@@ -253,17 +253,17 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             continue;
         }
 
-        let ws_header = egui::CollapsingHeader::new(
+        let is_just_saved = app.collection_just_saved_workspace.as_deref() == Some(ws_id.as_str());
+
+        let mut ws_header = egui::CollapsingHeader::new(
             egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
         .default_open(true);
 
-        let ws_header = if !filter.is_empty() {
-            ws_header.open(Some(true))
-        } else {
-            ws_header
-        };
+        if !filter.is_empty() || is_just_saved {
+            ws_header = ws_header.open(Some(true));
+        }
 
         let ws_header_resp = ws_header.show(ui, |ui| {
             // ── Top-level requests ────────────────────────────────────────
@@ -400,6 +400,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     app.collection_expanded_folders = expanded_folders;
+    app.collection_just_saved_workspace = None;
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {

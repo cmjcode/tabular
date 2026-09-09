@@ -707,6 +707,7 @@ pub(crate) fn render_connection_dialog(
 
                             // Open HTTP client tab for API-HTTP connections
                             if is_api_http {
+                                tabular.selected_menu = "APIs".to_string();
                                 crate::editor::create_new_tab_with_connection(
                                     tabular,
                                     new_conn_name,
@@ -2386,9 +2387,6 @@ pub(crate) fn add_connection_to_tree(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) {
-    if connection.connection_type == models::enums::DatabaseType::ApiHttp {
-        return;
-    }
     if let Some(id) = connection.id {
         let folder_name = connection
             .folder
@@ -2436,9 +2434,6 @@ pub(crate) fn update_connection_in_tree(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) {
-    if connection.connection_type == models::enums::DatabaseType::ApiHttp {
-        return;
-    }
     if let Some(id) = connection.id {
         let new_folder = connection
             .folder
@@ -2827,9 +2822,6 @@ pub(crate) fn create_connections_folder_structure(
     > = std::collections::HashMap::new();
 
     for conn in &tabular.connections {
-        if conn.connection_type == models::enums::DatabaseType::ApiHttp {
-            continue;
-        }
         let full_path = normalize_folder_path(conn.folder.as_deref());
         // Top-level segment — guaranteed non-empty after normalize_folder_path
         let top = full_path

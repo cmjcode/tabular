@@ -709,6 +709,8 @@ pub struct Tabular {
     pub collection_search: String,
     /// Which folder ids are expanded in the sidebar tree.
     pub collection_expanded_folders: std::collections::HashSet<String>,
+    /// Workspace id that was just saved, used to force-expand it in the sidebar.
+    pub collection_just_saved_workspace: Option<String>,
     /// Flag: show the Yaak import file-picker dialog next frame.
     pub show_yaak_import_dialog: bool,
     /// Flag: show the Postman import file-picker dialog next frame.
