@@ -479,14 +479,38 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         && tab.http_client_state.is_some()
     {
         let conn_id = tab.connection_id;
+        let mut new_tab_title = None;
+        let mut saved_ws_id = None;
+        let mut saved_folder_id = None;
+        let mut workspaces_changed = false;
         if let Some(http_state) = tab.http_client_state.as_mut() {
-            let workspaces_changed = crate::http_client::save_or_update_http_tab(
+            workspaces_changed = crate::http_client::save_or_update_http_tab(
                 conn_id,
                 http_state,
                 &mut tabular.toasts,
             );
             if workspaces_changed {
-                tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+                saved_ws_id = http_state.saved_workspace_id.clone();
+                saved_folder_id = http_state.saved_folder_id.clone();
+                if !http_state.save_dialog_name.trim().is_empty() {
+                    new_tab_title = Some(http_state.save_dialog_name.trim().to_string());
+                }
+            }
+        }
+        if workspaces_changed {
+            tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+            tabular.selected_menu = "APIs".to_string();
+            if let Some(ws_id) = saved_ws_id {
+                tabular.collection_just_saved_workspace = Some(ws_id);
+            }
+            if let Some(f_id) = saved_folder_id {
+                tabular.collection_expanded_folders.insert(f_id);
+            }
+            if let Some(title) = new_tab_title {
+                tab.title = title;
+            }
+            if tabular.sync_account.is_some() {
+                tabular.sync_trigger_http = true;
             }
         }
         return Ok(());
