@@ -1,9 +1,10 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
 use crate::export_import_all::{
-    export_all_data, import_all_data, inspect_archive, ConflictStrategy, ExportAllManifest,
+    import_all_data, inspect_archive, ConflictStrategy, ExportAllManifest,
     ExportAllOptions, ExportSummary, ImportAllOptions, ImportSummary,
 };
 use crate::rfd;
@@ -11,7 +12,7 @@ use crate::window_egui::Tabular;
 
 // ─── Export Dialog State ────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExportAllDialogState {
     pub target_file: Option<PathBuf>,
     pub options: ExportAllOptions,
@@ -19,6 +20,20 @@ pub struct ExportAllDialogState {
     pub status_message: Option<String>,
     pub error_message: Option<String>,
     pub summary: Option<ExportSummary>,
+    pub result_receiver: Option<Arc<Mutex<Option<Result<ExportSummary, String>>>>>,
+}
+
+impl std::fmt::Debug for ExportAllDialogState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportAllDialogState")
+            .field("target_file", &self.target_file)
+            .field("options", &self.options)
+            .field("is_running", &self.is_running)
+            .field("status_message", &self.status_message)
+            .field("error_message", &self.error_message)
+            .field("summary", &self.summary)
+            .finish()
+    }
 }
 
 impl Default for ExportAllDialogState {
@@ -36,6 +51,7 @@ impl Default for ExportAllDialogState {
             status_message: None,
             error_message: None,
             summary: None,
+            result_receiver: None,
         }
     }
 }
@@ -77,11 +93,40 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .unwrap_or_default();
     let mut close_requested = false;
 
+    // Check background export thread if running
+    if state.is_running {
+        if let Some(receiver) = state.result_receiver.clone() {
+            if let Ok(mut lock) = receiver.try_lock() {
+                if let Some(result) = lock.take() {
+                    state.is_running = false;
+                    state.result_receiver = None;
+                    match result {
+                        Ok(summary) => {
+                            state.summary = Some(summary);
+                            state.status_message = Some("Export completed successfully!".to_string());
+                            state.error_message = None;
+                        }
+                        Err(err) => {
+                            state.error_message = Some(format!("Export failed: {}", err));
+                        }
+                    }
+                }
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    crate::window_egui::style::render_modal_backdrop(ctx, "export_all_dialog", is_open);
+
+    let screen_rect = ctx.content_rect();
+    let dialog_w = (screen_rect.width() - 32.0).min(560.0).max(420.0);
+
     egui::Window::new("📦 Export All Application Data (ZIP)")
         .open(&mut is_open)
-        .default_size(egui::vec2(540.0, 480.0))
-        .min_size(egui::vec2(480.0, 360.0))
-        .resizable(true)
+        .default_width(dialog_w)
+        .max_width(dialog_w)
+        .min_width(dialog_w)
+        .resizable(false)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
@@ -89,6 +134,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Top Header Banner ──
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("📦").size(24.0));
                     ui.vertical(|ui| {
@@ -110,9 +156,26 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             ui.add_space(8.0);
 
+            // ── In-Progress Progress Indicator ──
+            if state.is_running {
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Exporting workspace data to ZIP archive, please wait...")
+                                .color(egui::Color32::from_rgb(100, 180, 255))
+                                .strong(),
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+            }
+
             // ── Summary Card (if already exported) ──
             if let Some(ref summary) = state.summary {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("✅")
@@ -150,6 +213,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             // ── Error Banner (if any) ──
             if let Some(ref err) = state.error_message {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("❌").size(16.0));
                         ui.label(
@@ -163,85 +227,95 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             }
 
             // ── Destination Path Selection ──
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("📁 Backup Destination Path").strong());
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    let mut path_str = state
-                        .target_file
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
+            ui.add_enabled_ui(!state.is_running, |ui| {
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("📁 Backup Destination Path").strong());
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        let mut path_str = state
+                            .target_file
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
 
-                    let text_resp = ui.add(
-                        egui::TextEdit::singleline(&mut path_str)
-                            .desired_width(ui.available_width() - 85.0)
-                            .hint_text("Choose target zip file path..."),
-                    );
-                    if text_resp.changed() {
-                        state.target_file = Some(PathBuf::from(path_str));
-                    }
+                        let button_width = 75.0;
+                        let spacing = ui.spacing().item_spacing.x;
+                        let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
 
-                    if ui.button("Browse...").clicked() {
-                        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-                        let default_name = format!("tabular_backup_{}.zip", timestamp);
+                        let text_resp = ui.add_sized(
+                            [text_edit_width, 22.0],
+                            egui::TextEdit::singleline(&mut path_str)
+                                .hint_text("Choose target zip file path..."),
+                        );
+                        if text_resp.changed() {
+                            state.target_file = Some(PathBuf::from(path_str));
+                        }
 
-                        let mut dialog = rfd::FileDialog::new()
-                            .set_file_name(&default_name)
-                            .add_filter("ZIP Archive (*.zip)", &["zip"]);
+                        if ui.add_sized([button_width, 22.0], egui::Button::new("Browse...")).clicked() {
+                            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                            let default_name = format!("tabular_backup_{}.zip", timestamp);
 
-                        if let Some(ref current) = state.target_file {
-                            if let Some(dir) = current.parent() {
-                                dialog = dialog.set_directory(dir);
+                            let mut dialog = rfd::FileDialog::new()
+                                .set_file_name(&default_name)
+                                .add_filter("ZIP Archive (*.zip)", &["zip"]);
+
+                            if let Some(ref current) = state.target_file {
+                                if let Some(dir) = current.parent() {
+                                    dialog = dialog.set_directory(dir);
+                                }
+                            }
+
+                            if let Some(path) = dialog.save_file() {
+                                state.target_file = Some(path);
                             }
                         }
-
-                        if let Some(path) = dialog.save_file() {
-                            state.target_file = Some(path);
-                        }
-                    }
+                    });
                 });
             });
 
             ui.add_space(8.0);
 
             // ── Data Inclusions Checkboxes ──
-            ui.group(|ui| {
-                ui.label(egui::RichText::new("📋 Data to Include in Backup").strong());
-                ui.add_space(4.0);
+            ui.add_enabled_ui(!state.is_running, |ui| {
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("📋 Data to Include in Backup").strong());
+                    ui.add_space(4.0);
 
-                ui.checkbox(
-                    &mut state.options.include_connections,
-                    format!(
-                        "🔌 Database Connections & Folders ({} connections)",
-                        tabular.connections.len()
-                    ),
-                );
-                ui.checkbox(
-                    &mut state.options.include_queries,
-                    "📝 Saved Queries (SQL scripts & directory hierarchy)",
-                );
-                ui.checkbox(
-                    &mut state.options.include_http_api,
-                    format!(
-                        "🌐 HTTP API Collections ({} workspaces)",
-                        tabular.yaak_workspaces.len()
-                    ),
-                );
-                ui.checkbox(
-                    &mut state.options.include_history,
-                    format!(
-                        "📜 Query Execution History ({} items)",
-                        tabular.history_items.len()
-                    ),
-                );
+                    ui.checkbox(
+                        &mut state.options.include_connections,
+                        format!(
+                            "🔌 Database Connections & Folders ({} connections)",
+                            tabular.connections.len()
+                        ),
+                    );
+                    ui.checkbox(
+                        &mut state.options.include_queries,
+                        "📝 Saved Queries (SQL scripts & directory hierarchy)",
+                    );
+                    ui.checkbox(
+                        &mut state.options.include_http_api,
+                        format!(
+                            "🌐 HTTP API Collections ({} workspaces)",
+                            tabular.yaak_workspaces.len()
+                        ),
+                    );
+                    ui.checkbox(
+                        &mut state.options.include_history,
+                        format!(
+                            "📜 Query Execution History ({} items)",
+                            tabular.history_items.len()
+                        ),
+                    );
+                });
             });
 
             ui.add_space(12.0);
 
             // ── Bottom Action Buttons ──
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
+                if ui.add_enabled(!state.is_running, egui::Button::new("Cancel")).clicked() {
                     close_requested = true;
                 }
 
@@ -256,25 +330,52 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         && !state.is_running;
 
                     let btn = egui::Button::new(
-                        egui::RichText::new("📦 Export Now")
-                            .strong()
-                            .color(egui::Color32::WHITE),
+                        egui::RichText::new(if state.is_running {
+                            "⏳ Exporting..."
+                        } else {
+                            "📦 Export Now"
+                        })
+                        .strong()
+                        .color(egui::Color32::WHITE),
                     )
-                    .fill(egui::Color32::from_rgb(45, 120, 220));
+                    .fill(if state.is_running {
+                        egui::Color32::from_gray(80)
+                    } else {
+                        egui::Color32::from_rgb(45, 120, 220)
+                    });
 
                     if ui.add_enabled(can_export, btn).clicked() {
                         if let Some(target_path) = state.target_file.clone() {
                             state.error_message = None;
+                            state.summary = None;
+                            state.is_running = true;
 
-                            match export_all_data(tabular, &target_path, &state.options) {
-                                Ok(summary) => {
-                                    state.summary = Some(summary);
-                                    state.status_message = Some("Export completed successfully!".to_string());
+                            let receiver = Arc::new(Mutex::new(None));
+                            state.result_receiver = Some(Arc::clone(&receiver));
+
+                            let options = state.options.clone();
+                            let connections = tabular.connections.clone();
+                            let connection_folders = tabular.connection_folders.clone();
+                            let yaak_workspaces = tabular.yaak_workspaces.clone();
+                            let history_items = tabular.history_items.clone();
+
+                            std::thread::spawn(move || {
+                                let res = crate::export_import_all::export_all_data_payload(
+                                    &target_path,
+                                    &options,
+                                    &connections,
+                                    &connection_folders,
+                                    &yaak_workspaces,
+                                    &history_items,
+                                )
+                                .map_err(|e| e.to_string());
+
+                                if let Ok(mut lock) = receiver.lock() {
+                                    *lock = Some(res);
                                 }
-                                Err(e) => {
-                                    state.error_message = Some(format!("Export failed: {}", e));
-                                }
-                            }
+                            });
+
+                            ctx.request_repaint();
                         }
                     }
                 });
@@ -298,11 +399,17 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .unwrap_or_default();
     let mut close_requested = false;
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "import_all_dialog", is_open);
+
+    let screen_rect = ctx.content_rect();
+    let dialog_w = (screen_rect.width() - 32.0).min(580.0).max(440.0);
+
     egui::Window::new("📥 Import & Restore All Data (ZIP)")
         .open(&mut is_open)
-        .default_size(egui::vec2(580.0, 520.0))
-        .min_size(egui::vec2(500.0, 400.0))
-        .resizable(true)
+        .default_width(dialog_w)
+        .max_width(dialog_w)
+        .min_width(dialog_w)
+        .resizable(false)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
@@ -310,6 +417,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Top Header Banner ──
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("📥").size(24.0));
                     ui.vertical(|ui| {
@@ -334,6 +442,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             // ── Summary Card (if already restored) ──
             if let Some(ref summary) = state.summary {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("✅")
@@ -363,6 +472,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             // ── Error Banner (if any) ──
             if let Some(ref err) = state.error_message {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("❌").size(16.0));
                         ui.label(
@@ -377,6 +487,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Archive File Selection ──
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.label(egui::RichText::new("📁 Select Backup Archive (.zip)").strong());
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
@@ -386,9 +497,13 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
 
-                    let text_resp = ui.add(
+                    let button_width = 75.0;
+                    let spacing = ui.spacing().item_spacing.x;
+                    let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
+
+                    let text_resp = ui.add_sized(
+                        [text_edit_width, 22.0],
                         egui::TextEdit::singleline(&mut path_str)
-                            .desired_width(ui.available_width() - 85.0)
                             .hint_text("Choose tabular backup .zip file..."),
                     );
                     if text_resp.changed() {
@@ -402,7 +517,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         }
                     }
 
-                    if ui.button("Browse...").clicked() {
+                    if ui.add_sized([button_width, 22.0], egui::Button::new("Browse...")).clicked() {
                         let dialog = rfd::FileDialog::new()
                             .add_filter("ZIP Archive (*.zip)", &["zip"]);
 
@@ -420,6 +535,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             // ── Archive Manifest Preview (if archive selected) ──
             if let Some(ref manifest) = state.manifest_preview {
                 ui.group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.label(egui::RichText::new("🔍 Archive Contents Preview").strong());
                     ui.add_space(2.0);
                     if !manifest.exported_at.is_empty() {
@@ -444,7 +560,8 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Data Restoration Selection Checkboxes ──
             ui.group(|ui| {
-                ui.label(egui::RichText::new("📋 Data to Restore").strong());
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new("📋 Data to Include in Restore").strong());
                 ui.add_space(4.0);
 
                 ui.checkbox(
@@ -469,6 +586,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Conflict Resolution Strategy ──
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.label(egui::RichText::new("⚙️ Conflict Handling Strategy").strong());
                 ui.add_space(4.0);
 
