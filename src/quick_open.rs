@@ -701,6 +701,8 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ("View: Refresh", "Refresh active database or table", "⌘R"),
         ("Preferences: Color Theme", "Change editor and UI color palette", ""),
         ("Preferences: Settings", "Configure application settings", "⌘,"),
+        ("Export All Data (ZIP)", "Export all connections, queries, HTTP APIs, and history to a ZIP file", ""),
+        ("Import All Data (ZIP)", "Restore all connections, queries, HTTP APIs, and history from a ZIP file", ""),
     ];
 
     for (cmd_title, cmd_sub, sc) in commands {

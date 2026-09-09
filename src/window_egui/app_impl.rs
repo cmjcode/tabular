@@ -459,6 +459,20 @@ impl Tabular {
                                     if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
                                 });
                                 ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application").size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
+                                ui.add_space(14.0);
+                                ui.separator();
+                                ui.add_space(10.0);
+                                ui.heading("📦 Backup & Restore All Data");
+                                ui.label("Export or restore all database connections, saved queries, HTTP API collections, and query history to/from a portable ZIP archive.");
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button("📦 Export All Data (ZIP)...").clicked() {
+                                        self.show_export_all_dialog = true;
+                                    }
+                                    if ui.button("📥 Import & Restore All Data (ZIP)...").clicked() {
+                                        self.show_import_all_dialog = true;
+                                    }
+                                });
                             }
                             PrefTab::Update => {
                                 ui.heading("Updates");
@@ -2547,6 +2561,18 @@ impl Tabular {
 
                                             if draw_menu_item(ui, egui_icons::icons::ICON_SETTINGS.codepoint, "Preferences", Some("⌘,")) {
                                                 self.show_settings_window = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            draw_menu_sep(ui);
+
+                                            if draw_menu_item(ui, "📦", "Export All Data (ZIP)...", None) {
+                                                self.show_export_all_dialog = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, "📥", "Import All Data (ZIP)...", None) {
+                                                self.show_import_all_dialog = true;
                                                 self.show_settings_menu = false;
                                             }
 
@@ -5029,6 +5055,16 @@ impl App for Tabular {
         // Database Restore dialog
         if self.show_restore_dialog {
             crate::dialog_backup_restore::render_restore_dialog(self, ctx);
+        }
+
+        // Export All Data (ZIP) dialog
+        if self.show_export_all_dialog {
+            crate::dialog_export_import_all::render_export_all_dialog(self, ctx);
+        }
+
+        // Import All Data (ZIP) dialog
+        if self.show_import_all_dialog {
+            crate::dialog_export_import_all::render_import_all_dialog(self, ctx);
         }
 
         // Show cache miss dialog (topmost)

@@ -1165,7 +1165,7 @@ pub(crate) fn rename_connection_folder(
 
 /// Move a connection's credentials into the secret store and rewrite the row
 /// so the columns only hold the sentinel (or plaintext if no backend worked).
-fn externalize_connection_secrets(
+pub(crate) fn externalize_connection_secrets(
     rt: &tokio::runtime::Runtime,
     pool: &std::sync::Arc<sqlx::SqlitePool>,
     connection_id: i64,
