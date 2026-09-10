@@ -57,6 +57,44 @@ pub enum NodeType {
     Diagram,
 }
 
+impl NodeType {
+    pub fn is_folder(&self) -> bool {
+        matches!(
+            self,
+            NodeType::HistoryDateFolder
+                | NodeType::DatabasesFolder
+                | NodeType::TablesFolder
+                | NodeType::ViewsFolder
+                | NodeType::StoredProceduresFolder
+                | NodeType::UserFunctionsFolder
+                | NodeType::TriggersFolder
+                | NodeType::EventsFolder
+                | NodeType::DBAViewsFolder
+                | NodeType::UsersFolder
+                | NodeType::PrivilegesFolder
+                | NodeType::ProcessesFolder
+                | NodeType::StatusFolder
+                | NodeType::BlockedQueriesFolder
+                | NodeType::MetricsUserActiveFolder
+                | NodeType::ReplicationStatusFolder
+                | NodeType::MasterStatusFolder
+                | NodeType::MySQLFolder
+                | NodeType::MsSQLFolder
+                | NodeType::MongoDBFolder
+                | NodeType::PostgreSQLFolder
+                | NodeType::SQLiteFolder
+                | NodeType::RedisFolder
+                | NodeType::CustomFolder
+                | NodeType::QueryFolder
+                | NodeType::ColumnsFolder
+                | NodeType::IndexesFolder
+                | NodeType::PrimaryKeysFolder
+                | NodeType::PartitionsFolder
+                | NodeType::DiagramsFolder
+        )
+    }
+}
+
 // Special DBA quick view context (used to apply post-processing without embedding markers in SQL)
 #[derive(Clone, PartialEq, Debug)]
 pub enum DBASpecialMode {
