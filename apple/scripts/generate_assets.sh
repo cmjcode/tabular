@@ -287,6 +287,8 @@ cat << 'EOF' > "$ACCENT_DIR/Contents.json"
     "version" : 1
   }
 }
+EOF
+
 echo "[SUCCESS] Asset catalog generated at $ASSETS_DIR"
 
 # Generate assets/AppIcon.icns for macOS desktop builds
