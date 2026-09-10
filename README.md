@@ -1370,11 +1370,11 @@ Tabular includes a dedicated shell script (`test_api.sh`) in the repository root
 # Make script executable (if not already)
 chmod +x test_api.sh
 
-# Run against default server (http://visva-api:8080)
+# Run against default server (https://api.tabular.id)
 bash test_api.sh
 
 # Or specify a custom target server URL
-API_URL=http://127.0.0.1:8080 ./test_api.sh
+API_URL=http://localhost:8080 ./test_api.sh
 ```
 
 ### Tested Endpoints:

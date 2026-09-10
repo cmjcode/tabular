@@ -12,9 +12,11 @@
 
 set -uo pipefail
 
-API_URL="${API_URL:-http://visva-api:8080}"
+API_URL="${API_URL:-https://api.tabular.id}"
 PASSED_TESTS=0
 FAILED_TESTS=0
+
+CLIENT_VERSION="0.15.0"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -30,7 +32,7 @@ echo -e "Target Server: ${YELLOW}${API_URL}${NC}\n"
 # Helper function to assert HTTP status code
 # Arguments:
 #   $1: Test Name
-#   $2: Expected status codes (regex, e.g. "200|404")
+#   $2: Expected status codes (regex, e.g. "200|400")
 #   $3: Actual status code
 #   $4: Response body
 assert_status() {
@@ -53,7 +55,8 @@ assert_status() {
 
 # 1. Health Check
 echo -e "${YELLOW}[1/5] Checking Server Health...${NC}"
-HEALTH_RESP=$(curl -s -w "\n%{http_code}" -X GET "${API_URL}/health" || true)
+HEALTH_RESP=$(curl -s -w "\n%{http_code}" -X GET "${API_URL}/health" \
+    -H "X-Tabular-Client-Version: ${CLIENT_VERSION}" || true)
 HEALTH_BODY=$(echo "$HEALTH_RESP" | head -n -1)
 HEALTH_CODE=$(echo "$HEALTH_RESP" | tail -n 1)
 assert_status "GET /health" "200" "$HEALTH_CODE" "$HEALTH_BODY"
@@ -63,39 +66,43 @@ echo -e "\n${YELLOW}[2/5] Testing OAuth Ticket Poll Endpoint...${NC}"
 POLL_PAYLOAD='{"ticket":"0123456789abcdef0123456789abcdef"}'
 POLL_RESP=$(curl -s -w "\n%{http_code}" -X POST "${API_URL}/api/v1/auth/ticket/poll" \
     -H "Content-Type: application/json" \
+    -H "X-Tabular-Client-Version: ${CLIENT_VERSION}" \
     -d "$POLL_PAYLOAD" || true)
 POLL_BODY=$(echo "$POLL_RESP" | head -n -1)
 POLL_CODE=$(echo "$POLL_RESP" | tail -n 1)
-assert_status "POST /api/v1/auth/ticket/poll" "200|400|404" "$POLL_CODE" "$POLL_BODY"
+assert_status "POST /api/v1/auth/ticket/poll" "200|202|400" "$POLL_CODE" "$POLL_BODY"
 
 # 3. Token Refresh Endpoint
 echo -e "\n${YELLOW}[3/5] Testing Token Refresh Endpoint...${NC}"
 REFRESH_PAYLOAD='{"refresh_token":"test_dummy_token"}'
 REFRESH_RESP=$(curl -s -w "\n%{http_code}" -X POST "${API_URL}/api/v1/auth/refresh" \
     -H "Content-Type: application/json" \
+    -H "X-Tabular-Client-Version: ${CLIENT_VERSION}" \
     -d "$REFRESH_PAYLOAD" || true)
 REFRESH_BODY=$(echo "$REFRESH_RESP" | head -n -1)
 REFRESH_CODE=$(echo "$REFRESH_RESP" | tail -n 1)
-assert_status "POST /api/v1/auth/refresh" "400|401|404" "$REFRESH_CODE" "$REFRESH_BODY"
+assert_status "POST /api/v1/auth/refresh" "400|401" "$REFRESH_CODE" "$REFRESH_BODY"
 
 # 4. User Profile Update Endpoint (PUT /api/v1/users/me)
 echo -e "\n${YELLOW}[4/5] Testing Profile Update Endpoint...${NC}"
 PROFILE_PAYLOAD='{"display_name":"Test User","username":"testuser","phone":"+6281234567890"}'
 PROFILE_RESP=$(curl -s -w "\n%{http_code}" -X PUT "${API_URL}/api/v1/users/me" \
     -H "Content-Type: application/json" \
+    -H "X-Tabular-Client-Version: ${CLIENT_VERSION}" \
     -H "Authorization: Bearer mock_or_expired_token" \
     -d "$PROFILE_PAYLOAD" || true)
 PROFILE_BODY=$(echo "$PROFILE_RESP" | head -n -1)
 PROFILE_CODE=$(echo "$PROFILE_RESP" | tail -n 1)
-assert_status "PUT /api/v1/users/me" "401|403|404" "$PROFILE_CODE" "$PROFILE_BODY"
+assert_status "PUT /api/v1/users/me" "401|403" "$PROFILE_CODE" "$PROFILE_BODY"
 
 # 5. User Search Endpoint (GET /api/v1/users/search)
 echo -e "\n${YELLOW}[5/5] Testing User Search Endpoint...${NC}"
 SEARCH_RESP=$(curl -s -w "\n%{http_code}" -X GET "${API_URL}/api/v1/users/search?q=testuser" \
+    -H "X-Tabular-Client-Version: ${CLIENT_VERSION}" \
     -H "Authorization: Bearer mock_or_expired_token" || true)
 SEARCH_BODY=$(echo "$SEARCH_RESP" | head -n -1)
 SEARCH_CODE=$(echo "$SEARCH_RESP" | tail -n 1)
-assert_status "GET /api/v1/users/search" "200|401|403|404" "$SEARCH_CODE" "$SEARCH_BODY"
+assert_status "GET /api/v1/users/search" "200|401|403" "$SEARCH_CODE" "$SEARCH_BODY"
 
 # Summary
 echo -e "\n${BLUE}======================================================${NC}"
