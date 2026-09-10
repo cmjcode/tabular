@@ -32,26 +32,24 @@ if ! command -v magick &>/dev/null; then
     exit 1
 fi
 
-# 1. Clean logo.png
-if [ -f "$CLIENT_DIR/assets/logo.png" ]; then
-    echo "🧹 Removing alpha channel from $CLIENT_DIR/assets/logo.png..."
-    magick "$CLIENT_DIR/assets/logo.png" -background "$BG_COLOR" -alpha remove -alpha off "$CLIENT_DIR/assets/logo.png"
-fi
-
-# 2. Also keep assets/icon.png in sync
-if [ -f "$CLIENT_DIR/assets/logo.png" ]; then
-    cp "$CLIENT_DIR/assets/logo.png" "$CLIENT_DIR/assets/icon.png"
-fi
-
-# 3. Clean logo-512.png if present
-if [ -f "$CLIENT_DIR/assets/logo-512.png" ]; then
-    echo "🧹 Removing alpha channel from $CLIENT_DIR/assets/logo-512.png..."
-    magick "$CLIENT_DIR/assets/logo-512.png" -background "$BG_COLOR" -alpha remove -alpha off "$CLIENT_DIR/assets/logo-512.png"
-fi
-
-# 4. Regenerate Xcode Asset Catalog
-echo "🔄 Regenerating Xcode Assets..."
+# 1. Regenerate Xcode Asset Catalog and AppIcon.icns from clean transparent assets
+echo "🔄 Regenerating Xcode Assets & AppIcon..."
 (cd "$CLIENT_DIR" && make xcode-assets)
+
+# 2. Keep assets/icon.png and assets/logo-512.png in sync with alpha
+cp "$CLIENT_DIR/assets/logo.png" "$CLIENT_DIR/assets/icon.png"
+sips -z 512 512 "$CLIENT_DIR/assets/logo.png" --out "$CLIENT_DIR/assets/logo-512.png" &>/dev/null
+
+# 3. For iOS App Store compliance (iOS App Store rejects alpha in 1024x1024 marketing icon),
+# only strip alpha from the iOS-specific icon-1024.png if explicitly requested,
+# while preserving alpha for all macOS icons and master assets.
+if [ "$1" = "--ios-store" ] || [ "$2" = "--ios-store" ]; then
+    echo "🧹 Removing alpha channel from iOS icon-1024.png for App Store submission..."
+    IOS_ICON="$CLIENT_DIR/apple/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+    if [ -f "$IOS_ICON" ]; then
+        magick "$IOS_ICON" -background "$BG_COLOR" -alpha remove -alpha off "$IOS_ICON"
+    fi
+fi
 
 # 5. Verify AppIcon properties
 echo "🔍 Verifying AppIcon properties:"
