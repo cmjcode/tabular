@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use log::info;
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
@@ -28,8 +28,8 @@ pub enum ExportImportError {
     InvalidArchive(String),
     #[error("Zip slip path traversal detected: {0}")]
     ZipSlip(String),
-    #[error("No active database pool available")]
-    NoDatabasePool,
+    #[error("No active database pool available: {0}")]
+    NoDatabasePool(String),
 }
 
 // ─── Manifest & Metadata Models ──────────────────────────────────────────────
@@ -436,16 +436,61 @@ pub fn import_all_data(
     archive_path: &Path,
     options: &ImportAllOptions,
 ) -> Result<ImportSummary, ExportImportError> {
-    let file = File::open(archive_path)?;
-    let mut archive = ZipArchive::new(file)?;
+    eprintln!("[RESTORE] ========================================================");
+    eprintln!("[RESTORE] Starting import_all_data from: {}", archive_path.display());
+    eprintln!(
+        "[RESTORE] Options: include_connections={}, include_queries={}, include_http_api={}, include_history={}, strategy={:?}",
+        options.include_connections,
+        options.include_queries,
+        options.include_http_api,
+        options.include_history,
+        options.conflict_strategy
+    );
+    info!(
+        "[RESTORE] Starting import_all_data from: {} (strategy={:?})",
+        archive_path.display(),
+        options.conflict_strategy
+    );
+
+    let file = match File::open(archive_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[RESTORE] ❌ Failed to open archive file '{}': {}", archive_path.display(), e);
+            error!("[RESTORE] Failed to open archive file '{}': {}", archive_path.display(), e);
+            return Err(ExportImportError::Io(e));
+        }
+    };
+
+    let mut archive = match ZipArchive::new(file) {
+        Ok(a) => {
+            eprintln!("[RESTORE] ZIP archive opened successfully. Total entries: {}", a.len());
+            a
+        }
+        Err(e) => {
+            eprintln!("[RESTORE] ❌ Failed to parse ZIP archive '{}': {}", archive_path.display(), e);
+            error!("[RESTORE] Failed to parse ZIP archive '{}': {}", archive_path.display(), e);
+            return Err(ExportImportError::Zip(e));
+        }
+    };
 
     // Zip slip verification
+    eprintln!("[RESTORE] Verifying archive entries against zip slip path traversal...");
     for i in 0..archive.len() {
-        let entry = archive.by_index(i)?;
+        let entry = match archive.by_index(i) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[RESTORE] ❌ Failed to read entry index {} from ZIP: {}", i, e);
+                return Err(ExportImportError::Zip(e));
+            }
+        };
         if entry.enclosed_name().is_none() {
-            return Err(ExportImportError::ZipSlip(entry.name().to_string()));
+            let name = entry.name().to_string();
+            eprintln!("[RESTORE] ❌ Potential zip slip detected on entry: '{}'", name);
+            error!("[RESTORE] Potential zip slip detected on entry: '{}'", name);
+            return Err(ExportImportError::ZipSlip(name));
         }
     }
+    eprintln!("[RESTORE] ✅ Zip slip verification passed for all entries.");
 
     let mut summary = ImportSummary::default();
     let mut old_id_to_new_id: HashMap<i64, i64> = HashMap::new();
@@ -453,12 +498,21 @@ pub fn import_all_data(
 
     let rt = tabular.get_runtime();
     let pool_opt = if options.include_connections || options.include_history {
-        Some(
-            tabular
-                .ensure_db_pool()
-                .map_err(|_| ExportImportError::NoDatabasePool)?,
-        )
+        eprintln!("[RESTORE] Database pool required. Requesting pool via ensure_db_pool()...");
+        match tabular.ensure_db_pool() {
+            Ok(pool) => {
+                eprintln!("[RESTORE] ✅ Database pool successfully acquired.");
+                info!("[RESTORE] Database pool successfully acquired.");
+                Some(pool)
+            }
+            Err(e) => {
+                eprintln!("[RESTORE] ❌ Failed to acquire database pool: {}", e);
+                error!("[RESTORE] Failed to acquire database pool: {}", e);
+                return Err(ExportImportError::NoDatabasePool(e));
+            }
+        }
     } else {
+        eprintln!("[RESTORE] Database pool not required (connections and history not selected).");
         None
     };
 
@@ -466,187 +520,247 @@ pub fn import_all_data(
     if options.include_connections {
         let pool = pool_opt
             .as_ref()
-            .ok_or(ExportImportError::NoDatabasePool)?;
+            .ok_or_else(|| ExportImportError::NoDatabasePool("Database pool missing for connections restore".to_string()))?;
 
+        eprintln!("[RESTORE] ── Step 1: Restoring Connections & Folders ──");
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
+            eprintln!("[RESTORE] CleanRestore: Clearing existing connection and cache tables...");
             rt.block_on(async {
-                let _ = sqlx::query("DELETE FROM connection_folders").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM database_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM table_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM column_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM row_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM index_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM partition_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM foreign_key_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM connection_sync_cache").execute(pool.as_ref()).await;
-                let _ = sqlx::query("DELETE FROM connections").execute(pool.as_ref()).await;
+                let delete_queries = [
+                    "DELETE FROM connection_folders",
+                    "DELETE FROM database_cache",
+                    "DELETE FROM table_cache",
+                    "DELETE FROM column_cache",
+                    "DELETE FROM row_cache",
+                    "DELETE FROM index_cache",
+                    "DELETE FROM partition_cache",
+                    "DELETE FROM foreign_key_cache",
+                    "DELETE FROM connection_sync_cache",
+                    "DELETE FROM connections",
+                ];
+                for q in delete_queries {
+                    if let Err(e) = sqlx::query(q).execute(pool.as_ref()).await {
+                        eprintln!("[RESTORE] ⚠️ Warning: Failed to execute '{}': {}", q, e);
+                        warn!("[RESTORE] Failed to execute '{}': {}", q, e);
+                    }
+                }
             });
             tabular.connection_folders.clear();
             tabular.connections.clear();
             tabular.connection_pools.clear();
+            eprintln!("[RESTORE] CleanRestore: Completed clearing tables and in-memory caches.");
         }
 
         // Restore Folders
-        if let Ok(mut entry) = archive.by_name("connections/folders.json") {
-            let mut content = Vec::new();
-            entry.read_to_end(&mut content)?;
-            if let Ok(folders) = serde_json::from_slice::<Vec<String>>(&content) {
-                for folder in folders {
-                    let folder_clone = folder.clone();
-                    let pool_clone = pool.clone();
-                    let ok = rt.block_on(async {
-                        sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
-                            .bind(&folder_clone)
-                            .execute(pool_clone.as_ref())
-                            .await
-                    })
-                    .is_ok();
+        match archive.by_name("connections/folders.json") {
+            Ok(mut entry) => {
+                let mut content = Vec::new();
+                if let Err(e) = entry.read_to_end(&mut content) {
+                    eprintln!("[RESTORE] ⚠️ Failed reading 'connections/folders.json': {}", e);
+                } else {
+                    match serde_json::from_slice::<Vec<String>>(&content) {
+                        Ok(folders) => {
+                            eprintln!("[RESTORE] Restoring {} folders...", folders.len());
+                            for folder in folders {
+                                let folder_clone = folder.clone();
+                                let pool_clone = pool.clone();
+                                let ok = rt.block_on(async {
+                                    sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
+                                        .bind(&folder_clone)
+                                        .execute(pool_clone.as_ref())
+                                        .await
+                                })
+                                .is_ok();
 
-                    if ok && !tabular.connection_folders.contains(&folder) {
-                        tabular.connection_folders.push(folder);
+                                if ok && !tabular.connection_folders.contains(&folder) {
+                                    tabular.connection_folders.push(folder);
+                                }
+                                summary.folders_restored += 1;
+                            }
+                            eprintln!("[RESTORE] Restored {} folders successfully.", summary.folders_restored);
+                        }
+                        Err(e) => {
+                            eprintln!("[RESTORE] ❌ Failed to parse 'connections/folders.json': {}", e);
+                            error!("[RESTORE] Failed to parse 'connections/folders.json': {}", e);
+                        }
                     }
-                    summary.folders_restored += 1;
                 }
+            }
+            Err(_) => {
+                eprintln!("[RESTORE] Note: 'connections/folders.json' not found in archive.");
             }
         }
 
         // Restore Connections
-        if let Ok(mut entry) = archive.by_name("connections/connections.json") {
-            let mut content = Vec::new();
-            entry.read_to_end(&mut content)?;
-            if let Ok(conns) = serde_json::from_slice::<Vec<ConnectionConfig>>(&content) {
-                for conn in conns {
-                    let old_id = conn.id;
-                    let conn_name = conn.name.clone();
+        match archive.by_name("connections/connections.json") {
+            Ok(mut entry) => {
+                let mut content = Vec::new();
+                if let Err(e) = entry.read_to_end(&mut content) {
+                    eprintln!("[RESTORE] ❌ Failed reading 'connections/connections.json': {}", e);
+                    error!("[RESTORE] Failed reading 'connections/connections.json': {}", e);
+                } else {
+                    match serde_json::from_slice::<Vec<ConnectionConfig>>(&content) {
+                        Ok(conns) => {
+                            eprintln!("[RESTORE] Parsed {} connections from 'connections/connections.json'", conns.len());
+                            for conn in conns {
+                                let old_id = conn.id;
+                                let conn_name = conn.name.clone();
 
-                    // Check if connection with this name already exists in database
-                    let pool_clone = pool.clone();
-                    let check_name = conn_name.clone();
-                    let existing_id: Option<i64> = rt.block_on(async {
-                        sqlx::query_scalar::<_, i64>("SELECT id FROM connections WHERE name = ?")
-                            .bind(&check_name)
-                            .fetch_optional(pool_clone.as_ref())
-                            .await
-                            .unwrap_or(None)
-                    });
+                                // Check if connection with this name already exists in database
+                                let pool_clone = pool.clone();
+                                let check_name = conn_name.clone();
+                                let existing_id: Option<i64> = rt.block_on(async {
+                                    sqlx::query_scalar::<_, i64>("SELECT id FROM connections WHERE name = ?")
+                                        .bind(&check_name)
+                                        .fetch_optional(pool_clone.as_ref())
+                                        .await
+                                        .unwrap_or(None)
+                                });
 
-                    match (options.conflict_strategy, existing_id) {
-                        (ConflictStrategy::MergeKeepExisting, Some(eid)) => {
-                            // Keep existing row, register id mappings
-                            if let Some(oid) = old_id {
-                                old_id_to_new_id.insert(oid, eid);
-                            }
-                            name_to_new_id.insert(conn_name, eid);
-                        }
-                        (ConflictStrategy::MergeOverwrite, Some(eid)) => {
-                            // Update existing row and externalize secrets
-                            let pool_clone = pool.clone();
-                            let conn_clone = conn.clone();
-                            let _ = rt.block_on(async {
-                                sqlx::query(
-                                    "UPDATE connections SET host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
-                                )
-                                .bind(conn_clone.host)
-                                .bind(conn_clone.port)
-                                .bind(conn_clone.username)
-                                .bind(&conn_clone.password)
-                                .bind(conn_clone.database)
-                                .bind(format!("{:?}", conn_clone.connection_type))
-                                .bind(conn_clone.folder)
-                                .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
-                                .bind(conn_clone.ssh_host)
-                                .bind(conn_clone.ssh_port)
-                                .bind(conn_clone.ssh_username)
-                                .bind(conn_clone.ssh_auth_method.as_db_value())
-                                .bind(&conn_clone.ssh_private_key)
-                                .bind(&conn_clone.ssh_password)
-                                .bind(if conn_clone.ssh_accept_unknown_host_keys { 1 } else { 0 })
-                                .bind(serde_json::to_string(&conn_clone.custom_views).unwrap_or_else(|_| "[]".to_string()))
-                                .bind(conn_clone.replication_master_id)
-                                .bind(conn_clone.ssh_jump_host)
-                                .bind(if conn_clone.ssl_enabled { 1 } else { 0 })
-                                .bind(conn_clone.ssl_ca_cert)
-                                .bind(conn_clone.ssl_client_cert)
-                                .bind(conn_clone.ssl_client_key)
-                                .bind(conn_clone.ssl_key_passphrase)
-                                .bind(if conn_clone.ssl_verify_server { 1 } else { 0 })
-                                .bind(eid)
-                                .execute(pool_clone.as_ref())
-                                .await
-                            });
+                                match (options.conflict_strategy, existing_id) {
+                                    (ConflictStrategy::MergeKeepExisting, Some(eid)) => {
+                                        eprintln!("[RESTORE] Connection '{}' already exists (id={}). Keeping existing.", conn_name, eid);
+                                        if let Some(oid) = old_id {
+                                            old_id_to_new_id.insert(oid, eid);
+                                        }
+                                        name_to_new_id.insert(conn_name, eid);
+                                    }
+                                    (ConflictStrategy::MergeOverwrite, Some(eid)) => {
+                                        eprintln!("[RESTORE] Connection '{}' exists (id={}). Overwriting...", conn_name, eid);
+                                        let pool_clone = pool.clone();
+                                        let conn_clone = conn.clone();
+                                        let update_res = rt.block_on(async {
+                                            sqlx::query(
+                                                "UPDATE connections SET host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
+                                            )
+                                            .bind(conn_clone.host)
+                                            .bind(conn_clone.port)
+                                            .bind(conn_clone.username)
+                                            .bind(&conn_clone.password)
+                                            .bind(conn_clone.database)
+                                            .bind(format!("{:?}", conn_clone.connection_type))
+                                            .bind(conn_clone.folder)
+                                            .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
+                                            .bind(conn_clone.ssh_host)
+                                            .bind(conn_clone.ssh_port)
+                                            .bind(conn_clone.ssh_username)
+                                            .bind(conn_clone.ssh_auth_method.as_db_value())
+                                            .bind(&conn_clone.ssh_private_key)
+                                            .bind(&conn_clone.ssh_password)
+                                            .bind(if conn_clone.ssh_accept_unknown_host_keys { 1 } else { 0 })
+                                            .bind(serde_json::to_string(&conn_clone.custom_views).unwrap_or_else(|_| "[]".to_string()))
+                                            .bind(conn_clone.replication_master_id)
+                                            .bind(conn_clone.ssh_jump_host)
+                                            .bind(if conn_clone.ssl_enabled { 1 } else { 0 })
+                                            .bind(conn_clone.ssl_ca_cert)
+                                            .bind(conn_clone.ssl_client_cert)
+                                            .bind(conn_clone.ssl_client_key)
+                                            .bind(conn_clone.ssl_key_passphrase)
+                                            .bind(if conn_clone.ssl_verify_server { 1 } else { 0 })
+                                            .bind(eid)
+                                            .execute(pool_clone.as_ref())
+                                            .await
+                                        });
 
-                            crate::sidebar_database::externalize_connection_secrets(
-                                &rt,
-                                &pool,
-                                eid,
-                                &conn.password,
-                                &conn.ssh_private_key,
-                                &conn.ssh_password,
-                            );
+                                        match update_res {
+                                            Ok(_) => {
+                                                crate::sidebar_database::externalize_connection_secrets(
+                                                    &rt,
+                                                    &pool,
+                                                    eid,
+                                                    &conn.password,
+                                                    &conn.ssh_private_key,
+                                                    &conn.ssh_password,
+                                                );
 
-                            if let Some(oid) = old_id {
-                                old_id_to_new_id.insert(oid, eid);
-                            }
-                            name_to_new_id.insert(conn_name, eid);
-                            summary.connections_restored += 1;
-                        }
-                        _ => {
-                            // Insert as a new connection
-                            let pool_clone = pool.clone();
-                            let conn_clone = conn.clone();
-                            let insert_result = rt.block_on(async {
-                                sqlx::query(
-                                    "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id, ssh_jump_host, ssl_enabled, ssl_ca_cert, ssl_client_cert, ssl_client_key, ssl_key_passphrase, ssl_verify_server) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                                )
-                                .bind(&conn_clone.name)
-                                .bind(conn_clone.host)
-                                .bind(conn_clone.port)
-                                .bind(conn_clone.username)
-                                .bind(&conn_clone.password)
-                                .bind(conn_clone.database)
-                                .bind(format!("{:?}", conn_clone.connection_type))
-                                .bind(conn_clone.folder)
-                                .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
-                                .bind(conn_clone.ssh_host)
-                                .bind(conn_clone.ssh_port)
-                                .bind(conn_clone.ssh_username)
-                                .bind(conn_clone.ssh_auth_method.as_db_value())
-                                .bind(&conn_clone.ssh_private_key)
-                                .bind(&conn_clone.ssh_password)
-                                .bind(if conn_clone.ssh_accept_unknown_host_keys { 1 } else { 0 })
-                                .bind(serde_json::to_string(&conn_clone.custom_views).unwrap_or_else(|_| "[]".to_string()))
-                                .bind(conn_clone.replication_master_id)
-                                .bind(conn_clone.ssh_jump_host)
-                                .bind(if conn_clone.ssl_enabled { 1 } else { 0 })
-                                .bind(conn_clone.ssl_ca_cert)
-                                .bind(conn_clone.ssl_client_cert)
-                                .bind(conn_clone.ssl_client_key)
-                                .bind(conn_clone.ssl_key_passphrase)
-                                .bind(if conn_clone.ssl_verify_server { 1 } else { 0 })
-                                .execute(pool_clone.as_ref())
-                                .await
-                            });
+                                                if let Some(oid) = old_id {
+                                                    old_id_to_new_id.insert(oid, eid);
+                                                }
+                                                name_to_new_id.insert(conn_name, eid);
+                                                summary.connections_restored += 1;
+                                                eprintln!("[RESTORE] ✅ Connection '{}' updated (id={}).", conn.name, eid);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[RESTORE] ❌ Failed to update connection '{}' (id={}): {}", conn_name, eid, e);
+                                                error!("[RESTORE] Failed to update connection '{}' (id={}): {}", conn_name, eid, e);
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // Insert as a new connection
+                                        let pool_clone = pool.clone();
+                                        let conn_clone = conn.clone();
+                                        let insert_result = rt.block_on(async {
+                                            sqlx::query(
+                                                "INSERT INTO connections (name, host, port, username, password, database_name, connection_type, folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id, ssh_jump_host, ssl_enabled, ssl_ca_cert, ssl_client_cert, ssl_client_key, ssl_key_passphrase, ssl_verify_server) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                            )
+                                            .bind(&conn_clone.name)
+                                            .bind(conn_clone.host)
+                                            .bind(conn_clone.port)
+                                            .bind(conn_clone.username)
+                                            .bind(&conn_clone.password)
+                                            .bind(conn_clone.database)
+                                            .bind(format!("{:?}", conn_clone.connection_type))
+                                            .bind(conn_clone.folder)
+                                            .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
+                                            .bind(conn_clone.ssh_host)
+                                            .bind(conn_clone.ssh_port)
+                                            .bind(conn_clone.ssh_username)
+                                            .bind(conn_clone.ssh_auth_method.as_db_value())
+                                            .bind(&conn_clone.ssh_private_key)
+                                            .bind(&conn_clone.ssh_password)
+                                            .bind(if conn_clone.ssh_accept_unknown_host_keys { 1 } else { 0 })
+                                            .bind(serde_json::to_string(&conn_clone.custom_views).unwrap_or_else(|_| "[]".to_string()))
+                                            .bind(conn_clone.replication_master_id)
+                                            .bind(conn_clone.ssh_jump_host)
+                                            .bind(if conn_clone.ssl_enabled { 1 } else { 0 })
+                                            .bind(conn_clone.ssl_ca_cert)
+                                            .bind(conn_clone.ssl_client_cert)
+                                            .bind(conn_clone.ssl_client_key)
+                                            .bind(conn_clone.ssl_key_passphrase)
+                                            .bind(if conn_clone.ssl_verify_server { 1 } else { 0 })
+                                            .execute(pool_clone.as_ref())
+                                            .await
+                                        });
 
-                            if let Ok(res) = insert_result {
-                                let new_id = res.last_insert_rowid();
-                                crate::sidebar_database::externalize_connection_secrets(
-                                    &rt,
-                                    &pool,
-                                    new_id,
-                                    &conn.password,
-                                    &conn.ssh_private_key,
-                                    &conn.ssh_password,
-                                );
+                                        match insert_result {
+                                            Ok(res) => {
+                                                let new_id = res.last_insert_rowid();
+                                                crate::sidebar_database::externalize_connection_secrets(
+                                                    &rt,
+                                                    &pool,
+                                                    new_id,
+                                                    &conn.password,
+                                                    &conn.ssh_private_key,
+                                                    &conn.ssh_password,
+                                                );
 
-                                if let Some(oid) = old_id {
-                                    old_id_to_new_id.insert(oid, new_id);
+                                                if let Some(oid) = old_id {
+                                                    old_id_to_new_id.insert(oid, new_id);
+                                                }
+                                                name_to_new_id.insert(conn_name.clone(), new_id);
+                                                summary.connections_restored += 1;
+                                                eprintln!("[RESTORE] ✅ Connection '{}' inserted with new id={}.", conn_name, new_id);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[RESTORE] ❌ Failed to insert connection '{}': {}", conn_name, e);
+                                                error!("[RESTORE] Failed to insert connection '{}': {}", conn_name, e);
+                                            }
+                                        }
+                                    }
                                 }
-                                name_to_new_id.insert(conn_name, new_id);
-                                summary.connections_restored += 1;
                             }
+                            eprintln!("[RESTORE] Step 1 finished. Restored {} connections.", summary.connections_restored);
+                        }
+                        Err(e) => {
+                            eprintln!("[RESTORE] ❌ Failed to parse 'connections/connections.json': {}", e);
+                            error!("[RESTORE] Failed to parse 'connections/connections.json': {}", e);
                         }
                     }
                 }
+            }
+            Err(_) => {
+                eprintln!("[RESTORE] Note: 'connections/connections.json' not found in archive.");
             }
         }
     }
@@ -654,14 +768,26 @@ pub fn import_all_data(
     // ── 2. Restore Saved Queries ──
     if options.include_queries {
         let query_dir = crate::directory::get_query_dir();
-        std::fs::create_dir_all(&query_dir)?;
+        eprintln!("[RESTORE] ── Step 2: Restoring Saved Queries to '{}' ──", query_dir.display());
+        if let Err(e) = std::fs::create_dir_all(&query_dir) {
+            eprintln!("[RESTORE] ❌ Failed to create queries directory '{}': {}", query_dir.display(), e);
+            error!("[RESTORE] Failed to create queries directory '{}': {}", query_dir.display(), e);
+            return Err(ExportImportError::Io(e));
+        }
 
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
+            eprintln!("[RESTORE] CleanRestore: Clearing existing contents of '{}'...", query_dir.display());
             let _ = clear_directory_contents(&query_dir);
         }
 
         for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
+            let mut entry = match archive.by_index(i) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("[RESTORE] ❌ Failed to read query entry at index {}: {}", i, e);
+                    return Err(ExportImportError::Zip(e));
+                }
+            };
             let name = entry.name().to_string();
 
             if let Some(rel) = name.strip_prefix("queries/") {
@@ -672,37 +798,62 @@ pub fn import_all_data(
 
                 // Zip slip defense
                 if !target.starts_with(&query_dir) {
+                    eprintln!("[RESTORE] ❌ Zip slip detected for query path: {}", name);
                     return Err(ExportImportError::ZipSlip(name));
                 }
 
-                if entry.is_dir() {
-                    std::fs::create_dir_all(&target)?;
+                if entry.is_dir() || name.ends_with('/') {
+                    let _ = std::fs::create_dir_all(&target);
                 } else {
                     if options.conflict_strategy == ConflictStrategy::MergeKeepExisting && target.exists() {
+                        eprintln!("[RESTORE] Query '{}' exists. Skipping (MergeKeepExisting).", rel);
                         continue;
                     }
                     if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        let _ = std::fs::create_dir_all(parent);
                     }
-                    let mut out = File::create(&target)?;
-                    std::io::copy(&mut entry, &mut out)?;
-                    summary.queries_restored += 1;
+                    match File::create(&target) {
+                        Ok(mut out) => {
+                            if let Err(e) = std::io::copy(&mut entry, &mut out) {
+                                eprintln!("[RESTORE] ❌ Failed writing query file '{}': {}", target.display(), e);
+                                return Err(ExportImportError::Io(e));
+                            }
+                            summary.queries_restored += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("[RESTORE] ❌ Failed creating query file '{}': {}", target.display(), e);
+                            return Err(ExportImportError::Io(e));
+                        }
+                    }
                 }
             }
         }
+        eprintln!("[RESTORE] Step 2 finished. Restored {} query files.", summary.queries_restored);
     }
 
     // ── 3. Restore HTTP API Collections ──
     if options.include_http_api {
         let http_dir = crate::directory::get_app_data_dir().join("http_collections");
-        std::fs::create_dir_all(&http_dir)?;
+        eprintln!("[RESTORE] ── Step 3: Restoring HTTP API Collections to '{}' ──", http_dir.display());
+        if let Err(e) = std::fs::create_dir_all(&http_dir) {
+            eprintln!("[RESTORE] ❌ Failed creating http_collections directory '{}': {}", http_dir.display(), e);
+            error!("[RESTORE] Failed creating http_collections directory '{}': {}", http_dir.display(), e);
+            return Err(ExportImportError::Io(e));
+        }
 
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
+            eprintln!("[RESTORE] CleanRestore: Clearing existing http_collections directory...");
             let _ = clear_directory_contents(&http_dir);
         }
 
         for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
+            let mut entry = match archive.by_index(i) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("[RESTORE] ❌ Failed reading http entry at index {}: {}", i, e);
+                    return Err(ExportImportError::Zip(e));
+                }
+            };
             let name = entry.name().to_string();
 
             if let Some(rel) = name.strip_prefix("http_collections/") {
@@ -713,124 +864,168 @@ pub fn import_all_data(
 
                 // Zip slip defense
                 if !target.starts_with(&http_dir) {
+                    eprintln!("[RESTORE] ❌ Zip slip detected for http_collections path: {}", name);
                     return Err(ExportImportError::ZipSlip(name));
                 }
 
-                if entry.is_dir() {
-                    std::fs::create_dir_all(&target)?;
+                if entry.is_dir() || name.ends_with('/') {
+                    let _ = std::fs::create_dir_all(&target);
                 } else {
                     if options.conflict_strategy == ConflictStrategy::MergeKeepExisting && target.exists() {
+                        eprintln!("[RESTORE] HTTP collection '{}' exists. Skipping (MergeKeepExisting).", rel);
                         continue;
                     }
                     if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        let _ = std::fs::create_dir_all(parent);
                     }
-                    let mut out = File::create(&target)?;
-                    std::io::copy(&mut entry, &mut out)?;
-                    summary.http_workspaces_restored += 1;
+                    match File::create(&target) {
+                        Ok(mut out) => {
+                            if let Err(e) = std::io::copy(&mut entry, &mut out) {
+                                eprintln!("[RESTORE] ❌ Failed writing HTTP collection '{}': {}", target.display(), e);
+                                return Err(ExportImportError::Io(e));
+                            }
+                            summary.http_workspaces_restored += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("[RESTORE] ❌ Failed creating HTTP collection file '{}': {}", target.display(), e);
+                            return Err(ExportImportError::Io(e));
+                        }
+                    }
                 }
             }
         }
+        eprintln!("[RESTORE] Step 3 finished. Restored {} HTTP collection files.", summary.http_workspaces_restored);
     }
 
     // ── 4. Restore History ──
     if options.include_history {
         let pool = pool_opt
             .as_ref()
-            .ok_or(ExportImportError::NoDatabasePool)?;
+            .ok_or_else(|| ExportImportError::NoDatabasePool("Database pool missing for history restore".to_string()))?;
 
+        eprintln!("[RESTORE] ── Step 4: Restoring Query History ──");
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            rt.block_on(async {
-                let _ = sqlx::query("DELETE FROM query_history").execute(pool.as_ref()).await;
+            eprintln!("[RESTORE] CleanRestore: Clearing query_history table...");
+            let res = rt.block_on(async {
+                sqlx::query("DELETE FROM query_history").execute(pool.as_ref()).await
             });
+            if let Err(e) = res {
+                eprintln!("[RESTORE] ⚠️ Warning: Failed to clear query_history: {}", e);
+            }
             tabular.history_items.clear();
         }
 
-        if let Ok(mut entry) = archive.by_name("history/history.json") {
-            let mut content = Vec::new();
-            entry.read_to_end(&mut content)?;
-            if let Ok(items) = serde_json::from_slice::<Vec<HistoryItem>>(&content) {
-                // Fallback connection if needed to satisfy foreign keys
-                let default_conn_id: Option<i64> = rt.block_on(async {
-                    sqlx::query_scalar::<_, i64>("SELECT id FROM connections LIMIT 1")
-                        .fetch_optional(pool.as_ref())
-                        .await
-                        .unwrap_or(None)
-                });
+        match archive.by_name("history/history.json") {
+            Ok(mut entry) => {
+                let mut content = Vec::new();
+                if let Err(e) = entry.read_to_end(&mut content) {
+                    eprintln!("[RESTORE] ❌ Failed reading 'history/history.json': {}", e);
+                } else {
+                    match serde_json::from_slice::<Vec<HistoryItem>>(&content) {
+                        Ok(items) => {
+                            eprintln!("[RESTORE] Parsed {} history items from archive.", items.len());
+                            // Fallback connection if needed to satisfy foreign keys
+                            let default_conn_id: Option<i64> = rt.block_on(async {
+                                sqlx::query_scalar::<_, i64>("SELECT id FROM connections LIMIT 1")
+                                    .fetch_optional(pool.as_ref())
+                                    .await
+                                    .unwrap_or(None)
+                            });
+                            eprintln!("[RESTORE] Fallback connection ID for history: {:?}", default_conn_id);
 
-                for item in items {
-                    // Try resolving connection_id in priority order:
-                    // 1. Mapped from old id
-                    // 2. Mapped from connection name
-                    // 3. Current connection id in DB by name
-                    // 4. Current connection id in DB by ID
-                    // 5. Default existing connection id in DB
-                    let target_conn_id = old_id_to_new_id
-                        .get(&item.connection_id)
-                        .copied()
-                        .or_else(|| name_to_new_id.get(&item.connection_name).copied())
-                        .or_else(|| {
-                            let pool_clone = pool.clone();
-                            let cname = item.connection_name.clone();
-                            rt.block_on(async {
-                                sqlx::query_scalar::<_, i64>(
-                                    "SELECT id FROM connections WHERE name = ?",
-                                )
-                                .bind(&cname)
-                                .fetch_optional(pool_clone.as_ref())
-                                .await
-                                .unwrap_or(None)
-                            })
-                        })
-                        .or_else(|| {
-                            let pool_clone = pool.clone();
-                            let cid = item.connection_id;
-                            rt.block_on(async {
-                                sqlx::query_scalar::<_, i64>(
-                                    "SELECT id FROM connections WHERE id = ?",
-                                )
-                                .bind(cid)
-                                .fetch_optional(pool_clone.as_ref())
-                                .await
-                                .unwrap_or(None)
-                            })
-                        })
-                        .or(default_conn_id);
+                            for item in items {
+                                let target_conn_id = old_id_to_new_id
+                                    .get(&item.connection_id)
+                                    .copied()
+                                    .or_else(|| name_to_new_id.get(&item.connection_name).copied())
+                                    .or_else(|| {
+                                        let pool_clone = pool.clone();
+                                        let cname = item.connection_name.clone();
+                                        rt.block_on(async {
+                                            sqlx::query_scalar::<_, i64>(
+                                                "SELECT id FROM connections WHERE name = ?",
+                                            )
+                                            .bind(&cname)
+                                            .fetch_optional(pool_clone.as_ref())
+                                            .await
+                                            .unwrap_or(None)
+                                        })
+                                    })
+                                    .or_else(|| {
+                                        let pool_clone = pool.clone();
+                                        let cid = item.connection_id;
+                                        rt.block_on(async {
+                                            sqlx::query_scalar::<_, i64>(
+                                                "SELECT id FROM connections WHERE id = ?",
+                                            )
+                                            .bind(cid)
+                                            .fetch_optional(pool_clone.as_ref())
+                                            .await
+                                            .unwrap_or(None)
+                                        })
+                                    })
+                                    .or(default_conn_id);
 
-                    if let Some(resolved_conn_id) = target_conn_id {
-                        let pool_clone = pool.clone();
-                        let qtext = item.query.clone();
-                        let cname = item.connection_name.clone();
-                        let exec_at = item.executed_at.clone();
+                                if let Some(resolved_conn_id) = target_conn_id {
+                                    let pool_clone = pool.clone();
+                                    let qtext = item.query.clone();
+                                    let cname = item.connection_name.clone();
+                                    let exec_at = item.executed_at.clone();
 
-                        let res = rt.block_on(async {
-                            sqlx::query(
-                                "INSERT INTO query_history (query_text, connection_id, connection_name, executed_at) VALUES (?, ?, ?, ?)"
-                            )
-                            .bind(&qtext)
-                            .bind(resolved_conn_id)
-                            .bind(&cname)
-                            .bind(&exec_at)
-                            .execute(pool_clone.as_ref())
-                            .await
-                        });
+                                    let res = rt.block_on(async {
+                                        sqlx::query(
+                                            "INSERT INTO query_history (query_text, connection_id, connection_name, executed_at) VALUES (?, ?, ?, ?)"
+                                        )
+                                        .bind(&qtext)
+                                        .bind(resolved_conn_id)
+                                        .bind(&cname)
+                                        .bind(&exec_at)
+                                        .execute(pool_clone.as_ref())
+                                        .await
+                                    });
 
-                        if res.is_ok() {
-                            summary.history_restored += 1;
+                                    match res {
+                                        Ok(_) => summary.history_restored += 1,
+                                        Err(e) => {
+                                            eprintln!("[RESTORE] ⚠️ Warning: Failed to insert history item: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            eprintln!("[RESTORE] Step 4 finished. Restored {} history items.", summary.history_restored);
+                        }
+                        Err(e) => {
+                            eprintln!("[RESTORE] ❌ Failed to parse 'history/history.json': {}", e);
+                            error!("[RESTORE] Failed to parse 'history/history.json': {}", e);
                         }
                     }
                 }
+            }
+            Err(_) => {
+                eprintln!("[RESTORE] Note: 'history/history.json' not found in archive.");
             }
         }
     }
 
     // ── 5. Reload Application State ──
+    eprintln!("[RESTORE] ── Step 5: Reloading Application State from DB & Disk ──");
     crate::sidebar_database::load_connections(tabular);
     crate::sidebar_database::load_connection_folders(tabular);
     crate::sidebar_query::load_queries_from_directory(tabular);
     tabular.yaak_workspaces = crate::http_collection::load_workspaces();
     crate::sidebar_history::load_query_history(tabular);
     tabular.needs_refresh = true;
+
+    eprintln!("[RESTORE] ========================================================");
+    eprintln!(
+        "[RESTORE] ✅ RESTORE COMPLETED SUCCESSFULLY:\n          • Connections: {}\n          • Folders: {}\n          • Queries: {}\n          • HTTP Workspaces: {}\n          • History: {}",
+        summary.connections_restored,
+        summary.folders_restored,
+        summary.queries_restored,
+        summary.http_workspaces_restored,
+        summary.history_restored
+    );
+    eprintln!("[RESTORE] ========================================================");
 
     info!(
         "📥 Import All Data restored: {} connections, {} folders, {} queries, {} HTTP workspaces, {} history items",

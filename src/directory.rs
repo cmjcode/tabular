@@ -19,9 +19,31 @@ pub(crate) fn ensure_app_directories() -> Result<(), std::io::Error> {
     let query_dir = get_query_dir();
 
     // Create directories if they don't exist
-    std::fs::create_dir_all(&app_dir)?;
-    std::fs::create_dir_all(&data_dir)?;
-    std::fs::create_dir_all(&query_dir)?;
+    let create_result = std::fs::create_dir_all(&app_dir)
+        .and_then(|_| std::fs::create_dir_all(&data_dir))
+        .and_then(|_| std::fs::create_dir_all(&query_dir));
+
+    if let Err(e) = create_result {
+        let default_dir = crate::config::get_local_data_dir();
+        if app_dir != default_dir {
+            log::warn!(
+                "Configured app data directory {:?} is not writable ({}). Falling back to local default {:?}",
+                app_dir,
+                e,
+                default_dir
+            );
+            unsafe {
+                std::env::set_var("TABULAR_DATA_DIR", &default_dir);
+            }
+            let fallback_data_dir = default_dir.join("data");
+            let fallback_query_dir = default_dir.join("query");
+            std::fs::create_dir_all(&default_dir)?;
+            std::fs::create_dir_all(&fallback_data_dir)?;
+            std::fs::create_dir_all(&fallback_query_dir)?;
+            return Ok(());
+        }
+        return Err(e);
+    }
 
     Ok(())
 }

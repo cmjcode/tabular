@@ -1521,7 +1521,40 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             .max_connections(5)
             .connect_with(connect_opts)
             .await
-    }).ok()?;
+    }).ok();
+
+    let pool = match pool {
+        Some(p) => p,
+        None => {
+            let local_default_dir = crate::config::get_local_data_dir().join("data");
+            if data_dir != local_default_dir {
+                warn!(
+                    "⚠️ Failed to connect to SQLite at {:?}. Retrying with local container fallback {:?}",
+                    data_dir, local_default_dir
+                );
+                let _ = std::fs::create_dir_all(&local_default_dir);
+                let fallback_db = local_default_dir.join("connections.db");
+                let fallback_conn_str = format!("sqlite://{}?mode=rwc", fallback_db.to_string_lossy());
+                if let Ok(opts) = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&fallback_conn_str) {
+                    let opts = opts
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                        .busy_timeout(std::time::Duration::from_secs(5));
+                    rt.block_on(async {
+                        sqlx::sqlite::SqlitePoolOptions::new()
+                            .max_connections(5)
+                            .connect_with(opts)
+                            .await
+                    }).ok()?
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    };
 
     // Table verification and creations in single transaction
     rt.block_on(async {
@@ -1833,6 +1866,38 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 .max_connections(5)
                 .connect_with(connect_opts)
                 .await;
+
+            let pool = match pool {
+                Ok(p) => Ok(p),
+                Err(e) => {
+                    let local_default_dir = crate::config::get_local_data_dir().join("data");
+                    if data_dir != local_default_dir {
+                        warn!(
+                            "⚠️ Failed to connect to SQLite at {:?}: {}. Retrying with local container fallback {:?}",
+                            data_dir, e, local_default_dir
+                        );
+                        let _ = std::fs::create_dir_all(&local_default_dir);
+                        let fallback_db = local_default_dir.join("connections.db");
+                        let fallback_conn_str = format!("sqlite://{}?mode=rwc", fallback_db.to_string_lossy());
+                        match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&fallback_conn_str) {
+                            Ok(opts) => {
+                                let opts = opts
+                                    .create_if_missing(true)
+                                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                                    .busy_timeout(std::time::Duration::from_secs(5));
+                                sqlx::sqlite::SqlitePoolOptions::new()
+                                    .max_connections(5)
+                                    .connect_with(opts)
+                                    .await
+                            }
+                            Err(url_err) => Err(url_err.into()),
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+            };
 
             match pool {
                 Ok(pool) => {

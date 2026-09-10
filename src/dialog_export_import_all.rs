@@ -509,7 +509,26 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if text_resp.changed() {
                         let path = PathBuf::from(path_str);
                         if path.is_file() {
-                            state.manifest_preview = inspect_archive(&path).ok();
+                            eprintln!("[RESTORE-UI] Path entered: '{}'. Inspecting archive...", path.display());
+                            match inspect_archive(&path) {
+                                Ok(manifest) => {
+                                    eprintln!(
+                                        "[RESTORE-UI] ✅ Archive inspected: {} conns, {} folders, {} queries, {} http, {} history",
+                                        manifest.counts.connections,
+                                        manifest.counts.connection_folders,
+                                        manifest.counts.queries,
+                                        manifest.counts.http_workspaces,
+                                        manifest.counts.history_items
+                                    );
+                                    state.manifest_preview = Some(manifest);
+                                    state.error_message = None;
+                                }
+                                Err(e) => {
+                                    eprintln!("[RESTORE-UI] ❌ Archive inspect failed: {}", e);
+                                    state.error_message = Some(format!("Invalid archive: {}", e));
+                                    state.manifest_preview = None;
+                                }
+                            }
                             state.archive_path = Some(path);
                         } else {
                             state.archive_path = Some(path);
@@ -522,9 +541,27 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             .add_filter("ZIP Archive (*.zip)", &["zip"]);
 
                         if let Some(path) = dialog.pick_file() {
-                            state.manifest_preview = inspect_archive(&path).ok();
+                            eprintln!("[RESTORE-UI] User selected file from picker: '{}'. Inspecting archive...", path.display());
+                            match inspect_archive(&path) {
+                                Ok(manifest) => {
+                                    eprintln!(
+                                        "[RESTORE-UI] ✅ Archive inspected: {} conns, {} folders, {} queries, {} http, {} history",
+                                        manifest.counts.connections,
+                                        manifest.counts.connection_folders,
+                                        manifest.counts.queries,
+                                        manifest.counts.http_workspaces,
+                                        manifest.counts.history_items
+                                    );
+                                    state.manifest_preview = Some(manifest);
+                                    state.error_message = None;
+                                }
+                                Err(e) => {
+                                    eprintln!("[RESTORE-UI] ❌ Archive inspect failed: {}", e);
+                                    state.error_message = Some(format!("Invalid archive: {}", e));
+                                    state.manifest_preview = None;
+                                }
+                            }
                             state.archive_path = Some(path);
-                            state.error_message = None;
                         }
                     }
                 });
@@ -654,19 +691,27 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     // If restore was triggered on previous frame, perform it now so egui rendered "Restoring..."
                     if state.is_running {
                         if let Some(archive_path) = state.archive_path.clone() {
+                            eprintln!("[RESTORE-UI] Starting restore execution for: {}", archive_path.display());
                             match import_all_data(tabular, &archive_path, &state.options) {
                                 Ok(summary) => {
+                                    eprintln!("[RESTORE-UI] ✅ Restore succeeded!");
                                     state.summary = Some(summary);
                                     state.status_message = Some("Restore completed successfully!".to_string());
                                 }
                                 Err(e) => {
+                                    eprintln!("[RESTORE-UI] ❌ Restore failed with error: {}", e);
+                                    log::error!("[RESTORE-UI] Restore failed with error: {}", e);
                                     state.error_message = Some(format!("Restore failed: {}", e));
                                 }
                             }
+                        } else {
+                            eprintln!("[RESTORE-UI] ❌ No archive path available in state!");
+                            state.error_message = Some("Restore failed: No backup archive selected".to_string());
                         }
                         state.is_running = false;
                         ctx.request_repaint();
                     } else if ui.add_enabled(can_restore, btn).clicked() {
+                        eprintln!("[RESTORE-UI] 'Restore Now' button clicked. Setting is_running=true.");
                         state.error_message = None;
                         state.summary = None;
                         state.status_message = None;
