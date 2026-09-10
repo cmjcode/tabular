@@ -76,6 +76,8 @@ Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
 - Zero-Knowledge Vault with client-side **Argon2id** and **AES-256-GCM** encryption.
 - Multi-user team sharing with **X25519** sealed boxes.
 - Server (`tabular-server`) stores only ciphertext it cannot read.
+- **Instant Account Profile Synchronization**: Upon completing OAuth login (Google, GitHub) or manual token authentication, account details (display name, username, phone number, and avatar image) are immediately propagated to the active Account & Profile dialog without requiring reopening the modal.
+
 
 ### AI Assistant (Cmd+Shift+A)
 Context‑aware AI assistant integrated directly into the query editor.
@@ -235,6 +237,19 @@ cargo run
 | Lint (clippy) | `cargo clippy -- -D warnings`    |
 | Format        | `cargo fmt`                      |
 | Release build | `cargo build --release`          |
+| API Integration Test | `bash test_api.sh`        |
+
+### API & Backend Integration Testing
+To test the Tabular synchronization and authentication HTTP API endpoints (server health check, OAuth ticket polling, token refresh, user profile update, and user search):
+
+```bash
+# Execute against the default production endpoint (https://api.tabular.id)
+bash test_api.sh
+
+# Or execute against a local or staging server
+API_URL=http://localhost:8080 ./test_api.sh
+```
+
 
 ## 8. Core Dependencies (Crates)
 | Purpose        | Crate |
@@ -297,6 +312,11 @@ This project is dual‑licensed:
 2) Commercial License — contact PT. Vneu Teknologi Indonesia (see `LICENSE`)
 
 ## 13. Changelog
+
+### v0.13.1
+- **Account & Profile Instant Sync**: Resolved issue where completed Account Information (display name, username, phone number, and avatar) did not update immediately upon completing OAuth login (Google, GitHub) or manual token authentication in the open Account & Profile modal. All profile form buffers now sync instantly via `sync_profile_inputs_from_account`.
+- **API Test Suite**: Added `test_api.sh` cURL test suite to automate verification of backend sync and auth endpoints.
+
 
 ### v0.13.0 (Master Powerhouse Release)
 - **Visual Query Profiler**: Interactive tree graph for `EXPLAIN ANALYZE` (Postgres, MySQL, MSSQL) with Sugiyama layout, cost percentage visualization, and automated bottleneck warnings.

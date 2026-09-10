@@ -1,6 +1,8 @@
 use crate::self_update::UpdateInfo;
 use futures_util::StreamExt;
-use log::{debug, info, warn};
+use log::{info, warn};
+#[cfg(target_os = "macos")]
+use log::debug;
 use std::fs;
 #[allow(unused_imports)]
 use std::io::Cursor;
