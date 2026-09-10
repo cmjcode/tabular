@@ -396,46 +396,11 @@ impl super::Tabular {
             match result {
                 Ok(updated) => {
                     info!("[sync] ✅ Access token refreshed automatically!");
-                    let prev_account = self.sync_account.clone();
                     self.sync_account = Some(updated);
-                    // Keep profile inputs updated if empty or matching previous account values
-                    if self.profile_display_name_input.is_empty()
-                        || prev_account.as_ref().and_then(|a| a.display_name.as_deref()) == Some(&self.profile_display_name_input)
-                    {
-                        if let Some(account) = &self.sync_account {
-                            if let Some(ref name) = account.display_name {
-                                self.profile_display_name_input = name.clone();
-                            }
-                        }
-                    }
-                    if self.profile_avatar_url_input.is_empty()
-                        || prev_account.as_ref().and_then(|a| a.avatar_url.as_deref()) == Some(&self.profile_avatar_url_input)
-                    {
-                        if let Some(account) = &self.sync_account {
-                            if let Some(ref avatar) = account.avatar_url {
-                                self.profile_avatar_url_input = avatar.clone();
-                            }
-                        }
-                    }
-                    if self.profile_username_input.is_empty()
-                        || prev_account.as_ref().and_then(|a| a.username.as_deref()) == Some(&self.profile_username_input)
-                    {
-                        if let Some(account) = &self.sync_account {
-                            if let Some(ref username) = account.username {
-                                self.profile_username_input = username.clone();
-                            }
-                        }
-                    }
-                    if self.profile_phone_input.is_empty()
-                        || prev_account.as_ref().and_then(|a| a.phone.as_deref()) == Some(&self.profile_phone_input)
-                    {
-                        if let Some(account) = &self.sync_account {
-                            if let Some(ref phone) = account.phone {
-                                self.profile_phone_input = phone.clone();
-                            }
-                        }
-                    }
-                    if let Some(account) = &self.sync_account {
+                    // Prevent race condition & clobbering: do not overwrite active form inputs if account dialog is currently open
+                    if !self.show_account_dialog {
+                        self.sync_profile_inputs_from_account();
+                    } else if let Some(account) = &self.sync_account {
                         if self.avatar_texture_url != account.avatar_url {
                             self.avatar_texture = None;
                             self.avatar_texture_url = None;

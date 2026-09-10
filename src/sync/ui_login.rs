@@ -317,16 +317,6 @@ fn render_account_profile_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
         None => return,
     };
 
-    // Auto-load Account Information data if input buffers are currently empty but account has data
-    if tabular.profile_display_name_input.is_empty()
-        && tabular.profile_avatar_url_input.is_empty()
-        && tabular.profile_username_input.is_empty()
-        && tabular.profile_phone_input.is_empty()
-        && (account.display_name.is_some() || account.avatar_url.is_some() || account.username.is_some() || account.phone.is_some())
-    {
-        tabular.sync_profile_inputs_from_account();
-    }
-
     ui.vertical(|ui| {
         ui.add_space(4.0);
 
