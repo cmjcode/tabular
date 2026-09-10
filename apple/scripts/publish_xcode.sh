@@ -57,6 +57,10 @@ archive_ios() {
         -archivePath "$archive_path" \
         -configuration Release
         
+    echo "🧹 Sanitizing iOS archive extended attributes & metadata..."
+    xattr -cr "$archive_path" 2>/dev/null || true
+    find "$archive_path" -name ".DS_Store" -delete 2>/dev/null || true
+
     echo "✅ iOS Archive created at: $archive_path"
 }
 
@@ -72,6 +76,10 @@ archive_macos() {
         -archivePath "$archive_path" \
         -configuration Release
         
+    echo "🧹 Sanitizing macOS archive extended attributes & metadata..."
+    xattr -cr "$archive_path" 2>/dev/null || true
+    find "$archive_path" -name ".DS_Store" -delete 2>/dev/null || true
+
     echo "✅ macOS Archive created at: $archive_path"
 }
 
@@ -106,6 +114,10 @@ EOF
             echo "⚠️ xcodebuild auto-upload requires Xcode accounts. Archive is ready in Organizer: $archive_path"
             echo "ℹ️  You can open Xcode -> Window -> Organizer -> Distribute App to upload with 1 click."
         }
+    if [ -d "$ipa_dir" ]; then
+        xattr -cr "$ipa_dir" 2>/dev/null || true
+        find "$ipa_dir" -name ".DS_Store" -delete 2>/dev/null || true
+    fi
 }
 
 upload_macos() {
@@ -127,6 +139,10 @@ upload_macos() {
 </plist>
 EOF
 
+    echo "🧹 Ensuring archive is clean before export..."
+    xattr -cr "$archive_path" 2>/dev/null || true
+    find "$archive_path" -name ".DS_Store" -delete 2>/dev/null || true
+
     echo "📤 Exporting & Uploading macOS PKG via xcodebuild..."
     xcodebuild -exportArchive \
         -archivePath "$archive_path" \
@@ -136,6 +152,10 @@ EOF
             echo "⚠️ Archive is ready in Organizer: $archive_path"
             echo "ℹ️  You can open Xcode -> Window -> Organizer -> Distribute App to upload with 1 click."
         }
+    if [ -d "$pkg_dir" ]; then
+        xattr -cr "$pkg_dir" 2>/dev/null || true
+        find "$pkg_dir" -name ".DS_Store" -delete 2>/dev/null || true
+    fi
 }
 
 case "$PLATFORM" in

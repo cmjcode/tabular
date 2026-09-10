@@ -310,3 +310,9 @@ if command -v iconutil &>/dev/null; then
     rm -rf "$ICONSET_TMP"
     echo "[SUCCESS] AppIcon.icns generated at $CLIENT_DIR/assets/AppIcon.icns"
 fi
+
+# Sanitize extended attributes from generated assets catalog and master assets
+xattr -cr "$ASSETS_DIR" 2>/dev/null || true
+xattr -cr "$CLIENT_DIR/assets" 2>/dev/null || true
+find "$ASSETS_DIR" "$CLIENT_DIR/assets" -name ".DS_Store" -delete 2>/dev/null || true
+

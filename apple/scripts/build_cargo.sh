@@ -103,7 +103,27 @@ if [ -n "$BUILT_PRODUCTS_DIR" ] && [ -n "$EXECUTABLE_PATH" ]; then
     mkdir -p "$APP_DIR"
     if [ -d "$CLIENT_DIR/assets" ]; then
         cp -r "$CLIENT_DIR/assets" "$APP_DIR/assets" 2>/dev/null || true
+        # Clean non-runtime design files & OS metadata
+        find "$APP_DIR/assets" \( -name "*.afdesign" -o -name ".DS_Store" \) -delete 2>/dev/null || true
+    fi
+
+    # 7. Strip extended attributes (com.apple.quarantine, etc.) & .DS_Store from the app bundle
+    # This prevents App Store Connect error 91109 (Invalid package contents: com.apple.quarantine)
+    TARGET_APP_BUNDLE=""
+    if [ -n "$BUILT_PRODUCTS_DIR" ] && [ -n "$WRAPPER_NAME" ] && [ -d "$BUILT_PRODUCTS_DIR/$WRAPPER_NAME" ]; then
+        TARGET_APP_BUNDLE="$BUILT_PRODUCTS_DIR/$WRAPPER_NAME"
+    elif [[ "$PLATFORM_NAME" == "macosx" ]]; then
+        TARGET_APP_BUNDLE="$(dirname "$(dirname "$(dirname "$DEST_BIN")")")"
+    else
+        TARGET_APP_BUNDLE="$(dirname "$DEST_BIN")"
+    fi
+
+    if [ -n "$TARGET_APP_BUNDLE" ] && [ -d "$TARGET_APP_BUNDLE" ]; then
+        echo "🧹 Sanitizing app bundle extended attributes & .DS_Store ($TARGET_APP_BUNDLE)..."
+        xattr -cr "$TARGET_APP_BUNDLE" 2>/dev/null || true
+        find "$TARGET_APP_BUNDLE" -name ".DS_Store" -delete 2>/dev/null || true
     fi
 fi
 
 echo "✅ [Tabular Xcode Bridge] Cargo build phase finished successfully!"
+
