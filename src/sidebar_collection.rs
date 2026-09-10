@@ -34,7 +34,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         );
     });
 
-    let filter = app.collection_search.to_lowercase();
+    let filter = app.collection_search.trim().to_lowercase();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
 
     // ── 1. HTTP Connections section ───────────────────────────────────────
@@ -266,6 +266,8 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         }
 
         let ws_header_resp = ws_header.show(ui, |ui| {
+            let ws_matches = !filter.is_empty() && ws_name.to_lowercase().contains(&filter);
+
             // ── Top-level requests ────────────────────────────────────────
             let top_req_ids: Vec<String> = app.yaak_workspaces[ws_idx]
                 .requests
@@ -283,7 +285,8 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     None => continue,
                 };
                 let req = app.yaak_workspaces[ws_idx].requests[req_idx].clone();
-                if !filter.is_empty()
+                if !ws_matches
+                    && !filter.is_empty()
                     && !req.display_name().to_lowercase().contains(&filter)
                     && !req.url.to_lowercase().contains(&filter)
                 {
@@ -313,7 +316,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     None => continue,
                 };
                 let folder = app.yaak_workspaces[ws_idx].folders[folder_idx].clone();
-                if !filter.is_empty() && !folder_has_match(&folder, &filter) {
+                if !ws_matches && !filter.is_empty() && !folder_has_match(&folder, &filter) {
                     continue;
                 }
                 render_folder_node(
@@ -322,6 +325,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     &folder,
                     &mut expanded_folders,
                     &filter,
+                    ws_matches,
                     accent,
                     active_dnd_source.as_ref(),
                     &mut req_action,
@@ -849,6 +853,7 @@ fn render_folder_node(
     folder: &crate::http_collection::HttpFolder,
     expanded_folders: &mut std::collections::HashSet<String>,
     filter: &str,
+    parent_matched: bool,
     accent: egui::Color32,
     active_dnd_source: Option<&HttpDndSource>,
     req_action_out: &mut Option<(SavedRequest, RequestAction)>,
@@ -857,7 +862,10 @@ fn render_folder_node(
     folder_to_rename: &mut Option<(String, String, String)>,
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
-    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty();
+    let folder_matches =
+        parent_matched || (!filter.is_empty() && folder.name.to_lowercase().contains(filter));
+    let is_expanded =
+        expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
     let is_being_dragged = active_dnd_source.is_some_and(
         |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
     );
@@ -1034,7 +1042,8 @@ fn render_folder_node(
     if is_expanded {
         ui.indent(format!("fld_body_{}", folder.id), |ui| {
             for req in &folder.requests {
-                if !filter.is_empty()
+                if !folder_matches
+                    && !filter.is_empty()
                     && !req.display_name().to_lowercase().contains(filter)
                     && !req.url.to_lowercase().contains(filter)
                 {
@@ -1045,7 +1054,7 @@ fn render_folder_node(
                 }
             }
             for child in &folder.children {
-                if !filter.is_empty() && !folder_has_match(child, filter) {
+                if !folder_matches && !filter.is_empty() && !folder_has_match(child, filter) {
                     continue;
                 }
                 render_folder_node(
@@ -1054,6 +1063,7 @@ fn render_folder_node(
                     child,
                     expanded_folders,
                     filter,
+                    folder_matches,
                     accent,
                     active_dnd_source,
                     req_action_out,
@@ -1459,5 +1469,65 @@ fn method_color_for(method: &str) -> egui::Color32 {
         "PATCH" => egui::Color32::from_rgb(80, 227, 194),
         "HEAD" => egui::Color32::from_rgb(144, 150, 160),
         _ => egui::Color32::from_rgb(200, 200, 200),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_collection::{HttpFolder, HttpWorkspace, SavedRequest};
+
+    #[test]
+    fn test_folder_and_workspace_has_match() {
+        let req = SavedRequest {
+            id: "r1".to_string(),
+            name: "Get User Profile".to_string(),
+            url: "https://api.example.com/v1/users/me".to_string(),
+            ..Default::default()
+        };
+
+        let sub_folder = HttpFolder {
+            id: "sub1".to_string(),
+            name: "OAuth2 Flow".to_string(),
+            requests: vec![req],
+            children: vec![],
+            ..Default::default()
+        };
+
+        let parent_folder = HttpFolder {
+            id: "parent1".to_string(),
+            name: "Authentication".to_string(),
+            requests: vec![],
+            children: vec![sub_folder],
+            ..Default::default()
+        };
+
+        let ws = HttpWorkspace {
+            id: "ws1".to_string(),
+            name: "Core Backend API".to_string(),
+            requests: vec![],
+            folders: vec![parent_folder.clone()],
+            ..Default::default()
+        };
+
+        // Matching parent folder
+        assert!(folder_has_match(&parent_folder, "auth"));
+        assert!(workspace_has_match(&ws, "auth"));
+
+        // Matching nested subfolder
+        assert!(folder_has_match(&parent_folder, "oauth2"));
+        assert!(workspace_has_match(&ws, "oauth2"));
+
+        // Matching request name or url inside nested subfolder
+        assert!(folder_has_match(&parent_folder, "profile"));
+        assert!(folder_has_match(&parent_folder, "users/me"));
+        assert!(workspace_has_match(&ws, "profile"));
+
+        // Matching workspace name
+        assert!(workspace_has_match(&ws, "backend"));
+
+        // Non-matching
+        assert!(!folder_has_match(&parent_folder, "billing"));
+        assert!(!workspace_has_match(&ws, "billing"));
     }
 }
