@@ -36,24 +36,3 @@
     "version" : 1
   }
 }
-echo "[SUCCESS] Asset catalog generated at $ASSETS_DIR"
-
-# Generate assets/AppIcon.icns for macOS desktop builds
-if command -v iconutil &>/dev/null; then
-    ICONSET_TMP="$(mktemp -d)"
-    ICONSET_DIR="$ICONSET_TMP/AppIcon.iconset"
-    mkdir -p "$ICONSET_DIR"
-    cp "$APPICON_DIR/icon-16@1x.png" "$ICONSET_DIR/icon_16x16.png"
-    cp "$APPICON_DIR/icon-16@2x.png" "$ICONSET_DIR/icon_16x16@2x.png"
-    cp "$APPICON_DIR/icon-32@1x.png" "$ICONSET_DIR/icon_32x32.png"
-    cp "$APPICON_DIR/icon-32@2x.png" "$ICONSET_DIR/icon_32x32@2x.png"
-    cp "$APPICON_DIR/icon-128@1x.png" "$ICONSET_DIR/icon_128x128.png"
-    cp "$APPICON_DIR/icon-128@2x.png" "$ICONSET_DIR/icon_128x128@2x.png"
-    cp "$APPICON_DIR/icon-256@1x.png" "$ICONSET_DIR/icon_256x256.png"
-    cp "$APPICON_DIR/icon-256@2x.png" "$ICONSET_DIR/icon_256x256@2x.png"
-    cp "$APPICON_DIR/icon-512@1x.png" "$ICONSET_DIR/icon_512x512.png"
-    cp "$APPICON_DIR/icon-512@2x.png" "$ICONSET_DIR/icon_512x512@2x.png"
-    iconutil -c icns "$ICONSET_DIR" -o "$CLIENT_DIR/assets/AppIcon.icns"
-    rm -rf "$ICONSET_TMP"
-    echo "[SUCCESS] AppIcon.icns generated at $CLIENT_DIR/assets/AppIcon.icns"
-fi
