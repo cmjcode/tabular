@@ -3,7 +3,7 @@ use eframe::egui::text_edit::TextEditState;
 use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
-use log::debug;
+use log::{debug, info};
 use sqlformat::{QueryParams, format as sqlfmt};
 
 use crate::{
@@ -60,6 +60,7 @@ pub(crate) fn create_new_tab(
         tx_active: false,
         session: None,
         pinned_columns: std::collections::HashSet::new(),
+        is_pinned: false,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -219,6 +220,7 @@ pub(crate) fn open_user_manager_tab(
 
 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
         if let Some(tab) = tabular.query_tabs.get_mut(0) {
@@ -227,6 +229,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.file_path = None;
             tab.is_saved = false;
             tab.is_modified = false;
+            tab.is_pinned = false;
             tab.connection_id = None; // Clear connection as well
             tab.database_name = None; // Clear database as well
             // Clear per-tab result state as well
@@ -284,6 +287,251 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.sql_semantic_snapshot = None;
         }
         tabular.current_object_ddl = None;
+    }
+}
+
+/// Move a tab from `from` index to `to` index directly.
+/// Automatically updates active_tab_index and syncs pinned status if crossing the pinned boundary.
+pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usize) {
+    tabular.dragged_tab_index = None;
+    let tab_count = tabular.query_tabs.len();
+    if from == to || from >= tab_count || to >= tab_count {
+        eprintln!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
+        info!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
+        return;
+    }
+
+    let pinned_count_before = tabular.query_tabs.iter().filter(|t| t.is_pinned).count();
+    let was_pinned = tabular.query_tabs[from].is_pinned;
+    let tab_title = tabular.query_tabs[from].title.clone();
+
+    let mut tab = tabular.query_tabs.remove(from);
+
+    // If moved into pinned region (< pinned_count_before), pin it.
+    // If moved out of pinned region (>= pinned_count_before), unpin it.
+    if !was_pinned && to < pinned_count_before {
+        tab.is_pinned = true;
+        eprintln!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
+        info!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
+    } else if was_pinned && to >= pinned_count_before {
+        tab.is_pinned = false;
+        eprintln!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
+        info!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
+    }
+
+    tabular.query_tabs.insert(to, tab);
+
+    // Adjust active_tab_index
+    let prev_active = tabular.active_tab_index;
+    if tabular.active_tab_index == from {
+        tabular.active_tab_index = to;
+    } else if from < to {
+        if tabular.active_tab_index > from && tabular.active_tab_index <= to {
+            tabular.active_tab_index -= 1;
+        }
+    } else {
+        if tabular.active_tab_index >= to && tabular.active_tab_index < from {
+            tabular.active_tab_index += 1;
+        }
+    }
+    eprintln!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
+    info!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
+}
+
+/// Reorder a tab dragged from `from` index and dropped at insertion slot `insert_at` (0..=tab_count).
+/// Automatically updates active_tab_index and syncs pinned status if crossing the pinned boundary.
+pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
+    let tab_count = tabular.query_tabs.len();
+    if from >= tab_count {
+        eprintln!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
+        info!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
+        tabular.dragged_tab_index = None;
+        return;
+    }
+    let to = if insert_at > from {
+        (insert_at - 1).min(tab_count - 1)
+    } else {
+        insert_at.min(tab_count - 1)
+    };
+    eprintln!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
+    info!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
+    move_tab(tabular, from, to);
+}
+
+/// Pin a tab by index and move it to the end of the pinned section.
+pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        return;
+    }
+    tabular.query_tabs[tab_index].is_pinned = true;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
+    let first_unpinned = tabular
+        .query_tabs
+        .iter()
+        .position(|t| !t.is_pinned)
+        .unwrap_or(tabular.query_tabs.len());
+    if tab_index > first_unpinned {
+        let tab = tabular.query_tabs.remove(tab_index);
+        tabular.query_tabs.insert(first_unpinned, tab);
+
+        let prev_active = tabular.active_tab_index;
+        if tabular.active_tab_index == tab_index {
+            tabular.active_tab_index = first_unpinned;
+        } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index {
+            tabular.active_tab_index += 1;
+        }
+        eprintln!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+    } else {
+        eprintln!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
+    }
+}
+
+/// Unpin a tab by index and move it after all remaining pinned tabs if needed.
+pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        return;
+    }
+    tabular.query_tabs[tab_index].is_pinned = false;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
+    let last_pinned_idx = tabular.query_tabs.iter().rposition(|t| t.is_pinned);
+    if let Some(last_p) = last_pinned_idx {
+        if tab_index < last_p {
+            let tab = tabular.query_tabs.remove(tab_index);
+            tabular.query_tabs.insert(last_p, tab);
+
+            let prev_active = tabular.active_tab_index;
+            if tabular.active_tab_index == tab_index {
+                tabular.active_tab_index = last_p;
+            } else if tabular.active_tab_index > tab_index && tabular.active_tab_index <= last_p {
+                tabular.active_tab_index -= 1;
+            }
+            eprintln!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+        } else {
+            eprintln!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
+        }
+    } else {
+        eprintln!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
+    }
+}
+
+/// Toggle pinned status for a tab.
+pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        return;
+    }
+    let is_pinned = tabular.query_tabs[tab_index].is_pinned;
+    eprintln!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    info!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    if is_pinned {
+        unpin_tab(tabular, tab_index);
+    } else {
+        pin_tab(tabular, tab_index);
+    }
+}
+
+/// Close all tabs except `keep_index` and any pinned tabs.
+pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: usize) {
+    tabular.dragged_tab_index = None;
+    if keep_index >= tabular.query_tabs.len() {
+        return;
+    }
+    if tabular.active_tab_index != keep_index {
+        switch_to_tab(tabular, keep_index);
+    }
+    let mut i = 0;
+    while i < tabular.query_tabs.len() {
+        if i != tabular.active_tab_index && !tabular.query_tabs[i].is_pinned {
+            if let Some(session) = tabular.query_tabs[i].session.take() {
+                session.close();
+            }
+            tabular.query_tabs.remove(i);
+            if tabular.active_tab_index > i {
+                tabular.active_tab_index -= 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
+    }
+}
+
+/// Close all unpinned tabs to the right of `tab_index`.
+pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        return;
+    }
+    if tabular.active_tab_index > tab_index && !tabular.query_tabs[tabular.active_tab_index].is_pinned {
+        switch_to_tab(tabular, tab_index);
+    }
+    let mut i = tab_index + 1;
+    while i < tabular.query_tabs.len() {
+        if !tabular.query_tabs[i].is_pinned {
+            if let Some(session) = tabular.query_tabs[i].session.take() {
+                session.close();
+            }
+            tabular.query_tabs.remove(i);
+            if tabular.active_tab_index > i {
+                tabular.active_tab_index -= 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
     }
 }
 
@@ -7902,6 +8150,295 @@ mod tests {
         assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'inactive';"), Some("UPDATE"));
         assert_eq!(is_unsafe_dml_query("DELETE FROM users WHERE id = 1;"), None);
         assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"), None);
+    }
+
+    #[test]
+    fn test_move_tab_and_active_index() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Tab 0".to_string(), "0".to_string());
+        create_new_tab(&mut tabular, "Tab 1".to_string(), "1".to_string());
+        create_new_tab(&mut tabular, "Tab 2".to_string(), "2".to_string());
+        create_new_tab(&mut tabular, "Tab 3".to_string(), "3".to_string());
+
+        tabular.active_tab_index = 1; // Tab 1 is active
+
+        // Move Tab 0 to index 2: [Tab 1, Tab 2, Tab 0, Tab 3]
+        move_tab(&mut tabular, 0, 2);
+        assert_eq!(tabular.query_tabs[0].title, "Tab 1");
+        assert_eq!(tabular.query_tabs[1].title, "Tab 2");
+        assert_eq!(tabular.query_tabs[2].title, "Tab 0");
+        assert_eq!(tabular.query_tabs[3].title, "Tab 3");
+        // Active tab was Tab 1 (index 1), shifted to index 0
+        assert_eq!(tabular.active_tab_index, 0);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "Tab 1");
+
+        // Move active tab (Tab 1 at index 0) to index 3: [Tab 2, Tab 0, Tab 3, Tab 1]
+        move_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.query_tabs[3].title, "Tab 1");
+        assert_eq!(tabular.active_tab_index, 3);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "Tab 1");
+    }
+
+    #[test]
+    fn test_reorder_tab_with_insert_slots() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "A".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "B".to_string());
+        create_new_tab(&mut tabular, "C".to_string(), "C".to_string());
+
+        // Reorder B (from = 1) to insert_at = 3 (end): [A, C, B]
+        reorder_tab(&mut tabular, 1, 3);
+        assert_eq!(tabular.query_tabs[0].title, "A");
+        assert_eq!(tabular.query_tabs[1].title, "C");
+        assert_eq!(tabular.query_tabs[2].title, "B");
+
+        // Reorder B (from = 2) to insert_at = 0 (beginning): [B, A, C]
+        reorder_tab(&mut tabular, 2, 0);
+        assert_eq!(tabular.query_tabs[0].title, "B");
+        assert_eq!(tabular.query_tabs[1].title, "A");
+        assert_eq!(tabular.query_tabs[2].title, "C");
+    }
+
+    #[test]
+    fn test_pin_and_unpin_tab() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "0".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "1".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "2".to_string());
+
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert!(!tabular.query_tabs[2].is_pinned);
+
+        // Pin T2: should become pinned and move to front (index 0)
+        pin_tab(&mut tabular, 2);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T2");
+        assert_eq!(tabular.query_tabs[1].title, "T0");
+        assert_eq!(tabular.query_tabs[2].title, "T1");
+
+        // Pin T1 (currently at index 2): should become pinned and move to index 1
+        pin_tab(&mut tabular, 2);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T1");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "T0");
+
+        // Unpin T2 (at index 0): should unpin and move after pinned T1 (index 1)
+        unpin_tab(&mut tabular, 0);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T1");
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T2");
+
+        // Toggle pin on T2: should pin it again
+        toggle_pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T2");
+    }
+
+    #[test]
+    fn test_close_other_tabs_protects_pinned() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+
+        // Close others keeping U2 (index 3)
+        close_other_tabs(&mut tabular, 3);
+
+        // P1 and P2 should be preserved because they are pinned, U2 kept
+        assert_eq!(tabular.query_tabs.len(), 3);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "U2");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.active_tab_index, 2);
+
+        // Close tabs to right of P1 (index 0)
+        // P2 is pinned so it is not closed; U2 is unpinned so it closes
+        close_tabs_to_the_right(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs.len(), 2);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+    }
+
+    #[test]
+    fn test_pin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        // Active tab is U1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Pin U3 (index 3). It should move to index 1 (end of pinned group).
+        // Since active tab was at index 1 (>= first_unpinned and < tab_index),
+        // active_tab_index should shift to 2 to remain pointing to U1.
+        pin_tab(&mut tabular, 3);
+        assert_eq!(tabular.query_tabs[0].title, "P0");
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "U1");
+        assert_eq!(tabular.query_tabs[3].title, "U2");
+        assert_eq!(tabular.active_tab_index, 2);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "U1");
+    }
+
+    #[test]
+    fn test_unpin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        pin_tab(&mut tabular, 2);
+
+        // Active tab is P1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Unpin P0 (index 0). It moves to index 2 (after all remaining pinned tabs P1, P2).
+        // Active tab was at index 1 (> tab_index and <= last_p),
+        // active_tab_index should shift from 1 to 0 to remain pointing to P1.
+        unpin_tab(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "P0");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.active_tab_index, 0);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "P1");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_active_tab_switch() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        // Active tab is T2 (index 2)
+        tabular.active_tab_index = 2;
+
+        // Close tabs to right of T0 (index 0)
+        // Since active tab (T2) is to the right and unpinned, it switches to T0 first,
+        // then removes T1 and T2.
+        close_tabs_to_the_right(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "T0");
+        assert_eq!(tabular.active_tab_index, 0);
+    }
+
+    #[test]
+    fn test_move_tab_crossing_pinned_boundary_both_ways() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert!(!tabular.query_tabs[3].is_pinned);
+
+        // Move unpinned U3 (index 3) into pinned territory at index 1 (< pinned_count 2)
+        // It must automatically become pinned.
+        move_tab(&mut tabular, 3, 1);
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 3);
+
+        // Move pinned P0 (index 0) into unpinned territory at index 3 (>= pinned_count 3)
+        // It must automatically become unpinned.
+        move_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.query_tabs[3].title, "P0");
+        assert!(!tabular.query_tabs[3].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 2);
+    }
+
+    #[test]
+    fn test_tab_bounds_safety() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Tab0".to_string(), "".to_string());
+
+        // Out of bounds operations should no-op safely without panicking
+        move_tab(&mut tabular, 0, 10);
+        move_tab(&mut tabular, 10, 0);
+        move_tab(&mut tabular, 0, 0);
+        reorder_tab(&mut tabular, 10, 0);
+        pin_tab(&mut tabular, 10);
+        unpin_tab(&mut tabular, 10);
+        toggle_pin_tab(&mut tabular, 10);
+        close_other_tabs(&mut tabular, 10);
+        close_tabs_to_the_right(&mut tabular, 10);
+
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "Tab0");
+    }
+
+    #[test]
+    fn test_reorder_tab_clears_dragged_tab_index() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        tabular.dragged_tab_index = Some(0);
+        reorder_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.dragged_tab_index, None);
+        assert_eq!(tabular.query_tabs[2].title, "T0");
+    }
+
+    #[test]
+    fn test_toggle_pin_tab_full_cycle() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "".to_string());
+
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
+
+        // Toggle B: pins B and moves it to front
+        toggle_pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "B");
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "A");
+
+        // Toggle B again: unpins B
+        toggle_pin_tab(&mut tabular, 0);
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
     }
 }
 

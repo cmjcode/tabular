@@ -755,6 +755,7 @@ pub struct QueryTab {
     pub tx_active: bool,
     pub session: Option<crate::connection::session::SessionHandle>,
     pub pinned_columns: HashSet<String>,
+    pub is_pinned: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1776,5 +1777,52 @@ mod tests {
 
         assert!(state.pinned_columns.contains("id"));
         assert!(state.pinned_columns.contains("name"));
+    }
+
+    #[test]
+    fn test_query_tab_pinning() {
+        let mut tab = QueryTab {
+            title: "Test Tab".to_string(),
+            content: "SELECT 1;".to_string(),
+            file_path: None,
+            is_saved: false,
+            is_modified: false,
+            connection_id: None,
+            database_name: None,
+            schema_name: None,
+            has_executed_query: false,
+            result_headers: Vec::new(),
+            result_rows: Vec::new(),
+            result_all_rows: Vec::new(),
+            result_table_name: String::new(),
+            result_column_metadata: None,
+            results: Vec::new(),
+            active_result_index: 0,
+            is_table_browse_mode: false,
+            current_page: 0,
+            page_size: 100,
+            total_rows: 0,
+            base_query: String::new(),
+            dba_special_mode: None,
+            object_ddl: None,
+            explain_plan_json: None,
+            query_message: String::new(),
+            query_message_is_error: false,
+            diagram_state: None,
+            should_run_on_open: false,
+            http_client_state: None,
+            redis_browser_state: None,
+            dba_monitor_state: None,
+            user_manager_state: None,
+            tx_mode: false,
+            tx_active: false,
+            session: None,
+            pinned_columns: HashSet::new(),
+            is_pinned: false,
+        };
+
+        assert!(!tab.is_pinned);
+        tab.is_pinned = true;
+        assert!(tab.is_pinned);
     }
 }

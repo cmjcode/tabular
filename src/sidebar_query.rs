@@ -563,6 +563,7 @@ pub(crate) fn open_query_file(
         tx_active: false,
         session: None,
         pinned_columns: std::collections::HashSet::new(),
+        is_pinned: false,
     };
 
     tabular.query_tabs.push(new_tab);
