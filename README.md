@@ -1355,6 +1355,36 @@ ls -la dist/
 
 This will create distribution-ready packages for macOS, Linux, and Windows.
 
+---
+
+## ☁ Account Information Auto-Load on OAuth Login
+
+When authenticating via Google or GitHub OAuth, Tabular automatically loads and populates all user profile attributes (`Display Name`, `Username`, `Phone Number`, and `Profile Picture URL`) into the Account Information form immediately upon successful login. Closing and reopening the profile modal is no longer required.
+
+## 🧪 API & Backend Integration Testing (`test_api.sh`)
+
+Tabular includes a dedicated shell script (`test_api.sh`) in the repository root to verify sync server and authentication API endpoints using structured `cURL` requests with HTTP status code validation.
+
+### Running the API Tests
+```bash
+# Make script executable (if not already)
+chmod +x test_api.sh
+
+# Run against default server (http://visva-api:8080)
+bash test_api.sh
+
+# Or specify a custom target server URL
+API_URL=http://127.0.0.1:8080 ./test_api.sh
+```
+
+### Tested Endpoints:
+- `GET /health` — Service connectivity and database status assertion
+- `POST /api/v1/auth/ticket/poll` — OAuth session ticket polling
+- `POST /api/v1/auth/refresh` — Token refresh endpoint validation
+- `PUT /api/v1/users/me` — Account Information update (Display Name, Username, Phone)
+- `GET /api/v1/users/search` — User lookup for team collaboration
+
+---
 
 Join us at Telegram
 
