@@ -269,41 +269,52 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
 
 /// Filter history tree based on search text
 pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
-    if tabular.history_search_text.is_empty() {
+    let search_text = tabular.history_search_text.trim();
+    if search_text.is_empty() {
         // Clear filtered tree if search is empty
         tabular.filtered_history_tree.clear();
         return;
     }
 
     tabular.filtered_history_tree.clear();
-    let search_lower = tabular.history_search_text.to_lowercase();
+    let search_lower = search_text.to_lowercase();
 
     for date_node in &tabular.history_tree {
         let mut filtered_date_node = date_node.clone();
         filtered_date_node.children.clear();
 
-        for item_node in &date_node.children {
-            // Search in query text and connection name
-            let query_text = item_node.name.to_lowercase();
-            let connection_name = item_node
-                .connection_id
-                .and_then(|id| {
-                    tabular
-                        .connections
-                        .iter()
-                        .find(|c| c.id == Some(id))
-                        .map(|c| c.name.to_lowercase())
-                })
-                .unwrap_or_default();
+        // If the date folder itself matches the search text, keep all items in this folder
+        let folder_matches = date_node.name.to_lowercase().contains(&search_lower);
 
-            if query_text.contains(&search_lower) || connection_name.contains(&search_lower) {
-                filtered_date_node.children.push(item_node.clone());
-            }
-        }
-
-        // Only add date node if it has matching items
-        if !filtered_date_node.children.is_empty() {
+        if folder_matches {
+            filtered_date_node.children = date_node.children.clone();
+            filtered_date_node.is_expanded = true;
             tabular.filtered_history_tree.push(filtered_date_node);
+        } else {
+            for item_node in &date_node.children {
+                // Search in query text and connection name
+                let query_text = item_node.name.to_lowercase();
+                let connection_name = item_node
+                    .connection_id
+                    .and_then(|id| {
+                        tabular
+                            .connections
+                            .iter()
+                            .find(|c| c.id == Some(id))
+                            .map(|c| c.name.to_lowercase())
+                    })
+                    .unwrap_or_default();
+
+                if query_text.contains(&search_lower) || connection_name.contains(&search_lower) {
+                    filtered_date_node.children.push(item_node.clone());
+                }
+            }
+
+            // Only add date node if it has matching items
+            if !filtered_date_node.children.is_empty() {
+                filtered_date_node.is_expanded = true;
+                tabular.filtered_history_tree.push(filtered_date_node);
+            }
         }
     }
 }
@@ -331,3 +342,75 @@ pub(crate) fn clear_query_history(tabular: &mut window_egui::Tabular) {
     tabular.history_search_text.clear();
     tabular.toasts.success("Query history cleared".to_string());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::enums::NodeType;
+    use crate::models::structs::TreeNode;
+
+    #[test]
+    fn test_filter_history_tree() {
+        let mut tabular = window_egui::Tabular::default();
+
+        let mut item1 = TreeNode::new("SELECT * FROM users;".to_string(), NodeType::QueryHistItem);
+        item1.connection_id = Some(1);
+
+        let mut item2 = TreeNode::new("UPDATE orders SET done = 1;".to_string(), NodeType::QueryHistItem);
+        item2.connection_id = Some(1);
+
+        let mut today_folder = TreeNode::new("Today".to_string(), NodeType::HistoryDateFolder);
+        today_folder.children = vec![item1, item2];
+
+        tabular.history_tree = vec![today_folder];
+
+        // 1. Search for query text "users" -> only matching query is shown
+        tabular.history_search_text = "users".to_string();
+        filter_history_tree(&mut tabular);
+        assert_eq!(tabular.filtered_history_tree.len(), 1);
+        assert_eq!(tabular.filtered_history_tree[0].name, "Today");
+        assert_eq!(tabular.filtered_history_tree[0].children.len(), 1);
+        assert_eq!(
+            tabular.filtered_history_tree[0].children[0].name,
+            "SELECT * FROM users;"
+        );
+
+        // 2. Search for folder name "Today" -> all items in folder should be kept
+        tabular.history_search_text = "today".to_string();
+        filter_history_tree(&mut tabular);
+        assert_eq!(tabular.filtered_history_tree.len(), 1);
+        assert_eq!(tabular.filtered_history_tree[0].name, "Today");
+        assert!(tabular.filtered_history_tree[0].is_expanded);
+        assert_eq!(tabular.filtered_history_tree[0].children.len(), 2);
+        assert_eq!(
+            tabular.filtered_history_tree[0].children[0].name,
+            "SELECT * FROM users;"
+        );
+        assert_eq!(
+            tabular.filtered_history_tree[0].children[1].name,
+            "UPDATE orders SET done = 1;"
+        );
+
+        // 3. Clear search
+        tabular.history_search_text = "".to_string();
+        filter_history_tree(&mut tabular);
+        assert!(tabular.filtered_history_tree.is_empty());
+
+        // 4. Search with whitespace only -> should treat as empty and clear filtered tree
+        tabular.history_search_text = "   ".to_string();
+        filter_history_tree(&mut tabular);
+        assert!(tabular.filtered_history_tree.is_empty());
+
+        // 5. Search with untrimmed query -> should trim and match correctly
+        tabular.history_search_text = "  users  ".to_string();
+        filter_history_tree(&mut tabular);
+        assert_eq!(tabular.filtered_history_tree.len(), 1);
+        assert_eq!(tabular.filtered_history_tree[0].name, "Today");
+        assert_eq!(tabular.filtered_history_tree[0].children.len(), 1);
+        assert_eq!(
+            tabular.filtered_history_tree[0].children[0].name,
+            "SELECT * FROM users;"
+        );
+    }
+}
+

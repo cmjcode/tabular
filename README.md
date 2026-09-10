@@ -29,10 +29,16 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **Semantic Find & Replace**: Editor search with Regex, Match Case, Whole Word, and In-Selection scope support
 - **End-to-End Encrypted Cloud Sync (Zero-Knowledge Vault)**: Argon2id KDF, AES-256-GCM encrypted connections and HTTP secrets synced securely across devices and teams
 - **Integrated HTTP Client**: REST API tester supporting JSON, form-data, custom auth, headers, and code export
-- **Redis Visual Key Browser**: Key explorer with cluster detection, type filtering, full-text search, and TTL/size metrics
+- **Smart Sidebar Tree Search**: Case-insensitive instant filtering across Connections, Queries, History, and HTTP Collections. When searching for a folder name, the folder and all of its contents (connections, queries, history entries, subfolders) remain fully displayed and automatically expanded.
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 
 ---
+
+### Smart Sidebar Tree Search & Folder Content Preservation
+Instant in-memory filtering for all sidebar navigation panels (Connections, Saved Queries, History, and HTTP Collections).
+- **Folder Search Preservation**: When typing a search query matching a folder name (such as custom connection folders, query categories, date folders, or HTTP collection folders), the matching folder is displayed and automatically expanded with all of its child contents intact.
+- **Hierarchical Context**: When searching for specific tables, queries, or history items, the sidebar displays matching items while maintaining their parent directory structure for clear visual context.
+
 
 ### Visual Query Profiler (New in v0.13)
 Analyze and optimize slow queries with interactive visual graphs instead of deciphering raw JSON outputs.
