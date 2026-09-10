@@ -31,8 +31,24 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **Integrated HTTP Client**: REST API tester supporting JSON, form-data, custom auth, headers, and code export
 - **Redis Visual Key Browser**: Key explorer with cluster detection, type filtering, full-text search, and TTL/size metrics
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
+- **Editor Tab Drag & Drop Reordering & Pin Tab**: Group and reorder tabs via intuitive horizontal drag-and-drop, pin important queries/tables with 📌, prevent accidental closures, and manage tabs with full context menus
 
 ---
+
+### Editor Tab Drag & Drop & Tab Pinning (New in v0.15)
+Organize and group editor tabs seamlessly to enhance workflow when dealing with many queries, tables, and API requests.
+- **Interactive Drag-and-Drop Reordering**: Drag tabs horizontally to reorder them and group related tabs together. Visual feedback includes grabbing cursor, floating badge tooltip with tab title, and a real-time vertical insertion indicator line between candidate slots.
+- **Pin Tab (📌)**: Pin essential tabs to keep them docked on the left side of the tab bar. Pinned tabs feature a distinctive 📌 indicator, warm styling tint, and an optional separator dividing pinned from unpinned tabs.
+- **Accidental Close Prevention**: Pinned tabs replace the "×" close button with the pin icon so they cannot be accidentally closed during rapid navigation. Clicking the pin icon directly unpins the tab.
+- **Quick Hover Pin Button**: Hovering over any unpinned tab reveals a convenient quick-pin button beside the close icon.
+- **Smart Boundary Synchronization**: Dragging an unpinned tab into the pinned region automatically pins it, and dragging a pinned tab past the pinned zone automatically unpins it.
+- **Full Tab Context Menu**: Right-click on any tab to access:
+  - 📌 **Pin Tab** / 📌 **Unpin Tab**
+  - ⬅ **Move Tab Left** / ➡ **Move Tab Right**
+  - ✕ **Close Tab**
+  - **Close Other Tabs** (safely preserves pinned tabs)
+  - **Close Tabs to the Right** (safely preserves pinned tabs)
+- **Middle-Click to Close**: Middle-clicking any unpinned tab quickly closes it.
 
 ### Visual Query Profiler (New in v0.13)
 Analyze and optimize slow queries with interactive visual graphs instead of deciphering raw JSON outputs.
