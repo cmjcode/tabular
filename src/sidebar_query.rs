@@ -76,6 +76,14 @@ pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
         let name_lower = node.name.to_lowercase();
         let matches = name_lower.contains(search_text);
 
+        // If this node is a folder and matches the search text, preserve all of its contents (children)
+        // and recursively expand all nested subfolders.
+        if matches && node.node_type.is_folder() {
+            let mut filtered_node = node.clone();
+            filtered_node.expand_all_folders();
+            return Some(filtered_node);
+        }
+
         let mut filtered_children = Vec::new();
         for child in &node.children {
             if let Some(filtered_child) = filter_node(child, search_text) {
@@ -88,6 +96,7 @@ pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
             if !filtered_children.is_empty() {
                 filtered_node.children = filtered_children;
             }
+            filtered_node.is_expanded = true;
             Some(filtered_node)
         } else {
             None
@@ -710,5 +719,53 @@ mod tests {
         tabular.database_search_text = "".to_string();
         filter_queries_tree(&mut tabular);
         assert!(tabular.filtered_queries_tree.is_empty());
+
+        // 4. Search for folder name "admin" -> folder matches, so all children should be displayed!
+        tabular.database_search_text = "admin".to_string();
+        filter_queries_tree(&mut tabular);
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        assert_eq!(tabular.filtered_queries_tree[0].name, "Admin Queries");
+        assert!(tabular.filtered_queries_tree[0].is_expanded);
+        assert_eq!(tabular.filtered_queries_tree[0].children.len(), 2);
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[0].name,
+            "Select Users.sql"
+        );
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[1].name,
+            "Insert Products.sql"
+        );
+    }
+
+    #[test]
+    fn test_filter_queries_tree_nested_subfolders_recursive_expand() {
+        let mut tabular = window_egui::Tabular::default();
+
+        let q1 = TreeNode::new("Monthly Report.sql".to_string(), NodeType::Query);
+        let mut sub_folder = TreeNode::new("2026 Reports".to_string(), NodeType::QueryFolder);
+        sub_folder.children = vec![q1];
+        assert!(!sub_folder.is_expanded);
+
+        let mut root_folder = TreeNode::new("Finance".to_string(), NodeType::QueryFolder);
+        root_folder.children = vec![sub_folder];
+        assert!(!root_folder.is_expanded);
+
+        tabular.queries_tree = vec![root_folder];
+
+        // Search for root folder "Finance"
+        tabular.database_search_text = "finance".to_string();
+        filter_queries_tree(&mut tabular);
+
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        let root = &tabular.filtered_queries_tree[0];
+        assert_eq!(root.name, "Finance");
+        assert!(root.is_expanded, "Root folder must be auto-expanded");
+
+        assert_eq!(root.children.len(), 1);
+        let nested = &root.children[0];
+        assert_eq!(nested.name, "2026 Reports");
+        assert!(nested.is_expanded, "Nested subfolder must be recursively auto-expanded!");
+        assert_eq!(nested.children.len(), 1);
+        assert_eq!(nested.children[0].name, "Monthly Report.sql");
     }
 }

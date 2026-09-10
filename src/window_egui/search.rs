@@ -5,7 +5,7 @@ use log::debug;
 impl super::Tabular {
     pub fn update_all_database_search_results(&mut self) {
         self.update_search_results();
-        self.history_search_text = self.database_search_text.clone();
+        self.history_search_text = self.database_search_text.trim().to_string();
         crate::sidebar_history::filter_history_tree(self);
         crate::sidebar_query::filter_queries_tree(self);
     }
@@ -44,14 +44,20 @@ impl super::Tabular {
         node: &models::structs::TreeNode,
         search_text: &str,
     ) -> Option<models::structs::TreeNode> {
-        let mut matches = false;
-        let mut filtered_children = Vec::new();
-
         // Case-insensitive LIKE search
         let search_lower = search_text.to_lowercase();
-        if node.name.to_lowercase().contains(&search_lower) {
-            matches = true;
+        let self_matches = node.name.to_lowercase().contains(&search_lower);
+
+        // If this node is a folder and matches the search text, preserve all of its contents (children)
+        // and recursively expand all nested subfolders.
+        if self_matches && node.node_type.is_folder() {
+            let mut filtered_node = node.clone();
+            filtered_node.expand_all_folders();
+            return Some(filtered_node);
         }
+
+        let mut matches = self_matches;
+        let mut filtered_children = Vec::new();
 
         // Check children recursively
         for child in &node.children {
@@ -688,3 +694,125 @@ impl super::Tabular {
         job
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::models::enums::NodeType;
+    use crate::models::structs::TreeNode;
+    use crate::window_egui::Tabular;
+
+    #[test]
+    fn test_filter_node_with_like_search_folder_preserves_children() {
+        let tabular = Tabular::default();
+
+        let mut conn1 = TreeNode::new("postgres_db".to_string(), NodeType::Connection);
+        conn1.connection_id = Some(1);
+
+        let mut conn2 = TreeNode::new("mysql_db".to_string(), NodeType::Connection);
+        conn2.connection_id = Some(2);
+
+        let mut folder = TreeNode::new("Production".to_string(), NodeType::CustomFolder);
+        folder.children = vec![conn1, conn2];
+
+        // 1. Search for child "postgres" -> only postgres_db is preserved
+        let res = tabular.filter_node_with_like_search(&folder, "postgres");
+        assert!(res.is_some());
+        let filtered = res.unwrap();
+        assert_eq!(filtered.name, "Production");
+        assert_eq!(filtered.children.len(), 1);
+        assert_eq!(filtered.children[0].name, "postgres_db");
+
+        // 2. Search for folder name "Production" -> all contents must be displayed!
+        let res_folder = tabular.filter_node_with_like_search(&folder, "production");
+        assert!(res_folder.is_some());
+        let filtered_folder = res_folder.unwrap();
+        assert_eq!(filtered_folder.name, "Production");
+        assert!(filtered_folder.is_expanded);
+        assert_eq!(filtered_folder.children.len(), 2);
+        assert_eq!(filtered_folder.children[0].name, "postgres_db");
+        assert_eq!(filtered_folder.children[1].name, "mysql_db");
+
+        // 3. Search for non-existent text -> None
+        let res_none = tabular.filter_node_with_like_search(&folder, "nonexistent");
+        assert!(res_none.is_none());
+    }
+
+    #[test]
+    fn test_filter_node_database_preserves_tables_and_expands_folders() {
+        let tabular = Tabular::default();
+
+        let table1 = TreeNode::new("users".to_string(), NodeType::Table);
+        let table2 = TreeNode::new("orders".to_string(), NodeType::Table);
+
+        let mut tables_folder = TreeNode::new("Tables".to_string(), NodeType::TablesFolder);
+        tables_folder.children = vec![table1, table2];
+        assert!(!tables_folder.is_expanded);
+
+        let mut views_folder = TreeNode::new("Views".to_string(), NodeType::ViewsFolder);
+        let view1 = TreeNode::new("active_users".to_string(), NodeType::View);
+        views_folder.children = vec![view1];
+        assert!(!views_folder.is_expanded);
+
+        let mut db_node = TreeNode::new("ecommerce_db".to_string(), NodeType::Database);
+        db_node.children = vec![tables_folder, views_folder];
+        assert!(!db_node.is_expanded);
+
+        // When database node matches search, ALL tables & views are preserved and subfolders are auto-expanded!
+        let res = tabular.filter_node_with_like_search(&db_node, "ecommerce");
+        assert!(res.is_some(), "Database node must match 'ecommerce'");
+        let filtered = res.unwrap();
+        assert_eq!(filtered.name, "ecommerce_db");
+        assert!(filtered.is_expanded, "Database node must be auto-expanded");
+        assert_eq!(filtered.children.len(), 2, "Tables and Views folders must be preserved!");
+
+        let tables = &filtered.children[0];
+        assert_eq!(tables.name, "Tables");
+        assert!(tables.is_expanded, "Nested TablesFolder must be auto-expanded!");
+        assert_eq!(tables.children.len(), 2);
+        assert_eq!(tables.children[0].name, "users");
+        assert_eq!(tables.children[1].name, "orders");
+
+        let views = &filtered.children[1];
+        assert_eq!(views.name, "Views");
+        assert!(views.is_expanded, "Nested ViewsFolder must be auto-expanded!");
+        assert_eq!(views.children.len(), 1);
+        assert_eq!(views.children[0].name, "active_users");
+    }
+
+    #[test]
+    fn test_filter_node_nested_subfolders_recursive_expand() {
+        let tabular = Tabular::default();
+
+        let conn = TreeNode::new("prod_db".to_string(), NodeType::Connection);
+
+        let mut sub_sub_folder = TreeNode::new("Europe".to_string(), NodeType::CustomFolder);
+        sub_sub_folder.children = vec![conn];
+        assert!(!sub_sub_folder.is_expanded);
+
+        let mut sub_folder = TreeNode::new("Regional".to_string(), NodeType::CustomFolder);
+        sub_folder.children = vec![sub_sub_folder];
+        assert!(!sub_folder.is_expanded);
+
+        let mut root_folder = TreeNode::new("Servers".to_string(), NodeType::CustomFolder);
+        root_folder.children = vec![sub_folder];
+        assert!(!root_folder.is_expanded);
+
+        // Search for root folder "Servers"
+        let res = tabular.filter_node_with_like_search(&root_folder, "servers");
+        assert!(res.is_some());
+        let filtered = res.unwrap();
+        assert_eq!(filtered.name, "Servers");
+        assert!(filtered.is_expanded, "Root folder must be auto-expanded");
+
+        let f1 = &filtered.children[0];
+        assert_eq!(f1.name, "Regional");
+        assert!(f1.is_expanded, "Subfolder must be auto-expanded recursively");
+
+        let f2 = &f1.children[0];
+        assert_eq!(f2.name, "Europe");
+        assert!(f2.is_expanded, "Nested subfolder must be auto-expanded recursively");
+        assert_eq!(f2.children.len(), 1);
+        assert_eq!(f2.children[0].name, "prod_db");
+    }
+}
+
