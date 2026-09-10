@@ -3,7 +3,7 @@ use eframe::egui::text_edit::TextEditState;
 use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
-use log::debug;
+use log::{debug, info};
 use sqlformat::{QueryParams, format as sqlfmt};
 
 use crate::{
@@ -296,11 +296,14 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     tabular.dragged_tab_index = None;
     let tab_count = tabular.query_tabs.len();
     if from == to || from >= tab_count || to >= tab_count {
+        eprintln!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
+        info!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
         return;
     }
 
     let pinned_count_before = tabular.query_tabs.iter().filter(|t| t.is_pinned).count();
     let was_pinned = tabular.query_tabs[from].is_pinned;
+    let tab_title = tabular.query_tabs[from].title.clone();
 
     let mut tab = tabular.query_tabs.remove(from);
 
@@ -308,13 +311,18 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     // If moved out of pinned region (>= pinned_count_before), unpin it.
     if !was_pinned && to < pinned_count_before {
         tab.is_pinned = true;
+        eprintln!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
+        info!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
     } else if was_pinned && to >= pinned_count_before {
         tab.is_pinned = false;
+        eprintln!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
+        info!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
     }
 
     tabular.query_tabs.insert(to, tab);
 
     // Adjust active_tab_index
+    let prev_active = tabular.active_tab_index;
     if tabular.active_tab_index == from {
         tabular.active_tab_index = to;
     } else if from < to {
@@ -326,6 +334,14 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
             tabular.active_tab_index += 1;
         }
     }
+    eprintln!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
+    info!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
 }
 
 /// Reorder a tab dragged from `from` index and dropped at insertion slot `insert_at` (0..=tab_count).
@@ -333,6 +349,8 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
 pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
     let tab_count = tabular.query_tabs.len();
     if from >= tab_count {
+        eprintln!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
+        info!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
         tabular.dragged_tab_index = None;
         return;
     }
@@ -341,6 +359,8 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
     } else {
         insert_at.min(tab_count - 1)
     };
+    eprintln!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
+    info!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
     move_tab(tabular, from, to);
 }
 
@@ -348,9 +368,12 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
 pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = true;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
     let first_unpinned = tabular
         .query_tabs
         .iter()
@@ -360,11 +383,29 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         let tab = tabular.query_tabs.remove(tab_index);
         tabular.query_tabs.insert(first_unpinned, tab);
 
+        let prev_active = tabular.active_tab_index;
         if tabular.active_tab_index == tab_index {
             tabular.active_tab_index = first_unpinned;
         } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index {
             tabular.active_tab_index += 1;
         }
+        eprintln!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+    } else {
+        eprintln!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
     }
 }
 
@@ -372,21 +413,51 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = false;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
     let last_pinned_idx = tabular.query_tabs.iter().rposition(|t| t.is_pinned);
     if let Some(last_p) = last_pinned_idx {
         if tab_index < last_p {
             let tab = tabular.query_tabs.remove(tab_index);
             tabular.query_tabs.insert(last_p, tab);
 
+            let prev_active = tabular.active_tab_index;
             if tabular.active_tab_index == tab_index {
                 tabular.active_tab_index = last_p;
             } else if tabular.active_tab_index > tab_index && tabular.active_tab_index <= last_p {
                 tabular.active_tab_index -= 1;
             }
+            eprintln!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+        } else {
+            eprintln!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
         }
+    } else {
+        eprintln!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
     }
 }
 
@@ -394,9 +465,14 @@ pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
+        eprintln!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        info!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
-    if tabular.query_tabs[tab_index].is_pinned {
+    let is_pinned = tabular.query_tabs[tab_index].is_pinned;
+    eprintln!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    info!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    if is_pinned {
         unpin_tab(tabular, tab_index);
     } else {
         pin_tab(tabular, tab_index);
@@ -8326,6 +8402,43 @@ mod tests {
 
         assert_eq!(tabular.query_tabs.len(), 1);
         assert_eq!(tabular.query_tabs[0].title, "Tab0");
+    }
+
+    #[test]
+    fn test_reorder_tab_clears_dragged_tab_index() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        tabular.dragged_tab_index = Some(0);
+        reorder_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.dragged_tab_index, None);
+        assert_eq!(tabular.query_tabs[2].title, "T0");
+    }
+
+    #[test]
+    fn test_toggle_pin_tab_full_cycle() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "".to_string());
+
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
+
+        // Toggle B: pins B and moves it to front
+        toggle_pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "B");
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "A");
+
+        // Toggle B again: unpins B
+        toggle_pin_tab(&mut tabular, 0);
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
     }
 }
 
