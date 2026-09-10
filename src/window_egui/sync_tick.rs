@@ -57,15 +57,7 @@ impl super::Tabular {
                         account.phone = user.phone.clone();
                         crate::sync::api_client::save_account(account);
                     }
-                    self.profile_display_name_input = user.display_name.unwrap_or_default();
-                    self.profile_avatar_url_input = user.avatar_url.clone().unwrap_or_default();
-                    self.profile_username_input = user.username.unwrap_or_default();
-                    self.profile_phone_input = user.phone.unwrap_or_default();
-                    // Invalidate avatar texture if avatar_url changed
-                    if self.avatar_texture_url != user.avatar_url {
-                        self.avatar_texture = None;
-                        self.avatar_texture_url = None;
-                    }
+                    self.sync_profile_inputs_from_account();
                     self.toasts.info("Profile saved");
                 }
                 Err(e) => {
@@ -365,6 +357,7 @@ impl super::Tabular {
                     let account = crate::sync::auth::token_to_account(&token_resp);
                     crate::sync::api_client::save_account(&account);
                     self.sync_account = Some(account.clone());
+                    self.sync_profile_inputs_from_account();
                     self.sync_login_pending = false;
                     self.sync_login_error = None;
                     self.sync_status = crate::sync::SyncStatus::Synced;
@@ -395,6 +388,13 @@ impl super::Tabular {
             match result {
                 Ok(updated) => {
                     info!("[sync] ✅ Access token refreshed automatically!");
+                    // Invalidate avatar texture cache if avatar URL was updated on server
+                    if let Some(ref account) = self.sync_account {
+                        if account.avatar_url != updated.avatar_url {
+                            self.avatar_texture = None;
+                            self.avatar_texture_url = None;
+                        }
+                    }
                     self.sync_account = Some(updated);
                     self.sync_login_error = None;
                     self.sync_status = crate::sync::SyncStatus::Synced;
@@ -1087,6 +1087,27 @@ impl super::Tabular {
             && crdt.is_connected
         {
             crdt.on_cursor_move(pos);
+        }
+    }
+
+    /// Sync the Account Information form input buffers from the currently active `sync_account`.
+    pub fn sync_profile_inputs_from_account(&mut self) {
+        if let Some(account) = &self.sync_account {
+            self.profile_display_name_input = account.display_name.clone().unwrap_or_default();
+            self.profile_avatar_url_input = account.avatar_url.clone().unwrap_or_default();
+            self.profile_username_input = account.username.clone().unwrap_or_default();
+            self.profile_phone_input = account.phone.clone().unwrap_or_default();
+            if self.avatar_texture_url != account.avatar_url {
+                self.avatar_texture = None;
+                self.avatar_texture_url = None;
+            }
+        } else {
+            self.profile_display_name_input.clear();
+            self.profile_avatar_url_input.clear();
+            self.profile_username_input.clear();
+            self.profile_phone_input.clear();
+            self.avatar_texture = None;
+            self.avatar_texture_url = None;
         }
     }
 }

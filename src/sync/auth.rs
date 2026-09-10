@@ -341,9 +341,12 @@ mod tests {
         let account = token_to_account(&resp);
         assert_eq!(account.user_id, "usr-42");
         assert_eq!(account.email, "dev@tabular.id");
+        assert_eq!(account.display_name, Some("Dev User".to_string()));
+        assert_eq!(account.avatar_url, None);
         assert_eq!(account.access_token, "test_access_token");
         assert_eq!(account.refresh_token, "test_refresh_token");
         assert_eq!(account.username, Some("devuser".to_string()));
+        assert_eq!(account.phone, Some("+123456789".to_string()));
         assert!(!account.is_token_expired());
     }
 
@@ -373,5 +376,40 @@ mod tests {
         let token_resp: TokenResponse = serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
         assert_eq!(token_resp.access_token, "poll_access");
         assert_eq!(token_resp.user.email, "poll@tabular.id");
+    }
+
+    #[test]
+    fn test_parse_poll_completed_with_account_information() {
+        let json_data = serde_json::json!({
+            "success": true,
+            "data": {
+                "status": "completed",
+                "token": {
+                    "access_token": "acc_access",
+                    "refresh_token": "acc_refresh",
+                    "expires_in": 3600,
+                    "user": {
+                        "id": "u-100",
+                        "email": "alice@tabular.id",
+                        "display_name": "Alice Wonderland",
+                        "avatar_url": "https://example.com/alice.png",
+                        "username": "alicew",
+                        "phone": "+628123456789"
+                    }
+                }
+            }
+        });
+
+        let data = json_data.get("data").unwrap();
+        let token_val = data.get("token").unwrap();
+        let token_resp: TokenResponse = serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
+        let account = token_to_account(&token_resp);
+
+        assert_eq!(account.user_id, "u-100");
+        assert_eq!(account.email, "alice@tabular.id");
+        assert_eq!(account.display_name.as_deref(), Some("Alice Wonderland"));
+        assert_eq!(account.avatar_url.as_deref(), Some("https://example.com/alice.png"));
+        assert_eq!(account.username.as_deref(), Some("alicew"));
+        assert_eq!(account.phone.as_deref(), Some("+628123456789"));
     }
 }
