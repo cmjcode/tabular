@@ -39,6 +39,8 @@ Dokumen ini mendokumentasikan implementasi dan verifikasi fitur **Drag & Drop Ta
 | **Dead Logic pada `close_tabs_to_the_right`** | `src/editor.rs:448` | Menghapus decrement indeks `active_tab_index >= i` yang tidak pernah terjadi karena tab aktif telah berpindah ke `tab_index < i`. |
 | **Premature Drop pada `any_released()`** | `src/window_egui/app_impl.rs:2076` | Mengganti ke `inp.pointer.button_released(egui::PointerButton::Primary)`. |
 | **Ketiadaan Validasi Batas Vertikal** | `src/window_egui/app_impl.rs:2424` | Menambahkan validasi `is_within_tab_bar_y` sehingga drag dapat dibatalkan jika pointer keluar tab bar. |
+| **Pemicuan Drag Tombol Non-Primer** | `src/window_egui/app_impl.rs:2150` | Mengganti `drag_started()` menjadi `drag_started_by(egui::PointerButton::Primary)`. |
+| **Starvation / Stuck Drag State** | `src/window_egui/app_impl.rs:2476` | Menambahkan pembersihan state drag jika primary pointer tidak lagi ditekan (`!primary_down`) atau tab count berubah. |
 
 ---
 
@@ -54,3 +56,6 @@ Pengujian unit di `src/editor.rs` dan `src/models/structs.rs` mencakup skenario:
 7. `test_close_other_tabs_protects_pinned`: Pengujian perlindungan tab pinned dari operasi penutupan tab lainnya.
 8. `test_close_tabs_to_the_right`: Pengujian penutupan tab unpinned di sebelah kanan dengan perlindungan tab pinned.
 9. `test_close_tabs_to_the_right_active_tab_switch`: Pengujian pengalihan tab aktif ke target sebelum penutupan tab kanan.
+10. `test_move_tab_crossing_pinned_boundary_both_ways`: Pengujian transisi dua arah saat tab unpinned diseret ke area pinned (otomatis menjadi pinned) dan sebaliknya.
+11. `test_tab_bounds_safety`: Pengujian ketahanan dan ketiadaan panic saat pemindahan atau penutupan tab dipanggil dengan indeks out-of-bounds.
+

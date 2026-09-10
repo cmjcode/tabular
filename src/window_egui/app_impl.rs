@@ -2147,7 +2147,7 @@ impl Tabular {
                                             );
                                             tab_rects.push(tab_rect);
 
-                                            if tab_resp.drag_started() {
+                                            if tab_resp.drag_started_by(egui::PointerButton::Primary) {
                                                 self.dragged_tab_index = Some(i);
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                                 ui.ctx().request_repaint();
@@ -2394,94 +2394,102 @@ impl Tabular {
 
                                         // Handle active Drag-and-Drop state and drop insertion rendering
                                         if let Some(drag_from) = self.dragged_tab_index {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                            let mut candidate_insert_at = None;
+                                            if drag_from >= self.query_tabs.len() {
+                                                self.dragged_tab_index = None;
+                                            } else {
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                                let mut candidate_insert_at = None;
 
-                                            if let Some(pos) = pointer_pos {
-                                                // Floating ghost badge following cursor
-                                                if let Some(drag_tab) = self.query_tabs.get(drag_from) {
-                                                    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                                                        egui::Order::Tooltip,
-                                                        egui::Id::new("tab_drag_badge"),
-                                                    ));
-                                                    let ghost_title = format!("{} {}", if drag_tab.is_pinned { "📌" } else { "📑" }, drag_tab.title);
-                                                    let font_id = egui::FontId::proportional(12.0);
-                                                    let text_w = painter.layout_no_wrap(ghost_title.clone(), font_id.clone(), egui::Color32::WHITE).size().x;
-                                                    let badge_w = (text_w + 24.0).clamp(80.0, 220.0);
-                                                    let badge_rect = egui::Rect::from_min_size(
-                                                        pos + egui::vec2(14.0, 10.0),
-                                                        egui::vec2(badge_w, 24.0),
-                                                    );
-                                                    painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(28, 30, 38, 235));
-                                                    painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.5, super::style::theme_accent(ui.ctx())), egui::StrokeKind::Outside);
-                                                    painter.text(
-                                                        badge_rect.center(),
-                                                        egui::Align2::CENTER_CENTER,
-                                                        ghost_title,
-                                                        font_id,
-                                                        egui::Color32::WHITE,
-                                                    );
-                                                }
+                                                if let Some(pos) = pointer_pos {
+                                                    // Floating ghost badge following cursor
+                                                    if let Some(drag_tab) = self.query_tabs.get(drag_from) {
+                                                        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                                                            egui::Order::Tooltip,
+                                                            egui::Id::new("tab_drag_badge"),
+                                                        ));
+                                                        let ghost_title = format!("{} {}", if drag_tab.is_pinned { "📌" } else { "📑" }, drag_tab.title);
+                                                        let font_id = egui::FontId::proportional(12.0);
+                                                        let text_w = painter.layout_no_wrap(ghost_title.clone(), font_id.clone(), egui::Color32::WHITE).size().x;
+                                                        let badge_w = (text_w + 24.0).clamp(80.0, 220.0);
+                                                        let badge_rect = egui::Rect::from_min_size(
+                                                            pos + egui::vec2(14.0, 10.0),
+                                                            egui::vec2(badge_w, 24.0),
+                                                        );
+                                                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(28, 30, 38, 235));
+                                                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.5, super::style::theme_accent(ui.ctx())), egui::StrokeKind::Outside);
+                                                        painter.text(
+                                                            badge_rect.center(),
+                                                            egui::Align2::CENTER_CENTER,
+                                                            ghost_title,
+                                                            font_id,
+                                                            egui::Color32::WHITE,
+                                                        );
+                                                    }
 
-                                                // Determine candidate drop slot
-                                                let is_within_tab_bar_y = tab_rects.first().map(|r| {
-                                                    let margin = 20.0;
-                                                    pos.y >= r.top() - margin && pos.y <= r.bottom() + margin
-                                                }).unwrap_or(false);
+                                                    // Determine candidate drop slot
+                                                    let is_within_tab_bar_y = tab_rects.first().map(|r| {
+                                                        let margin = 20.0;
+                                                        pos.y >= r.top() - margin && pos.y <= r.bottom() + margin
+                                                    }).unwrap_or(false);
 
-                                                if is_within_tab_bar_y {
-                                                    for (idx, r) in tab_rects.iter().enumerate() {
-                                                        if pos.x < r.center().x {
-                                                            candidate_insert_at = Some(idx);
-                                                            break;
+                                                    if is_within_tab_bar_y {
+                                                        for (idx, r) in tab_rects.iter().enumerate() {
+                                                            if pos.x < r.center().x {
+                                                                candidate_insert_at = Some(idx);
+                                                                break;
+                                                            }
+                                                        }
+                                                        if candidate_insert_at.is_none() && !tab_rects.is_empty() {
+                                                            candidate_insert_at = Some(tab_rects.len());
                                                         }
                                                     }
-                                                    if candidate_insert_at.is_none() && !tab_rects.is_empty() {
-                                                        candidate_insert_at = Some(tab_rects.len());
+
+                                                    // Render insertion indicator line
+                                                    if let Some(target_idx) = candidate_insert_at {
+                                                        if target_idx != drag_from && target_idx != drag_from + 1 {
+                                                            let indicator_x = if target_idx < tab_rects.len() {
+                                                                tab_rects[target_idx].left() - 1.0
+                                                            } else {
+                                                                tab_rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0)
+                                                            };
+                                                            let indicator_top = tab_rects.first().map(|r| r.top()).unwrap_or(0.0);
+                                                            let indicator_bottom = tab_rects.first().map(|r| r.bottom()).unwrap_or(34.0);
+                                                            let accent_col = super::style::theme_accent(ui.ctx());
+
+                                                            let ind_line_rect = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 1.5, indicator_top),
+                                                                egui::vec2(3.0, indicator_bottom - indicator_top),
+                                                            );
+                                                            ui.painter().rect_filled(ind_line_rect, 1.5, accent_col);
+
+                                                            let cap_top = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 3.5, indicator_top),
+                                                                egui::vec2(7.0, 4.0),
+                                                            );
+                                                            ui.painter().rect_filled(cap_top, 2.0, accent_col);
+                                                            let cap_bot = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 3.5, indicator_bottom - 4.0),
+                                                                egui::vec2(7.0, 4.0),
+                                                            );
+                                                            ui.painter().rect_filled(cap_bot, 2.0, accent_col);
+                                                        }
                                                     }
                                                 }
 
-                                                // Render insertion indicator line
-                                                if let Some(target_idx) = candidate_insert_at {
-                                                    if target_idx != drag_from && target_idx != drag_from + 1 {
-                                                        let indicator_x = if target_idx < tab_rects.len() {
-                                                            tab_rects[target_idx].left() - 1.0
-                                                        } else {
-                                                            tab_rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0)
-                                                        };
-                                                        let indicator_top = tab_rects.first().map(|r| r.top()).unwrap_or(0.0);
-                                                        let indicator_bottom = tab_rects.first().map(|r| r.bottom()).unwrap_or(34.0);
-                                                        let accent_col = super::style::theme_accent(ui.ctx());
-
-                                                        let ind_line_rect = egui::Rect::from_min_size(
-                                                            egui::pos2(indicator_x - 1.5, indicator_top),
-                                                            egui::vec2(3.0, indicator_bottom - indicator_top),
-                                                        );
-                                                        ui.painter().rect_filled(ind_line_rect, 1.5, accent_col);
-
-                                                        let cap_top = egui::Rect::from_min_size(
-                                                            egui::pos2(indicator_x - 3.5, indicator_top),
-                                                            egui::vec2(7.0, 4.0),
-                                                        );
-                                                        ui.painter().rect_filled(cap_top, 2.0, accent_col);
-                                                        let cap_bot = egui::Rect::from_min_size(
-                                                            egui::pos2(indicator_x - 3.5, indicator_bottom - 4.0),
-                                                            egui::vec2(7.0, 4.0),
-                                                        );
-                                                        ui.painter().rect_filled(cap_bot, 2.0, accent_col);
+                                                // Process drop on mouse release or cancel if primary pointer is released/lost
+                                                let primary_down = ui.ctx().input(|inp| inp.pointer.primary_down());
+                                                if mouse_released {
+                                                    let from = self.dragged_tab_index.take();
+                                                    if let (Some(from_idx), Some(target_idx)) = (from, candidate_insert_at) {
+                                                        if target_idx != from_idx && target_idx != from_idx + 1 {
+                                                            editor::reorder_tab(self, from_idx, target_idx);
+                                                        }
                                                     }
+                                                    ui.ctx().request_repaint();
+                                                } else if !primary_down {
+                                                    self.dragged_tab_index = None;
+                                                    ui.ctx().request_repaint();
                                                 }
-                                            }
-
-                                            // Process drop on mouse release
-                                            if mouse_released {
-                                                let from = self.dragged_tab_index.take();
-                                                if let (Some(from_idx), Some(target_idx)) = (from, candidate_insert_at) {
-                                                    if target_idx != from_idx && target_idx != from_idx + 1 {
-                                                        editor::reorder_tab(self, from_idx, target_idx);
-                                                    }
-                                                }
-                                                ui.ctx().request_repaint();
                                             }
                                         }
 

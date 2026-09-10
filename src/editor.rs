@@ -8258,5 +8258,57 @@ mod tests {
         assert_eq!(tabular.query_tabs[0].title, "T0");
         assert_eq!(tabular.active_tab_index, 0);
     }
+
+    #[test]
+    fn test_move_tab_crossing_pinned_boundary_both_ways() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert!(!tabular.query_tabs[3].is_pinned);
+
+        // Move unpinned U3 (index 3) into pinned territory at index 1 (< pinned_count 2)
+        // It must automatically become pinned.
+        move_tab(&mut tabular, 3, 1);
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 3);
+
+        // Move pinned P0 (index 0) into unpinned territory at index 3 (>= pinned_count 3)
+        // It must automatically become unpinned.
+        move_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.query_tabs[3].title, "P0");
+        assert!(!tabular.query_tabs[3].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 2);
+    }
+
+    #[test]
+    fn test_tab_bounds_safety() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Tab0".to_string(), "".to_string());
+
+        // Out of bounds operations should no-op safely without panicking
+        move_tab(&mut tabular, 0, 10);
+        move_tab(&mut tabular, 10, 0);
+        move_tab(&mut tabular, 0, 0);
+        reorder_tab(&mut tabular, 10, 0);
+        pin_tab(&mut tabular, 10);
+        unpin_tab(&mut tabular, 10);
+        toggle_pin_tab(&mut tabular, 10);
+        close_other_tabs(&mut tabular, 10);
+        close_tabs_to_the_right(&mut tabular, 10);
+
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "Tab0");
+    }
 }
 

@@ -85,3 +85,8 @@ Saat bekerja dengan banyak tab query SQL, tabel basis data, dan endpoint HTTP, p
    - Mengganti `any_released()` dengan `button_released(egui::PointerButton::Primary)`.
 5. **Validasi Batas Vertikal**:
    - Menambahkan `is_within_tab_bar_y` pada kalkulasi slot drop `candidate_insert_at`.
+6. **Pemicuan Drag Tombol Non-Primer**:
+   - Membatasi inisiasi drag hanya pada tombol mouse primer melalui `drag_started_by(egui::PointerButton::Primary)`.
+7. **Pencegahan Starvation / UI Stuck State**:
+   - Menambahkan mekanisme reset `self.dragged_tab_index = None` saat pointer primer tidak lagi ditekan (`!primary_down`) atau saat jumlah tab berubah.
+
