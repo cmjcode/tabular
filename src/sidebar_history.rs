@@ -269,14 +269,15 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
 
 /// Filter history tree based on search text
 pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
-    if tabular.history_search_text.is_empty() {
+    let search_text = tabular.history_search_text.trim();
+    if search_text.is_empty() {
         // Clear filtered tree if search is empty
         tabular.filtered_history_tree.clear();
         return;
     }
 
     tabular.filtered_history_tree.clear();
-    let search_lower = tabular.history_search_text.to_lowercase();
+    let search_lower = search_text.to_lowercase();
 
     for date_node in &tabular.history_tree {
         let mut filtered_date_node = date_node.clone();
@@ -394,6 +395,22 @@ mod tests {
         tabular.history_search_text = "".to_string();
         filter_history_tree(&mut tabular);
         assert!(tabular.filtered_history_tree.is_empty());
+
+        // 4. Search with whitespace only -> should treat as empty and clear filtered tree
+        tabular.history_search_text = "   ".to_string();
+        filter_history_tree(&mut tabular);
+        assert!(tabular.filtered_history_tree.is_empty());
+
+        // 5. Search with untrimmed query -> should trim and match correctly
+        tabular.history_search_text = "  users  ".to_string();
+        filter_history_tree(&mut tabular);
+        assert_eq!(tabular.filtered_history_tree.len(), 1);
+        assert_eq!(tabular.filtered_history_tree[0].name, "Today");
+        assert_eq!(tabular.filtered_history_tree[0].children.len(), 1);
+        assert_eq!(
+            tabular.filtered_history_tree[0].children[0].name,
+            "SELECT * FROM users;"
+        );
     }
 }
 
