@@ -471,6 +471,14 @@ pub fn import_all_data(
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
             rt.block_on(async {
                 let _ = sqlx::query("DELETE FROM connection_folders").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM database_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM table_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM column_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM row_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM index_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM partition_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM foreign_key_cache").execute(pool.as_ref()).await;
+                let _ = sqlx::query("DELETE FROM connection_sync_cache").execute(pool.as_ref()).await;
                 let _ = sqlx::query("DELETE FROM connections").execute(pool.as_ref()).await;
             });
             tabular.connection_folders.clear();
@@ -1255,6 +1263,10 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let zip_path = temp_dir.join("queries_backup.zip");
 
+        unsafe {
+            std::env::set_var("TABULAR_DATA_DIR", &temp_dir);
+        }
+
         // Create an archive with queries and http collections, without any connections/history
         {
             let file = File::create(&zip_path).unwrap();
@@ -1305,19 +1317,169 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_desktop_backup_archive() {
-        let zip_path = PathBuf::from("/Users/jayuda/Desktop/tabular_backup_20260909_203357.zip");
-        if !zip_path.exists() {
-            return; // Skip if test is run on an environment without this file
+    fn test_import_with_uninitialized_db_pool_isolated() {
+        let temp_dir = std::env::temp_dir().join(format!("tabular_isolated_restore_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("isolated.db");
+        let zip_path = temp_dir.join("isolated_backup.zip");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // Create initial isolated SQLite schema
+        let pool = rt.block_on(async {
+            use sqlx::sqlite::SqliteConnectOptions;
+            use std::str::FromStr;
+            let options = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path.display()))
+                .unwrap();
+            let p = sqlx::SqlitePool::connect_with(options).await.unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS connections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    database_name TEXT NOT NULL,
+                    connection_type TEXT NOT NULL,
+                    folder TEXT,
+                    ssh_enabled INTEGER DEFAULT 0,
+                    ssh_host TEXT DEFAULT '',
+                    ssh_port TEXT DEFAULT '',
+                    ssh_username TEXT DEFAULT '',
+                    ssh_auth_method TEXT DEFAULT 'password',
+                    ssh_private_key TEXT DEFAULT '',
+                    ssh_password TEXT DEFAULT '',
+                    ssh_accept_unknown_host_keys INTEGER DEFAULT 0,
+                    custom_views TEXT DEFAULT '[]',
+                    replication_master_id INTEGER,
+                    ssh_jump_host TEXT DEFAULT '',
+                    ssl_enabled INTEGER DEFAULT 0,
+                    ssl_ca_cert TEXT DEFAULT '',
+                    ssl_client_cert TEXT DEFAULT '',
+                    ssl_client_key TEXT DEFAULT '',
+                    ssl_key_passphrase TEXT DEFAULT '',
+                    ssl_verify_server INTEGER DEFAULT 1
+                );"
+            )
+            .execute(&p)
+            .await
+            .unwrap();
+
+            sqlx::query("CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);")
+                .execute(&p)
+                .await
+                .unwrap();
+
+            p
+        });
+
+        // Create an isolated zip archive with connection data
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let file_opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+            let conns = vec![ConnectionConfig {
+                id: Some(1),
+                name: "Isolated DB".to_string(),
+                host: "localhost".to_string(),
+                port: "3306".to_string(),
+                username: "root".to_string(),
+                password: "root".to_string(),
+                database: "test".to_string(),
+                connection_type: crate::models::enums::DatabaseType::MySQL,
+                folder: Some("Testing".to_string()),
+                ssh_enabled: false,
+                ssh_host: String::new(),
+                ssh_port: String::new(),
+                ssh_username: String::new(),
+                ssh_auth_method: crate::models::enums::SshAuthMethod::Password,
+                ssh_private_key: String::new(),
+                ssh_password: String::new(),
+                ssh_accept_unknown_host_keys: false,
+                ssh_jump_host: String::new(),
+                ssl_enabled: false,
+                ssl_ca_cert: String::new(),
+                ssl_client_cert: String::new(),
+                ssl_client_key: String::new(),
+                ssl_key_passphrase: String::new(),
+                ssl_verify_server: true,
+                custom_views: Vec::new(),
+                replication_master_id: None,
+            }];
+            let conns_json = serde_json::to_string_pretty(&conns).unwrap();
+            zip.start_file("connections/connections.json", file_opts).unwrap();
+            zip.write_all(conns_json.as_bytes()).unwrap();
+
+            let folders = vec!["Testing".to_string()];
+            let folders_json = serde_json::to_string_pretty(&folders).unwrap();
+            zip.start_file("connections/folders.json", file_opts).unwrap();
+            zip.write_all(folders_json.as_bytes()).unwrap();
+
+            let manifest = ExportAllManifest {
+                version: "1.0.0".to_string(),
+                app: "Tabular".to_string(),
+                exported_at: "2026-09-10T00:00:00Z".to_string(),
+                counts: ExportCounts {
+                    connections: 1,
+                    connection_folders: 1,
+                    ..Default::default()
+                },
+                includes: ExportIncludes {
+                    connections: true,
+                    ..Default::default()
+                },
+            };
+            let manifest_json = serde_json::to_string_pretty(&manifest).unwrap();
+            zip.start_file("manifest.json", file_opts).unwrap();
+            zip.write_all(manifest_json.as_bytes()).unwrap();
+
+            zip.finish().unwrap();
         }
 
         let mut tabular = Tabular::new();
-        tabular.db_pool = None; // Start with uninitialized pool
+        // Set isolated pool on shared_db_pool so ensure_db_pool picks it up without touching live DB
+        tabular.db_pool = None;
+        tabular.set_db_pool(Some(std::sync::Arc::new(pool)));
+        tabular.db_pool = None; // clear db_pool so ensure_db_pool must recover it from shared_db_pool
 
         let options = ImportAllOptions {
             include_connections: true,
-            include_queries: false, // Don't overwrite user's live queries directory
-            include_http_api: false, // Don't overwrite user's live http collections
+            include_queries: false,
+            include_http_api: false,
+            include_history: false,
+            conflict_strategy: ConflictStrategy::CleanRestore,
+        };
+
+        let result = import_all_data(&mut tabular, &zip_path, &options);
+        assert!(result.is_ok(), "Import with uninitialized pool should recover: {:?}", result.err());
+        let summary = result.unwrap();
+        assert_eq!(summary.connections_restored, 1);
+        assert_eq!(summary.folders_restored, 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    #[ignore = "manual verification fixture for desktop backup"]
+    fn test_restore_desktop_backup_archive() {
+        let zip_path = PathBuf::from("/Users/jayuda/Desktop/tabular_backup_20260909_203357.zip");
+        if !zip_path.exists() {
+            return;
+        }
+
+        let mut tabular = Tabular::new();
+        tabular.db_pool = None;
+
+        let options = ImportAllOptions {
+            include_connections: true,
+            include_queries: false,
+            include_http_api: false,
             include_history: true,
             conflict_strategy: ConflictStrategy::MergeKeepExisting,
         };
