@@ -787,16 +787,18 @@ impl super::Tabular {
     /// Ensure an active SQLite database pool is available, waiting for async startup or
     /// initializing on-demand if necessary.
     pub fn ensure_db_pool(&mut self) -> Result<Arc<sqlx::SqlitePool>, String> {
-        // 1. Fast path: already active in self.db_pool
+        // 1. Fast path: already active in self.db_pool and not closed
         if let Some(ref pool) = self.db_pool {
-            return Ok(pool.clone());
+            if !pool.is_closed() {
+                return Ok(pool.clone());
+            }
         }
 
         // 2. Check shared_db_pool in case another thread populated it
-        if let Ok(guard) = self.shared_db_pool.read() {
-            if let Some(ref pool) = *guard {
+        if let Some(pool) = self.shared_db_pool.read().ok().and_then(|g| g.clone()) {
+            if !pool.is_closed() {
                 self.db_pool = Some(pool.clone());
-                return Ok(pool.clone());
+                return Ok(pool);
             }
         }
 
@@ -848,13 +850,17 @@ impl super::Tabular {
         // 4. Synchronously initialize database as fallback
         crate::sidebar_database::initialize_database(self);
         if let Some(ref pool) = self.db_pool {
-            return Ok(pool.clone());
+            if !pool.is_closed() {
+                return Ok(pool.clone());
+            }
         }
 
         // 5. Corrupt db reset recovery as last resort
         if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
             if let Some(ref pool) = self.db_pool {
-                return Ok(pool.clone());
+                if !pool.is_closed() {
+                    return Ok(pool.clone());
+                }
             }
         }
 

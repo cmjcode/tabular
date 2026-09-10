@@ -618,7 +618,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             // ── Bottom Action Buttons ──
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
+                if ui.add_enabled(!state.is_running, egui::Button::new("Cancel")).clicked() {
                     close_requested = true;
                 }
 
@@ -651,10 +651,9 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         egui::Color32::from_rgb(40, 160, 90)
                     });
 
-                    if ui.add_enabled(can_restore, btn).clicked() {
+                    // If restore was triggered on previous frame, perform it now so egui rendered "Restoring..."
+                    if state.is_running {
                         if let Some(archive_path) = state.archive_path.clone() {
-                            state.error_message = None;
-
                             match import_all_data(tabular, &archive_path, &state.options) {
                                 Ok(summary) => {
                                     state.summary = Some(summary);
@@ -665,6 +664,14 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 }
                             }
                         }
+                        state.is_running = false;
+                        ctx.request_repaint();
+                    } else if ui.add_enabled(can_restore, btn).clicked() {
+                        state.error_message = None;
+                        state.summary = None;
+                        state.status_message = None;
+                        state.is_running = true;
+                        ctx.request_repaint();
                     }
                 });
             });
