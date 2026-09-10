@@ -10,7 +10,7 @@
 #   API_URL=http://localhost:8080 ./test_api.sh
 # ==============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
 API_URL="${API_URL:-https://api.tabular.id}"
 PASSED_TESTS=0
@@ -43,13 +43,13 @@ assert_status() {
 
     if [[ "$actual" =~ ^($expected)$ ]]; then
         echo -e "  [${GREEN}PASS${NC}] ${test_name} (HTTP ${actual})"
-        ((PASSED_TESTS++))
+        PASSED_TESTS=$((PASSED_TESTS + 1))
     else
         echo -e "  [${RED}FAIL${NC}] ${test_name} (Expected: ${expected}, Got: ${actual})"
         if [ -n "$body" ]; then
             echo -e "         Response: ${body:0:160}"
         fi
-        ((FAILED_TESTS++))
+        FAILED_TESTS=$((FAILED_TESTS + 1))
     fi
 }
 

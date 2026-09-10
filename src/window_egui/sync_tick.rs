@@ -57,15 +57,7 @@ impl super::Tabular {
                         account.phone = user.phone.clone();
                         crate::sync::api_client::save_account(account);
                     }
-                    self.profile_display_name_input = user.display_name.unwrap_or_default();
-                    self.profile_avatar_url_input = user.avatar_url.clone().unwrap_or_default();
-                    self.profile_username_input = user.username.unwrap_or_default();
-                    self.profile_phone_input = user.phone.unwrap_or_default();
-                    // Invalidate avatar texture if avatar_url changed
-                    if self.avatar_texture_url != user.avatar_url {
-                        self.avatar_texture = None;
-                        self.avatar_texture_url = None;
-                    }
+                    self.sync_profile_inputs_from_account();
                     self.toasts.info("Profile saved");
                 }
                 Err(e) => {
@@ -1111,6 +1103,13 @@ impl super::Tabular {
                 self.avatar_texture = None;
                 self.avatar_texture_url = None;
             }
+        } else {
+            self.profile_display_name_input.clear();
+            self.profile_avatar_url_input.clear();
+            self.profile_username_input.clear();
+            self.profile_phone_input.clear();
+            self.avatar_texture = None;
+            self.avatar_texture_url = None;
         }
     }
 }
