@@ -787,25 +787,38 @@ impl super::Tabular {
     /// Ensure an active SQLite database pool is available, waiting for async startup or
     /// initializing on-demand if necessary.
     pub fn ensure_db_pool(&mut self) -> Result<Arc<sqlx::SqlitePool>, String> {
+        eprintln!("[RESTORE-DB] ensure_db_pool() called. Inspecting active SQLite pool...");
         // 1. Fast path: already active in self.db_pool and not closed
         if let Some(ref pool) = self.db_pool {
             if !pool.is_closed() {
+                eprintln!("[RESTORE-DB] Fast path: Reusing existing self.db_pool (active).");
                 return Ok(pool.clone());
+            } else {
+                eprintln!("[RESTORE-DB] Warning: self.db_pool is present but closed!");
             }
+        } else {
+            eprintln!("[RESTORE-DB] self.db_pool is None.");
         }
 
         // 2. Check shared_db_pool in case another thread populated it
         if let Some(pool) = self.shared_db_pool.read().ok().and_then(|g| g.clone()) {
             if !pool.is_closed() {
+                eprintln!("[RESTORE-DB] Found active pool in shared_db_pool. Adopting into self.db_pool.");
                 self.db_pool = Some(pool.clone());
                 return Ok(pool);
+            } else {
+                eprintln!("[RESTORE-DB] Warning: shared_db_pool is present but closed!");
             }
+        } else {
+            eprintln!("[RESTORE-DB] shared_db_pool is currently empty.");
         }
 
         // 3. If background initialization is pending, wait for it
         if let Some(rx) = self.db_init_receiver.take() {
+            eprintln!("[RESTORE-DB] Background db initialization is in flight. Waiting up to 5s...");
             match rx.recv_timeout(std::time::Duration::from_secs(5)) {
                 Ok(res) => {
+                    eprintln!("[RESTORE-DB] Background db initialization receiver completed successfully.");
                     let pool = res.db_pool.clone();
                     self.set_db_pool(Some(res.db_pool));
                     self.connections = res.connections;
@@ -842,28 +855,40 @@ impl super::Tabular {
                     return Ok(pool);
                 }
                 Err(e) => {
+                    eprintln!("[RESTORE-DB] ⚠️ Timed out or failed waiting for background db init: {:?}", e);
                     log::warn!("Timed out or failed waiting for background db init in ensure_db_pool: {:?}", e);
                 }
             }
+        } else {
+            eprintln!("[RESTORE-DB] No pending background db_init_receiver.");
         }
 
         // 4. Synchronously initialize database as fallback
+        eprintln!("[RESTORE-DB] Triggering synchronous crate::sidebar_database::initialize_database(self)...");
         crate::sidebar_database::initialize_database(self);
         if let Some(ref pool) = self.db_pool {
             if !pool.is_closed() {
+                eprintln!("[RESTORE-DB] Synchronous initialize_database succeeded.");
                 return Ok(pool.clone());
+            } else {
+                eprintln!("[RESTORE-DB] Warning: self.db_pool is closed after initialize_database!");
             }
+        } else {
+            eprintln!("[RESTORE-DB] Warning: self.db_pool is still None after initialize_database!");
         }
 
         // 5. Corrupt db reset recovery as last resort
+        eprintln!("[RESTORE-DB] Triggering crate::sidebar_database::reset_corrupted_sqlite_db(self)...");
         if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
             if let Some(ref pool) = self.db_pool {
                 if !pool.is_closed() {
+                    eprintln!("[RESTORE-DB] Corruption reset succeeded, new pool active.");
                     return Ok(pool.clone());
                 }
             }
         }
 
+        eprintln!("[RESTORE-DB] ❌ All 5 defense layers failed to acquire or initialize SQLite database pool!");
         Err("No active database pool available and failed to initialize SQLite database".to_string())
     }
 

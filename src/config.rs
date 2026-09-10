@@ -636,8 +636,15 @@ pub fn get_local_data_dir() -> PathBuf {
     get_default_tabular_dir()
 }
 
-/// Get the default tabular directory in home folder
+/// Get the default tabular directory in home folder (or Documents on iOS)
 fn get_default_tabular_dir() -> PathBuf {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(doc) = dirs::document_dir() {
+            return doc.join(".tabular");
+        }
+    }
+
     if let Some(mut hd) = home_dir() {
         hd.push(".tabular");
         hd
@@ -682,16 +689,30 @@ fn load_config_location() -> Option<String> {
     if config_file.exists() {
         match fs::read_to_string(&config_file) {
             Ok(content) => {
-                let path = content.trim();
-                if !path.is_empty() && PathBuf::from(path).exists() {
+                let path_str = content.trim();
+                let path = PathBuf::from(path_str);
+                if !path_str.is_empty() && path.exists() {
+                    // Check if path is actually accessible and writable.
+                    // In sandboxed environments (TestFlight / App Store), accessing paths
+                    // outside the sandbox container (e.g. Google Drive, external volumes)
+                    // fails with EPERM / PermissionDenied.
+                    let test_data = path.join("data");
+                    if fs::create_dir_all(&test_data).is_err() {
+                        log::warn!(
+                            "Config location path is not writable (App Sandbox restriction?): {}",
+                            path_str
+                        );
+                        return None;
+                    }
+
                     log::debug!(
                         "Loaded config location from {}: {}",
                         config_file.display(),
-                        path
+                        path_str
                     );
-                    return Some(path.to_string());
+                    return Some(path_str.to_string());
                 } else {
-                    log::warn!("Config location file contains invalid path: {}", path);
+                    log::warn!("Config location file contains invalid path: {}", path_str);
                     // Remove invalid config file
                     let _ = fs::remove_file(&config_file);
                 }
@@ -743,12 +764,8 @@ pub fn get_data_dir() -> PathBuf {
         }
     }
 
-    // Default to ~/.tabular
-    if let Some(mut hd) = home_dir() {
-        hd.push(".tabular");
-        return hd;
-    }
-    PathBuf::from(".")
+    // Default to ~/.tabular (or Documents/.tabular on iOS)
+    get_default_tabular_dir()
 }
 
 pub fn set_data_dir(new_path: &str) -> Result<(), String> {
