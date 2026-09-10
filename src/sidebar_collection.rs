@@ -34,7 +34,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
         );
     });
 
-    let filter = app.collection_search.to_lowercase();
+    let filter = app.collection_search.trim().to_lowercase();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
 
     // ── 1. HTTP Connections section ───────────────────────────────────────
@@ -322,6 +322,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     &folder,
                     &mut expanded_folders,
                     &filter,
+                    false,
                     accent,
                     active_dnd_source.as_ref(),
                     &mut req_action,
@@ -849,6 +850,7 @@ fn render_folder_node(
     folder: &crate::http_collection::HttpFolder,
     expanded_folders: &mut std::collections::HashSet<String>,
     filter: &str,
+    parent_matched: bool,
     accent: egui::Color32,
     active_dnd_source: Option<&HttpDndSource>,
     req_action_out: &mut Option<(SavedRequest, RequestAction)>,
@@ -857,7 +859,10 @@ fn render_folder_node(
     folder_to_rename: &mut Option<(String, String, String)>,
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
-    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty();
+    let folder_matches =
+        parent_matched || (!filter.is_empty() && folder.name.to_lowercase().contains(filter));
+    let is_expanded =
+        expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
     let is_being_dragged = active_dnd_source.is_some_and(
         |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
     );
@@ -1032,14 +1037,12 @@ fn render_folder_node(
     });
 
     if is_expanded {
-        let folder_matches = !filter.is_empty() && folder.name.to_lowercase().contains(filter);
-        let child_filter = if folder_matches { "" } else { filter };
-
         ui.indent(format!("fld_body_{}", folder.id), |ui| {
             for req in &folder.requests {
-                if !child_filter.is_empty()
-                    && !req.display_name().to_lowercase().contains(child_filter)
-                    && !req.url.to_lowercase().contains(child_filter)
+                if !folder_matches
+                    && !filter.is_empty()
+                    && !req.display_name().to_lowercase().contains(filter)
+                    && !req.url.to_lowercase().contains(filter)
                 {
                     continue;
                 }
@@ -1048,7 +1051,7 @@ fn render_folder_node(
                 }
             }
             for child in &folder.children {
-                if !child_filter.is_empty() && !folder_has_match(child, child_filter) {
+                if !folder_matches && !filter.is_empty() && !folder_has_match(child, filter) {
                     continue;
                 }
                 render_folder_node(
@@ -1056,7 +1059,8 @@ fn render_folder_node(
                     ws_id,
                     child,
                     expanded_folders,
-                    child_filter,
+                    filter,
+                    folder_matches,
                     accent,
                     active_dnd_source,
                     req_action_out,

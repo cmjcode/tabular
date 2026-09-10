@@ -63,6 +63,7 @@ impl NodeType {
             self,
             NodeType::HistoryDateFolder
                 | NodeType::DatabasesFolder
+                | NodeType::Database
                 | NodeType::TablesFolder
                 | NodeType::ViewsFolder
                 | NodeType::StoredProceduresFolder
