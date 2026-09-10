@@ -61,4 +61,33 @@ Pengujian unit di `src/editor.rs` dan `src/models/structs.rs` mencakup skenario:
 10. `test_move_tab_crossing_pinned_boundary_both_ways`: Pengujian transisi dua arah saat tab unpinned diseret ke area pinned (otomatis menjadi pinned) dan sebaliknya.
 11. `test_tab_bounds_safety`: Pengujian ketahanan dan ketiadaan panic saat pemindahan atau penutupan tab dipanggil dengan indeks out-of-bounds.
 
+Hasil eksekusi test suite pustaka (`cargo test --lib`):
+```
+test result: ok. 201 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.22s
+```
 
+---
+
+## 4. Panduan Penggunaan Fitur
+
+1. **Menggeser dan Mengelompokkan Tab (Drag & Drop)**:
+   - Klik dan tahan tombol kiri mouse (primary button) pada judul tab yang ingin digeser.
+   - Seret secara horizontal ke posisi yang diinginkan. Garis vertikal indikator penyisipan dan ghost badge akan muncul mengikuti kursor.
+   - Lepaskan tombol mouse pada slot target untuk menempatkan tab.
+   - Untuk membatalkan pergeseran tab, tekan tombol `Escape` atau geser kursor keluar dari batas atas/bawah area tab bar sebelum melepaskan mouse.
+
+2. **Menyematkan Tab (Pin Tab - 📌)**:
+   - **Tombol Cepat Hover**: Arahkan kursor ke tab biasa, klik ikon pin yang muncul di sebelah kanan judul tab.
+   - **Menu Konteks**: Klik kanan pada tab mana saja lalu pilih **📌 Pin Tab**.
+   - Tab yang disematkan akan berpindah secara otomatis ke kelompok kiri tab bar dan memiliki pin badge berwarna aksen.
+   - Tab yang disematkan tidak memiliki tombol tutup "×", mencegah penutupan yang tidak disengaja.
+
+3. **Melepas Sematan Tab (Unpin Tab)**:
+   - Klik langsung ikon 📌 pada tab yang sedang disematkan, atau klik kanan tab lalu pilih **📌 Unpin Tab**. Tab akan kembali menjadi tab biasa.
+
+4. **Operasi Tab Tambahan Melalui Menu Konteks**:
+   - Klik kanan tab untuk memilih:
+     - **⬅ Move Tab Left** / **➡ Move Tab Right** untuk pergeseran langkah demi langkah.
+     - **Close Other Tabs**: Menutup semua tab lain kecuali tab yang dipilih dan seluruh tab yang sedang disematkan.
+     - **Close Tabs to the Right**: Menutup semua tab unpinned di sebelah kanan tab yang dipilih.
+     - **Middle-Click**: Klik tengah pada tab unpinned untuk menutupnya dengan cepat.
