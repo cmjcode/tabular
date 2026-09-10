@@ -29,7 +29,7 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **Semantic Find & Replace**: Editor search with Regex, Match Case, Whole Word, and In-Selection scope support
 - **End-to-End Encrypted Cloud Sync (Zero-Knowledge Vault)**: Argon2id KDF, AES-256-GCM encrypted connections and HTTP secrets synced securely across devices and teams
 - **Integrated HTTP Client**: REST API tester supporting JSON, form-data, custom auth, headers, and code export
-- **Redis Visual Key Browser**: Key explorer with cluster detection, type filtering, full-text search, and TTL/size metrics
+- **Smart Sidebar Tree Search**: Case-insensitive instant filtering across Connections, Queries, History, and HTTP Collections. When searching for a folder name, the folder and all of its contents (connections, queries, history entries, subfolders) remain fully displayed and automatically expanded.
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 - **Editor Tab Drag & Drop Reordering & Pin Tab**: Group and reorder tabs via intuitive horizontal drag-and-drop, pin important queries/tables with 📌, prevent accidental closures, and manage tabs with full context menus
 
@@ -49,6 +49,11 @@ Organize and group editor tabs seamlessly to enhance workflow when dealing with 
   - **Close Other Tabs** (safely preserves pinned tabs)
   - **Close Tabs to the Right** (safely preserves pinned tabs)
 - **Middle-Click to Close**: Middle-clicking any unpinned tab quickly closes it.
+
+### Smart Sidebar Tree Search & Folder Content Preservation
+Instant in-memory filtering for all sidebar navigation panels (Connections, Saved Queries, History, and HTTP Collections).
+- **Folder Search Preservation**: When typing a search query matching a folder name (such as custom connection folders, query categories, date folders, or HTTP collection folders), the matching folder is displayed and automatically expanded with all of its child contents intact.
+- **Hierarchical Context**: When searching for specific tables, queries, or history items, the sidebar displays matching items while maintaining their parent directory structure for clear visual context.
 
 ### Visual Query Profiler (New in v0.13)
 Analyze and optimize slow queries with interactive visual graphs instead of deciphering raw JSON outputs.
@@ -86,6 +91,8 @@ Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
 - Zero-Knowledge Vault with client-side **Argon2id** and **AES-256-GCM** encryption.
 - Multi-user team sharing with **X25519** sealed boxes.
 - Server (`tabular-server`) stores only ciphertext it cannot read.
+- **Instant Account Profile Synchronization**: Upon completing OAuth login (Google, GitHub) or manual token authentication, account details (display name, username, phone number, and avatar image) are immediately propagated to the active Account & Profile dialog without requiring reopening the modal.
+
 
 ### AI Assistant (Cmd+Shift+A)
 Context‑aware AI assistant integrated directly into the query editor.
@@ -245,6 +252,19 @@ cargo run
 | Lint (clippy) | `cargo clippy -- -D warnings`    |
 | Format        | `cargo fmt`                      |
 | Release build | `cargo build --release`          |
+| API Integration Test | `bash test_api.sh`        |
+
+### API & Backend Integration Testing
+To test the Tabular synchronization and authentication HTTP API endpoints (server health check, OAuth ticket polling, token refresh, user profile update, and user search):
+
+```bash
+# Execute against the default production endpoint (https://api.tabular.id)
+bash test_api.sh
+
+# Or execute against a local or staging server
+API_URL=http://localhost:8080 ./test_api.sh
+```
+
 
 ## 8. Core Dependencies (Crates)
 | Purpose        | Crate |
@@ -307,6 +327,11 @@ This project is dual‑licensed:
 2) Commercial License — contact PT. Vneu Teknologi Indonesia (see `LICENSE`)
 
 ## 13. Changelog
+
+### v0.13.1
+- **Account & Profile Instant Sync**: Resolved issue where completed Account Information (display name, username, phone number, and avatar) did not update immediately upon completing OAuth login (Google, GitHub) or manual token authentication in the open Account & Profile modal. All profile form buffers now sync instantly via `sync_profile_inputs_from_account`.
+- **API Test Suite**: Added `test_api.sh` cURL test suite to automate verification of backend sync and auth endpoints.
+
 
 ### v0.13.0 (Master Powerhouse Release)
 - **Visual Query Profiler**: Interactive tree graph for `EXPLAIN ANALYZE` (Postgres, MySQL, MSSQL) with Sugiyama layout, cost percentage visualization, and automated bottleneck warnings.

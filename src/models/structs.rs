@@ -403,6 +403,16 @@ impl TreeNode {
             query: None,
         }
     }
+
+    /// Recursively auto-expand all nested folders in the tree node hierarchy.
+    pub fn expand_all_folders(&mut self) {
+        if self.node_type.is_folder() {
+            self.is_expanded = true;
+        }
+        for child in &mut self.children {
+            child.expand_all_folders();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
