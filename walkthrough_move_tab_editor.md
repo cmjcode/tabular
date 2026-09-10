@@ -42,6 +42,7 @@ Dokumen ini mendokumentasikan implementasi dan verifikasi fitur **Drag & Drop Ta
 | **Pemicuan Drag Tombol Non-Primer** | `src/window_egui/app_impl.rs:2150` | Mengganti `drag_started()` menjadi `drag_started_by(egui::PointerButton::Primary)`. |
 | **Starvation / Stuck Drag State** | `src/window_egui/app_impl.rs:2476` | Menambahkan pembersihan state drag jika primary pointer tidak lagi ditekan (`!primary_down`) atau tab count berubah. |
 | **Pembersihan Compiler Warning** | `src/auto_updater.rs:3` | Menghapus import `debug` yang tidak digunakan guna menjamin *zero compiler warnings*. |
+| **Integritas Dokumen Rencana & Arsitektur** | `implementation_plan_move_tab_editor.md` | Menyusun kembali dokumen spesifikasi rencana teknis perancangan tab drag & drop dan tab pinning secara menyeluruh dan presisi. |
 | **Integritas Dokumentasi & Mode Eksekusi Berkas** | Root Workspace | Memulihkan berkas `walkthrough.md` dan `implementation_plan.md` root repositori dari `origin/main`, menjaga pemisahan dokumen per fitur (`walkthrough_move_tab_editor.md`), serta mengembalikan izin berkas skrip shell ke `100644`. |
 
 ---
