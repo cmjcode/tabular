@@ -1,6 +1,6 @@
 use crate::self_update::UpdateInfo;
 use futures_util::StreamExt;
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::fs;
 #[allow(unused_imports)]
 use std::io::Cursor;
