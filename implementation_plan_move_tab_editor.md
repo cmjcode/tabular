@@ -1,190 +1,97 @@
-# Rencana Teknis Implementasi: Export & Import Seluruh Data (ZIP)
+# Rencana Teknis Implementasi: Drag & Drop Tab Editor dan Pin Tab
 
-Dokumen ini menjelaskan rencana teknis menyeluruh untuk menambahkan fitur **Export dan Import seluruh data Tabular** (Database Connections, Saved Queries, HTTP API Collections, dan Query History) dalam format file **ZIP**, serta mekanisme **Restore** data ke dalam sistem.
+Dokumen ini menjelaskan rencana teknis menyeluruh untuk menambahkan fitur **Drag & Drop Tab Editor** (reordering & visual feedback) dan **Pin Tab** (penyematan tab editor di sisi kiri dengan proteksi penutupan) pada aplikasi Tabular.
 
 ---
 
 ## 1. Analisis Kebutuhan (Requirements Analysis)
 
 ### 1.1 Latar Belakang & Tujuan
-Saat ini pengguna Tabular dapat melakukan backup pada level database engine tertentu (seperti `pg_dump` atau `mysqldump`), serta import koleksi HTTP individual (seperti Postman atau Yaak). Namun, belum ada mekanisme terpadu untuk:
-1. Mengekspor **seluruh konfigurasi dan workspace pengguna** sekaligus ke dalam 1 file arsip portable (ZIP).
-2. Memindahkan atau memulihkan seluruh data aplikasi (migrasi perangkat atau pemulihan bencana).
-3. Mengimpor kembali file ZIP tersebut sehingga seluruh data (**Connection DB**, **Query**, **HTTP API**, dan **History**) ter-restore dengan aman, konsisten, dan langsung aktif di antarmuka aplikasi.
+Saat bekerja dengan banyak tab query SQL, tabel basis data, atau API HTTP, tab editor sering kali menumpuk tanpa pengelompokan yang jelas. Pengguna membutuhkan:
+1. Kemampuan untuk **menyeret dan menggeser tab** (drag-and-drop horizontal) secara interaktif untuk mengatur urutan dan mengelompokkan tab yang saling berhubungan.
+2. Fitur **Pin Tab (📌)** untuk menandai tab-tab penting (koneksi aktif, query pemantauan, atau referensi) agar selalu berada di posisi paling kiri dan tidak tertutup secara tidak sengaja.
+3. Menu konteks navigasi tab yang lengkap (Pin/Unpin, Move Left/Right, Close, Close Others, Close to the Right).
 
-### 1.2 Cakupan Data (4 Domain Utama)
-1. **Connection DB (Koneksi Database)**:
-   - Menyimpan seluruh profil koneksi (`ConnectionConfig`): nama koneksi, host, port, username, password, database default, tipe database (`MySQL`, `PostgreSQL`, `SQLite`, `Redis`, `MsSQL`, `MongoDB`, dll.), SSL settings, SSH tunneling & credentials, custom views, dan replication settings.
-   - Menyimpan struktur pengelompokan folder koneksi (`connection_folders`).
-   - Penanganan kredensial: saat diekspor, kredensial diambil dari state memori/secret store; saat diimpor, kredensial disimpan ulang ke SQLite dan di-externalize ke secrets store (`externalize_connection_secrets`).
+### 1.2 Batasan Arsitektural & Invarian
+1. **Invarian Urutan Tab (Pinned vs Unpinned)**:
+   - Seluruh tab yang memiliki status `is_pinned == true` harus selalu berada di sebelah kiri tab-tab yang `is_pinned == false`.
+   - Garis pembatas visual (vertical divider) memisahkan kelompok tab pinned dari kelompok tab unpinned.
+   - Jika pengguna menyeret tab unpinned ke dalam zona pinned, tab tersebut otomatis menjadi pinned.
+   - Jika pengguna menyeret tab pinned ke dalam zona unpinned, tab tersebut otomatis menjadi unpinned.
+2. **Integritas Sesi Transaksi & Sumber Daya**:
+   - Tab yang ditutup melalui *Close Other Tabs* atau *Close Tabs to the Right* harus memanggil `session.close()` jika memiliki manual-commit transaction handle (`SessionHandle`), mencegah kebocoran sesi koneksi.
+3. **Pembaruan Sinkron Indeks Tab Aktif (`active_tab_index`)**:
+   - Pemindahan tab ke kanan maupun ke kiri harus memperbarui `active_tab_index` secara presisi tanpa out-of-bounds index atau desinkronisasi konten editor.
+4. **Resilience & Liveness Drag State**:
+   - Drag state (`dragged_tab_index`) harus aman dari kondisi stuck: pembatalan via tombol `Escape`, pelepasan pointer primer (`button_released(PointerButton::Primary)`), liveness check saat pointer tidak lagi ditekan (`!primary_down`), serta toleransi batas vertikal (`is_within_tab_bar_y`).
 
-2. **Saved Queries (Koleksi Query SQL)**:
-   - Seluruh file query SQL (`.sql`) beserta subfoldernya yang tersimpan di direktori aplikasi `{app_data}/query/`.
-   - Mempertahankan header metadata Tabular seperti `-- tabular:connection_id=...`, `-- tabular:database=...`, dan hierarki foldernya.
+---
 
-3. **HTTP API (Koleksi & Workspace HTTP)**:
-   - Seluruh workspace HTTP (`HttpWorkspace`), subfolder (`HttpFolder`), saved requests (`SavedRequest`), dan variabel environment (`YaakEnvironment`) dari direktori `{app_data}/http_collections/`.
+## 2. Desain Solusi Teknis & Struktur Data
 
-4. **History (Riwayat Eksekusi Query)**:
-   - Seluruh log riwayat query dari tabel `query_history` di SQLite (`id`, `query_text`, `connection_id`, `connection_name`, `executed_at`).
-   - Penanganan relasi Foreign Key: penyesuaian `connection_id` dengan ID baru jika koneksi diimpor ke basis data target yang memiliki ID berbeda (berdasarkan pencocokan `connection_name`).
-
-### 1.3 Format Struktur Arsip ZIP
-Format arsip ZIP didesain modular, aman, dan mudah dibaca secara terstruktur:
-
-```
-tabular_backup_YYYYMMDD_HHMMSS.zip
-├── manifest.json
-├── connections/
-│   └── connections.json
-├── queries/
-│   ├── analytics/
-│   │   └── monthly_report.sql
-│   └── schema_init.sql
-├── http_collections/
-│   ├── ws_1710000000_1.json
-│   └── ws_1710000000_2.json
-└── history/
-    └── history.json
+### 2.1 Model Data Tab (`src/models/structs.rs`)
+Menambahkan atribut `is_pinned` pada struct `QueryTab`:
+```rust
+pub struct QueryTab {
+    pub id: usize,
+    pub title: String,
+    pub content: String,
+    pub file_path: Option<String>,
+    pub is_saved: bool,
+    pub is_modified: bool,
+    pub is_pinned: bool,
+    ...
+}
 ```
 
-- **`manifest.json`**:
-  ```json
-  {
-    "version": "1.0",
-    "app": "Tabular",
-    "exported_at": "2026-09-09T14:30:00Z",
-    "counts": {
-      "connections": 5,
-      "connection_folders": 2,
-      "queries": 14,
-      "http_workspaces": 3,
-      "history_items": 100
-    },
-    "includes": {
-      "connections": true,
-      "queries": true,
-      "http_api": true,
-      "history": true
-    }
-  }
-  ```
+### 2.2 Field State pada `Tabular` (`src/window_egui/mod.rs` & `init.rs`)
+Menambahkan field state penanda tab yang sedang diseret:
+```rust
+pub struct Tabular {
+    ...
+    pub dragged_tab_index: Option<usize>,
+    ...
+}
+```
+
+### 2.3 Operasi Tab Editor (`src/editor.rs`)
+Implementasi fungsi-fungsi manipulasi tab:
+- `move_tab(tabular, from, to)`: Memindahkan posisi tab secara langsung dengan sinkronisasi `is_pinned` saat melewati batas dan penyesuaian `active_tab_index`.
+- `reorder_tab(tabular, from, insert_at)`: Menghitung target indeks dari slot drop penyisipan kursor.
+- `pin_tab(tabular, tab_index)`: Menyematkan tab dan memindahkannya ke akhir kelompok pinned.
+- `unpin_tab(tabular, tab_index)`: Melepas sematan tab dan memindahkannya ke awal kelompok unpinned.
+- `toggle_pin_tab(tabular, tab_index)`: Toggle antara pin dan unpin.
+- `close_other_tabs(tabular, keep_index)`: Menutup seluruh tab lain kecuali tab yang dipilih dan semua tab pinned.
+- `close_tabs_to_the_right(tabular, tab_index)`: Menutup tab unpinned di sebelah kanan indeks target.
+
+### 2.4 Antarmuka Pengguna & Interaksi (`src/window_egui/app_impl.rs`)
+1. **Drag Detection**:
+   - Menggunakan `allocate_exact_size` dengan `Sense::click_and_drag()`.
+   - Mengaktifkan drag hanya saat pointer primer ditekan (`drag_started_by(PointerButton::Primary)`).
+2. **Visual Feedback**:
+   - Kursor berubah menjadi `egui::CursorIcon::Grabbing`.
+   - Floating ghost badge melayang mengikuti posisi pointer dengan ikon (📌 / 📑) dan judul tab.
+   - Garis indikator penyisipan vertikal berwarna aksen tema dengan aksen cap atas & bawah di antara slot drop.
+3. **Context Menu**:
+   - Menu klik kanan pada setiap tab: Pin/Unpin Tab, Move Left/Right, Close Tab, Close Other Tabs, Close Tabs to the Right.
+4. **Proteksi & Tombol Aksi**:
+   - Tombol close ("×") digantikan oleh ikon pin ("📌") pada tab pinned.
+   - Quick-pin button muncul saat hover pada tab unpinned.
+   - Middle-click menutup tab biasa secara cepat tanpa menutup tab pinned.
 
 ---
 
-## 2. Desain Arsitektur & Rencana Perubahan Berkas
+## 3. Rencana Pengujian & Validasi
 
-### 2.1 Modul Baru
-
-#### A. `src/export_import_all.rs` (Core Logic Module)
-Modul independen untuk operasi kompresi, dekompresi, serialisasi, validasi, dan persistensi database:
-- **Tipe Data & Model**:
-  - `ExportAllManifest`: Metadata arsip.
-  - `ExportAllOptions`: Opsi export (pilihan kategori yang disertakan).
-  - `ImportAllOptions`: Opsi import (pilihan kategori yang ingin di-restore, serta strategi konflik: `MergeKeepExisting`, `MergeOverwrite`, atau `CleanRestore`).
-  - `ExportSummary` & `ImportSummary`: Laporan jumlah data yang berhasil diproses.
-  - `ExportImportError`: Error handling komprehensif menggunakan `thiserror`.
-- **Fungsi Inti**:
-  - `pub fn export_all_data(tabular: &Tabular, target_path: &Path, options: &ExportAllOptions) -> Result<ExportSummary, ExportImportError>`
-    - Mengumpulkan data dari in-memory state dan file system.
-    - Menulis ke ZIP menggunakan `zip::ZipWriter` dengan kompresi Deflate.
-  - `pub fn inspect_archive(archive_path: &Path) -> Result<ExportAllManifest, ExportImportError>`
-    - Membaca `manifest.json` dan menghitung preview entri sebelum proses restore dijalankan.
-  - `pub fn import_all_data(tabular: &mut Tabular, archive_path: &Path, options: &ImportAllOptions) -> Result<ImportSummary, ExportImportError>`
-    - Membuka ZIP dengan `zip::ZipArchive`.
-    - Memvalidasi path entri (mencegah Zip Slip vulnerability).
-    - Memulihkan koneksi database & folder koneksi ke SQLite serta mendaftarkan secret credentials.
-    - Mengekstrak file query ke `{app_data}/query/`.
-    - Mengekstrak file workspace HTTP ke `{app_data}/http_collections/`.
-    - Menyimpan history ke tabel `query_history` dengan mapping ID koneksi.
-    - Merefresh in-memory state Tabular (`load_connection_folders`, `load_queries_from_directory`, `load_workspaces`, `load_query_history`, dan trigger `needs_refresh`).
-
-#### B. `src/dialog_export_import_all.rs` (UI Dialog Module)
-Komponen dialog berbasis `egui`:
-- **`ExportAllDialogState`**:
-  - Pilihan kategori data (checkboxes: Connections, Queries, HTTP API, History).
-  - Target path file ZIP default (misal: `~/Downloads/tabular_backup_YYYYMMDD_HHMMSS.zip`).
-  - Status eksekusi (Idle, InProgress, Completed, Error).
-  - Ringkasan hasil ekspor.
-- **`ImportAllDialogState`**:
-  - File picker untuk memilih file `.zip`.
-  - Preview manifest hasil inspeksi (jumlah item yang ditemukan di dalam file ZIP).
-  - Checkbox pilihan data yang ingin di-restore.
-  - Opsi penanganan duplikasi (Merge / Overwrite).
-  - Tombol aksi "Restore Now" dan progress bar / status banner.
-
----
-
-### 2.2 Berkas yang Dimodifikasi
-
-1. **`src/main.rs` / `src/lib.rs`**:
-   - Daftarkan modul baru:
-     ```rust
-     pub mod export_import_all;
-     pub mod dialog_export_import_all;
-     ```
-
-2. **`src/window_egui/mod.rs`**:
-   - Tambahkan state flag & dialog state di struct `Tabular`:
-     ```rust
-     pub show_export_all_dialog: bool,
-     pub show_import_all_dialog: bool,
-     pub export_all_state: Option<crate::dialog_export_import_all::ExportAllDialogState>,
-     pub import_all_state: Option<crate::dialog_export_import_all::ImportAllDialogState>,
-     ```
-
-3. **`src/window_egui/init.rs`**:
-   - Inisialisasi field baru tersebut dengan `false` dan `None`.
-
-4. **`src/window_egui/app_impl.rs`**:
-   - **Gear Settings Context Menu** (baris ~2535):
-     - Tambahkan item menu:
-       - `📦 Export All Data (.zip)...` -> membuka `show_export_all_dialog = true`
-       - `📥 Import & Restore All Data (.zip)...` -> membuka `show_import_all_dialog = true`
-   - **Settings Window - Data Directory Tab (`PrefTab::DataDirectory`)** (baris ~437):
-     - Tambahkan kartu UI "Backup & Restore Application Data" dengan tombol "Export All to ZIP" dan "Import from ZIP".
-   - **Render Loop** (baris ~4995):
-     - Render `render_export_all_dialog(self, ctx)` saat `self.show_export_all_dialog == true`.
-     - Render `render_import_all_dialog(self, ctx)` saat `self.show_import_all_dialog == true`.
-
-5. **`src/quick_open.rs`**:
-   - Daftarkan perintah ke Command Palette:
-     - `Export All Data (ZIP)`
-     - `Import All Data (ZIP)`
-
----
-
-## 3. Analisis Potensi Risiko & Strategi Mitigasi
-
-| Risiko | Dampak | Strategi Mitigasi |
-| :--- | :--- | :--- |
-| **Zip Slip / Path Traversal Attack** | File jahat di dalam ZIP dapat menimpa berkas sistem sembarang (`../../etc/shadow`). | Wajib menggunakan `file.enclosed_name()` dari crate `zip` dan membatasi ekstraksi hanya di dalam subdirektori tujuan yang sah (`query/` dan `http_collections/`). |
-| **Foreign Key Constraint pada `query_history`** | `query_history` memiliki relasi `connection_id -> connections(id) ON DELETE CASCADE`. Jika `connection_id` lama tidak ditemukan, query insert history gagal. | Buat tabel mapping ID lama ke ID baru berdasarkan kesamaan nama koneksi (`connection_name`). Jika koneksi belum ada, buat koneksi terlebih dahulu atau kaitkan ke koneksi default yang valid. |
-| **Penanganan Kredensial & Secrets** | Password atau SSH key tersimpan sebagai sentinel di SQLite dan data asli di keychain/secret store. | Saat ekspor, ambil data dari `tabular.connections` (yang sudah ter-dekripsi di RAM). Saat import, panggil `externalize_connection_secrets` agar kredensial tersimpan aman di database dan secret backend sistem target. |
-| **UI Freeze saat Arsip Besar** | Aplikasi tidak responsif selama kompresi/ekstraksi I/O. | Jalankan proses kompresi dan dekompresi ZIP di background thread / tokio runtime async dengan `mpsc` channel untuk mengirim progress dan hasil ke UI thread. |
-| **In-Memory State Stale setelah Restore** | Data sudah masuk ke SQLite/disk tetapi tampilan sidebar tidak terupdate. | Panggil fungsi reload: `sidebar_database::load_connection_folders()`, `sidebar_query::load_queries_from_directory()`, `http_collection::load_workspaces()`, dan `sidebar_history::load_query_history()`, serta set `tabular.needs_refresh = true`. |
-
----
-
-## 4. Tahapan Verifikasi & Pengujian
-
-1. **Uji Kompilasi (`cargo check`)**:
-   - Memastikan tidak ada compile error, type mismatch, atau broken references.
-2. **Automated Unit Tests**:
-   - Buat unit test komprehensif di `src/export_import_all.rs`:
-     - Test pembuatan mock connection, query file, HTTP workspace, dan history item.
-     - Test ekspor ke buffer/file ZIP sementara dan verifikasi integritas ZIP serta isi `manifest.json`.
-     - Test pembacaan dan validasi isi arsip (`inspect_archive`).
-     - Test impor ke direktori sementara dan verifikasi bahwa data koneksi, queries, HTTP collection, dan history berhasil dipulihkan secara identik.
-     - Test proteksi Zip Slip (path traversal rejected).
-     - Test pemulihan relasi `query_history` saat connection ID berubah.
-3. **Uji Integrasi UI**:
-   - Verifikasi pembukaan dialog via Gear Menu dan Tab Settings Data Directory.
-   - Verifikasi pemilihan file picker (`rfd::FileDialog`).
-   - Verifikasi feedback visual, progress bar, dan notifikasi keberhasilan pemulihan data.
-
----
-
-## 5. Kesimpulan & Batasan Tahap Ini (Stage 1 Scope)
-
-Sesuai instruksi tugas, pengerjaan pada **Tahap 1 (Planning Phase)** dibatasi hanya pada penyusunan dokumen perencanaan teknis ini di file `implementation_plan.md`. Tidak ada kode aplikasi yang diubah pada tahap ini sebelum rencana ini ditinjau dan disetujui oleh pengguna.
+### 3.1 Unit Test Skenario
+1. `test_query_tab_pinning`: Pengujian inisialisasi default `is_pinned`.
+2. `test_move_tab_and_active_index`: Pengujian pergeseran `active_tab_index` saat tab aktif dipindah atau tab lain digeser.
+3. `test_reorder_tab_with_insert_slots`: Pengujian pemetaan slot penyisipan kursor ke indeks target.
+4. `test_pin_and_unpin_tab`: Pengujian transisi status pin dan perpindahan grup tab.
+5. `test_pin_tab_shifts_active_index_correctly`: Pengujian pergeseran indeks tab aktif saat tab di kanannya di-pin.
+6. `test_unpin_tab_shifts_active_index_correctly`: Pengujian pergeseran indeks tab aktif saat tab di kirinya di-unpin.
+7. `test_close_other_tabs_protects_pinned`: Pengujian retensi tab pinned saat operasi close-others dipanggil.
+8. `test_close_tabs_to_the_right`: Pengujian retensi tab pinned saat operasi close-tabs-to-right dipanggil.
+9. `test_close_tabs_to_the_right_active_tab_switch`: Pengujian pengalihan tab aktif ke target sebelum penutupan tab kanan.
+10. `test_move_tab_crossing_pinned_boundary_both_ways`: Pengujian transisi otomatis status pin dua arah saat melintasi batas pemisah.
+11. `test_tab_bounds_safety`: Pengujian ketahanan dan ketiadaan panic saat input indeks melebihi batas (out-of-bounds).
