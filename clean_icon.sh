@@ -32,15 +32,20 @@ if ! command -v magick &>/dev/null; then
     exit 1
 fi
 
-# 1. Regenerate Xcode Asset Catalog and AppIcon.icns from clean transparent assets
+# 1. Strip extended attributes (quarantine, etc.) from master assets
+echo "🧹 Sanitizing master assets extended attributes..."
+xattr -cr "$CLIENT_DIR/assets" 2>/dev/null || true
+find "$CLIENT_DIR/assets" -name ".DS_Store" -delete 2>/dev/null || true
+
+# 2. Regenerate Xcode Asset Catalog and AppIcon.icns from clean transparent assets
 echo "🔄 Regenerating Xcode Assets & AppIcon..."
 (cd "$CLIENT_DIR" && make xcode-assets)
 
-# 2. Keep assets/icon.png and assets/logo-512.png in sync with alpha
+# 3. Keep assets/icon.png and assets/logo-512.png in sync with alpha
 cp "$CLIENT_DIR/assets/logo.png" "$CLIENT_DIR/assets/icon.png"
 sips -z 512 512 "$CLIENT_DIR/assets/logo.png" --out "$CLIENT_DIR/assets/logo-512.png" &>/dev/null
 
-# 3. For iOS App Store compliance (iOS App Store rejects alpha in 1024x1024 marketing icon),
+# 4. For iOS App Store compliance (iOS App Store rejects alpha in 1024x1024 marketing icon),
 # only strip alpha from the iOS-specific icon-1024.png if explicitly requested,
 # while preserving alpha for all macOS icons and master assets.
 if [ "$1" = "--ios-store" ] || [ "$2" = "--ios-store" ]; then
@@ -51,9 +56,14 @@ if [ "$1" = "--ios-store" ] || [ "$2" = "--ios-store" ]; then
     fi
 fi
 
-# 5. Verify AppIcon properties
+# 5. Sanitize all generated assets
+xattr -cr "$CLIENT_DIR/assets" 2>/dev/null || true
+xattr -cr "$CLIENT_DIR/apple/Assets.xcassets" 2>/dev/null || true
+find "$CLIENT_DIR/assets" "$CLIENT_DIR/apple" -name ".DS_Store" -delete 2>/dev/null || true
+
+# 6. Verify AppIcon properties
 echo "🔍 Verifying AppIcon properties:"
 sips -g all "$CLIENT_DIR/apple/Assets.xcassets/AppIcon.appiconset/icon-1024.png" | grep -E "hasAlpha|samplesPerPixel|pixelWidth|pixelHeight"
 
 echo ""
-echo "✅ [SUCCESS] App Icon cleaned and assets catalog generated successfully!"
+echo "✅ [SUCCESS] App Icon cleaned, extended attributes stripped, and assets catalog generated successfully!"
