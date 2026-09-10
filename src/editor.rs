@@ -358,14 +358,8 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 
         if tabular.active_tab_index == tab_index {
             tabular.active_tab_index = first_unpinned;
-        } else if tab_index < first_unpinned {
-            if tabular.active_tab_index > tab_index && tabular.active_tab_index <= first_unpinned {
-                tabular.active_tab_index -= 1;
-            }
-        } else {
-            if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index {
-                tabular.active_tab_index += 1;
-            }
+        } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index {
+            tabular.active_tab_index += 1;
         }
     }
 }
@@ -384,14 +378,8 @@ pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 
             if tabular.active_tab_index == tab_index {
                 tabular.active_tab_index = last_p;
-            } else if tab_index < last_p {
-                if tabular.active_tab_index > tab_index && tabular.active_tab_index <= last_p {
-                    tabular.active_tab_index -= 1;
-                }
-            } else {
-                if tabular.active_tab_index >= last_p && tabular.active_tab_index < tab_index {
-                    tabular.active_tab_index += 1;
-                }
+            } else if tabular.active_tab_index > tab_index && tabular.active_tab_index <= last_p {
+                tabular.active_tab_index -= 1;
             }
         }
     }
@@ -448,9 +436,6 @@ pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_in
                 session.close();
             }
             tabular.query_tabs.remove(i);
-            if tabular.active_tab_index >= i && tabular.active_tab_index > 0 {
-                tabular.active_tab_index -= 1;
-            }
         } else {
             i += 1;
         }
@@ -8196,6 +8181,82 @@ mod tests {
         assert_eq!(tabular.query_tabs.len(), 2);
         assert_eq!(tabular.query_tabs[0].title, "P1");
         assert_eq!(tabular.query_tabs[1].title, "P2");
+    }
+
+    #[test]
+    fn test_pin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        // Active tab is U1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Pin U3 (index 3). It should move to index 1 (end of pinned group).
+        // Since active tab was at index 1 (>= first_unpinned and < tab_index),
+        // active_tab_index should shift to 2 to remain pointing to U1.
+        pin_tab(&mut tabular, 3);
+        assert_eq!(tabular.query_tabs[0].title, "P0");
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "U1");
+        assert_eq!(tabular.query_tabs[3].title, "U2");
+        assert_eq!(tabular.active_tab_index, 2);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "U1");
+    }
+
+    #[test]
+    fn test_unpin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        pin_tab(&mut tabular, 2);
+
+        // Active tab is P1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Unpin P0 (index 0). It moves to index 2 (after all remaining pinned tabs P1, P2).
+        // Active tab was at index 1 (> tab_index and <= last_p),
+        // active_tab_index should shift from 1 to 0 to remain pointing to P1.
+        unpin_tab(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "P0");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.active_tab_index, 0);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "P1");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_active_tab_switch() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        // Active tab is T2 (index 2)
+        tabular.active_tab_index = 2;
+
+        // Close tabs to right of T0 (index 0)
+        // Since active tab (T2) is to the right and unpinned, it switches to T0 first,
+        // then removes T1 and T2.
+        close_tabs_to_the_right(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "T0");
+        assert_eq!(tabular.active_tab_index, 0);
     }
 }
 

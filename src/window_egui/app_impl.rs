@@ -2076,7 +2076,7 @@ impl Tabular {
                                         };
 
                                         let pointer_pos = ui.ctx().input(|inp| inp.pointer.hover_pos().or(inp.pointer.interact_pos()));
-                                        let mouse_released = ui.ctx().input(|inp| inp.pointer.any_released());
+                                        let mouse_released = ui.ctx().input(|inp| inp.pointer.button_released(egui::PointerButton::Primary));
 
                                         let mut tab_rects = Vec::with_capacity(tab_count);
 
@@ -2424,14 +2424,21 @@ impl Tabular {
                                                 }
 
                                                 // Determine candidate drop slot
-                                                for (idx, r) in tab_rects.iter().enumerate() {
-                                                    if pos.x < r.center().x {
-                                                        candidate_insert_at = Some(idx);
-                                                        break;
+                                                let is_within_tab_bar_y = tab_rects.first().map(|r| {
+                                                    let margin = 20.0;
+                                                    pos.y >= r.top() - margin && pos.y <= r.bottom() + margin
+                                                }).unwrap_or(false);
+
+                                                if is_within_tab_bar_y {
+                                                    for (idx, r) in tab_rects.iter().enumerate() {
+                                                        if pos.x < r.center().x {
+                                                            candidate_insert_at = Some(idx);
+                                                            break;
+                                                        }
                                                     }
-                                                }
-                                                if candidate_insert_at.is_none() && !tab_rects.is_empty() {
-                                                    candidate_insert_at = Some(tab_rects.len());
+                                                    if candidate_insert_at.is_none() && !tab_rects.is_empty() {
+                                                        candidate_insert_at = Some(tab_rects.len());
+                                                    }
                                                 }
 
                                                 // Render insertion indicator line
@@ -2472,9 +2479,9 @@ impl Tabular {
                                                 if let (Some(from_idx), Some(target_idx)) = (from, candidate_insert_at) {
                                                     if target_idx != from_idx && target_idx != from_idx + 1 {
                                                         editor::reorder_tab(self, from_idx, target_idx);
-                                                        ui.ctx().request_repaint();
                                                     }
                                                 }
+                                                ui.ctx().request_repaint();
                                             }
                                         }
 
