@@ -1,190 +1,82 @@
-# Rencana Teknis Implementasi: Export & Import Seluruh Data (ZIP)
+# Implementation Plan: Perbaikan Sidebar Search & Preservasi Konten Folder
 
-Dokumen ini menjelaskan rencana teknis menyeluruh untuk menambahkan fitur **Export dan Import seluruh data Tabular** (Database Connections, Saved Queries, HTTP API Collections, dan Query History) dalam format file **ZIP**, serta mekanisme **Restore** data ke dalam sistem.
+Dokumen ini menjelaskan rencana teknis perbaikan dan penyempurnaan fitur **Sidebar Search** pada aplikasi Tabular. Perbaikan ini memastikan bahwa pencarian pada sidebar mempertahankan seluruh konten di dalam folder yang cocok (subfolder bersarang, tabel, view, query files, dan request HTTP) serta meng-expand seluruh folder turunan secara rekursif.
 
 ---
 
-## 1. Analisis Kebutuhan (Requirements Analysis)
+## 1. Analisis Masalah (Problem Statement)
 
-### 1.1 Latar Belakang & Tujuan
-Saat ini pengguna Tabular dapat melakukan backup pada level database engine tertentu (seperti `pg_dump` atau `mysqldump`), serta import koleksi HTTP individual (seperti Postman atau Yaak). Namun, belum ada mekanisme terpadu untuk:
-1. Mengekspor **seluruh konfigurasi dan workspace pengguna** sekaligus ke dalam 1 file arsip portable (ZIP).
-2. Memindahkan atau memulihkan seluruh data aplikasi (migrasi perangkat atau pemulihan bencana).
-3. Mengimpor kembali file ZIP tersebut sehingga seluruh data (**Connection DB**, **Query**, **HTTP API**, dan **History**) ter-restore dengan aman, konsisten, dan langsung aktif di antarmuka aplikasi.
+### 1.1 Masalah pada Fitur Pencarian Sidebar Sebelumnya
+1. **HTTP Collections**: Subfolder pada koleksi HTTP otomatis tertutup (*collapsed*) dan item request di dalamnya tersembunyi ketika parent folder atau workspace cocok dengan kueri pencarian.
+2. **Database Nodes**: Tipe `NodeType::Database` belum terdaftar dalam fungsi `NodeType::is_folder()`. Akibatnya, saat pengguna mencari nama database, seluruh tabel dan view di dalamnya terfilter keluar (hilang dari hasil pencarian).
+3. **Subfolder Bersarang (Nested Subfolders)**: Subfolder bertingkat tidak mengalami auto-expand rekursif pada Saved Queries (`filtered_queries_tree`) maupun Connection Tree (`filter_node_with_like_search`). Hanya folder tingkat pertama yang terbuka, sementara subfolder di dalamnya tetap tertutup.
+4. **Inkonsistensi Whitespace & Ketiadaan `.trim()`**: Ketiadaan `.trim()` pada pemrosesan pencarian riwayat query (`sidebar_history.rs`) menyebabkan pencarian dengan spasi awal/akhir tidak menemukan hasil dan menyebabkan desinkronisasi status pencarian dengan UI toggle di `app_impl.rs`.
 
-### 1.2 Cakupan Data (4 Domain Utama)
-1. **Connection DB (Koneksi Database)**:
-   - Menyimpan seluruh profil koneksi (`ConnectionConfig`): nama koneksi, host, port, username, password, database default, tipe database (`MySQL`, `PostgreSQL`, `SQLite`, `Redis`, `MsSQL`, `MongoDB`, dll.), SSL settings, SSH tunneling & credentials, custom views, dan replication settings.
-   - Menyimpan struktur pengelompokan folder koneksi (`connection_folders`).
-   - Penanganan kredensial: saat diekspor, kredensial diambil dari state memori/secret store; saat diimpor, kredensial disimpan ulang ke SQLite dan di-externalize ke secrets store (`externalize_connection_secrets`).
+---
 
-2. **Saved Queries (Koleksi Query SQL)**:
-   - Seluruh file query SQL (`.sql`) beserta subfoldernya yang tersimpan di direktori aplikasi `{app_data}/query/`.
-   - Mempertahankan header metadata Tabular seperti `-- tabular:connection_id=...`, `-- tabular:database=...`, dan hierarki foldernya.
+## 2. Desain Solusi & Rencana Perubahan
 
-3. **HTTP API (Koleksi & Workspace HTTP)**:
-   - Seluruh workspace HTTP (`HttpWorkspace`), subfolder (`HttpFolder`), saved requests (`SavedRequest`), dan variabel environment (`YaakEnvironment`) dari direktori `{app_data}/http_collections/`.
+### 2.1 Preservasi Node Database sebagai Folder (`src/models/enums.rs`)
+- Menambahkan variant `NodeType::Database` ke dalam fungsi pembantu `NodeType::is_folder()`.
+- Hal ini memastikan bahwa node database diperlakukan sebagai kontainer/folder sehingga saat node database cocok dengan kueri pencarian, seluruh hirarki anak di bawahnya (`TablesFolder`, `ViewsFolder`, tabel, dan view) dipertahankan utuh.
 
-4. **History (Riwayat Eksekusi Query)**:
-   - Seluruh log riwayat query dari tabel `query_history` di SQLite (`id`, `query_text`, `connection_id`, `connection_name`, `executed_at`).
-   - Penanganan relasi Foreign Key: penyesuaian `connection_id` dengan ID baru jika koneksi diimpor ke basis data target yang memiliki ID berbeda (berdasarkan pencocokan `connection_name`).
-
-### 1.3 Format Struktur Arsip ZIP
-Format arsip ZIP didesain modular, aman, dan mudah dibaca secara terstruktur:
-
-```
-tabular_backup_YYYYMMDD_HHMMSS.zip
-├── manifest.json
-├── connections/
-│   └── connections.json
-├── queries/
-│   ├── analytics/
-│   │   └── monthly_report.sql
-│   └── schema_init.sql
-├── http_collections/
-│   ├── ws_1710000000_1.json
-│   └── ws_1710000000_2.json
-└── history/
-    └── history.json
-```
-
-- **`manifest.json`**:
-  ```json
-  {
-    "version": "1.0",
-    "app": "Tabular",
-    "exported_at": "2026-09-09T14:30:00Z",
-    "counts": {
-      "connections": 5,
-      "connection_folders": 2,
-      "queries": 14,
-      "http_workspaces": 3,
-      "history_items": 100
-    },
-    "includes": {
-      "connections": true,
-      "queries": true,
-      "http_api": true,
-      "history": true
-    }
+### 2.2 Ekspansi Rekursif Subfolder (`src/models/structs.rs`)
+- Menambahkan method rekursif `expand_all_folders(&mut self)` pada struct `TreeNode`:
+  ```rust
+  impl TreeNode {
+      pub fn expand_all_folders(&mut self) {
+          if self.node_type.is_folder() {
+              self.is_expanded = true;
+          }
+          for child in &mut self.children {
+              child.expand_all_folders();
+          }
+      }
   }
   ```
+- Memastikan bahwa saat sebuah folder lolos pencarian, seluruh subfolder turunan di dalamnya otomatis terbuka (`is_expanded = true`) sampai tingkat terdalam.
+
+### 2.3 Perbaikan Filter Connection & Database Tree (`src/window_egui/search.rs`)
+- Pada fungsi `filter_node_with_like_search`:
+  - Ketika sebuah folder (kategori, folder koneksi, atau database) cocok dengan teks pencarian, seluruh node anak di-clone dan dipertahankan.
+  - Memanggil `filtered_node.expand_all_folders()` untuk membuka folder utama beserta semua subfoldernya.
+- Pada `update_all_database_search_results`:
+  - Melakukan `.trim()` pada teks pencarian database saat memperbarui `history_search_text`.
+
+### 2.4 Perbaikan Saved Queries Tree (`src/sidebar_query.rs`)
+- Pada fungsi `filter_queries_tree`:
+  - Saat `node.node_type.is_folder()` cocok dengan teks pencarian, seluruh struktur folder anak dipertahankan dan dilakukan `filtered_node.expand_all_folders()`.
+
+### 2.5 Normalisasi Whitespace pada History Search (`src/sidebar_history.rs`)
+- Pada fungsi `filter_history_tree`:
+  - Melakukan `.trim()` pada `tabular.history_search_text.trim()`.
+  - Jika kueri kosong atau hanya whitespace, kosongkan `filtered_history_tree` secara deterministik dan konsisten dengan status UI.
+
+### 2.6 Propagasi Pencocokan Workspace & Parent pada HTTP Collection (`src/sidebar_collection.rs`)
+- Menambahkan parameter `parent_matched: bool` pada `render_folder_node`.
+- Mendeteksi kecocokan pada level workspace (`ws_matches`).
+- Jika parent folder atau workspace cocok dengan kata kunci:
+  - Propagasi status kecocokan ke seluruh subfolder turunan.
+  - Set `is_expanded = true` secara rekursif pada folder-folder turunan.
+  - Tampilkan seluruh requests dan child folders tanpa di-filter keluar.
 
 ---
 
-## 2. Desain Arsitektur & Rencana Perubahan Berkas
+## 3. Rencana Pengujian (Testing Plan)
 
-### 2.1 Modul Baru
+1. **Unit Tests - Search (`src/window_egui/search.rs`)**:
+   - `test_filter_node_with_like_search_folder_preserves_children`: Memastikan koneksi di bawah folder tetap muncul saat nama folder dicari.
+   - `test_filter_node_database_preserves_tables_and_expands_folders`: Memastikan tabel dan view di bawah database tetap muncul dan terbuka.
+   - `test_filter_node_nested_subfolders_recursive_expand`: Memastikan subfolder bertingkat (`Servers -> Regional -> Europe`) ter-expand secara rekursif.
 
-#### A. `src/export_import_all.rs` (Core Logic Module)
-Modul independen untuk operasi kompresi, dekompresi, serialisasi, validasi, dan persistensi database:
-- **Tipe Data & Model**:
-  - `ExportAllManifest`: Metadata arsip.
-  - `ExportAllOptions`: Opsi export (pilihan kategori yang disertakan).
-  - `ImportAllOptions`: Opsi import (pilihan kategori yang ingin di-restore, serta strategi konflik: `MergeKeepExisting`, `MergeOverwrite`, atau `CleanRestore`).
-  - `ExportSummary` & `ImportSummary`: Laporan jumlah data yang berhasil diproses.
-  - `ExportImportError`: Error handling komprehensif menggunakan `thiserror`.
-- **Fungsi Inti**:
-  - `pub fn export_all_data(tabular: &Tabular, target_path: &Path, options: &ExportAllOptions) -> Result<ExportSummary, ExportImportError>`
-    - Mengumpulkan data dari in-memory state dan file system.
-    - Menulis ke ZIP menggunakan `zip::ZipWriter` dengan kompresi Deflate.
-  - `pub fn inspect_archive(archive_path: &Path) -> Result<ExportAllManifest, ExportImportError>`
-    - Membaca `manifest.json` dan menghitung preview entri sebelum proses restore dijalankan.
-  - `pub fn import_all_data(tabular: &mut Tabular, archive_path: &Path, options: &ImportAllOptions) -> Result<ImportSummary, ExportImportError>`
-    - Membuka ZIP dengan `zip::ZipArchive`.
-    - Memvalidasi path entri (mencegah Zip Slip vulnerability).
-    - Memulihkan koneksi database & folder koneksi ke SQLite serta mendaftarkan secret credentials.
-    - Mengekstrak file query ke `{app_data}/query/`.
-    - Mengekstrak file workspace HTTP ke `{app_data}/http_collections/`.
-    - Menyimpan history ke tabel `query_history` dengan mapping ID koneksi.
-    - Merefresh in-memory state Tabular (`load_connection_folders`, `load_queries_from_directory`, `load_workspaces`, `load_query_history`, dan trigger `needs_refresh`).
+2. **Unit Tests - Saved Queries (`src/sidebar_query.rs`)**:
+   - `test_filter_queries_tree_nested_subfolders_recursive_expand`: Memastikan hierarki query file bertingkat terbuka utuh saat parent folder dicari.
 
-#### B. `src/dialog_export_import_all.rs` (UI Dialog Module)
-Komponen dialog berbasis `egui`:
-- **`ExportAllDialogState`**:
-  - Pilihan kategori data (checkboxes: Connections, Queries, HTTP API, History).
-  - Target path file ZIP default (misal: `~/Downloads/tabular_backup_YYYYMMDD_HHMMSS.zip`).
-  - Status eksekusi (Idle, InProgress, Completed, Error).
-  - Ringkasan hasil ekspor.
-- **`ImportAllDialogState`**:
-  - File picker untuk memilih file `.zip`.
-  - Preview manifest hasil inspeksi (jumlah item yang ditemukan di dalam file ZIP).
-  - Checkbox pilihan data yang ingin di-restore.
-  - Opsi penanganan duplikasi (Merge / Overwrite).
-  - Tombol aksi "Restore Now" dan progress bar / status banner.
+3. **Unit Tests - History Search (`src/sidebar_history.rs`)**:
+   - Pengujian kueri whitespace (`"  users  "` dan `"   "`).
 
----
+4. **Unit Tests - HTTP Collections (`src/sidebar_collection.rs`)**:
+   - `test_folder_and_workspace_has_match`: Memastikan pencarian nama workspace dan parent folder memunculkan seluruh request di dalamnya.
 
-### 2.2 Berkas yang Dimodifikasi
-
-1. **`src/main.rs` / `src/lib.rs`**:
-   - Daftarkan modul baru:
-     ```rust
-     pub mod export_import_all;
-     pub mod dialog_export_import_all;
-     ```
-
-2. **`src/window_egui/mod.rs`**:
-   - Tambahkan state flag & dialog state di struct `Tabular`:
-     ```rust
-     pub show_export_all_dialog: bool,
-     pub show_import_all_dialog: bool,
-     pub export_all_state: Option<crate::dialog_export_import_all::ExportAllDialogState>,
-     pub import_all_state: Option<crate::dialog_export_import_all::ImportAllDialogState>,
-     ```
-
-3. **`src/window_egui/init.rs`**:
-   - Inisialisasi field baru tersebut dengan `false` dan `None`.
-
-4. **`src/window_egui/app_impl.rs`**:
-   - **Gear Settings Context Menu** (baris ~2535):
-     - Tambahkan item menu:
-       - `📦 Export All Data (.zip)...` -> membuka `show_export_all_dialog = true`
-       - `📥 Import & Restore All Data (.zip)...` -> membuka `show_import_all_dialog = true`
-   - **Settings Window - Data Directory Tab (`PrefTab::DataDirectory`)** (baris ~437):
-     - Tambahkan kartu UI "Backup & Restore Application Data" dengan tombol "Export All to ZIP" dan "Import from ZIP".
-   - **Render Loop** (baris ~4995):
-     - Render `render_export_all_dialog(self, ctx)` saat `self.show_export_all_dialog == true`.
-     - Render `render_import_all_dialog(self, ctx)` saat `self.show_import_all_dialog == true`.
-
-5. **`src/quick_open.rs`**:
-   - Daftarkan perintah ke Command Palette:
-     - `Export All Data (ZIP)`
-     - `Import All Data (ZIP)`
-
----
-
-## 3. Analisis Potensi Risiko & Strategi Mitigasi
-
-| Risiko | Dampak | Strategi Mitigasi |
-| :--- | :--- | :--- |
-| **Zip Slip / Path Traversal Attack** | File jahat di dalam ZIP dapat menimpa berkas sistem sembarang (`../../etc/shadow`). | Wajib menggunakan `file.enclosed_name()` dari crate `zip` dan membatasi ekstraksi hanya di dalam subdirektori tujuan yang sah (`query/` dan `http_collections/`). |
-| **Foreign Key Constraint pada `query_history`** | `query_history` memiliki relasi `connection_id -> connections(id) ON DELETE CASCADE`. Jika `connection_id` lama tidak ditemukan, query insert history gagal. | Buat tabel mapping ID lama ke ID baru berdasarkan kesamaan nama koneksi (`connection_name`). Jika koneksi belum ada, buat koneksi terlebih dahulu atau kaitkan ke koneksi default yang valid. |
-| **Penanganan Kredensial & Secrets** | Password atau SSH key tersimpan sebagai sentinel di SQLite dan data asli di keychain/secret store. | Saat ekspor, ambil data dari `tabular.connections` (yang sudah ter-dekripsi di RAM). Saat import, panggil `externalize_connection_secrets` agar kredensial tersimpan aman di database dan secret backend sistem target. |
-| **UI Freeze saat Arsip Besar** | Aplikasi tidak responsif selama kompresi/ekstraksi I/O. | Jalankan proses kompresi dan dekompresi ZIP di background thread / tokio runtime async dengan `mpsc` channel untuk mengirim progress dan hasil ke UI thread. |
-| **In-Memory State Stale setelah Restore** | Data sudah masuk ke SQLite/disk tetapi tampilan sidebar tidak terupdate. | Panggil fungsi reload: `sidebar_database::load_connection_folders()`, `sidebar_query::load_queries_from_directory()`, `http_collection::load_workspaces()`, dan `sidebar_history::load_query_history()`, serta set `tabular.needs_refresh = true`. |
-
----
-
-## 4. Tahapan Verifikasi & Pengujian
-
-1. **Uji Kompilasi (`cargo check`)**:
-   - Memastikan tidak ada compile error, type mismatch, atau broken references.
-2. **Automated Unit Tests**:
-   - Buat unit test komprehensif di `src/export_import_all.rs`:
-     - Test pembuatan mock connection, query file, HTTP workspace, dan history item.
-     - Test ekspor ke buffer/file ZIP sementara dan verifikasi integritas ZIP serta isi `manifest.json`.
-     - Test pembacaan dan validasi isi arsip (`inspect_archive`).
-     - Test impor ke direktori sementara dan verifikasi bahwa data koneksi, queries, HTTP collection, dan history berhasil dipulihkan secara identik.
-     - Test proteksi Zip Slip (path traversal rejected).
-     - Test pemulihan relasi `query_history` saat connection ID berubah.
-3. **Uji Integrasi UI**:
-   - Verifikasi pembukaan dialog via Gear Menu dan Tab Settings Data Directory.
-   - Verifikasi pemilihan file picker (`rfd::FileDialog`).
-   - Verifikasi feedback visual, progress bar, dan notifikasi keberhasilan pemulihan data.
-
----
-
-## 5. Kesimpulan & Batasan Tahap Ini (Stage 1 Scope)
-
-Sesuai instruksi tugas, pengerjaan pada **Tahap 1 (Planning Phase)** dibatasi hanya pada penyusunan dokumen perencanaan teknis ini di file `implementation_plan.md`. Tidak ada kode aplikasi yang diubah pada tahap ini sebelum rencana ini ditinjau dan disetujui oleh pengguna.
+5. **Kompilasi & Regresi**:
+   - Menjalankan `cargo test` untuk memverifikasi seluruh test suite lulus tanpa error.
