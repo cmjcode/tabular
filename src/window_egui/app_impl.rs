@@ -2060,8 +2060,10 @@ impl Tabular {
                                             self.last_active_tab_index = Some(self.active_tab_index);
                                         }
 
-                                        // Cancel drag if Escape key pressed
-                                        if ui.ctx().input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                        // Cancel drag if Escape key pressed or if primary mouse pointer is not held down
+                                        if ui.ctx().input(|inp| inp.key_pressed(egui::Key::Escape))
+                                            || (self.dragged_tab_index.is_some() && ui.ctx().input(|inp| !inp.pointer.primary_down()))
+                                        {
                                             self.dragged_tab_index = None;
                                         }
 

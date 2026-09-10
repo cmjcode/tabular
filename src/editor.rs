@@ -220,6 +220,7 @@ pub(crate) fn open_user_manager_tab(
 
 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
         if let Some(tab) = tabular.query_tabs.get_mut(0) {
@@ -292,6 +293,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 /// Move a tab from `from` index to `to` index directly.
 /// Automatically updates active_tab_index and syncs pinned status if crossing the pinned boundary.
 pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usize) {
+    tabular.dragged_tab_index = None;
     let tab_count = tabular.query_tabs.len();
     if from == to || from >= tab_count || to >= tab_count {
         return;
@@ -331,6 +333,7 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
 pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
     let tab_count = tabular.query_tabs.len();
     if from >= tab_count {
+        tabular.dragged_tab_index = None;
         return;
     }
     let to = if insert_at > from {
@@ -343,6 +346,7 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
 
 /// Pin a tab by index and move it to the end of the pinned section.
 pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
@@ -366,6 +370,7 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 
 /// Unpin a tab by index and move it after all remaining pinned tabs if needed.
 pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
@@ -387,6 +392,7 @@ pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 
 /// Toggle pinned status for a tab.
 pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
@@ -399,6 +405,7 @@ pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usiz
 
 /// Close all tabs except `keep_index` and any pinned tabs.
 pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: usize) {
+    tabular.dragged_tab_index = None;
     if keep_index >= tabular.query_tabs.len() {
         return;
     }
@@ -419,10 +426,14 @@ pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: u
             i += 1;
         }
     }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
+    }
 }
 
 /// Close all unpinned tabs to the right of `tab_index`.
 pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
@@ -436,9 +447,15 @@ pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_in
                 session.close();
             }
             tabular.query_tabs.remove(i);
+            if tabular.active_tab_index > i {
+                tabular.active_tab_index -= 1;
+            }
         } else {
             i += 1;
         }
+    }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
     }
 }
 
