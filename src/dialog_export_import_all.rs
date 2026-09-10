@@ -637,11 +637,19 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     let can_restore = has_selected && file_exists && !state.is_running;
 
                     let btn = egui::Button::new(
-                        egui::RichText::new("📥 Restore Now")
-                            .strong()
-                            .color(egui::Color32::WHITE),
+                        egui::RichText::new(if state.is_running {
+                            "⏳ Restoring..."
+                        } else {
+                            "📥 Restore Now"
+                        })
+                        .strong()
+                        .color(egui::Color32::WHITE),
                     )
-                    .fill(egui::Color32::from_rgb(40, 160, 90));
+                    .fill(if state.is_running {
+                        egui::Color32::from_gray(80)
+                    } else {
+                        egui::Color32::from_rgb(40, 160, 90)
+                    });
 
                     if ui.add_enabled(can_restore, btn).clicked() {
                         if let Some(archive_path) = state.archive_path.clone() {
