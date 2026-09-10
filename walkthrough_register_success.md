@@ -23,7 +23,7 @@ Setelah perbaikan ini:
 | Berkas | Jenis Perubahan | Deskripsi |
 | :--- | :--- | :--- |
 | `src/window_egui/sync_tick.rs` | Perbaikan Logika & Concurrency | Memanggil `sync_profile_inputs_from_account()` saat event OAuth login sukses; mengisolasi background token refresh agar tidak menimpa buffer formulir aktif pengguna; menambahkan helper `sync_profile_inputs_from_account()`. |
-| `src/sync/ui_login.rs` | UI State Management | Mengintegrasikan pemanggilan `sync_profile_inputs_from_account()` pada `open_account_dialog` dan `try_submit_token`; menghapus logika auto-load di dalam per-frame render loop `render_account_profile_view` guna mencegah terkuncinya input saat pengguna mengetik/menghapus teks. |
+| `src/sync/ui_login.rs` | UI State Management | Mengintegrasikan pemanggilan `sync_profile_inputs_from_account()` pada `open_account_dialog`, `try_submit_token`, dan `do_logout`; menghapus logika auto-load di dalam per-frame render loop `render_account_profile_view` guna mencegah terkuncinya input saat pengguna mengetik/menghapus teks. |
 | `src/window_egui/init.rs` | Sinkronisasi State | Menggunakan `sync_profile_inputs_from_account()` saat memuat akun dari cache SQLite saat inisialisasi aplikasi. |
 | `src/window_egui/app_impl.rs` | Sinkronisasi State | Menggunakan `sync_profile_inputs_from_account()` saat akun terdeteksi dari background receiver startup. |
 | `src/sync/auth.rs` | Unit Test | Menambahkan unit test `test_parse_poll_completed_with_account_information` dan assertion untuk kelengkapan atribut profil. |

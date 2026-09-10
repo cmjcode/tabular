@@ -712,12 +712,7 @@ pub fn do_logout(tabular: &mut Tabular) {
     tabular.sync_status = super::SyncStatus::Offline;
     tabular.crdt_state = None;
 
-    tabular.avatar_texture = None;
-    tabular.avatar_texture_url = None;
-    tabular.profile_display_name_input.clear();
-    tabular.profile_avatar_url_input.clear();
-    tabular.profile_username_input.clear();
-    tabular.profile_phone_input.clear();
+    tabular.sync_profile_inputs_from_account();
 
     tabular.vault = None;
     tabular.vault_team_keys.clear();
