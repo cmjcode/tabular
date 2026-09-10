@@ -388,16 +388,14 @@ impl super::Tabular {
             match result {
                 Ok(updated) => {
                     info!("[sync] ✅ Access token refreshed automatically!");
-                    self.sync_account = Some(updated);
-                    // Prevent race condition & clobbering: do not overwrite active form inputs if account dialog is currently open
-                    if !self.show_account_dialog {
-                        self.sync_profile_inputs_from_account();
-                    } else if let Some(account) = &self.sync_account {
-                        if self.avatar_texture_url != account.avatar_url {
+                    // Invalidate avatar texture cache if avatar URL was updated on server
+                    if let Some(ref account) = self.sync_account {
+                        if account.avatar_url != updated.avatar_url {
                             self.avatar_texture = None;
                             self.avatar_texture_url = None;
                         }
                     }
+                    self.sync_account = Some(updated);
                     self.sync_login_error = None;
                     self.sync_status = crate::sync::SyncStatus::Synced;
                     // Reset retry counters on success
