@@ -2050,10 +2050,19 @@ impl Tabular {
                                         ui.add_space(8.0);
                                         let mut to_close = None;
                                         let mut to_switch = None;
+                                        let mut to_toggle_pin = None;
+                                        let mut to_move = None;
+                                        let mut to_close_others = None;
+                                        let mut to_close_right = None;
 
                                         if self.last_active_tab_index != Some(self.active_tab_index) {
                                             self.scroll_to_active_tab = true;
                                             self.last_active_tab_index = Some(self.active_tab_index);
+                                        }
+
+                                        // Cancel drag if Escape key pressed
+                                        if ui.ctx().input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                            self.dragged_tab_index = None;
                                         }
 
                                         let tab_count = self.query_tabs.len();
@@ -2066,14 +2075,27 @@ impl Tabular {
                                             max_single_tab_w
                                         };
 
+                                        let pointer_pos = ui.ctx().input(|inp| inp.pointer.hover_pos().or(inp.pointer.interact_pos()));
+                                        let mouse_released = ui.ctx().input(|inp| inp.pointer.any_released());
+
+                                        let mut tab_rects = Vec::with_capacity(tab_count);
+
                                         for (i, tab) in self.query_tabs.iter().enumerate() {
                                             let active = i == self.active_tab_index;
+                                            let is_being_dragged = self.dragged_tab_index == Some(i);
+
                                             let inactive_bg = if ui.visuals().dark_mode {
                                                 egui::Color32::from_rgb(35, 35, 35)
                                             } else {
                                                 egui::Color32::from_rgb(240, 240, 240)
                                             };
-                                            let tab_bg = if active {
+                                            let tab_bg = if is_being_dragged {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(30, 34, 44)
+                                                } else {
+                                                    egui::Color32::from_rgb(220, 224, 235)
+                                                }
+                                            } else if active {
                                                 if ui.visuals().dark_mode {
                                                     egui::Color32::from_rgb(45, 48, 56)
                                                 } else {
@@ -2082,11 +2104,19 @@ impl Tabular {
                                             } else {
                                                 inactive_bg
                                             };
-                                            let border_color = if active {
+                                            let border_color = if is_being_dragged {
+                                                super::style::theme_accent(ui.ctx()).linear_multiply(0.8)
+                                            } else if active {
                                                 if ui.visuals().dark_mode {
                                                     egui::Color32::from_rgb(55, 60, 76)
                                                 } else {
                                                     egui::Color32::from_rgb(215, 222, 232)
+                                                }
+                                            } else if tab.is_pinned {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(65, 60, 48)
+                                                } else {
+                                                    egui::Color32::from_rgb(215, 210, 195)
                                                 }
                                             } else {
                                                 ui.visuals().widgets.inactive.bg_stroke.color
@@ -2107,13 +2137,21 @@ impl Tabular {
                                                 title = format!("{} [{}]", title, n);
                                             }
                                             let close_size = 16.0;
+                                            let pin_size = 16.0;
                                             let tab_width = (title.len() as f32 * 8.0 + 64.0)
                                                 .clamp(min_single_tab_w, tab_width_cap);
                                             let menu_tab_height = 34.0;
                                             let (tab_rect, tab_resp) = ui.allocate_exact_size(
                                                 egui::vec2(tab_width, menu_tab_height),
-                                                egui::Sense::click(),
+                                                egui::Sense::click_and_drag(),
                                             );
+                                            tab_rects.push(tab_rect);
+
+                                            if tab_resp.drag_started() {
+                                                self.dragged_tab_index = Some(i);
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                                ui.ctx().request_repaint();
+                                            }
 
                                             if active && self.scroll_to_active_tab {
                                                 tab_resp.scroll_to_me(Some(egui::Align::Center));
@@ -2144,14 +2182,120 @@ impl Tabular {
                                                     super::style::theme_accent(ui.ctx()),
                                                 );
                                             }
-                                            let close_rect = egui::Rect::from_min_size(
+
+                                            let right_slot_rect = egui::Rect::from_min_size(
                                                 egui::pos2(
                                                     tab_rect.right() - close_size - 6.0,
                                                     tab_rect.center().y - close_size / 2.0,
                                                 ),
                                                 egui::vec2(close_size, close_size),
                                             );
-                                            let label_max_width = tab_rect.width() - close_size - 18.0;
+                                            let hover_pin_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    right_slot_rect.left() - pin_size - 4.0,
+                                                    tab_rect.center().y - pin_size / 2.0,
+                                                ),
+                                                egui::vec2(pin_size, pin_size),
+                                            );
+
+                                            let mut pointer_over_button = false;
+
+                                            if tab.is_pinned {
+                                                // Pinned tab: show pin icon at right_slot_rect (replaces close button)
+                                                let pin_resp = ui.interact(
+                                                    right_slot_rect,
+                                                    ui.id().with(("tab_unpin", i)),
+                                                    egui::Sense::click(),
+                                                )
+                                                .on_hover_text("Pinned tab. Click to unpin, or right-click for options.");
+                                                if pin_resp.hovered() {
+                                                    let hover_color = if active {
+                                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                    } else {
+                                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                    };
+                                                    ui.painter().rect_filled(right_slot_rect, 4.0, hover_color);
+                                                    pointer_over_button = true;
+                                                }
+                                                ui.painter().text(
+                                                    right_slot_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    "📌",
+                                                    egui::FontId::proportional(12.0),
+                                                    text_color,
+                                                );
+                                                if pin_resp.clicked() {
+                                                    to_toggle_pin = Some(i);
+                                                }
+                                            } else {
+                                                // Unpinned tab: show close button
+                                                let show_close = self.query_tabs.len() > 1 || !active;
+                                                if show_close {
+                                                    let close_resp = ui.interact(
+                                                        right_slot_rect,
+                                                        ui.id().with(("tab_close", i)),
+                                                        egui::Sense::click(),
+                                                    )
+                                                    .on_hover_text("Close tab");
+                                                    if close_resp.hovered() {
+                                                        let hover_color = if active {
+                                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                        };
+                                                        ui.painter().rect_filled(right_slot_rect, 4.0, hover_color);
+                                                        pointer_over_button = true;
+                                                    }
+                                                    ui.painter().text(
+                                                        right_slot_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        "×",
+                                                        egui::FontId::proportional(13.0),
+                                                        text_color,
+                                                    );
+                                                    if close_resp.clicked() {
+                                                        to_close = Some(i);
+                                                    }
+                                                }
+
+                                                // Quick pin button on hover
+                                                if tab_resp.hovered() && !is_being_dragged {
+                                                    let quick_pin_resp = ui.interact(
+                                                        hover_pin_rect,
+                                                        ui.id().with(("tab_quick_pin", i)),
+                                                        egui::Sense::click(),
+                                                    )
+                                                    .on_hover_text("Pin tab (keep on left)");
+                                                    if quick_pin_resp.hovered() {
+                                                        let hover_color = if active {
+                                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                        };
+                                                        ui.painter().rect_filled(hover_pin_rect, 4.0, hover_color);
+                                                        pointer_over_button = true;
+                                                    }
+                                                    ui.painter().text(
+                                                        hover_pin_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        "📌",
+                                                        egui::FontId::proportional(11.0),
+                                                        text_color.linear_multiply(0.7),
+                                                    );
+                                                    if quick_pin_resp.clicked() {
+                                                        to_toggle_pin = Some(i);
+                                                    }
+                                                }
+                                            }
+
+                                            let right_margin = if tab.is_pinned {
+                                                close_size + 12.0
+                                            } else if tab_resp.hovered() && !is_being_dragged {
+                                                close_size + pin_size + 16.0
+                                            } else {
+                                                close_size + 12.0
+                                            };
+                                            let label_max_width = (tab_rect.width() - right_margin - 10.0).max(20.0);
                                             let label_area = egui::Rect::from_min_size(
                                                 egui::pos2(tab_rect.left() + 10.0, tab_rect.top()),
                                                 egui::vec2(label_max_width, tab_rect.height()),
@@ -2166,37 +2310,54 @@ impl Tabular {
                                                     text_color,
                                                 );
 
-                                            let show_close = self.query_tabs.len() > 1 || !active;
-                                            if show_close {
-                                                let close_resp = ui.interact(
-                                                    close_rect,
-                                                    ui.id().with(("tab_close", i)),
-                                                    egui::Sense::click(),
-                                                );
-                                                if close_resp.hovered() {
-                                                    let hover_color = if active {
-                                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
-                                                    } else {
-                                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
-                                                    };
-                                                    ui.painter().rect_filled(close_rect, 4.0, hover_color);
+                                            // Context menu on tab
+                                            let tab_is_pinned = tab.is_pinned;
+                                            let cur_tabs_len = self.query_tabs.len();
+                                            tab_resp.context_menu(|ui| {
+                                                if tab_is_pinned {
+                                                    if ui.button("📌 Unpin Tab").clicked() {
+                                                        to_toggle_pin = Some(i);
+                                                        ui.close();
+                                                    }
+                                                } else {
+                                                    if ui.button("📌 Pin Tab").clicked() {
+                                                        to_toggle_pin = Some(i);
+                                                        ui.close();
+                                                    }
                                                 }
-                                                ui.painter().text(
-                                                    close_rect.center(),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    "×",
-                                                    egui::FontId::proportional(13.0),
-                                                    text_color,
-                                                );
-                                                if close_resp.clicked() {
+                                                ui.separator();
+                                                if i > 0 && ui.button("⬅ Move Tab Left").clicked() {
+                                                    to_move = Some((i, i - 1));
+                                                    ui.close();
+                                                }
+                                                if i + 1 < cur_tabs_len && ui.button("➡ Move Tab Right").clicked() {
+                                                    to_move = Some((i, i + 1));
+                                                    ui.close();
+                                                }
+                                                ui.separator();
+                                                let show_close_menu = cur_tabs_len > 1 || !active;
+                                                if ui.add_enabled(show_close_menu, egui::Button::new("✕ Close Tab")).clicked() {
                                                     to_close = Some(i);
+                                                    ui.close();
                                                 }
-                                            }
+                                                if cur_tabs_len > 1 && ui.button("Close Other Tabs").clicked() {
+                                                    to_close_others = Some(i);
+                                                    ui.close();
+                                                }
+                                                if i + 1 < cur_tabs_len && ui.button("Close Tabs to the Right").clicked() {
+                                                    to_close_right = Some(i);
+                                                    ui.close();
+                                                }
+                                            });
+
+                                            let click_pos = tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO);
+                                            let on_button = right_slot_rect.contains(click_pos)
+                                                || (!tab.is_pinned && hover_pin_rect.contains(click_pos));
 
                                             if tab_resp.clicked()
-                                                && !close_rect.contains(
-                                                    tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
-                                                )
+                                                && !on_button
+                                                && !pointer_over_button
+                                                && self.dragged_tab_index.is_none()
                                             {
                                                 if !active {
                                                     to_switch = Some(i);
@@ -2204,7 +2365,119 @@ impl Tabular {
                                                     self.scroll_to_active_tab = true;
                                                 }
                                             }
+
+                                            // Middle-click to close unpinned tabs
+                                            if tab_resp.middle_clicked()
+                                                && !tab.is_pinned
+                                                && (self.query_tabs.len() > 1 || !active)
+                                            {
+                                                to_close = Some(i);
+                                            }
+
+                                            // Divider between last pinned tab and first unpinned tab
+                                            let is_last_pinned = tab.is_pinned
+                                                && self.query_tabs.get(i + 1).map(|t| !t.is_pinned).unwrap_or(false);
+                                            if is_last_pinned {
+                                                let div_x = tab_rect.right() + 3.0;
+                                                ui.painter().vline(
+                                                    div_x,
+                                                    (tab_rect.top() + 6.0)..=(tab_rect.bottom() - 6.0),
+                                                    egui::Stroke::new(1.0, if ui.visuals().dark_mode {
+                                                        egui::Color32::from_rgb(70, 75, 85)
+                                                    } else {
+                                                        egui::Color32::from_rgb(190, 195, 205)
+                                                    }),
+                                                );
+                                                ui.add_space(6.0);
+                                            }
                                         }
+
+                                        // Handle active Drag-and-Drop state and drop insertion rendering
+                                        if let Some(drag_from) = self.dragged_tab_index {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                            let mut candidate_insert_at = None;
+
+                                            if let Some(pos) = pointer_pos {
+                                                // Floating ghost badge following cursor
+                                                if let Some(drag_tab) = self.query_tabs.get(drag_from) {
+                                                    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                                                        egui::Order::Tooltip,
+                                                        egui::Id::new("tab_drag_badge"),
+                                                    ));
+                                                    let ghost_title = format!("{} {}", if drag_tab.is_pinned { "📌" } else { "📑" }, drag_tab.title);
+                                                    let font_id = egui::FontId::proportional(12.0);
+                                                    let text_w = painter.layout_no_wrap(ghost_title.clone(), font_id.clone(), egui::Color32::WHITE).size().x;
+                                                    let badge_w = (text_w + 24.0).clamp(80.0, 220.0);
+                                                    let badge_rect = egui::Rect::from_min_size(
+                                                        pos + egui::vec2(14.0, 10.0),
+                                                        egui::vec2(badge_w, 24.0),
+                                                    );
+                                                    painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(28, 30, 38, 235));
+                                                    painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.5, super::style::theme_accent(ui.ctx())), egui::StrokeKind::Outside);
+                                                    painter.text(
+                                                        badge_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        ghost_title,
+                                                        font_id,
+                                                        egui::Color32::WHITE,
+                                                    );
+                                                }
+
+                                                // Determine candidate drop slot
+                                                for (idx, r) in tab_rects.iter().enumerate() {
+                                                    if pos.x < r.center().x {
+                                                        candidate_insert_at = Some(idx);
+                                                        break;
+                                                    }
+                                                }
+                                                if candidate_insert_at.is_none() && !tab_rects.is_empty() {
+                                                    candidate_insert_at = Some(tab_rects.len());
+                                                }
+
+                                                // Render insertion indicator line
+                                                if let Some(target_idx) = candidate_insert_at {
+                                                    if target_idx != drag_from && target_idx != drag_from + 1 {
+                                                        let indicator_x = if target_idx < tab_rects.len() {
+                                                            tab_rects[target_idx].left() - 1.0
+                                                        } else {
+                                                            tab_rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0)
+                                                        };
+                                                        let indicator_top = tab_rects.first().map(|r| r.top()).unwrap_or(0.0);
+                                                        let indicator_bottom = tab_rects.first().map(|r| r.bottom()).unwrap_or(34.0);
+                                                        let accent_col = super::style::theme_accent(ui.ctx());
+
+                                                        let ind_line_rect = egui::Rect::from_min_size(
+                                                            egui::pos2(indicator_x - 1.5, indicator_top),
+                                                            egui::vec2(3.0, indicator_bottom - indicator_top),
+                                                        );
+                                                        ui.painter().rect_filled(ind_line_rect, 1.5, accent_col);
+
+                                                        let cap_top = egui::Rect::from_min_size(
+                                                            egui::pos2(indicator_x - 3.5, indicator_top),
+                                                            egui::vec2(7.0, 4.0),
+                                                        );
+                                                        ui.painter().rect_filled(cap_top, 2.0, accent_col);
+                                                        let cap_bot = egui::Rect::from_min_size(
+                                                            egui::pos2(indicator_x - 3.5, indicator_bottom - 4.0),
+                                                            egui::vec2(7.0, 4.0),
+                                                        );
+                                                        ui.painter().rect_filled(cap_bot, 2.0, accent_col);
+                                                    }
+                                                }
+                                            }
+
+                                            // Process drop on mouse release
+                                            if mouse_released {
+                                                let from = self.dragged_tab_index.take();
+                                                if let (Some(from_idx), Some(target_idx)) = (from, candidate_insert_at) {
+                                                    if target_idx != from_idx && target_idx != from_idx + 1 {
+                                                        editor::reorder_tab(self, from_idx, target_idx);
+                                                        ui.ctx().request_repaint();
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         self.scroll_to_active_tab = false;
 
                                         let is_http_active = self.selected_menu == "APIs"
@@ -2253,8 +2526,20 @@ impl Tabular {
                                             }
                                         }
 
+                                        if let Some(i) = to_toggle_pin {
+                                            editor::toggle_pin_tab(self, i);
+                                        }
+                                        if let Some((from, to)) = to_move {
+                                            editor::move_tab(self, from, to);
+                                        }
                                         if let Some(i) = to_close {
                                             editor::close_tab(self, i);
+                                        }
+                                        if let Some(i) = to_close_others {
+                                            editor::close_other_tabs(self, i);
+                                        }
+                                        if let Some(i) = to_close_right {
+                                            editor::close_tabs_to_the_right(self, i);
                                         }
                                         if let Some(i) = to_switch {
                                             editor::switch_to_tab(self, i);

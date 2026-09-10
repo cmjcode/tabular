@@ -284,6 +284,7 @@ impl super::Tabular {
             next_tab_id: 1,
             scroll_to_active_tab: true,
             last_active_tab_index: None,
+            dragged_tab_index: None,
             show_save_dialog: false,
             save_filename: String::new(),
             save_directory: String::new(),
