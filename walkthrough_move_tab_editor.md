@@ -41,6 +41,7 @@ Dokumen ini mendokumentasikan implementasi dan verifikasi fitur **Drag & Drop Ta
 | **Ketiadaan Validasi Batas Vertikal** | `src/window_egui/app_impl.rs:2424` | Menambahkan validasi `is_within_tab_bar_y` sehingga drag dapat dibatalkan jika pointer keluar tab bar. |
 | **Pemicuan Drag Tombol Non-Primer** | `src/window_egui/app_impl.rs:2150` | Mengganti `drag_started()` menjadi `drag_started_by(egui::PointerButton::Primary)`. |
 | **Starvation / Stuck Drag State** | `src/window_egui/app_impl.rs:2476` | Menambahkan pembersihan state drag jika primary pointer tidak lagi ditekan (`!primary_down`) atau tab count berubah. |
+| **Integritas Dokumentasi & Mode Eksekusi Berkas** | Root Workspace | Memulihkan berkas `walkthrough.md` dan `implementation_plan.md` root repositori, menjaga pemisahan dokumen per fitur (`walkthrough_move_tab_editor.md`), serta mengembalikan izin berkas skrip shell ke `100644`. |
 
 ---
 
@@ -58,4 +59,5 @@ Pengujian unit di `src/editor.rs` dan `src/models/structs.rs` mencakup skenario:
 9. `test_close_tabs_to_the_right_active_tab_switch`: Pengujian pengalihan tab aktif ke target sebelum penutupan tab kanan.
 10. `test_move_tab_crossing_pinned_boundary_both_ways`: Pengujian transisi dua arah saat tab unpinned diseret ke area pinned (otomatis menjadi pinned) dan sebaliknya.
 11. `test_tab_bounds_safety`: Pengujian ketahanan dan ketiadaan panic saat pemindahan atau penutupan tab dipanggil dengan indeks out-of-bounds.
+
 
