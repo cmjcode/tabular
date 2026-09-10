@@ -44,14 +44,19 @@ impl super::Tabular {
         node: &models::structs::TreeNode,
         search_text: &str,
     ) -> Option<models::structs::TreeNode> {
-        let mut matches = false;
-        let mut filtered_children = Vec::new();
-
         // Case-insensitive LIKE search
         let search_lower = search_text.to_lowercase();
-        if node.name.to_lowercase().contains(&search_lower) {
-            matches = true;
+        let self_matches = node.name.to_lowercase().contains(&search_lower);
+
+        // If this node is a folder and matches the search text, preserve all of its contents (children).
+        if self_matches && node.node_type.is_folder() {
+            let mut filtered_node = node.clone();
+            filtered_node.is_expanded = true;
+            return Some(filtered_node);
         }
+
+        let mut matches = self_matches;
+        let mut filtered_children = Vec::new();
 
         // Check children recursively
         for child in &node.children {
@@ -688,3 +693,47 @@ impl super::Tabular {
         job
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::models::enums::NodeType;
+    use crate::models::structs::TreeNode;
+    use crate::window_egui::Tabular;
+
+    #[test]
+    fn test_filter_node_with_like_search_folder_preserves_children() {
+        let tabular = Tabular::default();
+
+        let mut conn1 = TreeNode::new("postgres_db".to_string(), NodeType::Connection);
+        conn1.connection_id = Some(1);
+
+        let mut conn2 = TreeNode::new("mysql_db".to_string(), NodeType::Connection);
+        conn2.connection_id = Some(2);
+
+        let mut folder = TreeNode::new("Production".to_string(), NodeType::CustomFolder);
+        folder.children = vec![conn1, conn2];
+
+        // 1. Search for child "postgres" -> only postgres_db is preserved
+        let res = tabular.filter_node_with_like_search(&folder, "postgres");
+        assert!(res.is_some());
+        let filtered = res.unwrap();
+        assert_eq!(filtered.name, "Production");
+        assert_eq!(filtered.children.len(), 1);
+        assert_eq!(filtered.children[0].name, "postgres_db");
+
+        // 2. Search for folder name "Production" -> all contents must be displayed!
+        let res_folder = tabular.filter_node_with_like_search(&folder, "production");
+        assert!(res_folder.is_some());
+        let filtered_folder = res_folder.unwrap();
+        assert_eq!(filtered_folder.name, "Production");
+        assert!(filtered_folder.is_expanded);
+        assert_eq!(filtered_folder.children.len(), 2);
+        assert_eq!(filtered_folder.children[0].name, "postgres_db");
+        assert_eq!(filtered_folder.children[1].name, "mysql_db");
+
+        // 3. Search for non-existent text -> None
+        let res_none = tabular.filter_node_with_like_search(&folder, "nonexistent");
+        assert!(res_none.is_none());
+    }
+}
+

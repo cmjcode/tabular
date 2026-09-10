@@ -1032,11 +1032,14 @@ fn render_folder_node(
     });
 
     if is_expanded {
+        let folder_matches = !filter.is_empty() && folder.name.to_lowercase().contains(filter);
+        let child_filter = if folder_matches { "" } else { filter };
+
         ui.indent(format!("fld_body_{}", folder.id), |ui| {
             for req in &folder.requests {
-                if !filter.is_empty()
-                    && !req.display_name().to_lowercase().contains(filter)
-                    && !req.url.to_lowercase().contains(filter)
+                if !child_filter.is_empty()
+                    && !req.display_name().to_lowercase().contains(child_filter)
+                    && !req.url.to_lowercase().contains(child_filter)
                 {
                     continue;
                 }
@@ -1045,7 +1048,7 @@ fn render_folder_node(
                 }
             }
             for child in &folder.children {
-                if !filter.is_empty() && !folder_has_match(child, filter) {
+                if !child_filter.is_empty() && !folder_has_match(child, child_filter) {
                     continue;
                 }
                 render_folder_node(
@@ -1053,7 +1056,7 @@ fn render_folder_node(
                     ws_id,
                     child,
                     expanded_folders,
-                    filter,
+                    child_filter,
                     accent,
                     active_dnd_source,
                     req_action_out,

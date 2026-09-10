@@ -76,6 +76,13 @@ pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
         let name_lower = node.name.to_lowercase();
         let matches = name_lower.contains(search_text);
 
+        // If this node is a folder and matches the search text, preserve all of its contents (children).
+        if matches && node.node_type.is_folder() {
+            let mut filtered_node = node.clone();
+            filtered_node.is_expanded = true;
+            return Some(filtered_node);
+        }
+
         let mut filtered_children = Vec::new();
         for child in &node.children {
             if let Some(filtered_child) = filter_node(child, search_text) {
@@ -88,6 +95,7 @@ pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
             if !filtered_children.is_empty() {
                 filtered_node.children = filtered_children;
             }
+            filtered_node.is_expanded = true;
             Some(filtered_node)
         } else {
             None
@@ -709,5 +717,21 @@ mod tests {
         tabular.database_search_text = "".to_string();
         filter_queries_tree(&mut tabular);
         assert!(tabular.filtered_queries_tree.is_empty());
+
+        // 4. Search for folder name "admin" -> folder matches, so all children should be displayed!
+        tabular.database_search_text = "admin".to_string();
+        filter_queries_tree(&mut tabular);
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        assert_eq!(tabular.filtered_queries_tree[0].name, "Admin Queries");
+        assert!(tabular.filtered_queries_tree[0].is_expanded);
+        assert_eq!(tabular.filtered_queries_tree[0].children.len(), 2);
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[0].name,
+            "Select Users.sql"
+        );
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[1].name,
+            "Insert Products.sql"
+        );
     }
 }
