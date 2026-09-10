@@ -834,19 +834,8 @@ impl super::Tabular {
                         self.shared_folders_cache = res.shared_folders_cache;
                     }
                     if let Some(account) = res.sync_account {
-                        if let Some(ref name) = account.display_name {
-                            self.profile_display_name_input = name.clone();
-                        }
-                        if let Some(ref avatar) = account.avatar_url {
-                            self.profile_avatar_url_input = avatar.clone();
-                        }
-                        if let Some(ref username) = account.username {
-                            self.profile_username_input = username.clone();
-                        }
-                        if let Some(ref phone) = account.phone {
-                            self.profile_phone_input = phone.clone();
-                        }
                         self.sync_account = Some(account);
+                        self.sync_profile_inputs_from_account();
                     }
                     self.connection_last_synced = res.connection_last_synced;
                     crate::sidebar_database::refresh_connections_tree(self);

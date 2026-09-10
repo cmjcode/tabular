@@ -127,12 +127,7 @@ pub fn draw_circular_avatar(
 
 /// Open and sync inputs for the dedicated Account Dialog.
 pub fn open_account_dialog(tabular: &mut Tabular) {
-    if let Some(account) = &tabular.sync_account {
-        tabular.profile_display_name_input = account.display_name.clone().unwrap_or_default();
-        tabular.profile_avatar_url_input = account.avatar_url.clone().unwrap_or_default();
-        tabular.profile_username_input = account.username.clone().unwrap_or_default();
-        tabular.profile_phone_input = account.phone.clone().unwrap_or_default();
-    }
+    tabular.sync_profile_inputs_from_account();
     tabular.show_account_dialog = true;
 }
 
@@ -650,14 +645,9 @@ fn try_submit_token(tabular: &mut Tabular) {
             };
 
             super::api_client::save_account(&account);
-            tabular.profile_display_name_input = display_name.unwrap_or_default();
-            tabular.profile_avatar_url_input = avatar_url.unwrap_or_default();
-            tabular.profile_username_input = username.unwrap_or_default();
-            tabular.profile_phone_input = phone.unwrap_or_default();
-            tabular.avatar_texture = None;
-            tabular.avatar_texture_url = None;
-
             tabular.sync_account = Some(account);
+            tabular.sync_profile_inputs_from_account();
+
             tabular.sync_login_pending = false;
             tabular.sync_login_error = None;
             tabular.sync_token_input.clear();
@@ -722,12 +712,7 @@ pub fn do_logout(tabular: &mut Tabular) {
     tabular.sync_status = super::SyncStatus::Offline;
     tabular.crdt_state = None;
 
-    tabular.avatar_texture = None;
-    tabular.avatar_texture_url = None;
-    tabular.profile_display_name_input.clear();
-    tabular.profile_avatar_url_input.clear();
-    tabular.profile_username_input.clear();
-    tabular.profile_phone_input.clear();
+    tabular.sync_profile_inputs_from_account();
 
     tabular.vault = None;
     tabular.vault_team_keys.clear();
