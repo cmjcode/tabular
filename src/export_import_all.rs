@@ -452,13 +452,22 @@ pub fn import_all_data(
     let mut name_to_new_id: HashMap<String, i64> = HashMap::new();
 
     let rt = tabular.get_runtime();
-    let pool = tabular
-        .db_pool
-        .clone()
-        .ok_or(ExportImportError::NoDatabasePool)?;
+    let pool_opt = if options.include_connections || options.include_history {
+        Some(
+            tabular
+                .ensure_db_pool()
+                .map_err(|_| ExportImportError::NoDatabasePool)?,
+        )
+    } else {
+        None
+    };
 
     // ── 1. Restore Connections & Folders ──
     if options.include_connections {
+        let pool = pool_opt
+            .as_ref()
+            .ok_or(ExportImportError::NoDatabasePool)?;
+
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
             rt.block_on(async {
                 let _ = sqlx::query("DELETE FROM connection_folders").execute(pool.as_ref()).await;
@@ -466,6 +475,7 @@ pub fn import_all_data(
             });
             tabular.connection_folders.clear();
             tabular.connections.clear();
+            tabular.connection_pools.clear();
         }
 
         // Restore Folders
@@ -717,6 +727,10 @@ pub fn import_all_data(
 
     // ── 4. Restore History ──
     if options.include_history {
+        let pool = pool_opt
+            .as_ref()
+            .ok_or(ExportImportError::NoDatabasePool)?;
+
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
             rt.block_on(async {
                 let _ = sqlx::query("DELETE FROM query_history").execute(pool.as_ref()).await;
@@ -1233,5 +1247,84 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_import_queries_only_without_db_pool() {
+        let temp_dir = std::env::temp_dir().join(format!("tabular_queries_only_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let zip_path = temp_dir.join("queries_backup.zip");
+
+        // Create an archive with queries and http collections, without any connections/history
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let file_opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+            zip.start_file("queries/test_query.sql", file_opts).unwrap();
+            zip.write_all(b"SELECT 1;").unwrap();
+
+            let manifest = ExportAllManifest {
+                version: "1.0.0".to_string(),
+                app: "Tabular".to_string(),
+                exported_at: "2026-09-10T00:00:00Z".to_string(),
+                counts: ExportCounts {
+                    queries: 1,
+                    ..Default::default()
+                },
+                includes: ExportIncludes {
+                    queries: true,
+                    ..Default::default()
+                },
+            };
+            let manifest_json = serde_json::to_string_pretty(&manifest).unwrap();
+            zip.start_file("manifest.json", file_opts).unwrap();
+            zip.write_all(manifest_json.as_bytes()).unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let mut tabular = Tabular::new();
+        tabular.db_pool = None; // Explicitly ensure pool is None
+
+        let options = ImportAllOptions {
+            include_connections: false,
+            include_history: false,
+            include_queries: true,
+            include_http_api: false,
+            conflict_strategy: ConflictStrategy::MergeKeepExisting,
+        };
+
+        let result = import_all_data(&mut tabular, &zip_path, &options);
+        assert!(result.is_ok(), "Import queries only should succeed without db_pool: {:?}", result.err());
+        let summary = result.unwrap();
+        assert_eq!(summary.queries_restored, 1);
+        assert_eq!(summary.connections_restored, 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_restore_desktop_backup_archive() {
+        let zip_path = PathBuf::from("/Users/jayuda/Desktop/tabular_backup_20260909_203357.zip");
+        if !zip_path.exists() {
+            return; // Skip if test is run on an environment without this file
+        }
+
+        let mut tabular = Tabular::new();
+        tabular.db_pool = None; // Start with uninitialized pool
+
+        let options = ImportAllOptions {
+            include_connections: true,
+            include_queries: false, // Don't overwrite user's live queries directory
+            include_http_api: false, // Don't overwrite user's live http collections
+            include_history: true,
+            conflict_strategy: ConflictStrategy::MergeKeepExisting,
+        };
+
+        let result = import_all_data(&mut tabular, &zip_path, &options);
+        assert!(result.is_ok(), "Restoring actual desktop backup failed: {:?}", result.err());
+        let summary = result.unwrap();
+        assert!(summary.connections_restored > 0 || !tabular.connections.is_empty(), "Expected connections restored");
     }
 }

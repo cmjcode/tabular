@@ -784,6 +784,83 @@ impl super::Tabular {
         }
     }
 
+    /// Ensure an active SQLite database pool is available, waiting for async startup or
+    /// initializing on-demand if necessary.
+    pub fn ensure_db_pool(&mut self) -> Result<Arc<sqlx::SqlitePool>, String> {
+        // 1. Fast path: already active in self.db_pool
+        if let Some(ref pool) = self.db_pool {
+            return Ok(pool.clone());
+        }
+
+        // 2. Check shared_db_pool in case another thread populated it
+        if let Ok(guard) = self.shared_db_pool.read() {
+            if let Some(ref pool) = *guard {
+                self.db_pool = Some(pool.clone());
+                return Ok(pool.clone());
+            }
+        }
+
+        // 3. If background initialization is pending, wait for it
+        if let Some(rx) = self.db_init_receiver.take() {
+            match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(res) => {
+                    let pool = res.db_pool.clone();
+                    self.set_db_pool(Some(res.db_pool));
+                    self.connections = res.connections;
+                    self.connection_folders = res.connection_folders;
+                    self.history_items = res.history_items;
+                    if !res.teams.is_empty() {
+                        self.teams = res.teams;
+                    }
+                    if !res.team_members.is_empty() {
+                        self.team_members = res.team_members;
+                    }
+                    if !res.shared_folders_cache.is_empty() {
+                        self.shared_folders_cache = res.shared_folders_cache;
+                    }
+                    if let Some(account) = res.sync_account {
+                        if let Some(ref name) = account.display_name {
+                            self.profile_display_name_input = name.clone();
+                        }
+                        if let Some(ref avatar) = account.avatar_url {
+                            self.profile_avatar_url_input = avatar.clone();
+                        }
+                        if let Some(ref username) = account.username {
+                            self.profile_username_input = username.clone();
+                        }
+                        if let Some(ref phone) = account.phone {
+                            self.profile_phone_input = phone.clone();
+                        }
+                        self.sync_account = Some(account);
+                    }
+                    self.connection_last_synced = res.connection_last_synced;
+                    crate::sidebar_database::refresh_connections_tree(self);
+                    crate::sidebar_history::refresh_history_tree(self);
+                    crate::log_startup_step("async background database & connections init completed via ensure_db_pool");
+                    return Ok(pool);
+                }
+                Err(e) => {
+                    log::warn!("Timed out or failed waiting for background db init in ensure_db_pool: {:?}", e);
+                }
+            }
+        }
+
+        // 4. Synchronously initialize database as fallback
+        crate::sidebar_database::initialize_database(self);
+        if let Some(ref pool) = self.db_pool {
+            return Ok(pool.clone());
+        }
+
+        // 5. Corrupt db reset recovery as last resort
+        if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
+            if let Some(ref pool) = self.db_pool {
+                return Ok(pool.clone());
+            }
+        }
+
+        Err("No active database pool available and failed to initialize SQLite database".to_string())
+    }
+
     pub fn start_background_worker(
         &self,
         task_receiver: Receiver<models::enums::BackgroundTask>,
