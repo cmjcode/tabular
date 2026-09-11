@@ -740,6 +740,7 @@ pub enum PrefTab {
     Update,
     AiAssistant,
     Sync,
+    Plugins,
 }
 
 impl Default for Tabular {

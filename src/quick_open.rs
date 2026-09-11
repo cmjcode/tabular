@@ -697,7 +697,7 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ("DBA: Deadlock & Lock Tree", "Inspect active lock dependencies and blocking hierarchy", ""),
         ("DBA: Manage Users & Privileges", "Open User & Role Management and Object Grants GUI", ""),
         ("DBA: Create New User", "Create database user account & assign permissions", ""),
-        ("Plugins: Extensibility & Wasm Automation", "Run Wasm plugins, export Parquet/DuckDB & generate ORM models", "⌘⇧P"),
+        ("Plugins: Extensibility & Wasm Automation", "Run Wasm plugins, export Parquet/DuckDB & generate ORM models", ""),
         ("View: Refresh", "Refresh active database or table", "⌘R"),
         ("Preferences: Color Theme", "Change editor and UI color palette", ""),
         ("Preferences: Settings", "Configure application settings", "⌘,"),

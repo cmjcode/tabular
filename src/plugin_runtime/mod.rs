@@ -15,7 +15,7 @@ pub use manager::{
 pub use templates::{
     generate_duckdb_script, generate_orm_code, OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER,
 };
-pub use ui::{extract_plugin_table_schema, render_plugin_modal};
+pub use ui::{extract_plugin_table_schema, render_plugin_modal, render_plugin_panel};
 
 #[cfg(test)]
 mod tests {

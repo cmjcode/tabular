@@ -102,20 +102,44 @@ impl Tabular {
         if self.show_settings_window {
             let mut open_flag = true; // local to satisfy borrow rules
             let screen_rect = ctx.content_rect();
-            let max_dialog_h = (screen_rect.height() - 40.0).max(280.0);
-            let max_dialog_w = (screen_rect.width() - 32.0).min(780.0).max(360.0);
-            let content_max_h = (max_dialog_h - 120.0).max(180.0);
+            let is_plugins = self.settings_active_pref_tab == PrefTab::Plugins;
+            let max_screen_h = (screen_rect.height() - 30.0).max(360.0);
+            let max_screen_w = (screen_rect.width() - 30.0).max(460.0);
 
-            egui::Window::new("Preferences")
+            let dialog_w = if is_plugins {
+                960.0_f32.min(max_screen_w).max(720.0_f32.min(max_screen_w))
+            } else {
+                920.0_f32.min(max_screen_w).max(460.0_f32.min(max_screen_w))
+            };
+
+            let dialog_h = if is_plugins {
+                570.0_f32.min(max_screen_h).max(480.0_f32.min(max_screen_h))
+            } else {
+                600.0_f32.min(max_screen_h).max(360.0_f32.min(max_screen_h))
+            };
+
+            let content_max_h = (dialog_h - 105.0).max(200.0);
+
+            let mut window = egui::Window::new("Preferences")
                 .open(&mut open_flag)
                 .collapsible(false)
                 .resizable(false)
                 .pivot(egui::Align2::CENTER_CENTER)
-                .fixed_pos(screen_rect.center())
-                .max_height(max_dialog_h)
-                .max_width(max_dialog_w)
-                .default_width(max_dialog_w)
-                .show(ctx, |ui| {
+                .fixed_pos(screen_rect.center());
+
+            if is_plugins {
+                window = window.fixed_size(egui::vec2(dialog_w, dialog_h));
+            } else {
+                window = window
+                    .min_width(dialog_w)
+                    .default_width(dialog_w)
+                    .max_width(max_screen_w)
+                    .min_height(dialog_h)
+                    .default_height(dialog_h)
+                    .max_height(max_screen_h);
+            }
+
+            window.show(ctx, |ui| {
                     // Tab bar
                     egui::ScrollArea::horizontal()
                         .id_salt("settings_tab_bar_scroll")
@@ -224,17 +248,43 @@ impl Tabular {
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Sync, "☁ Cloud Sync");
+                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Plugins, &format!("{} Plugins", egui_icons::icons::MDI_PUZZLE.codepoint));
                         });
                     });
                     ui.separator();
                     ui.add_space(4.0);
 
-                    egui::ScrollArea::vertical()
-                        .id_salt("settings_content_scroll")
-                        .max_height(content_max_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            match self.settings_active_pref_tab {
+                    if is_plugins {
+                        let db_type = self
+                            .current_connection_id
+                            .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
+                            .map(|c| c.connection_type.clone());
+
+                        let selected_rows_vec: Vec<Vec<String>> = self
+                            .selected_rows
+                            .iter()
+                            .filter_map(|&idx| self.current_table_data.get(idx).cloned())
+                            .collect();
+
+                        crate::plugin_runtime::ui::render_plugin_panel(
+                            ui,
+                            &mut self.plugin_modal_state,
+                            &mut self.plugin_manager,
+                            &self.current_table_name,
+                            &self.current_table_headers,
+                            &selected_rows_vec,
+                            &self.all_table_data,
+                            Some(&self.structure_columns),
+                            self.current_column_metadata.as_deref(),
+                            db_type.as_ref(),
+                        );
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings_content_scroll")
+                            .max_height(content_max_h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                match self.settings_active_pref_tab {
                                 PrefTab::ApplicationTheme => {
                                 ui.heading("Application Theme");
                                 ui.add_space(8.0);
@@ -645,8 +695,10 @@ impl Tabular {
                             PrefTab::Sync => {
                                 crate::sync::ui_login::render_sync_panel(self, ui);
                             }
+                            PrefTab::Plugins => {}
                         }
                     });
+                    }
 
                     ui.add_space(6.0);
                     ui.separator();
@@ -5119,9 +5171,12 @@ impl App for Tabular {
             if (i.modifiers.mac_cmd || i.modifiers.ctrl)
                 && (i.key_pressed(egui::Key::P) || i.key_pressed(egui::Key::K))
                 && !self.show_command_palette
-                && !self.quick_open_state.is_open
             {
-                crate::quick_open::open_quick_open(self);
+                if self.quick_open_state.is_open {
+                    self.quick_open_state.close();
+                } else {
+                    crate::quick_open::open_quick_open(self);
+                }
             }
 
             // F12 — Go to definition (navigate sidebar to table under cursor)
