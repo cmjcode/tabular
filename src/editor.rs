@@ -5935,10 +5935,9 @@ pub(crate) fn render_find_replace_floating_panel(
 
                             if replace_resp.has_focus() {
                                 let alt_pressed = ui.input(|i| i.modifiers.alt);
-                                let cmd_pressed = ui.input(|i| i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl);
 
                                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    if alt_pressed || (cmd_pressed && alt_pressed) {
+                                    if alt_pressed {
                                         replace_all_requested = true;
                                     } else {
                                         replace_current_requested = true;

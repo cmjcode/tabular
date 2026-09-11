@@ -86,9 +86,6 @@ fn get_value_as_string_fallback_idx(
     if let Ok(Some(val)) = row.try_get::<Option<rust_decimal::Decimal>, _>(idx) {
         return val.to_string();
     }
-    if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
-        return val.to_string();
-    }
     if let Ok(Some(val)) = row.try_get::<Option<chrono::NaiveDate>, _>(idx) {
         return val.to_string();
     }

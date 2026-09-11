@@ -494,9 +494,7 @@ fn map_typescript_type(raw_type: &str) -> &'static str {
 
 fn map_python_type(raw_type: &str) -> &'static str {
     let lower = raw_type.to_lowercase();
-    if lower.contains("bigint") || lower.contains("int8") {
-        "int"
-    } else if lower.contains("int") || lower.contains("serial") || lower.contains("smallint") {
+    if lower.contains("int") || lower.contains("serial") {
         "int"
     } else if lower.contains("bool") {
         "bool"

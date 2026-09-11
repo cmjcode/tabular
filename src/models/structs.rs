@@ -1738,8 +1738,8 @@ mod tests {
         let val_int: CellValue = 42i64.into();
         assert_eq!(val_int.to_display_string(), "42");
 
-        let val_num: CellValue = 3.14159.into();
-        assert_eq!(val_num.to_display_string(), "3.14159");
+        let val_num: CellValue = 123.45.into();
+        assert_eq!(val_num.to_display_string(), "123.45");
 
         let val_bool: CellValue = true.into();
         assert_eq!(val_bool.to_display_string(), "true");
