@@ -377,9 +377,7 @@ pub fn try_decode_base64(input: &str) -> Option<Vec<u8>> {
 pub fn try_decode_hex_str(input: &str) -> Option<Vec<u8>> {
     let mut clean = input.trim();
     let has_prefix = clean.starts_with("0x") || clean.starts_with("0X") || clean.starts_with("\\x");
-    if clean.starts_with("0x") || clean.starts_with("0X") {
-        clean = &clean[2..];
-    } else if clean.starts_with("\\x") {
+    if has_prefix {
         clean = &clean[2..];
     }
 

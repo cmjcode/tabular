@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -316,15 +315,15 @@ impl BinaryDetector {
     /// Detect binary path for tools: pg_dump, pg_restore, mysqldump, mysql, psql
     pub fn find_binary(binary_name: &'static str, custom_path: Option<&Path>) -> Option<NativeBinaryInfo> {
         // 1. Check custom path override first
-        if let Some(cp) = custom_path {
-            if cp.is_file() {
-                let ver = Self::query_version(cp);
-                return Some(NativeBinaryInfo {
-                    name: binary_name,
-                    path: cp.to_path_buf(),
-                    version: ver,
-                });
-            }
+        if let Some(cp) = custom_path
+            && cp.is_file()
+        {
+            let ver = Self::query_version(cp);
+            return Some(NativeBinaryInfo {
+                name: binary_name,
+                path: cp.to_path_buf(),
+                version: ver,
+            });
         }
 
         // 2. Check PATH environment variable
@@ -497,7 +496,7 @@ impl SqliteBackupEngine {
                 return Err(format!("Failed to create destination SQLite file: {}", err_msg));
             }
 
-            let main_db = b"main\0".as_ptr() as *const c_char;
+            let main_db = c"main".as_ptr();
             let p_backup = libsqlite3_sys::sqlite3_backup_init(p_dest, main_db, p_src, main_db);
 
             if p_backup.is_null() {
@@ -1572,6 +1571,7 @@ impl BackupRestoreRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_char;
 
     #[test]
     fn test_backup_format_properties() {
