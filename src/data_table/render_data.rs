@@ -1596,7 +1596,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.cell_inspector.open(val, col_title, r, c);
             }
             if open_plugin_modal {
-                tabular.plugin_modal_state.is_open = true;
+                tabular.settings_active_pref_tab = crate::window_egui::PrefTab::Plugins;
+                tabular.show_settings_window = true;
             }
             // Execute deferred refresh after UI borrows are released
             if refresh_request_data {
