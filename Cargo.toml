@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.16.2"
+version = "0.16.3"
 edition = "2024"
 
 [lib]
@@ -59,7 +59,7 @@ rust_decimal = "1.43.0"
 wasmi = "2.0.0"
 log = { version = "0.4", features = ["max_level_off"] }
 env_logger = "0.11"
-dotenv = "0.15.0"
+dotenvy = "0.15.7"
 md5 = "0.8"
 # Pinned exact: pre-1.0 API moves between minors (replaces tiberius + deadpool-tiberius)
 mssql-client = { version = ">=0.20.0", features = [

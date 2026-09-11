@@ -36,20 +36,24 @@ not on a compromised client.
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Security updates are actively provided for the current release series:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| 0.16.x | :white_check_mark: |
+| < 0.16.0 | :x:                |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+We take the security and privacy of Tabular and its users seriously. If you discover a security vulnerability, please report it responsibly:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+1. **GitHub Security Advisories (Recommended)**:  
+   Submit a private report directly at [GitHub Security Advisories](https://github.com/tabular-id/tabular/security/advisories/new).
+2. **Email**:  
+   Contact the core team directly at [`security@tabular.id`](mailto:security@tabular.id) or [`support@tabular.id`](mailto:support@tabular.id).
+
+### Response Expectations
+- **Initial Acknowledgment**: Within 48 hours of submission.
+- **Triage & Status Updates**: Regular updates within 3–5 business days as the issue is investigated and remediated.
+- **Coordinated Disclosure**: We kindly request that you do not publicly disclose the issue until a patch has been released. Credit will be acknowledged in release notes if desired.
+

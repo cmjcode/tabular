@@ -7,13 +7,14 @@
 .PHONY: all help install-deps clean create-dirs \
         build-macos build-linux build-windows \
         bundle-macos bundle-linux bundle-windows pkg-macos-store \
-        release build run dev test check fmt info notarize notarize-check
+        release build run dev test check fmt info notarize notarize-check sync-version
 
 all: help
 
 APP_NAME = Tabular
 VERSION  = $(shell grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)
 RUST_VERSION = stable
+export APPLE_BUNDLE_ID ?= id.tabular.database
 
 # Targets
 MACOS_X86_TARGET = x86_64-apple-darwin
@@ -61,9 +62,10 @@ help:
 	@echo "  notarize-check     Check notarization status"
 	@echo "Dev Helpers:"
 	@echo "  run / dev / test / check / fmt / info"
+	@echo "  sync-version       Sync version across packaging manifests (optional: v=X.Y.Z)"
 	@echo "Environment (macOS signing/notarization):"
 	@echo "  APPLE_IDENTITY='Developer ID Application: Name (TEAMID)'"
-	@echo "  APPLE_BUNDLE_ID='id.tabular.data'"
+	@echo "  APPLE_BUNDLE_ID='id.tabular.database'"
 	@echo "  NOTARIZE=1 APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID"
 	@echo "  PROVISIONING_PROFILE=path/to/AppStore.provisionprofile (for pkg)"
 	@echo ""
@@ -381,4 +383,8 @@ xcode-publish-macos: xcode-project
 xcode-publish-all: xcode-project
 	@chmod +x apple/scripts/publish_xcode.sh
 	@./apple/scripts/publish_xcode.sh all
+
+sync-version:
+	@chmod +x scripts/sync-version.sh
+	@./scripts/sync-version.sh $(v)
 

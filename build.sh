@@ -173,7 +173,7 @@ main() {
                 print_warning "APPLE_IDENTITY belum diset. Contoh: export APPLE_IDENTITY='Apple Distribution: Nama (TEAMID)'"
             fi
             if [ -z "$APPLE_BUNDLE_ID" ]; then
-                print_warning "APPLE_BUNDLE_ID belum diset (contoh: id.tabular.data)"
+                print_warning "APPLE_BUNDLE_ID belum diset (contoh: id.tabular.database)"
             fi
             make pkg-macos-store || {
                 print_error "Gagal membuat pkg. Pastikan env & provisioning profile benar."

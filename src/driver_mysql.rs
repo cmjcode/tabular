@@ -508,6 +508,74 @@ pub(crate) async fn fetch_mysql_data(
 
         debug!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
 
+        // Batch pre-fetch all columns for this schema
+        let mut columns_by_table: std::collections::HashMap<String, Vec<ColumnMetaStaging>> =
+            std::collections::HashMap::new();
+        let cols_query = "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION";
+        if let Ok(cols) = sqlx::query(cols_query).bind(&db_name).fetch_all(pool).await {
+            let mut seen_cols: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            for row_c in cols {
+                let tbl_name = decode_cell(&row_c, 0).unwrap_or_default();
+                let col_name = decode_cell(&row_c, 1).unwrap_or_default();
+                let col_type = decode_cell(&row_c, 2).unwrap_or_default();
+                let ord: i64 = row_c.try_get(3).unwrap_or(0);
+                if !tbl_name.is_empty() && !col_name.is_empty() && seen_cols.insert((tbl_name.clone(), col_name.clone())) {
+                    columns_by_table
+                        .entry(tbl_name)
+                        .or_default()
+                        .push(ColumnMetaStaging {
+                            column_name: col_name,
+                            data_type: col_type,
+                            ordinal_position: ord,
+                        });
+                }
+            }
+        }
+
+        // Batch pre-fetch all indexes for this schema
+        let mut indexes_by_table: std::collections::HashMap<String, Vec<IndexMetaStaging>> =
+            std::collections::HashMap::new();
+        let index_query = "SELECT TABLE_NAME, INDEX_NAME, \
+                    GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, \
+                    MIN(NON_UNIQUE) AS NON_UNIQUE,\
+                    GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES \
+             FROM INFORMATION_SCHEMA.STATISTICS \
+             WHERE TABLE_SCHEMA = ? \
+             GROUP BY TABLE_NAME, INDEX_NAME \
+             ORDER BY TABLE_NAME, INDEX_NAME";
+        if let Ok(index_rows) = sqlx::query(index_query).bind(&db_name).fetch_all(pool).await {
+            let mut seen_indexes: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            for idx_row in index_rows {
+                let tbl_name = decode_cell(&idx_row, 0).unwrap_or_default();
+                let index_name = decode_cell(&idx_row, 1).unwrap_or_default();
+                let columns_str = decode_cell(&idx_row, 2).unwrap_or_default();
+                let non_unique: i64 = idx_row.try_get(3).unwrap_or(1);
+                let index_types = decode_cell(&idx_row, 4);
+
+                let is_unique = non_unique == 0;
+
+                let columns: Vec<String> = columns_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let columns_json =
+                    serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
+
+                if !tbl_name.is_empty() && !index_name.is_empty() && seen_indexes.insert((tbl_name.clone(), index_name.clone())) {
+                    indexes_by_table
+                        .entry(tbl_name)
+                        .or_default()
+                        .push(IndexMetaStaging {
+                            index_name,
+                            method: index_types,
+                            is_unique,
+                            columns_json,
+                        });
+                }
+            }
+        }
+
         let mut seen_tables = std::collections::HashSet::new();
         for row in table_rows.into_iter() {
             let table_name = match decode_cell(&row, 0) {
@@ -526,81 +594,12 @@ pub(crate) async fn fetch_mysql_data(
                 continue;
             }
 
-            let mut staged_table = TableMetaStaging {
-                table_name: table_name.clone(),
+            let staged_table = TableMetaStaging {
+                columns: columns_by_table.remove(&table_name).unwrap_or_default(),
+                indexes: indexes_by_table.remove(&table_name).unwrap_or_default(),
+                table_name,
                 table_type,
-                columns: Vec::new(),
-                indexes: Vec::new(),
             };
-
-            // Fetch columns using INFORMATION_SCHEMA
-            let cols_query = "SELECT COLUMN_NAME, COLUMN_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
-            let cols_res = sqlx::query(cols_query)
-                .bind(&db_name)
-                .bind(&table_name)
-                .fetch_all(pool)
-                .await;
-
-            if let Ok(cols) = cols_res {
-                let mut seen_cols = std::collections::HashSet::new();
-                for row_c in cols {
-                    let col_name = decode_cell(&row_c, 0).unwrap_or_default();
-                    let col_type = decode_cell(&row_c, 1).unwrap_or_default();
-                    let ord: i64 = row_c.try_get(2).unwrap_or(0);
-                    if !col_name.is_empty() && seen_cols.insert(col_name.clone()) {
-                        staged_table.columns.push(ColumnMetaStaging {
-                            column_name: col_name,
-                            data_type: col_type,
-                            ordinal_position: ord,
-                        });
-                    }
-                }
-            }
-
-            // Fetch indexes for this table
-            let index_query = "SELECT INDEX_NAME, \
-                        GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLS, \
-                        MIN(NON_UNIQUE) AS NON_UNIQUE,\
-                        GROUP_CONCAT(DISTINCT INDEX_TYPE) AS TYPES \
-                 FROM INFORMATION_SCHEMA.STATISTICS \
-                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
-                 GROUP BY INDEX_NAME \
-                 ORDER BY INDEX_NAME";
-
-            let indexes_res = sqlx::query(index_query)
-                .bind(&db_name)
-                .bind(&table_name)
-                .fetch_all(pool)
-                .await;
-
-            if let Ok(index_rows) = indexes_res {
-                let mut seen_indexes = std::collections::HashSet::new();
-                for idx_row in index_rows {
-                    let index_name = decode_cell(&idx_row, 0).unwrap_or_default();
-                    let columns_str = decode_cell(&idx_row, 1).unwrap_or_default();
-                    let non_unique: i64 = idx_row.try_get(2).unwrap_or(1);
-                    let index_types = decode_cell(&idx_row, 3);
-
-                    let is_unique = non_unique == 0;
-
-                    let columns: Vec<String> = columns_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    let columns_json =
-                        serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
-
-                    if !index_name.is_empty() && seen_indexes.insert(index_name.clone()) {
-                        staged_table.indexes.push(IndexMetaStaging {
-                            index_name,
-                            method: index_types,
-                            is_unique,
-                            columns_json,
-                        });
-                    }
-                }
-            }
 
             staged_db.tables.push(staged_table);
         }

@@ -154,15 +154,26 @@ pub mod rfd {
 pub static STARTUP_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 pub fn log_startup_step(step: &str) {
-    let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
-    let elapsed = start.elapsed();
-    eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+    #[cfg(debug_assertions)]
+    {
+        let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
+        let elapsed = start.elapsed();
+        eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        if std::env::var_os("TABULAR_DEBUG_STARTUP").is_some() {
+            let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
+            let elapsed = start.elapsed();
+            eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+        }
+    }
 }
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
     log_startup_step("run() entrypoint started");
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
     log_startup_step("dotenv loaded");
     config::init_data_dir();
     log_startup_step("init_data_dir completed");

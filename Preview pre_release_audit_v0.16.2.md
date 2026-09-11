@@ -116,14 +116,15 @@ localhost
 
 | Packaging Target | File | Current State | Required Update |
 | :--- | :--- | :--- | :--- |
-| **Cargo** | [`Cargo.toml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Cargo.toml#L3) | `0.16.2` | Correct |
-| **Xcode (macOS/iOS)** | [`Tabular.xcodeproj/project.pbxproj`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Tabular.xcodeproj/project.pbxproj) | `0.16.2` (build 162) | Correct |
-| **Linux AppStream / Flathub** | [`id.tabular.database.metainfo.xml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/id.tabular.database.metainfo.xml#L43) | `0.5.27` (2025-12-17) | Update to `<release version="0.16.2" date="2026-09-11">` with release notes |
-| **Flatpak Manifest** | [`flatpak/id.tabular.database.flathub.yml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/flatpak/id.tabular.database.flathub.yml#L60) | `tag: v0.5.27` | Update tag to `v0.16.2` |
-| **Arch Linux / AUR** | [`PKGBUILD`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/PKGBUILD#L3) & [`aur/tabular-bin/PKGBUILD`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/aur/tabular-bin/PKGBUILD#L3) | `0.10.0` | Update `pkgver=0.16.2` |
-| **Makefile** | [`Makefile`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Makefile#L55) | `id.tabular.data` | Change to canonical `id.tabular.database` |
-| **GitHub Actions** | [`.github/workflows/build.yml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/.github/workflows/build.yml#L30) | `actions/cache@v3`, `action-gh-release@v1` | Update to `@v4` and `@v2` |
-| **Security Policy** | [`SECURITY.md`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/SECURITY.md#L37-L50) | Generic template placeholder text ("5.1.x, 5.0.x") | Clean up versions and add real security contact email |
+| **Cargo** | [`Cargo.toml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Cargo.toml#L3) | `0.16.2` | Correct ✅ |
+| **Xcode (macOS/iOS)** | [`Tabular.xcodeproj/project.pbxproj`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Tabular.xcodeproj/project.pbxproj) | `0.16.2` (build 162) | Correct ✅ |
+| **Linux AppStream / Flathub** | [`id.tabular.database.metainfo.xml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/id.tabular.database.metainfo.xml#L44) | `0.16.2` (2026-09-11) | Updated with 0.16.2 release notes ✅ |
+| **Flatpak Manifest** | [`flatpak/id.tabular.database.flathub.yml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/flatpak/id.tabular.database.flathub.yml#L54) | `tag: v0.16.2` | Updated tag to `v0.16.2` ✅ |
+| **Arch Linux / AUR** | [`PKGBUILD`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/PKGBUILD#L2) & [`aur/tabular-bin/PKGBUILD`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/aur/tabular-bin/PKGBUILD#L2) | `0.16.2` | Updated `pkgver=0.16.2` & synced `.SRCINFO` ✅ |
+| **Makefile** | [`Makefile`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/Makefile#L17) | `id.tabular.database` | Set default export & canonical bundle ID ✅ |
+| **GitHub Actions** | [`.github/workflows/build.yml`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/.github/workflows/build.yml#L31) | `actions/cache@v4`, `action-gh-release@v2` | Updated to modern action versions ✅ |
+| **Security Policy** | [`SECURITY.md`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/SECURITY.md#L37-L50) | Supported: `0.16.x` | Replaced templates with official reporting policy ✅ |
+| **Automation Script** | [`scripts/sync-version.sh`](file:///Users/jayuda/Documents/PROJECT/TABULAR/tabular-client/scripts/sync-version.sh) | `make sync-version` | Added automated future version sync script ✅ |
 
 ---
 
@@ -177,13 +178,17 @@ graph TD
    - Relocate root `implementation_plan_*.md` and `walkthrough_*.md` to `docs/archive/` ✅
    - Update `.gitignore` with `localhost`, `*.db`, `*.sqlite`, `*.sqlite3`, `*.log` ✅
 
-4. **Phase 4: Packaging & Version Sync to `0.16.2`**
-   - Update AppStream `id.tabular.database.metainfo.xml`
-   - Update `flatpak/id.tabular.database.flathub.yml`
-   - Update `PKGBUILD` and `aur/tabular-bin/PKGBUILD`
-   - Update `Makefile` bundle ID
-   - Populate `SECURITY.md`
+4. **Phase 4: Packaging & Version Sync to `0.16.2` (Completed ✅)**
+   - Update AppStream `id.tabular.database.metainfo.xml` ✅
+   - Update `flatpak/id.tabular.database.flathub.yml` ✅
+   - Update `PKGBUILD`, `aur/tabular-bin/PKGBUILD`, and `.SRCINFO` files ✅
+   - Update `Makefile` & `build.sh` bundle ID (`id.tabular.database`) ✅
+   - Update GitHub Actions workflow (`actions/cache@v4`, `action-gh-release@v2`) ✅
+   - Populate `SECURITY.md` supported versions & reporting process ✅
+   - Add automated sync script `scripts/sync-version.sh` and `make sync-version` target ✅
 
-5. **Phase 5: Performance Polish**
-   - Optimize N+1 metadata queries
-   - Guard startup timer logs
+5. **Phase 5: Performance Polish (Completed ✅)**
+   - Optimize N+1 metadata queries in PostgreSQL (`src/driver_postgres.rs`) ✅
+   - Optimize 2N+1 metadata queries in MySQL (`src/driver_mysql.rs`) ✅
+   - Guard startup timer logs for release builds (`src/lib.rs`) ✅
+   - Migrate archived `dotenv` to `dotenvy 0.15.7` (`Cargo.toml` & `src/lib.rs`) ✅
