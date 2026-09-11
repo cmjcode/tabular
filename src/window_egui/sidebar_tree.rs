@@ -3188,7 +3188,7 @@ impl super::Tabular {
                             if node.database_name.is_some() {
                                 editor.set_text(format!("DESCRIBE {};", node.name));
                             } else {
-                                editor.set_text(format!("PRAGMA table_info({});", node.name)); // SQLite syntax
+                                editor.set_text(format!("PRAGMA table_info(\"{}\");", node.name.replace('\"', "\"\""))); // SQLite syntax
                             }
                             editor.mark_text_modified();
                             ui.close();
