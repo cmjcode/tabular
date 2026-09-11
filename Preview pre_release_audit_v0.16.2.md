@@ -172,9 +172,10 @@ graph TD
    - Clean up duplicate line in `src/driver_mysql.rs`
    - Run `cargo clippy -- -D warnings` to guarantee CI green
 
-3. **Phase 3: Repository Hygiene**
-   - Remove tracked `localhost`, `pub`, `color.txt`, `src/reproduce_issue.rs`, `src/tabular-0.10.0/`
-   - Update `.gitignore`
+3. **Phase 3: Repository Hygiene (Completed ✅)**
+   - Remove tracked `localhost`, `pub`, `color.txt`, `src/reproduce_issue.rs`, `src/tabular-0.10.0/` ✅
+   - Relocate root `implementation_plan_*.md` and `walkthrough_*.md` to `docs/archive/` ✅
+   - Update `.gitignore` with `localhost`, `*.db`, `*.sqlite`, `*.sqlite3`, `*.log` ✅
 
 4. **Phase 4: Packaging & Version Sync to `0.16.2`**
    - Update AppStream `id.tabular.database.metainfo.xml`
