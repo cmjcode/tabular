@@ -2292,7 +2292,7 @@ pub(crate) fn execute_table_query_sync(
                                                     && let Some(table_name) = words.get(from_idx + 1)
                                                 {
                                                     let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
-                                                    let pragma_query = format!("PRAGMA table_info({})", clean_table);
+                                                    let pragma_query = format!("PRAGMA table_info(\"{}\")", clean_table.replace('\"', "\"\""));
                                                     match tokio::time::timeout(
                                                         std::time::Duration::from_secs(10),
                                                         sqlx::query(sqlx::AssertSqlSafe(pragma_query.as_str())).fetch_all(sqlite_pool.as_ref()),

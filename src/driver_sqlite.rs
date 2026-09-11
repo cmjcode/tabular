@@ -28,7 +28,7 @@ pub async fn fetch_data(connection_id: i64, pool: &SqlitePool, cache_pool: &Sqli
                     indexes: Vec::new(),
                 };
 
-                let col_query = format!("PRAGMA table_info({})", table_name);
+                let col_query = format!("PRAGMA table_info(\"{}\")", table_name.replace('\"', "\"\""));
                 if let Ok(col_rows) = sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(pool).await {
                     for (idx, col_row) in col_rows.into_iter().enumerate() {
                         if let (Ok(col_name), Ok(col_type)) = (

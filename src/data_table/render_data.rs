@@ -1417,8 +1417,9 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     } // end for row_index in first_row..last_row
 
                     // Bottom spacer: allocate space for rows below the viewport
-                    if last_row < total_rows {
-                        ui.add_space((total_rows - last_row) as f32 * row_height);
+                    let remaining_rows = total_rows.saturating_sub(last_row);
+                    if remaining_rows > 0 {
+                        ui.add_space(remaining_rows as f32 * row_height);
                     }
 
                     // Context menu on the scroll area background
