@@ -46,6 +46,43 @@ pub(crate) async fn fetch_postgres_data(
     if let Some(db_name) = current_db {
         let staged_db = staging.add_database(&db_name);
 
+        // Pre-fetch all columns for public schema in one batch query to eliminate N+1 latency
+        let mut columns_by_table: std::collections::HashMap<String, Vec<ColumnMetaStaging>> =
+            std::collections::HashMap::new();
+
+        if let Ok(col_rows) = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            sqlx::query(
+                "SELECT table_name, column_name, data_type, ordinal_position \
+                 FROM information_schema.columns \
+                 WHERE table_schema = 'public' \
+                 ORDER BY table_name, ordinal_position",
+            )
+            .fetch_all(pool),
+        )
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)
+        .and_then(|r| r)
+        {
+            for col_row in col_rows {
+                if let (Ok(tbl_name), Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
+                    col_row.try_get::<String, _>(0),
+                    col_row.try_get::<String, _>(1),
+                    col_row.try_get::<String, _>(2),
+                    col_row.try_get::<i32, _>(3),
+                ) {
+                    columns_by_table
+                        .entry(tbl_name)
+                        .or_default()
+                        .push(ColumnMetaStaging {
+                            column_name: col_name,
+                            data_type: col_type,
+                            ordinal_position: ordinal_pos as i64,
+                        });
+                }
+            }
+        }
+
         // Tables (public)
         if let Ok(table_rows) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -57,38 +94,12 @@ pub(crate) async fn fetch_postgres_data(
         {
             for table_row in table_rows {
                 if let Ok(table_name) = table_row.try_get::<String, _>(0) {
-                    let mut staged_table = TableMetaStaging {
-                        table_name: table_name.clone(),
-                        table_type: "table".to_string(),
-                        columns: Vec::new(),
+                    let staged_table = TableMetaStaging {
+                        columns: columns_by_table.remove(&table_name).unwrap_or_default(),
                         indexes: Vec::new(),
+                        table_name,
+                        table_type: "table".to_string(),
                     };
-
-                    // Columns
-                    if let Ok(col_rows) = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
-                            .bind(&table_name)
-                            .fetch_all(pool),
-                    )
-                    .await
-                    .map_err(|_| sqlx::Error::PoolTimedOut)
-                    .and_then(|r| r)
-                    {
-                        for col_row in col_rows {
-                            if let (Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
-                                col_row.try_get::<String, _>(0),
-                                col_row.try_get::<String, _>(1),
-                                col_row.try_get::<i32, _>(2),
-                            ) {
-                                staged_table.columns.push(ColumnMetaStaging {
-                                    column_name: col_name,
-                                    data_type: col_type,
-                                    ordinal_position: ordinal_pos as i64,
-                                });
-                            }
-                        }
-                    }
 
                     staged_db.tables.push(staged_table);
                 }
@@ -110,10 +121,10 @@ pub(crate) async fn fetch_postgres_data(
             for view_row in view_rows {
                 if let Ok(view_name) = view_row.try_get::<String, _>(0) {
                     staged_db.tables.push(TableMetaStaging {
+                        columns: columns_by_table.remove(&view_name).unwrap_or_default(),
+                        indexes: Vec::new(),
                         table_name: view_name,
                         table_type: "view".to_string(),
-                        columns: Vec::new(),
-                        indexes: Vec::new(),
                     });
                 }
             }
