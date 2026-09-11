@@ -19,6 +19,13 @@ flatpak/repo
 Cargo.lock
 .idea
 
+# Databases and logs
+localhost
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
 # iOS & Xcode build artifacts
 ios/Xcode/TabulariOS/Generated/
 build/
