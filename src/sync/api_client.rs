@@ -412,6 +412,84 @@ impl ApiClient {
         Ok(resp.data)
     }
 
+    // ── Moderation (App Store Guideline 1.2) ─────────────────────────────────
+
+    /// GET /api/v1/moderation/blocks — everyone the caller has blocked.
+    pub async fn list_blocks(&self, token: &str) -> anyhow::Result<Vec<BlockedUser>> {
+        let resp = self.http
+            .get(self.url("/api/v1/moderation/blocks"))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<Vec<BlockedUser>>>().await?;
+        Ok(resp.data)
+    }
+
+    /// POST /api/v1/moderation/blocks — block a user.
+    ///
+    /// The server also drops the pair out of every team they share, so the
+    /// caller should refresh teams afterwards.
+    pub async fn block_user(&self, token: &str, user_id: &str) -> anyhow::Result<()> {
+        self.http
+            .post(self.url("/api/v1/moderation/blocks"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "user_id": user_id }))
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    /// DELETE /api/v1/moderation/blocks/{user_id}
+    pub async fn unblock_user(&self, token: &str, user_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/moderation/blocks/{}", user_id)))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    /// POST /api/v1/moderation/reports — report objectionable content or behaviour.
+    ///
+    /// `resource_type` is one of `user`, `team`, `shared_folder`, `room`;
+    /// `reason` one of `abuse`, `harassment`, `spam`, `illegal`, `other`.
+    pub async fn report_content(
+        &self,
+        token: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        reported_user_id: Option<&str>,
+        reason: &str,
+        details: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.http
+            .post(self.url("/api/v1/moderation/reports"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "reported_user_id": reported_user_id,
+                "reason": reason,
+                "details": details,
+            }))
+            .send().await?.error_for_status()?;
+        Ok(())
+    }
+
+    /// DELETE /api/v1/users/me — irreversibly erases the account and every row
+    /// the server holds for it.
+    ///
+    /// App Store Review Guideline 5.1.1(v) requires an app that offers account
+    /// creation to offer deletion from inside the app. Callers must confirm with
+    /// the user first: this cannot be undone, and because `teams.owner_id`
+    /// cascades server-side it also removes any team this account owns for its
+    /// other members.
+    pub async fn delete_account(&self, token: &str) -> anyhow::Result<DeleteAccountResponse> {
+        let resp = self.http
+            .delete(self.url("/api/v1/users/me"))
+            .bearer_auth(token)
+            .send().await?.error_for_status()?
+            .json::<ApiWrapper<DeleteAccountResponse>>().await?;
+        Ok(resp.data)
+    }
+
     /// GET /api/v1/users/search?q= — exact match on email, username, or phone.
     pub async fn search_users(&self, token: &str, q: &str) -> anyhow::Result<Vec<RemoteUser>> {
         let url = format!("{}?q={}", self.url("/api/v1/users/search"), percent_encode(q));
@@ -577,6 +655,25 @@ pub struct RemoteUser {
     pub username: Option<String>,
     #[serde(default)]
     pub phone: Option<String>,
+}
+
+/// One row of `GET /api/v1/moderation/blocks`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BlockedUser {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    #[allow(dead_code)]
+    pub avatar_url: Option<String>,
+}
+
+/// Payload of `DELETE /api/v1/users/me` — the email is echoed back so the
+/// confirmation toast can name the account that was removed.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DeleteAccountResponse {
+    #[allow(dead_code)]
+    pub deleted: bool,
+    pub email: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

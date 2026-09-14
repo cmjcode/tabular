@@ -224,7 +224,18 @@ impl PluginManager {
     }
 
     /// Load user-installed .wasm or .wat plugins from ~/.tabular/plugins directory
+    ///
+    /// Disabled on iOS. `UIFileSharingEnabled` lets anyone drop files into the
+    /// app's Documents folder from the Files app — which is how a user brings
+    /// their own `.db` in, so it stays on — but that same door would let a
+    /// `.wasm` module in, and executing downloaded code is exactly what App
+    /// Store Review Guideline 2.5.2 prohibits. Built-in plugins are compiled
+    /// into the binary and keep working.
     pub fn load_plugins_from_disk(&mut self) {
+        if cfg!(target_os = "ios") {
+            return;
+        }
+
         let plugins_dir = config::get_data_dir().join("plugins");
         if !plugins_dir.exists() {
             let _ = std::fs::create_dir_all(&plugins_dir);

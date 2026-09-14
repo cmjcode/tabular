@@ -139,6 +139,15 @@ rfd = "0.17"
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }
 keyring = "4"
+# UIKit bridge for `self_update::open_url` — iOS has no `open`/`xdg-open`, so the
+# OAuth sign-in URL has to go through -[UIApplication openURL:options:...].
+# Pinned to the versions winit already pulls in (see patches/winit/Cargo.toml) so
+# the iOS build does not end up compiling two objc2 trees.
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSString", "NSURL", "NSDictionary"] }
+# `block2` gates -[UIApplication openURL:options:completionHandler:]; without it
+# only the deprecated openURL: is generated.
+objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "block2"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = "4"

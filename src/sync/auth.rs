@@ -31,6 +31,10 @@ use super::{TabularAccount, api_client::TokenResponse};
 pub enum OAuthProvider {
     Google,
     GitHub,
+    /// Required by App Store Guideline 4.8: an app whose primary account is set
+    /// up through third-party login must also offer a service that limits data
+    /// collection to name and email and lets the user hide their address.
+    Apple,
 }
 
 impl OAuthProvider {
@@ -38,6 +42,7 @@ impl OAuthProvider {
         match self {
             OAuthProvider::Google => "Google",
             OAuthProvider::GitHub => "GitHub",
+            OAuthProvider::Apple => "Apple",
         }
     }
 
@@ -45,6 +50,7 @@ impl OAuthProvider {
         match self {
             OAuthProvider::Google => "google",
             OAuthProvider::GitHub => "github",
+            OAuthProvider::Apple => "apple",
         }
     }
 }
@@ -245,35 +251,10 @@ pub fn start_oauth_flow(
 }
 
 /// Open a URL in the system default browser
-fn open_url(_url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(_url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", _url])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(_url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        Err("Cannot open browser on this platform".to_string())
-    }
+fn open_url(url: &str) -> Result<(), String> {
+    // Delegates to the shared platform matrix — notably the iOS arm, without
+    // which the OAuth browser never opens and the ticket poller times out.
+    crate::url_opener::open_url(url)
 }
 
 /// Convert a TokenResponse (from server) into a TabularAccount for local storage

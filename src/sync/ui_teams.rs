@@ -236,6 +236,55 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                                     remove_team_member(tabular, &team.id, &m.user_id);
                                                 }
                                             }
+
+                                            // Guideline 1.2: reporting and blocking must be
+                                            // reachable wherever another person's content is,
+                                            // for every member — not only for team owners.
+                                            if m.user_id != account.user_id {
+                                                let icon_size = if metrics.is_touch { 14.0 } else { 11.0 };
+                                                let label = m
+                                                    .display_name
+                                                    .clone()
+                                                    .unwrap_or_else(|| m.email.clone());
+
+                                                ui.add_space(2.0);
+                                                if ui.add_sized(
+                                                    item_del_size,
+                                                    egui::Button::new(egui::RichText::new("⚑").size(icon_size)).frame(false),
+                                                )
+                                                .on_hover_text("Report this member")
+                                                .clicked()
+                                                {
+                                                    tabular.report_target = Some((m.user_id.clone(), label.clone()));
+                                                    tabular.report_reason = "abuse".to_string();
+                                                    tabular.report_details.clear();
+                                                    tabular.report_error = None;
+                                                }
+
+                                                ui.add_space(2.0);
+                                                if ui.add_sized(
+                                                    item_del_size,
+                                                    egui::Button::new(egui::RichText::new("🚫").size(icon_size)).frame(false),
+                                                )
+                                                .on_hover_text("Block this member")
+                                                .clicked()
+                                                {
+                                                    tabular.block_target = Some((m.user_id.clone(), label));
+                                                }
+                                            }
+
+                                            // A member who is not the owner can always walk away
+                                            // from a team they were added to without consent.
+                                            if m.user_id == account.user_id && !is_owner {
+                                                ui.add_space(2.0);
+                                                if ui
+                                                    .button(egui::RichText::new("Leave").small())
+                                                    .on_hover_text("Leave this team")
+                                                    .clicked()
+                                                {
+                                                    remove_team_member(tabular, &team.id, &m.user_id);
+                                                }
+                                            }
                                         });
                                     }
                                 }
@@ -1358,3 +1407,210 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
+
+// ─── Moderation UI (App Store Review Guideline 1.2) ──────────────────────────
+
+/// Reason keys accepted by `POST /api/v1/moderation/reports`, with their labels.
+const REPORT_REASONS: &[(&str, &str)] = &[
+    ("abuse", "Abusive or objectionable content"),
+    ("harassment", "Harassment or bullying"),
+    ("spam", "Spam or unwanted invitations"),
+    ("illegal", "Illegal content"),
+    ("other", "Something else"),
+];
+
+/// Modal for reporting a team member.
+pub fn render_report_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    let Some((user_id, label)) = tabular.report_target.clone() else {
+        return;
+    };
+
+    let in_flight = tabular.report_receiver.is_some();
+    let mut close = false;
+
+    egui::Window::new("Report Member")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            ui.add_space(4.0);
+
+            ui.label(format!("Reporting {label}"));
+            ui.add_space(8.0);
+
+            ui.label(egui::RichText::new("Why are you reporting this?").strong());
+            ui.add_space(4.0);
+            for (key, text) in REPORT_REASONS {
+                ui.radio_value(&mut tabular.report_reason, (*key).to_string(), *text);
+            }
+
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Details (optional)").strong());
+            ui.add_space(4.0);
+            ui.add_enabled(
+                !in_flight,
+                egui::TextEdit::multiline(&mut tabular.report_details)
+                    .hint_text("Anything that helps us understand what happened")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(4),
+            );
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(
+                    "We review every report and act on it, which may include removing content \
+                     or suspending the account. Blocking this person stops them reaching you \
+                     straight away.",
+                )
+                .size(11.0)
+                .color(ui.visuals().weak_text_color()),
+            );
+
+            if let Some(err) = &tabular.report_error {
+                ui.add_space(6.0);
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
+            }
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!in_flight, |ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(!in_flight, |ui| {
+                        let label = if in_flight { "Sending…" } else { "Submit Report" };
+                        if ui.button(label).clicked() {
+                            submit_report(tabular, &user_id);
+                        }
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        });
+
+    if close {
+        tabular.report_target = None;
+        tabular.report_details.clear();
+        tabular.report_error = None;
+    }
+}
+
+/// Confirmation for blocking a team member.
+pub fn render_block_user_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    let Some((user_id, label)) = tabular.block_target.clone() else {
+        return;
+    };
+
+    let in_flight = tabular.block_receiver.is_some();
+    let mut close = false;
+
+    egui::Window::new("Block Member")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            ui.add_space(4.0);
+
+            ui.label(format!("Block {label}?"));
+            ui.add_space(8.0);
+
+            for line in [
+                "• They can no longer add you to any team",
+                "• You are removed from teams they own, and they from teams you own",
+                "• Neither of you will find the other in member search",
+            ] {
+                ui.label(egui::RichText::new(line).size(12.0));
+            }
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("You can undo this later from Settings → Sync & Account.")
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!in_flight, |ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(!in_flight, |ui| {
+                        let label = if in_flight { "Blocking…" } else { "Block" };
+                        if ui.button(label).clicked() {
+                            do_block_user(tabular, &user_id);
+                        }
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        });
+
+    if close {
+        tabular.block_target = None;
+    }
+}
+
+fn submit_report(tabular: &mut Tabular, user_id: &str) {
+    let Some(account) = tabular.sync_account.clone() else {
+        return;
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let reason = tabular.report_reason.clone();
+    let details = tabular.report_details.trim().to_string();
+    let target = user_id.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    tabular.report_error = None;
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client
+            .report_content(
+                &token,
+                "user",
+                Some(&target),
+                Some(&target),
+                &reason,
+                if details.is_empty() { None } else { Some(&details) },
+            )
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    tabular.report_receiver = Some(rx);
+}
+
+fn do_block_user(tabular: &mut Tabular, user_id: &str) {
+    let Some(account) = tabular.sync_account.clone() else {
+        return;
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let target = user_id.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client
+            .block_user(&token, &target)
+            .await
+            .map(|_| target)
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    tabular.block_receiver = Some(rx);
+}

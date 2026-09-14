@@ -129,6 +129,11 @@ pub fn draw_circular_avatar(
 pub fn open_account_dialog(tabular: &mut Tabular) {
     tabular.sync_profile_inputs_from_account();
     tabular.show_account_dialog = true;
+    // Populate the unblock list up front so the section is not empty the first
+    // time someone opens it looking for a block they just made.
+    if tabular.sync_account.is_some() {
+        refresh_blocked_users(tabular);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -467,8 +472,213 @@ fn render_account_profile_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             });
         });
 
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Blocked users (App Store Guideline 1.2). Blocking happens from the
+        // Teams member list; this is the only place it can be undone, so the
+        // block confirmation points here.
+        let blocked_header = if tabular.blocked_users.is_empty() {
+            "🚫 Blocked Users".to_string()
+        } else {
+            format!("🚫 Blocked Users ({})", tabular.blocked_users.len())
+        };
+        egui::CollapsingHeader::new(blocked_header)
+            .id_salt("blocked_users_section")
+            .show(ui, |ui| {
+                if ui.button("🔄 Refresh").clicked() {
+                    refresh_blocked_users(tabular);
+                }
+                ui.add_space(4.0);
+
+                if tabular.blocked_users.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "You have not blocked anyone. Block a person from the Teams member list.",
+                        )
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                } else {
+                    let blocked = tabular.blocked_users.clone();
+                    for b in &blocked {
+                        ui.horizontal(|ui| {
+                            let label = b.display_name.clone().unwrap_or_else(|| b.email.clone());
+                            ui.label(egui::RichText::new(format!("• {}", label)).size(12.0));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui::RichText::new("Unblock").small()).clicked() {
+                                    do_unblock_user(tabular, &b.id);
+                                }
+                            });
+                        });
+                    }
+                }
+            });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Danger zone. App Store Review Guideline 5.1.1(v) requires an app that
+        // offers account creation to offer deletion from inside the app itself —
+        // a link out to a web form does not satisfy it.
+        ui.label(
+            egui::RichText::new("Danger Zone")
+                .strong()
+                .size(13.0)
+                .color(egui::Color32::from_rgb(220, 90, 90)),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "Deleting your account permanently erases your synced connections, saved queries, \
+                 query history, HTTP requests and vault keys from the server, and removes any team \
+                 you own for its other members. This cannot be undone.",
+            )
+            .size(11.0)
+            .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(6.0);
+        if ui.add(style::btn_danger_ctx(ui.ctx(), "🗑  Delete Account")).clicked() {
+            tabular.show_delete_account_dialog = true;
+            tabular.delete_account_confirm_input.clear();
+            tabular.delete_account_error = None;
+        }
+
         ui.add_space(6.0);
     });
+}
+
+/// Modal that gates account deletion behind typing the account's own email.
+///
+/// Rendered from the top-level frame loop rather than nested inside the account
+/// dialog, so it survives that dialog being closed underneath it.
+pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    if !tabular.show_delete_account_dialog {
+        return;
+    }
+
+    let Some(account) = tabular.sync_account.clone() else {
+        // Signed out from another surface while the modal was open.
+        tabular.show_delete_account_dialog = false;
+        return;
+    };
+
+    let in_progress = tabular.delete_account_receiver.is_some();
+
+    egui::Window::new("Delete Account")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.add_space(4.0);
+
+            ui.label(
+                egui::RichText::new("⚠  This permanently deletes your Tabular account")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 90, 90)),
+            );
+            ui.add_space(8.0);
+
+            ui.label("The following is erased from the server and cannot be recovered:");
+            ui.add_space(4.0);
+            for line in [
+                "• Synced database connections",
+                "• Saved queries and query history",
+                "• Saved HTTP requests",
+                "• Vault keys — encrypted credentials become unrecoverable",
+                "• Teams you own, including for their other members",
+            ] {
+                ui.label(egui::RichText::new(line).size(12.0));
+            }
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(
+                    "Your databases themselves are untouched — this only removes what Tabular \
+                     stores for your account. Local data on this device is cleared too.",
+                )
+                .size(11.0)
+                .color(ui.visuals().weak_text_color()),
+            );
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            ui.label(format!("Type {} to confirm:", account.email));
+            ui.add_space(4.0);
+            ui.add_enabled(
+                !in_progress,
+                egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
+                    .hint_text(account.email.clone())
+                    .desired_width(f32::INFINITY),
+            );
+
+            let confirmed = tabular.delete_account_confirm_input.trim() == account.email;
+
+            if let Some(err) = &tabular.delete_account_error {
+                ui.add_space(6.0);
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), err);
+            }
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!in_progress, |ui| {
+                    if ui.add(style::btn_secondary("Cancel")).clicked() {
+                        tabular.show_delete_account_dialog = false;
+                        tabular.delete_account_confirm_input.clear();
+                        tabular.delete_account_error = None;
+                    }
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(confirmed && !in_progress, |ui| {
+                        let label = if in_progress {
+                            "Deleting…"
+                        } else {
+                            "🗑  Delete My Account"
+                        };
+                        if ui.add(style::btn_danger_ctx(ui.ctx(), label)).clicked() {
+                            do_delete_account(tabular);
+                        }
+                    });
+                });
+            });
+
+            ui.add_space(4.0);
+        });
+}
+
+/// Fire the DELETE and let `poll_delete_account_receiver` finish the teardown.
+///
+/// The local wipe deliberately waits for the server to confirm: clearing first
+/// would throw away the very token needed to authenticate the request, leaving
+/// a live server-side account behind if it failed.
+fn do_delete_account(tabular: &mut Tabular) {
+    let Some(account) = tabular.sync_account.clone() else {
+        return;
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    tabular.delete_account_error = None;
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client
+            .delete_account(&token)
+            .await
+            .map(|resp| resp.email)
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    tabular.delete_account_receiver = Some(rx);
 }
 
 /// Render logged-out login / create account view.
@@ -499,6 +709,16 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             );
         }
         ui.add_space(12.0);
+
+        // Sign in with Apple sits above the others: Guideline 4.8 wants it at
+        // least as prominent as the third-party options it stands in for.
+        let apple_btn = style::btn_primary_ctx(ui.ctx(), "  Sign in with Apple  ")
+            .min_size(egui::vec2(328.0, 36.0));
+        if ui.add(apple_btn).clicked() {
+            start_oauth(tabular, OAuthProvider::Apple);
+        }
+
+        ui.add_space(8.0);
 
         // OAuth buttons
         ui.horizontal(|ui| {
@@ -535,21 +755,27 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             });
             ui.add_space(4.0);
 
-            ui.collapsing("Enter token manually (fallback)", |ui| {
-                ui.label("If browser redirect does not complete automatically, paste the token JSON:");
-                ui.add_space(4.0);
+            // Desktop only. On iOS sign-in always completes over HTTPS ticket
+            // polling, so this escape hatch is never needed there — and asking
+            // an App Store reviewer to paste raw token JSON reads as an
+            // unfinished developer screen.
+            if !cfg!(target_os = "ios") {
+                ui.collapsing("Enter token manually (fallback)", |ui| {
+                    ui.label("If browser redirect does not complete automatically, paste the token JSON:");
+                    ui.add_space(4.0);
 
-                let token_edit = egui::TextEdit::multiline(&mut tabular.sync_token_input)
-                    .hint_text("Paste token JSON here: { \"access_token\": \"...\", \"refresh_token\": \"...\" }")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(3);
-                ui.add(token_edit);
+                    let token_edit = egui::TextEdit::multiline(&mut tabular.sync_token_input)
+                        .hint_text("Paste token JSON here: { \"access_token\": \"...\", \"refresh_token\": \"...\" }")
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(3);
+                    ui.add(token_edit);
 
-                ui.add_space(4.0);
-                if ui.add(style::btn_primary_ctx(ui.ctx(), "✅  Submit Token")).clicked() {
-                    try_submit_token(tabular);
-                }
-            });
+                    ui.add_space(4.0);
+                    if ui.add(style::btn_primary_ctx(ui.ctx(), "✅  Submit Token")).clicked() {
+                        try_submit_token(tabular);
+                    }
+                });
+            }
 
             ui.add_space(4.0);
             if ui.add(style::btn_secondary("Cancel")).clicked() {
@@ -707,6 +933,16 @@ pub fn do_logout(tabular: &mut Tabular) {
         }
     }
 
+    wipe_local_session(tabular);
+}
+
+/// Drop every trace of the signed-in account from this device.
+///
+/// Shared by sign-out and account deletion. For deletion this is the second
+/// half of the operation — Guideline 5.1.1(v) expects the app to be back in its
+/// signed-out state once the server confirms, with no stale vault material left
+/// behind that could still decrypt a cached payload.
+pub fn wipe_local_session(tabular: &mut Tabular) {
     super::api_client::clear_account();
     tabular.sync_account = None;
     tabular.sync_status = super::SyncStatus::Offline;
@@ -725,3 +961,42 @@ pub fn do_logout(tabular: &mut Tabular) {
     tabular.vault_error = None;
 }
 
+
+/// Fetch the blocked-user list for the unblock UI (App Store Guideline 1.2).
+pub fn refresh_blocked_users(tabular: &mut Tabular) {
+    let Some(account) = tabular.sync_account.clone() else {
+        return;
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let result = client.list_blocks(&token).await.map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    tabular.blocked_users_receiver = Some(rx);
+}
+
+/// Lift a block, then refresh the list so the row disappears.
+fn do_unblock_user(tabular: &mut Tabular, user_id: &str) {
+    let Some(account) = tabular.sync_account.clone() else {
+        return;
+    };
+
+    let token = account.access_token.clone();
+    let server = tabular.sync_server_url.clone();
+    let target = user_id.to_string();
+
+    super::spawn_async(async move {
+        let client = super::api_client::ApiClient::new(&server);
+        let _ = client.unblock_user(&token, &target).await;
+    });
+
+    // Optimistic: the row goes now, and the next refresh reconciles if the
+    // request turned out to fail.
+    tabular.blocked_users.retain(|b| b.id != user_id);
+}

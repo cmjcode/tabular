@@ -607,6 +607,33 @@ pub struct Tabular {
     pub profile_phone_input: String,
     /// Async receiver for the profile save result
     pub profile_update_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::RemoteUser, String>>>,
+    /// Whether the "Delete Account" confirmation modal is open.
+    pub show_delete_account_dialog: bool,
+    /// Buffer for the type-to-confirm field in that modal — deletion is only
+    /// enabled once this matches the signed-in email exactly.
+    pub delete_account_confirm_input: String,
+    /// Async receiver for the account deletion result — `Ok(email)` on success.
+    pub delete_account_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Last account-deletion failure, shown inside the modal.
+    pub delete_account_error: Option<String>,
+    // ── Moderation: block & report (App Store Guideline 1.2) ────────────────
+    /// Target of the open "Report" modal: `(user_id, display label)`.
+    pub report_target: Option<(String, String)>,
+    /// Selected reason key — 'abuse' | 'harassment' | 'spam' | 'illegal' | 'other'.
+    pub report_reason: String,
+    /// Free-text detail the reporter typed.
+    pub report_details: String,
+    /// Async receiver for the report submission.
+    pub report_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    pub report_error: Option<String>,
+    /// Target of the open "Block user" confirmation: `(user_id, display label)`.
+    pub block_target: Option<(String, String)>,
+    /// Async receiver for a block/unblock — `Ok(user_id)`.
+    pub block_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Everyone the signed-in account has blocked, for the unblock list.
+    pub blocked_users: Vec<crate::sync::api_client::BlockedUser>,
+    pub blocked_users_receiver:
+        Option<std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::BlockedUser>, String>>>,
     /// Input for creating a new collab room
     pub new_collab_room_name: String,
     /// Async receiver for room list refresh

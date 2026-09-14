@@ -1,8 +1,10 @@
 use crate::self_update::UpdateInfo;
 use futures_util::StreamExt;
-use log::{info, warn};
+use log::info;
+// Every `warn!` here lives in the macOS-only DMG staging path, so importing it
+// unconditionally makes the iOS build fail `clippy -D warnings`.
 #[cfg(target_os = "macos")]
-use log::debug;
+use log::{debug, warn};
 use std::fs;
 #[allow(unused_imports)]
 use std::io::Cursor;

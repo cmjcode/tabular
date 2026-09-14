@@ -5,6 +5,12 @@ use crate::auto_updater::UpdateStage;
 
 impl super::Tabular {
     pub fn check_for_updates(&mut self, manual: bool) {
+        // iOS ships only through the App Store — see SELF_UPDATE_SUPPORTED.
+        // Guarded here as well as at the call sites so no future UI can
+        // accidentally reintroduce an out-of-store update path.
+        if !crate::self_update::SELF_UPDATE_SUPPORTED {
+            return;
+        }
         if self.update_check_in_progress {
             return; // Already checking
         }
@@ -26,6 +32,9 @@ impl super::Tabular {
     }
 
     pub fn render_update_dialog(&mut self, ctx: &egui::Context) {
+        if !crate::self_update::SELF_UPDATE_SUPPORTED {
+            return;
+        }
         if !self.show_update_dialog {
             return;
         }
