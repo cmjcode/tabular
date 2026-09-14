@@ -426,28 +426,21 @@ fn get_platform_info() -> PlatformInfo {
     PlatformInfo { os, arch }
 }
 
+/// Whether this build may offer to update itself.
+///
+/// False on iOS: App Store Review Guideline 2.5.2 forbids an app downloading
+/// and installing its own executable code, and pointing a reviewer at GitHub
+/// Releases to get a build reads as distribution outside the App Store. On iOS
+/// the App Store is the only update channel, so every updater surface — the
+/// "Check for Updates" menu item, the Update preferences tab, the startup
+/// auto-check and the update dialog — is hidden behind this flag.
+pub const SELF_UPDATE_SUPPORTED: bool = !cfg!(target_os = "ios");
+
 pub fn open_url(url: &str) {
-    debug!("Opening URL: {}", url);
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Err(e) = std::process::Command::new("open").arg(url).status() {
-            error!("Failed to open URL on macOS: {}", e);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(e) = std::process::Command::new("xdg-open").arg(url).status() {
-            error!("Failed to open URL on Linux: {}", e);
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Err(e) = std::process::Command::new("cmd").args(["/c", "start", "", url]).status() {
-            error!("Failed to open URL on Windows: {}", e);
-        }
+    // Platform matrix lives in `crate::url_opener` so iOS cannot be forgotten
+    // again; this wrapper keeps the infallible signature its callers expect.
+    if let Err(e) = crate::url_opener::open_url(url) {
+        error!("Failed to open URL: {}", e);
     }
 }
 

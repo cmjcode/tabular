@@ -1626,6 +1626,10 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         }
 
         let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(&pool).await;
+
+        // iOS only, and only when it has never been seeded: gives a first-time
+        // user something to open without a file picker, which iOS does not have.
+        crate::sample_data::ensure_sample_database(&pool).await;
     });
 
     // Load connections

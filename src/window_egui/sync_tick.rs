@@ -20,6 +20,8 @@ impl super::Tabular {
         crate::sync::ui_teams::render_share_folder_dialog(self, ctx);
         crate::sync::ui_teams::render_add_member_dialog(self, ctx);
         crate::sync::ui_teams::render_delete_team_dialog(self, ctx);
+        crate::sync::ui_teams::render_report_dialog(self, ctx);
+        crate::sync::ui_teams::render_block_user_dialog(self, ctx);
 
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);
@@ -38,10 +40,93 @@ impl super::Tabular {
 
         // ── Poll profile save receiver and avatar images ────────────────────────
         self.poll_profile_receiver(ctx);
+        self.poll_delete_account_receiver();
+        self.poll_moderation_receivers();
 
         // ── Vault (E2E encryption) setup/unlock UI receivers ────────────────────
         crate::sync::ui_vault_setup::drain_receivers(self);
         self.poll_vault_team_keys_receiver();
+    }
+
+    /// Settle the block and report requests (App Store Guideline 1.2).
+    ///
+    /// A successful block changes team membership on the server, so the team
+    /// list is refetched rather than patched locally.
+    fn poll_moderation_receivers(&mut self) {
+        if let Some(rx) = &self.report_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(()) => {
+                    self.report_target = None;
+                    self.report_details.clear();
+                    self.report_error = None;
+                    self.toasts
+                        .info("Report submitted. We review every report.");
+                }
+                Err(e) => {
+                    warn!("[moderation] Report failed: {}", e);
+                    self.report_error = Some(format!("Could not send the report: {}", e));
+                }
+            }
+            self.report_receiver = None;
+        }
+
+        if let Some(rx) = &self.blocked_users_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(list) => self.blocked_users = list,
+                Err(e) => warn!("[moderation] Could not load blocked users: {}", e),
+            }
+            self.blocked_users_receiver = None;
+        }
+
+        if let Some(rx) = &self.block_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(_) => {
+                    self.block_target = None;
+                    self.toasts.info("User blocked");
+                    crate::sync::ui_teams::refresh_teams(self);
+                    crate::sync::ui_login::refresh_blocked_users(self);
+                }
+                Err(e) => {
+                    warn!("[moderation] Block failed: {}", e);
+                    self.toasts.info(format!("Could not block user: {}", e));
+                    self.block_target = None;
+                }
+            }
+            self.block_receiver = None;
+        }
+    }
+
+    /// Finish an account deletion once the server has confirmed it.
+    ///
+    /// Only a confirmed delete wipes local state; a failure leaves the session
+    /// intact and reports into the modal so the user can retry rather than
+    /// being signed out of an account that still exists.
+    fn poll_delete_account_receiver(&mut self) {
+        if let Some(rx) = &self.delete_account_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(email) => {
+                    crate::sync::ui_login::wipe_local_session(self);
+                    self.show_delete_account_dialog = false;
+                    self.show_account_dialog = false;
+                    self.delete_account_confirm_input.clear();
+                    self.delete_account_error = None;
+                    self.toasts.info(format!("Account {} deleted", email));
+                }
+                Err(e) => {
+                    warn!("[sync] Account deletion failed: {}", e);
+                    self.delete_account_error = Some(format!("Could not delete account: {}", e));
+                }
+            }
+            self.delete_account_receiver = None;
+        }
     }
 
     fn poll_profile_receiver(&mut self, ctx: &egui::Context) {

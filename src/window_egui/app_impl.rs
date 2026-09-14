@@ -245,7 +245,9 @@ impl Tabular {
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
+                            if crate::self_update::SELF_UPDATE_SUPPORTED {
+                                draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
+                            }
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Sync, "☁ Cloud Sync");
                             draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Plugins, &format!("{} Plugins", egui_icons::icons::MDI_PUZZLE.codepoint));
@@ -524,6 +526,10 @@ impl Tabular {
                                     }
                                 });
                             }
+                            // Unreachable on iOS since the tab button is hidden, but a
+                            // preferences file carried over from desktop can still name
+                            // this tab as the active one.
+                            PrefTab::Update if !crate::self_update::SELF_UPDATE_SUPPORTED => {}
                             PrefTab::Update => {
                                 ui.heading("Updates");
                                 ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; self.try_save_prefs(); } });
@@ -3070,7 +3076,11 @@ impl Tabular {
 
                                             draw_menu_sep(ui);
 
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None) {
+                                            // Hidden on iOS — the App Store is the only
+                                            // update channel there (Guideline 2.5.2).
+                                            if crate::self_update::SELF_UPDATE_SUPPORTED
+                                                && draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None)
+                                            {
                                                 self.check_for_updates(true);
                                                 self.show_settings_menu = false;
                                             }
@@ -4929,8 +4939,9 @@ impl App for Tabular {
                     self.prefs_loaded = true;
                     log::debug!("Preferences loaded successfully on startup");
 
-                    // Check for updates on startup if enabled, but only once per day
-                    if prefs.auto_check_updates {
+                    // Check for updates on startup if enabled, but only once per day.
+                    // Never on iOS — see self_update::SELF_UPDATE_SUPPORTED.
+                    if prefs.auto_check_updates && crate::self_update::SELF_UPDATE_SUPPORTED {
                         let mut should_check = true;
                         if let Some(store_ref) = self.config_store.as_ref()
                             && let Some(last_iso) = rt.block_on(store_ref.get_last_update_check())
@@ -5792,6 +5803,9 @@ impl App for Tabular {
         dialog::render_error_dialog(self, ctx);
         dialog::render_about_dialog(self, ctx);
         crate::sync::ui_login::render_account_dialog(self, ctx);
+        // Rendered after (and outside) the account dialog so closing that one
+        // does not take the deletion confirmation down with it.
+        crate::sync::ui_login::render_delete_account_dialog(self, ctx);
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
         dialog::render_create_table_dialog(self, ctx);
