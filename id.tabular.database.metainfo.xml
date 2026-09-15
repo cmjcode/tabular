@@ -41,6 +41,14 @@
   <content_rating type="oars-1.1" />
   
   <releases>
+    <release version="0.17.0" date="2026-09-15">
+      <description>
+        <p>Tabular v0.17.0 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.16.3" date="2026-09-11">
       <description>
         <p>Tabular v0.16.3 release with stability, performance, and UI enhancements.</p>

@@ -40,8 +40,8 @@ Security updates are actively provided for the current release series:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.16.x | :white_check_mark: |
-| < 0.16.0 | :x:                |
+| 0.17.x | :white_check_mark: |
+| < 0.17.0 | :x:                |
 
 ## Reporting a Vulnerability
 
