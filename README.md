@@ -32,8 +32,46 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **Smart Sidebar Tree Search**: Case-insensitive instant filtering across Connections, Queries, History, and HTTP Collections. When searching for a folder name, the folder and all of its contents (connections, queries, history entries, subfolders) remain fully displayed and automatically expanded.
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 - **Editor Tab Drag & Drop Reordering & Pin Tab**: Group and reorder tabs via intuitive horizontal drag-and-drop, pin important queries/tables with 📌, prevent accidental closures, and manage tabs with full context menus
+- **Modern Developer SQL Editor**: Context-aware alias resolution (`u.`), Foreign Key auto-join completions, statement-level execution (`Ctrl+Enter`), quick query formatting (`Ctrl+Shift+F`), line comments (`Ctrl+/`), line duplication & moving (`Alt+Up/Down`), active line highlight, and multi-format result clipboard exports (Markdown, JSON, CSV, SQL INSERTs).
 
 ---
+
+### Modern Developer SQL Editor (New in v0.17)
+Next-generation SQL editing ergonomics tailored for developer velocity and precision:
+- **IntelliSense 2.0 & Contextual Autocomplete**:
+  - **Contextual Table Alias Resolution**: Automatically maps aliases across single or multi-table queries (e.g., `FROM users u, orders o` or `FROM users u JOIN orders o ON ...`). Typing `u.` instantly suggests columns belonging specifically to the `users` table.
+  - **Automated Foreign Key Join Suggestions**: When writing `JOIN ... ON` clauses, relational foreign key conditions are detected from table metadata and surfaced at the very top of autocomplete suggestions (e.g., `orders.user_id = users.id`).
+  - **User-Configurable Keyword Casing**: Supports `UPPERCASE` (`SELECT`, `WHERE`), `lowercase` (`select`, `where`), or `Preserve` according to editor preferences.
+  - **Visual Completion Iconography**: Distinct category icons for quick identification (⚡ Keywords, 📦 Tables, 🏷️ Columns, 🧩 Functions, 📄 Snippets, 🔧 Parameters).
+- **Smart Statement Boundary Parser & Cursor Execution**:
+  - **Execute Current Statement (`Ctrl+Enter` / `Cmd+Enter`)**: Runs only the statement enclosing the cursor without requiring manual text selection.
+  - **Literal & Comment-Safe Parser**: Built with a dedicated state-machine (`src/query_tools/statement_parser.rs`) that safely ignores semicolons (`;`) inside string literals (`'...'`), quoted identifiers (`"..."`), line comments (`--`), and block comments (`/* ... */`).
+- **Ergonomic Shortcuts & Line Actions**:
+  - **Line & Block Comment Toggle (`Ctrl+/` / `Cmd+/`)**: Toggles `-- ` comments on cursor line or multi-line selections with exact indentation preservation.
+  - **Fast Query Formatting (`Ctrl+Shift+F` / `Cmd+Shift+F`)**: Instantly prettifies SQL queries with standardized indentation and active keyword casing.
+  - **Duplicate Lines (`Shift+Alt+Down`)**: Clones the current line or multi-line selection downward.
+  - **Move Lines (`Alt+Up` / `Alt+Down`)**: Moves the current line or selection up or down smoothly with cursor offset retention.
+  - **Active Line Highlighting**: Soft real-time background indicator on the currently focused editor line.
+- **Quick Result Exports to Clipboard**:
+  - 1-click export from the query results grid directly to the clipboard:
+    - 📋 **Markdown Table**: Clean GitHub-flavored markdown table with aligned column boundaries.
+    - 📋 **JSON Array**: Structured JSON array of row objects (`[{"column": "value"}, ...]`).
+    - 📋 **CSV**: RFC 4180 compliant CSV format with safe double-quote escaping.
+    - 📋 **SQL INSERT Statements**: Ready-to-run `INSERT INTO <table> (...) VALUES (...)` statements.
+
+#### SQL Editor Keyboard Shortcuts
+| Action | macOS Shortcut | Linux / Windows Shortcut | Description |
+|---|---|---|---|
+| **Execute Current Statement** | `Cmd + Enter` | `Ctrl + Enter` | Run statement at cursor (or selection if highlighted) |
+| **Format Query** | `Cmd + Shift + F` | `Ctrl + Shift + F` | Prettify SQL with indentation and keyword casing |
+| **Toggle Comment** | `Cmd + /` | `Ctrl + /` | Toggle `-- ` comment on current line or selection |
+| **Duplicate Line Down** | `Shift + Option + Down` | `Shift + Alt + Down` | Duplicate current line or selection downward |
+| **Move Line Up** | `Option + Up` | `Alt + Up` | Move current line or selection upward |
+| **Move Line Down** | `Option + Down` | `Alt + Down` | Move current line or selection downward |
+| **Universal Quick Open** | `Cmd + P` / `Cmd + K` | `Ctrl + P` / `Ctrl + K` | Fuzzy search tables, queries, history, commands |
+| **Find in Editor** | `Cmd + F` | `Ctrl + F` | Search with Regex, Match Case, Whole Word |
+| **Replace in Editor** | `Cmd + H` | `Ctrl + H` | Find and replace within editor or selection |
+| **AI Assistant** | `Cmd + Shift + A` | `Ctrl + Shift + A` | Schema-aware AI SQL generation & completion |
 
 ### Editor Tab Drag & Drop & Tab Pinning (New in v0.15)
 Organize and group editor tabs seamlessly to enhance workflow when dealing with many queries, tables, and API requests.
@@ -208,6 +246,7 @@ src/
 ├── main.rs                   # App entrypoint
 ├── window_egui/              # Main UI / egui shell & sub-modules
 ├── data_table/               # High-performance data grid & inspector
+│   ├── export_clipboard.rs   # Quick clipboard formatters (Markdown, JSON, CSV, SQL INSERT)
 │   ├── filter_sort.rs        # Server-side SQL filter builder & sorting
 │   ├── inspector.rs          # Multi-tab JSON, Hex, Image & Text inspector
 │   ├── render_data.rs        # Grid rendering, FK hyperlinks, column freeze
@@ -217,6 +256,10 @@ src/
 │   ├── parser.rs             # Multi-database JSON/XML EXPLAIN parser
 │   ├── graph.rs              # Hierarchical Sugiyama layout canvas
 │   └── warnings.rs           # Automated bottleneck & scan detector
+├── query_tools/              # SQL developer ergonomics & statement tools
+│   ├── mod.rs                # Formatter with keyword casing & snippet registry
+│   ├── statement_parser.rs   # Intelligent statement boundary & cursor finder
+│   └── text_actions.rs       # Line comment toggle, duplicate lines, move lines
 ├── backup_restore.rs         # Native dump/restore runner (pg_dump, mysqldump, sqlite)
 ├── dialog_backup_restore.rs  # Visual Backup & Restore wizard modal
 ├── dba_monitor.rs            # Real-time processlist & lock tree monitor
@@ -228,7 +271,8 @@ src/
 │   ├── templates/            # Parquet, DuckDB & ORM starter templates
 │   └── ui.rs                 # Plugin manager & artifact viewer modal
 ├── quick_open.rs             # Universal Quick Open palette (Cmd+P / Cmd+K)
-├── editor.rs                 # Custom editor widget, multi-caret, Find & Replace
+├── editor.rs                 # Custom editor widget, active line highlight, shortcuts
+├── editor_autocomplete_new.rs # IntelliSense 2.0 (alias resolution, FK auto-joins, casing)
 ├── sync/                     # E2EE Cloud Sync & zero-knowledge vault
 ├── driver_*.rs               # Database drivers (Postgres, MySQL, SQLite, MSSQL, Redis, Mongo)
 ├── http_client.rs            # Built-in REST/HTTP tester
@@ -279,7 +323,7 @@ API_URL=http://localhost:8080 ./test_api.sh
 | Parser & Trees | `tree-sitter`, `tree-sitter-json`, `tree-sitter-javascript`, `sqlformat` |
 | Dialogs & OS   | `rfd`, `dirs`, `semver`, `reqwest` |
 
-Current package version: **0.13.0**.
+Current package version: **0.17.0**.
 
 ## 9. Contributing
 Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested workflow:
@@ -299,6 +343,9 @@ Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested w
 ## 11. Roadmap (High level)
 
 ### Recently Shipped ✅
+- **Modern Developer SQL Editor & IntelliSense 2.0**: Context-aware alias resolution (`u.`), Foreign Key auto-join completions, statement-level execution (`Ctrl+Enter`), quick query formatting (`Ctrl+Shift+F`), line comments (`Ctrl+/`), line duplication & moving (`Alt+Up/Down`), active line highlight, and multi-format result clipboard exports (Markdown, JSON, CSV, SQL INSERTs) (v0.17)
+- **Editor Tab Drag & Drop & Tab Pinning**: Interactive tab reordering, 📌 pinned tabs with accidental close prevention, smart boundary synchronization, and full context menus (v0.15)
+- **Smart Sidebar Tree Search & Folder Content Preservation**: Case-insensitive filtering across Connections, Queries, History, and Collections while preserving parent hierarchies and expanding folders (v0.14)
 - **Visual Query Profiler**: Interactive Sugiyama cost tree graph with bottleneck alerts (v0.13)
 - **Server-Side GUI Filter Builder**: Dynamic SQL WHERE builder with operator dropdowns (v0.13)
 - **Foreign Key Hyperlink Navigation**: 1-click jump to referenced parent/child rows (v0.13)
@@ -327,6 +374,37 @@ This project is dual‑licensed:
 2) Commercial License — contact PT. Vneu Teknologi Indonesia (see `LICENSE`)
 
 ## 13. Changelog
+
+### v0.17.0 (Modern Developer SQL Editor & IntelliSense 2.0)
+- **Intelligent SQL Statement Parser & Cursor Execution**:
+  - Implemented boundary extractor state-machine (`src/query_tools/statement_parser.rs`) that safely handles semicolons (`;`) inside string quotes (`'...'`), quoted identifiers (`"..."`), line comments (`--`), and block comments (`/* ... */`).
+  - Added `find_statement_at_cursor` enabling statement-level execution with `Ctrl+Enter` / `Cmd+Enter` without requiring manual block selection.
+- **IntelliSense 2.0 & Autocomplete Engine (`src/editor_autocomplete_new.rs`)**:
+  - Multi-clause alias resolution: extracts aliases across `FROM`, `JOIN`, `UPDATE`, `INTO`, and comma-separated joins (e.g. `FROM users u, orders o`), enabling `u.` to suggest columns for `users`.
+  - Automatic Foreign Key join completion: detects relational foreign key definitions on `JOIN ... ON` and surfaces recommended join predicates with highest priority.
+  - Configurable SQL keyword casing: supports `UPPERCASE`, `lowercase`, or `Preserve` matching editor settings.
+  - Visual icons for completion candidates: ⚡ Keyword, 📦 Table, 🏷️ Column, 🧩 Function, 📄 Snippet, 🔧 Parameter.
+- **Ergonomic Text Actions (`src/query_tools/text_actions.rs` & `src/editor.rs`)**:
+  - Line & block comment toggle (`Ctrl+/` / `Cmd+/`): smart addition and removal of `-- ` with exact indentation retention.
+  - Line duplication (`Shift+Alt+Down`): clones single or multi-line selections downwards.
+  - Move lines (`Alt+Up` / `Alt+Down`): moves current line or multi-line selection up or down with automatic cursor position tracking.
+  - Active line highlighting: subtle visual indicator on the currently active line for improved focus.
+  - Instant query formatting (`Ctrl+Shift+F` / `Cmd+Shift+F`): fast SQL prettification adhering to keyword casing preferences.
+- **Quick Result Exports to Clipboard (`src/data_table/export_clipboard.rs`)**:
+  - 1-click clipboard formatting for query results as Markdown Table, JSON Array, RFC 4180 escaped CSV, and SQL `INSERT INTO` statements.
+- **App Store & Moderation Compliance**:
+  - Added user reporting and blocking moderation UI, and iOS self-update guards for platform compliance.
+
+### v0.16.3
+- **Batch Metadata Pre-fetching**: Optimized MySQL schema metadata retrieval with batch pre-fetching, speeding up table and column inspection on large databases.
+
+### v0.15.0
+- **Editor Tab Drag & Drop Reordering**: Reorder and organize editor tabs intuitively with visual insertion indicator line and floating tooltip badges.
+- **Tab Pinning (📌)**: Pin essential query and table tabs to dock them on the left, prevent accidental closing, and maintain focus.
+- **Tab Context Menu**: Full right-click context menu with Pin/Unpin, Move Left/Right, Close, Close Other Tabs, and Close Tabs to the Right.
+
+### v0.14.0
+- **Smart Sidebar Tree Search**: Instant filtering for connections, queries, history, and collections. Searching for a folder retains and automatically expands the folder and all its child items.
 
 ### v0.13.1
 - **Account & Profile Instant Sync**: Resolved issue where completed Account Information (display name, username, phone number, and avatar) did not update immediately upon completing OAuth login (Google, GitHub) or manual token authentication in the open Account & Profile modal. All profile form buffers now sync instantly via `sync_profile_inputs_from_account`.

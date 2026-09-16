@@ -401,7 +401,7 @@ impl AutoUpdater {
             } else {
                 // Rollback if copy fails
                 let _ = fs::rename(&temp_old_exe, &current_exe);
-                warn!("Linux in-place replacement failed (permission denied); saving to Downloads");
+                log::warn!("Linux in-place replacement failed (permission denied); saving to Downloads");
                 if let Some(downloads_dir) = dirs::download_dir() {
                     let dest = downloads_dir.join("tabular-latest");
                     let _ = fs::copy(&new_binary, &dest);

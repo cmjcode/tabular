@@ -285,29 +285,106 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     let mut open_flag = true;
     let screen_rect = ctx.content_rect();
-    let max_dialog_w = (screen_rect.width() - 32.0).min(520.0).max(360.0);
-    let max_dialog_h = (screen_rect.height() - 40.0).min(640.0).max(320.0);
+    // Generous and responsive dimensions: taller to eliminate excessive scrolling,
+    // wider for a balanced two-card or structured layout.
+    let dialog_w = (screen_rect.width() - 40.0).min(680.0).max(480.0);
+    let dialog_h = (screen_rect.height() - 50.0).min(780.0).max(520.0);
+
+    let is_logged_in = tabular.sync_account.is_some();
 
     egui::Window::new("👤 Account & Profile")
         .open(&mut open_flag)
         .collapsible(false)
-        .resizable(false)
+        .resizable(true)
         .pivot(egui::Align2::CENTER_CENTER)
         .fixed_pos(screen_rect.center())
-        .max_width(max_dialog_w)
-        .default_width(max_dialog_w)
-        .max_height(max_dialog_h)
+        .min_width(480.0)
+        .default_width(dialog_w)
+        .max_width(screen_rect.width() - 24.0)
+        .min_height(520.0)
+        .default_height(dialog_h)
+        .max_height(screen_rect.height() - 32.0)
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("account_dialog_scroll")
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    if tabular.sync_account.is_some() {
-                        render_account_profile_view(tabular, ui);
-                    } else {
-                        render_account_login_view(tabular, ui);
+            if is_logged_in {
+                // Top Tab Bar
+                ui.add_space(2.0);
+                render_account_tab_bar(tabular, ui);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // Scrollable main content (leaves 48px for fixed footer)
+                let content_h = (ui.available_height() - 48.0).max(180.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("account_dialog_content_scroll")
+                    .max_height(content_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        match tabular.account_dialog_tab {
+                            crate::window_egui::AccountDialogTab::Profile => {
+                                render_account_profile_tab(tabular, ui);
+                            }
+                            crate::window_egui::AccountDialogTab::Security => {
+                                render_account_security_tab(tabular, ui);
+                            }
+                        }
+                    });
+
+                // Fixed Bottom Action Bar (Footer) — always visible without scrolling
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let saving = tabular.profile_update_receiver.is_some();
+                    if saving {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Saving changes…")
+                                .size(12.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                     }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_enabled_ui(!saving, |ui| {
+                            if ui
+                                .add(style::btn_primary_ctx(
+                                    ui.ctx(),
+                                    if saving { "💾  Saving…" } else { "💾  Save Changes" },
+                                ))
+                                .clicked()
+                            {
+                                save_profile(tabular);
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        if ui.add(style::btn_secondary("Close")).clicked() {
+                            tabular.show_account_dialog = false;
+                        }
+                    });
                 });
+            } else {
+                let content_h = (ui.available_height() - 44.0).max(180.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("account_login_dialog_scroll")
+                    .max_height(content_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_account_login_view(tabular, ui);
+                    });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(style::btn_secondary("Close")).clicked() {
+                            tabular.show_account_dialog = false;
+                        }
+                    });
+                });
+            }
         });
 
     if !open_flag {
@@ -315,189 +392,423 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
-/// Render logged-in account profile view with picture setter and form fields.
-fn render_account_profile_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
+/// Modern pill tab bar switching between Profile and Security tabs.
+fn render_account_tab_bar(tabular: &mut Tabular, ui: &mut egui::Ui) {
+    use crate::window_egui::AccountDialogTab;
+    let dark = ui.visuals().dark_mode;
+    let accent = style::theme_accent(ui.ctx());
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+
+        let tabs = [
+            (AccountDialogTab::Profile, "👤  Profile & Info"),
+            (AccountDialogTab::Security, "🛡️  Security & Privacy"),
+        ];
+
+        for (tab, label) in tabs {
+            let is_selected = tabular.account_dialog_tab == tab;
+            let bg_color = if is_selected {
+                if dark {
+                    egui::Color32::from_rgb(45, 50, 68)
+                } else {
+                    egui::Color32::from_rgb(228, 235, 248)
+                }
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+
+            let text_color = if is_selected {
+                accent
+            } else {
+                ui.visuals().weak_text_color()
+            };
+
+            let stroke = if is_selected {
+                egui::Stroke::new(1.0, accent)
+            } else {
+                egui::Stroke::NONE
+            };
+
+            let btn = egui::Button::new(
+                egui::RichText::new(label)
+                    .size(13.0)
+                    .strong()
+                    .color(text_color),
+            )
+            .fill(bg_color)
+            .stroke(stroke)
+            .corner_radius(egui::CornerRadius::same(6))
+            .min_size(egui::vec2(165.0, 32.0));
+
+            if ui.add(btn).clicked() {
+                tabular.account_dialog_tab = tab;
+            }
+        }
+    });
+}
+
+/// Helper to trigger file dialog for selecting a profile picture.
+fn choose_avatar_file(tabular: &mut Tabular) {
+    if let Some(path) = rfd::FileDialog::new()
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
+        .pick_file()
+    {
+        if let Ok(bytes) = std::fs::read(&path) {
+            use base64::Engine;
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
+            let mime = match ext.to_lowercase().as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "webp" => "image/webp",
+                "gif" => "image/gif",
+                _ => "image/png",
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            tabular.profile_avatar_url_input = format!("data:{};base64,{}", mime, b64);
+            tabular.avatar_texture = None;
+            tabular.avatar_texture_url = None;
+        }
+    }
+}
+
+/// Tab 1: Profile & Personal Information view.
+fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
     let account = match &tabular.sync_account {
         Some(a) => a.clone(),
         None => return,
     };
 
+    let dark = ui.visuals().dark_mode;
+    let card_bg = if dark {
+        egui::Color32::from_rgb(26, 28, 36)
+    } else {
+        egui::Color32::from_rgb(248, 250, 253)
+    };
+    let card_stroke = if dark {
+        egui::Color32::from_rgb(46, 50, 64)
+    } else {
+        egui::Color32::from_rgb(222, 226, 235)
+    };
+
     ui.vertical(|ui| {
-        ui.add_space(4.0);
-
-        // Header with Avatar & Details
-        ui.horizontal(|ui| {
-            draw_circular_avatar(
-                ui,
-                tabular,
-                64.0,
-                &account.email,
-                if tabular.profile_display_name_input.is_empty() {
-                    account.display_name.as_deref()
-                } else {
-                    Some(&tabular.profile_display_name_input)
-                },
-            );
-
-            ui.add_space(12.0);
-            ui.vertical(|ui| {
-                let name = if !tabular.profile_display_name_input.is_empty() {
-                    &tabular.profile_display_name_input
-                } else {
-                    account.display_name.as_deref().unwrap_or(&account.email)
-                };
-                ui.label(egui::RichText::new(name).strong().size(16.0));
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&account.email).color(ui.visuals().weak_text_color()).size(12.0));
-                    ui.label(egui::RichText::new("✓ Verified").color(egui::Color32::from_rgb(0, 180, 80)).size(11.0));
-                });
-                if let Some(ref handle) = account.username {
-                    if !handle.is_empty() {
-                        ui.label(egui::RichText::new(format!("@{}", handle)).color(style::theme_accent(ui.ctx())).size(12.0));
-                    }
-                }
-            });
-        });
-
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        // Profile Picture Configuration
-        ui.label(egui::RichText::new("Profile Picture").strong().size(13.0));
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            let avatar_edit = ui.add(
-                egui::TextEdit::singleline(&mut tabular.profile_avatar_url_input)
-                    .hint_text("Image URL or select local file")
-                    .desired_width(ui.available_width() - 170.0),
-            );
-            if avatar_edit.changed() {
-                // Invalidate cached texture so it reloads
-                tabular.avatar_texture = None;
-                tabular.avatar_texture_url = None;
-            }
 
-            if ui.add(style::btn_secondary("📁 Choose File")).clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                    .pick_file()
-                {
-                    if let Ok(bytes) = std::fs::read(&path) {
-                        use base64::Engine;
-                        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
-                        let mime = match ext.to_lowercase().as_str() {
-                            "jpg" | "jpeg" => "image/jpeg",
-                            "webp" => "image/webp",
-                            "gif" => "image/gif",
-                            _ => "image/png",
-                        };
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        tabular.profile_avatar_url_input = format!("data:{};base64,{}", mime, b64);
-                        tabular.avatar_texture = None;
-                        tabular.avatar_texture_url = None;
-                    }
-                }
-            }
-
-            if !tabular.profile_avatar_url_input.is_empty() {
-                if ui.button("🗑").on_hover_text("Clear Photo").clicked() {
-                    tabular.profile_avatar_url_input.clear();
-                    tabular.avatar_texture = None;
-                    tabular.avatar_texture_url = None;
-                }
-            }
-        });
-
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        // Account Information Form
-        ui.label(egui::RichText::new("Account Information").strong().size(13.0));
-        ui.add_space(4.0);
-
-        egui::Grid::new("account_info_form_grid")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
+        // 1. Hero Profile Identity Card
+        egui::Frame::new()
+            .fill(card_bg)
+            .stroke(egui::Stroke::new(1.0, card_stroke))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
-                ui.label("Display Name:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut tabular.profile_display_name_input)
-                        .hint_text("e.g. John Doe")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.end_row();
+                ui.horizontal(|ui| {
+                    // Left: Avatar with quick photo actions
+                    ui.vertical(|ui| {
+                        draw_circular_avatar(
+                            ui,
+                            tabular,
+                            72.0,
+                            &account.email,
+                            if tabular.profile_display_name_input.is_empty() {
+                                account.display_name.as_deref()
+                            } else {
+                                Some(&tabular.profile_display_name_input)
+                            },
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    style::btn_secondary("📁 Change")
+                                        .min_size(egui::vec2(60.0, 24.0)),
+                                )
+                                .on_hover_text("Choose an image from your computer")
+                                .clicked()
+                            {
+                                choose_avatar_file(tabular);
+                            }
+                            if !tabular.profile_avatar_url_input.is_empty() {
+                                if ui.button("🗑").on_hover_text("Remove photo").clicked() {
+                                    tabular.profile_avatar_url_input.clear();
+                                    tabular.avatar_texture = None;
+                                    tabular.avatar_texture_url = None;
+                                }
+                            }
+                        });
+                    });
 
-                ui.label("Username:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut tabular.profile_username_input)
-                        .hint_text("e.g. johndoe (used for team invites)")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.end_row();
+                    ui.add_space(16.0);
 
-                ui.label("Phone Number:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut tabular.profile_phone_input)
-                        .hint_text("e.g. +6281234567890")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.end_row();
+                    // Right: User Details & Badges
+                    ui.vertical(|ui| {
+                        let name = if !tabular.profile_display_name_input.is_empty() {
+                            &tabular.profile_display_name_input
+                        } else {
+                            account.display_name.as_deref().unwrap_or(&account.email)
+                        };
+                        ui.label(egui::RichText::new(name).strong().size(18.0));
+                        ui.add_space(3.0);
 
-                ui.label("Email:");
-                ui.label(egui::RichText::new(&account.email).color(ui.visuals().weak_text_color()));
-                ui.end_row();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&account.email)
+                                    .color(ui.visuals().weak_text_color())
+                                    .size(13.0),
+                            );
+                            ui.add_space(6.0);
 
-                ui.label("User ID:");
-                ui.label(egui::RichText::new(&account.user_id).color(ui.visuals().weak_text_color()).size(11.0));
-                ui.end_row();
+                            // Verified badge pill
+                            let badge_bg = if dark {
+                                egui::Color32::from_rgb(18, 56, 32)
+                            } else {
+                                egui::Color32::from_rgb(225, 248, 232)
+                            };
+                            let badge_fg = if dark {
+                                egui::Color32::from_rgb(72, 199, 116)
+                            } else {
+                                egui::Color32::from_rgb(16, 130, 60)
+                            };
+                            egui::Frame::new()
+                                .fill(badge_bg)
+                                .corner_radius(egui::CornerRadius::same(10))
+                                .inner_margin(egui::Margin::symmetric(8, 2))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("✓ Verified")
+                                            .color(badge_fg)
+                                            .size(11.0)
+                                            .strong(),
+                                    );
+                                });
+                        });
+
+                        if let Some(ref handle) = account.username {
+                            if !handle.is_empty() {
+                                ui.add_space(3.0);
+                                ui.label(
+                                    egui::RichText::new(format!("@{}", handle))
+                                        .color(style::theme_accent(ui.ctx()))
+                                        .size(13.0)
+                                        .strong(),
+                                );
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        // User ID with copy button
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("User ID:")
+                                    .size(11.5)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.label(
+                                egui::RichText::new(&account.user_id)
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new("📋 Copy").size(10.5))
+                                        .small(),
+                                )
+                                .clicked()
+                            {
+                                ui.ctx().copy_text(account.user_id.clone());
+                                tabular.toasts.info("User ID copied to clipboard");
+                            }
+                        });
+                    });
+                });
+
+                // Collapsible Image URL input
+                ui.add_space(8.0);
+                ui.collapsing("🔗 Custom Image URL or Base64", |ui| {
+                    ui.horizontal(|ui| {
+                        let avatar_edit = ui.add(
+                            egui::TextEdit::singleline(&mut tabular.profile_avatar_url_input)
+                                .hint_text("https://example.com/photo.png or data:image/...")
+                                .desired_width(ui.available_width() - 10.0),
+                        );
+                        if avatar_edit.changed() {
+                            tabular.avatar_texture = None;
+                            tabular.avatar_texture_url = None;
+                        }
+                    });
+                });
             });
 
         ui.add_space(14.0);
 
-        // Action Buttons
-        let saving = tabular.profile_update_receiver.is_some();
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(!saving, |ui| {
-                if ui.add(style::btn_primary_ctx(ui.ctx(), if saving { "💾  Saving Changes…" } else { "💾  Save Changes" })).clicked() {
-                    save_profile(tabular);
-                }
-            });
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(style::btn_danger_ctx(ui.ctx(), "🚪  Sign Out")).clicked() {
-                    do_logout(tabular);
-                }
-            });
-        });
-
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        // Blocked users (App Store Guideline 1.2). Blocking happens from the
-        // Teams member list; this is the only place it can be undone, so the
-        // block confirmation points here.
-        let blocked_header = if tabular.blocked_users.is_empty() {
-            "🚫 Blocked Users".to_string()
-        } else {
-            format!("🚫 Blocked Users ({})", tabular.blocked_users.len())
-        };
-        egui::CollapsingHeader::new(blocked_header)
-            .id_salt("blocked_users_section")
+        // 2. Personal Information Card
+        egui::Frame::new()
+            .fill(card_bg)
+            .stroke(egui::Stroke::new(1.0, card_stroke))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
-                if ui.button("🔄 Refresh").clicked() {
-                    refresh_blocked_users(tabular);
-                }
+                ui.label(egui::RichText::new("Personal Information").strong().size(14.0));
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("Update your personal details and public profile info.")
+                        .size(11.5)
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(12.0);
+
+                egui::Grid::new("account_info_form_grid")
+                    .num_columns(2)
+                    .spacing([18.0, 14.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Display Name:").strong().size(12.5));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut tabular.profile_display_name_input)
+                                .hint_text("e.g. John Doe")
+                                .desired_width(340.0),
+                        );
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Username:").strong().size(12.5));
+                        ui.vertical(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut tabular.profile_username_input)
+                                    .hint_text("e.g. johndoe")
+                                    .desired_width(340.0),
+                            );
+                            ui.label(
+                                egui::RichText::new("Used for team invites and mentions")
+                                    .size(10.5)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        });
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Phone Number:").strong().size(12.5));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut tabular.profile_phone_input)
+                                .hint_text("e.g. +62 812 3456 7890")
+                                .desired_width(340.0),
+                        );
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Email Address:").strong().size(12.5));
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&account.email).size(12.5));
+                            ui.label(
+                                egui::RichText::new("🔒 Linked to account")
+                                    .size(11.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        });
+                        ui.end_row();
+                    });
+            });
+
+        ui.add_space(10.0);
+    });
+}
+
+/// Tab 2: Security, Blocked Users, and Danger Zone view.
+fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
+    let account = match &tabular.sync_account {
+        Some(a) => a.clone(),
+        None => return,
+    };
+
+    let dark = ui.visuals().dark_mode;
+    let card_bg = if dark {
+        egui::Color32::from_rgb(26, 28, 36)
+    } else {
+        egui::Color32::from_rgb(248, 250, 253)
+    };
+    let card_stroke = if dark {
+        egui::Color32::from_rgb(46, 50, 64)
+    } else {
+        egui::Color32::from_rgb(222, 226, 235)
+    };
+
+    ui.vertical(|ui| {
+        ui.add_space(2.0);
+
+        // 1. Active Session Card
+        egui::Frame::new()
+            .fill(card_bg)
+            .stroke(egui::Stroke::new(1.0, card_stroke))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Active Session").strong().size(14.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(style::btn_danger_ctx(ui.ctx(), "🚪  Sign Out"))
+                            .clicked()
+                        {
+                            do_logout(tabular);
+                        }
+                    });
+                });
+
                 ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Manage your current session and connection to Tabular Cloud Sync.")
+                        .size(11.5)
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Sync Server:");
+                    ui.monospace(&tabular.sync_server_url);
+                });
+                ui.add_space(3.0);
+                ui.horizontal(|ui| {
+                    ui.label("Signed in as:");
+                    ui.label(egui::RichText::new(&account.email).strong());
+                });
+            });
+
+        ui.add_space(14.0);
+
+        // 2. Blocked Users Card (App Store Guideline 1.2)
+        egui::Frame::new()
+            .fill(card_bg)
+            .stroke(egui::Stroke::new(1.0, card_stroke))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let count_text = if tabular.blocked_users.is_empty() {
+                        "🚫 Blocked Users".to_string()
+                    } else {
+                        format!("🚫 Blocked Users ({})", tabular.blocked_users.len())
+                    };
+                    ui.label(egui::RichText::new(count_text).strong().size(14.0));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(style::btn_secondary("🔄 Refresh")).clicked() {
+                            refresh_blocked_users(tabular);
+                        }
+                    });
+                });
+
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "You can block or unblock collaborators from the Teams member list.",
+                    )
+                    .size(11.5)
+                    .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(10.0);
 
                 if tabular.blocked_users.is_empty() {
                     ui.label(
                         egui::RichText::new(
                             "You have not blocked anyone. Block a person from the Teams member list.",
                         )
-                        .size(11.0)
+                        .size(11.5)
                         .color(ui.visuals().weak_text_color()),
                     );
                 } else {
@@ -505,7 +816,7 @@ fn render_account_profile_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     for b in &blocked {
                         ui.horizontal(|ui| {
                             let label = b.display_name.clone().unwrap_or_else(|| b.email.clone());
-                            ui.label(egui::RichText::new(format!("• {}", label)).size(12.0));
+                            ui.label(egui::RichText::new(format!("• {}", label)).size(12.5));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(egui::RichText::new("Unblock").small()).clicked() {
                                     do_unblock_user(tabular, &b.id);
@@ -516,37 +827,50 @@ fn render_account_profile_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 }
             });
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(14.0);
 
-        // Danger zone. App Store Review Guideline 5.1.1(v) requires an app that
-        // offers account creation to offer deletion from inside the app itself —
-        // a link out to a web form does not satisfy it.
-        ui.label(
-            egui::RichText::new("Danger Zone")
-                .strong()
-                .size(13.0)
-                .color(egui::Color32::from_rgb(220, 90, 90)),
-        );
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Deleting your account permanently erases your synced connections, saved queries, \
-                 query history, HTTP requests and vault keys from the server, and removes any team \
-                 you own for its other members. This cannot be undone.",
-            )
-            .size(11.0)
-            .color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(6.0);
-        if ui.add(style::btn_danger_ctx(ui.ctx(), "🗑  Delete Account")).clicked() {
-            tabular.show_delete_account_dialog = true;
-            tabular.delete_account_confirm_input.clear();
-            tabular.delete_account_error = None;
-        }
+        // 3. Danger Zone Card (App Store Guideline 5.1.1(v))
+        let danger_bg = if dark {
+            egui::Color32::from_rgb(38, 20, 20)
+        } else {
+            egui::Color32::from_rgb(255, 244, 244)
+        };
+        let danger_stroke = if dark {
+            egui::Color32::from_rgb(90, 36, 36)
+        } else {
+            egui::Color32::from_rgb(240, 190, 190)
+        };
+        egui::Frame::new()
+            .fill(danger_bg)
+            .stroke(egui::Stroke::new(1.0, danger_stroke))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("⚠️ Danger Zone")
+                        .strong()
+                        .size(14.0)
+                        .color(egui::Color32::from_rgb(220, 70, 70)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Deleting your account permanently erases your synced connections, saved queries, \
+                         query history, HTTP requests and vault keys from the server, and removes any team \
+                         you own for its other members. This action cannot be undone.",
+                    )
+                    .size(11.5)
+                    .color(ui.visuals().weak_text_color()),
+                );
+                ui.add_space(10.0);
+                if ui.add(style::btn_danger_ctx(ui.ctx(), "🗑  Delete Account")).clicked() {
+                    tabular.show_delete_account_dialog = true;
+                    tabular.delete_account_confirm_input.clear();
+                    tabular.delete_account_error = None;
+                }
+            });
 
-        ui.add_space(6.0);
+        ui.add_space(10.0);
     });
 }
 
