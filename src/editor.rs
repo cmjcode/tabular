@@ -1198,7 +1198,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let mut trigger_format_sql = false;
     ui.input(|i| {
         // Accept platform command (command on macOS, control elsewhere)
-        if (i.modifiers.mac_cmd || i.modifiers.command)
+        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
             && i.modifiers.shift
             && i.key_pressed(egui::Key::F)
         {
@@ -1228,7 +1228,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Shortcut: Toggle Comment (Cmd/Ctrl + /)
     let mut trigger_toggle_comment = false;
     ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command)
+        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
             && !i.modifiers.shift
             && i.key_pressed(egui::Key::Slash)
         {
@@ -3637,6 +3637,28 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Active line highlight (faint subtle background on cursor row)
+    if tabular.advanced_editor.highlight_active_line {
+        if let Some(cr) = cursor_range_after {
+            let layout = galley.layout_from_cursor(cr.primary);
+            let row_idx = layout.row;
+            if row_idx < galley.rows.len() {
+                let row = &galley.rows[row_idx];
+                let row_rect = row.rect().translate(galley_pos.to_vec2());
+                let hl_rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.min.x, row_rect.min.y),
+                    egui::pos2(response.rect.max.x, row_rect.max.y),
+                );
+                let hl_color = if ui.visuals().dark_mode {
+                    egui::Color32::from_white_alpha(12)
+                } else {
+                    egui::Color32::from_black_alpha(10)
+                };
+                ui.painter().rect_filled(hl_rect, 0.0, hl_color);
+            }
+        }
+    }
+
     // Handle multi-cursor typing - apply changes to all cursors
     // Multi-selection typing compensations handled later in response.changed() branch now.
     if tabular.advanced_editor.show_line_numbers
@@ -5108,8 +5130,12 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
         (0, text_len)
     };
     let original = &tabular.editor.text[range_start..range_end];
-    // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
-    let opts = crate::query_tools::default_sqlformat_options();
+    let mut opts = crate::query_tools::default_sqlformat_options();
+    match tabular.advanced_editor.keyword_casing {
+        crate::models::enums::KeywordCasing::Upper => opts.uppercase = Some(true),
+        crate::models::enums::KeywordCasing::Lower => opts.uppercase = Some(false),
+        crate::models::enums::KeywordCasing::Preserve => opts.uppercase = None,
+    }
     let formatted = sqlfmt(original, &QueryParams::None, &opts);
     if formatted == original {
         return; // no change
@@ -5159,127 +5185,21 @@ pub(crate) fn toggle_line_comment(tabular: &mut window_egui::Tabular) {
         return;
     }
 
-    // Get selection range
-    let sel_start = tabular.selection_start.min(text_len);
-    let sel_end = tabular.selection_end.min(text_len);
-    let (range_start, range_end) = if sel_start < sel_end {
-        (sel_start, sel_end)
-    } else {
-        // No selection, use cursor position to find current line
-        let cursor = tabular.cursor_position.min(text_len);
-        (cursor, cursor)
-    };
+    let (new_text, new_start, new_end) = crate::query_tools::text_actions::toggle_line_comments(
+        &tabular.editor.text,
+        tabular.selection_start,
+        tabular.selection_end,
+    );
 
-    // Find the start of the first line
-    let mut line_start = range_start;
-    while line_start > 0 && tabular.editor.text.as_bytes()[line_start - 1] != b'\n' {
-        line_start -= 1;
+    if new_text == tabular.editor.text {
+        return;
     }
 
-    // Find the end of the last line (include the line with cursor if no selection)
-    let mut line_end = if range_end > range_start {
-        range_end
-    } else {
-        // Single line: find end of current line
-        let mut end = range_start;
-        while end < text_len && tabular.editor.text.as_bytes()[end] != b'\n' {
-            end += 1;
-        }
-        end
-    };
-    
-    // Clamp to text length
-    line_end = line_end.min(text_len);
-
-    // Extract the block of lines
-    let block = &tabular.editor.text[line_start..line_end];
-    
-    // Check if all non-empty lines are commented
-    let mut all_commented = true;
-    let mut has_content_lines = false;
-    
-    for line in block.lines() {
-        let trimmed = line.trim_start();
-        if !trimmed.is_empty() {
-            has_content_lines = true;
-            if !trimmed.starts_with("--") {
-                all_commented = false;
-                break;
-            }
-        }
-    }
-
-    // If no content lines, treat as uncommented
-    if !has_content_lines {
-        all_commented = false;
-    }
-
-    // Build the new block
-    let mut new_block = String::with_capacity(block.len() + 100);
-    
-    if all_commented {
-        // Uncomment: remove "-- " or "--" from start of each line
-        for line in block.split_inclusive('\n') {
-            if line == "\n" {
-                new_block.push('\n');
-                continue;
-            }
-            
-            let (content, nl) = if let Some(p) = line.rfind('\n') {
-                (&line[..p], &line[p..])
-            } else {
-                (line, "")
-            };
-            
-            let trimmed = content.trim_start();
-            let indent_len = content.len() - trimmed.len();
-            let indent = &content[..indent_len];
-            
-            if let Some(rest) = trimmed.strip_prefix("-- ") {
-                new_block.push_str(indent);
-                new_block.push_str(rest);
-            } else if let Some(rest) = trimmed.strip_prefix("--") {
-                new_block.push_str(indent);
-                new_block.push_str(rest);
-            } else {
-                new_block.push_str(content);
-            }
-            new_block.push_str(nl);
-        }
-    } else {
-        // Comment: add "-- " to start of each line
-        for line in block.split_inclusive('\n') {
-            if line == "\n" {
-                new_block.push('\n');
-                continue;
-            }
-            
-            let (content, nl) = if let Some(p) = line.rfind('\n') {
-                (&line[..p], &line[p..])
-            } else {
-                (line, "")
-            };
-            
-            let trimmed = content.trim_start();
-            let indent_len = content.len() - trimmed.len();
-            let indent = &content[..indent_len];
-            
-            // Add comment marker
-            new_block.push_str(indent);
-            new_block.push_str("-- ");
-            new_block.push_str(trimmed);
-            new_block.push_str(nl);
-        }
-    }
-
-    // Apply the change
     tabular
         .editor
-        .apply_single_replace(line_start..line_end, &new_block);
+        .apply_single_replace(0..text_len, &new_text);
 
-    // Update selection to cover the modified block
-    let new_end = line_start + new_block.len();
-    tabular.selection_start = line_start;
+    tabular.selection_start = new_start;
     tabular.selection_end = new_end;
     tabular.cursor_position = new_end;
 
@@ -7625,6 +7545,10 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
         return String::new();
     }
 
+    if let Some(stmt) = crate::query_tools::statement_parser::find_statement_at_cursor(text, cursor_pos) {
+        return stmt.text;
+    }
+
     let statements = split_sql_statements_with_spans(text);
     if statements.is_empty() {
         return text.trim().to_string();
@@ -7639,16 +7563,6 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
             return trimmed.to_string();
         }
     }
-
-    if let Some((_, _, first_stmt)) = statements.first()
-        && cursor_pos < statements[0].0 && !first_stmt.trim().is_empty() {
-            return first_stmt.trim().to_string();
-        }
-
-    if let Some((_, _, last_stmt)) = statements.last()
-        && cursor_pos >= statements.last().unwrap().1 && !last_stmt.trim().is_empty() {
-            return last_stmt.trim().to_string();
-        }
 
     text.trim().to_string()
 }

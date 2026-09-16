@@ -7,6 +7,8 @@ mod selection;
 mod utils;
 mod inspector;
 
+pub mod export_clipboard;
+
 pub(crate) use render_data::*;
 pub(crate) use pagination::*;
 pub(crate) use filter_sort::*;
@@ -14,3 +16,4 @@ pub(crate) use structure::*;
 pub(crate) use render_structure::*;
 pub(crate) use selection::*;
 pub(crate) use inspector::*;
+pub use export_clipboard::*;
