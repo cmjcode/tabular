@@ -361,6 +361,7 @@ impl super::Tabular {
             // Gear menu and about / account dialogs
             show_about_dialog: false,
             show_account_dialog: false,
+            account_dialog_tab: crate::window_egui::AccountDialogTab::Profile,
             // Plugin Extensibility
             plugin_manager: crate::plugin_runtime::PluginManager::new(),
             plugin_modal_state: crate::plugin_runtime::PluginModalState::default(),
