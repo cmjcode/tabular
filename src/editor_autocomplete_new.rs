@@ -787,7 +787,7 @@ fn get_cached_columns(
     if out.is_empty() { None } else { Some(out) }
 }
 
-fn add_keywords(out: &mut Vec<String>, pref: &str) {
+fn add_keywords(out: &mut Vec<String>, pref: &str, casing: crate::models::enums::KeywordCasing) {
     // With no prefix yet (e.g. right after `FROM `), don't flood the popup with
     // every keyword — let tables/columns lead. Keywords return once the user types.
     if pref.is_empty() {
@@ -795,7 +795,12 @@ fn add_keywords(out: &mut Vec<String>, pref: &str) {
     }
     for kw in SQL_KEYWORDS {
         if kw.to_ascii_lowercase().starts_with(pref) {
-            out.push((*kw).to_string());
+            let s = match casing {
+                crate::models::enums::KeywordCasing::Upper => kw.to_ascii_uppercase(),
+                crate::models::enums::KeywordCasing::Lower => kw.to_ascii_lowercase(),
+                crate::models::enums::KeywordCasing::Preserve => (*kw).to_string(),
+            };
+            out.push(s);
         }
     }
 }
@@ -949,75 +954,93 @@ fn collect_alias_map(sql: &str) -> std::collections::HashMap<String, String> {
     let mut i = 0;
     while i < len {
         let kw_end = if i + 4 <= len
-            && (lb[i..i + 4] == *b"from" || lb[i..i + 4] == *b"join")
+            && (lb[i..i + 4] == *b"from" || lb[i..i + 4] == *b"join" || lb[i..i + 4] == *b"into")
             && (i == 0 || !is_word_char(bytes[i - 1]))
             && (i + 4 >= len || !is_word_char(bytes[i + 4]))
         {
             Some(i + 4)
+        } else if i + 6 <= len
+            && lb[i..i + 6] == *b"update"
+            && (i == 0 || !is_word_char(bytes[i - 1]))
+            && (i + 6 >= len || !is_word_char(bytes[i + 6]))
+        {
+            Some(i + 6)
         } else {
             None
         };
         if let Some(mut j) = kw_end {
-            while j < len && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            // Skip subqueries
-            if j < len && bytes[j] == b'(' {
-                i += 1;
-                continue;
-            }
-            // Read table name (may include schema prefix and/or quotes)
-            let tname_start = j;
-            while j < len {
-                let b = bytes[j];
-                if b.is_ascii_alphanumeric()
-                    || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
-                {
-                    j += 1;
-                } else {
-                    break;
-                }
-            }
-            if j == tname_start {
-                i += 1;
-                continue;
-            }
-            let raw_tname = &sql[tname_start..j];
-            // Use only the last segment (drop schema prefix)
-            let table_name: String = raw_tname
-                .split('.')
-                .next_back()
-                .map(|s| strip_wrapping_pair(s).to_string())
-                .unwrap_or_else(|| raw_tname.to_string());
-            // Always map the table itself
-            map.entry(table_name.to_ascii_lowercase())
-                .or_insert(table_name.clone());
-            // Skip whitespace
-            while j < len && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            // Optional AS keyword
-            if j + 2 <= len
-                && lb[j..j + 2] == *b"as"
-                && (j + 2 >= len || !is_word_char(bytes[j + 2]))
-            {
-                j += 2;
+            loop {
                 while j < len && bytes[j].is_ascii_whitespace() {
                     j += 1;
                 }
-            }
-            // Read alias (must be a word token and not a SQL keyword)
-            if j < len && is_word_char(bytes[j]) {
-                let alias_start = j;
-                while j < len && is_word_char(bytes[j]) {
+                // Skip subqueries
+                if j >= len || bytes[j] == b'(' {
+                    break;
+                }
+                // Read table name (may include schema prefix and/or quotes)
+                let tname_start = j;
+                while j < len {
+                    let b = bytes[j];
+                    if b.is_ascii_alphanumeric()
+                        || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
+                    {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if j == tname_start {
+                    break;
+                }
+                let raw_tname = &sql[tname_start..j];
+                // Use only the last segment (drop schema prefix)
+                let table_name: String = raw_tname
+                    .split('.')
+                    .next_back()
+                    .map(|s| strip_wrapping_pair(s).to_string())
+                    .unwrap_or_else(|| raw_tname.to_string());
+                // Always map the table itself
+                map.entry(table_name.to_ascii_lowercase())
+                    .or_insert(table_name.clone());
+                // Skip whitespace
+                while j < len && bytes[j].is_ascii_whitespace() {
                     j += 1;
                 }
-                let alias = &sql[alias_start..j];
-                let alias_upper = alias.to_ascii_uppercase();
-                let is_kw = SQL_KEYWORDS.contains(&alias_upper.as_str());
-                if !is_kw {
-                    map.insert(alias.to_ascii_lowercase(), table_name.clone());
+                // Optional AS keyword
+                if j + 2 <= len
+                    && lb[j..j + 2] == *b"as"
+                    && (j + 2 >= len || !is_word_char(bytes[j + 2]))
+                {
+                    j += 2;
+                    while j < len && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
                 }
+                // Read alias (must be a word token and not a SQL keyword)
+                if j < len && is_word_char(bytes[j]) {
+                    let alias_start = j;
+                    while j < len && is_word_char(bytes[j]) {
+                        j += 1;
+                    }
+                    let alias = &sql[alias_start..j];
+                    let alias_upper = alias.to_ascii_uppercase();
+                    let is_kw = SQL_KEYWORDS.contains(&alias_upper.as_str());
+                    if !is_kw {
+                        map.insert(alias.to_ascii_lowercase(), table_name.clone());
+                    } else {
+                        j = alias_start;
+                    }
+                }
+
+                // Check for comma-separated table list (e.g. FROM users u, orders o)
+                while j < len && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < len && bytes[j] == b',' {
+                    j += 1;
+                    continue;
+                }
+                break;
             }
             i = j;
         } else {
@@ -1393,7 +1416,7 @@ fn build_suggestions(
         .unwrap_or_default();
     match ctx {
         SqlContext::AfterSelect => {
-            add_keywords(&mut out, &pl);
+            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
             if let Some(cid) = conn_id
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
@@ -1408,7 +1431,7 @@ fn build_suggestions(
             }
         }
         SqlContext::AfterFrom => {
-            add_keywords(&mut out, &pl);
+            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
             let tables = conn_id
                 .and_then(|cid| get_cached_tables(app, cid, &db))
                 .unwrap_or_else(|| get_all_tables(app));
@@ -1435,28 +1458,23 @@ fn build_suggestions(
                         for fk in &fks {
                             let ft = fk.table_name.to_ascii_lowercase();
                             let fr = fk.referenced_table_name.to_ascii_lowercase();
-
                             if ft == real_scope_lower {
-                                let target = &fk.referenced_table_name;
-                                let join_sugg = format!(
+                                let target_table = &fk.referenced_table_name;
+                                let cond = format!(
                                     "{} ON {}.{} = {}.{}",
-                                    target, target, fk.referenced_column_name, scope_display, fk.column_name
+                                    target_table, scope_display, fk.column_name, target_table, fk.referenced_column_name
                                 );
-                                if fuzzy_match(&pl, &join_sugg).is_some()
-                                    || fuzzy_match(&pl, target).is_some()
-                                {
-                                    out.push(join_sugg);
+                                if fuzzy_match(&pl, target_table).is_some() || fuzzy_match(&pl, &cond).is_some() {
+                                    out.push(cond);
                                 }
                             } else if fr == real_scope_lower {
-                                let target = &fk.table_name;
-                                let join_sugg = format!(
+                                let target_table = &fk.table_name;
+                                let cond = format!(
                                     "{} ON {}.{} = {}.{}",
-                                    target, target, fk.column_name, scope_display, fk.referenced_column_name
+                                    target_table, target_table, fk.column_name, scope_display, fk.referenced_column_name
                                 );
-                                if fuzzy_match(&pl, &join_sugg).is_some()
-                                    || fuzzy_match(&pl, target).is_some()
-                                {
-                                    out.push(join_sugg);
+                                if fuzzy_match(&pl, target_table).is_some() || fuzzy_match(&pl, &cond).is_some() {
+                                    out.push(cond);
                                 }
                             }
                         }
@@ -1471,7 +1489,7 @@ fn build_suggestions(
             }
         }
         SqlContext::AfterWhere => {
-            add_keywords(&mut out, &pl);
+            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
             if let Some(cid) = conn_id
                 && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
             {
@@ -1483,9 +1501,16 @@ fn build_suggestions(
             }
         }
         SqlContext::AfterJoinOn => {
-            add_keywords(&mut out, &pl);
             if let Some(cid) = conn_id {
                 let alias_map = collect_alias_map(text);
+                // 1. Suggest heuristic / FK-based join conditions first for instant completion
+                let join_conds =
+                    suggest_join_conditions(app, cid, &db, &tables_in_scope, &alias_map);
+                for cond in join_conds {
+                    if cond.to_ascii_lowercase().starts_with(&pl) || fuzzy_match(&pl, &cond).is_some() || pl.is_empty() {
+                        out.push(cond);
+                    }
+                }
                 // Build real_lower → display_name map
                 let mut real_to_display: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
@@ -1500,7 +1525,7 @@ fn build_suggestions(
                         real_to_display.insert(real_lower, alias.clone());
                     }
                 }
-                // Suggest qualified `alias.column` names for all tables in scope
+                // 2. Suggest qualified `alias.column` names for all tables in scope
                 for table in &tables_in_scope {
                     let display = real_to_display
                         .get(&table.to_ascii_lowercase())
@@ -1517,18 +1542,11 @@ fn build_suggestions(
                         }
                     }
                 }
-                // Suggest heuristic / FK-based join conditions (formatted with aliases)
-                let join_conds =
-                    suggest_join_conditions(app, cid, &db, &tables_in_scope, &alias_map);
-                for cond in join_conds {
-                    if cond.to_ascii_lowercase().starts_with(&pl) || pl.is_empty() {
-                        out.push(cond);
-                    }
-                }
             }
+            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
         }
         SqlContext::General => {
-            add_keywords(&mut out, &pl);
+            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
             if let Some(cid) = conn_id {
                 if let Some(ts) = get_cached_tables(app, cid, &db) {
                     for t in ts {
@@ -1698,14 +1716,14 @@ pub fn update_autocomplete(app: &mut Tabular) {
             // Classify suggestions by SQL context — build_suggestions() already
             // returns them in fuzzy-score order, so no re-sort is needed here.
             // Avoids two extra cache fetches (get_cached_tables + get_cached_columns).
-            let syntax_kw: HashSet<&str> =
-                SQL_KEYWORDS.iter().copied().chain(std::iter::once("*")).collect();
+            let syntax_kw: HashSet<String> =
+                SQL_KEYWORDS.iter().map(|k| k.to_ascii_uppercase()).chain(std::iter::once("*".to_string())).collect();
 
             let mut tables = Vec::new();
             let mut columns = Vec::new();
             let mut syntax = Vec::new();
             for s in suggestions.into_iter() {
-                if syntax_kw.contains(s.as_str()) {
+                if syntax_kw.contains(&s.to_ascii_uppercase()) {
                     syntax.push(s);
                 } else {
                     match context {
@@ -1932,7 +1950,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     ui.ctx().fonts_mut(|f| {
         for (idx, s) in suggestions.iter().enumerate() {
             let g = f.layout_no_wrap(s.clone(), font_id.clone(), egui::Color32::WHITE);
-            max_label_px = max_label_px.max(g.size().x);
+            max_label_px = max_label_px.max(g.size().x + 24.0);
 
             if let Some(Some(note)) = notes.get(idx) {
                 let ng =
@@ -1946,11 +1964,12 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                 group_count += 1;
                 last_kind = Some(kind);
                 let heading = match kind {
-                    crate::models::enums::AutocompleteKind::Table => "Tables",
-                    crate::models::enums::AutocompleteKind::Column => "Columns",
-                    crate::models::enums::AutocompleteKind::Syntax => "Syntax",
-                    crate::models::enums::AutocompleteKind::Snippet => "Snippets",
-                    crate::models::enums::AutocompleteKind::Parameter => "Parameters",
+                    crate::models::enums::AutocompleteKind::Table => "📦 Tables",
+                    crate::models::enums::AutocompleteKind::Column => "🏷️ Columns",
+                    crate::models::enums::AutocompleteKind::Syntax => "⚡ Syntax",
+                    crate::models::enums::AutocompleteKind::Function => "🧩 Functions",
+                    crate::models::enums::AutocompleteKind::Snippet => "📄 Snippets",
+                    crate::models::enums::AutocompleteKind::Parameter => "🔧 Parameters",
                 };
                 let hg = f.layout_no_wrap(
                     heading.to_string(),
@@ -2034,11 +2053,12 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                 {
                                     last_kind = Some(k);
                                     let label = match k {
-                                        crate::models::enums::AutocompleteKind::Table => "Tables",
-                                        crate::models::enums::AutocompleteKind::Column => "Columns",
-                                        crate::models::enums::AutocompleteKind::Syntax => "Syntax",
-                                        crate::models::enums::AutocompleteKind::Snippet => "Snippets",
-                                        crate::models::enums::AutocompleteKind::Parameter => "Parameters",
+                                        crate::models::enums::AutocompleteKind::Table => "📦 Tables",
+                                        crate::models::enums::AutocompleteKind::Column => "🏷️ Columns",
+                                        crate::models::enums::AutocompleteKind::Syntax => "⚡ Syntax",
+                                        crate::models::enums::AutocompleteKind::Function => "🧩 Functions",
+                                        crate::models::enums::AutocompleteKind::Snippet => "📄 Snippets",
+                                        crate::models::enums::AutocompleteKind::Parameter => "🔧 Parameters",
                                     };
 
                                     let (header_rect, _) = ui.allocate_exact_size(
@@ -2047,7 +2067,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                     );
                                     if ui.is_rect_visible(header_rect) {
                                         let header_color = if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(170, 175, 185)
+                                             egui::Color32::from_rgb(170, 175, 185)
                                         } else {
                                             egui::Color32::from_rgb(70, 75, 85)
                                         };
@@ -2092,9 +2112,26 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         egui::Color32::from_rgb(25, 25, 35)
                                     };
 
-                                    // Left: Suggestion text
+                                    let icon = match kinds.get(i).copied() {
+                                        Some(crate::models::enums::AutocompleteKind::Table) => "📦",
+                                        Some(crate::models::enums::AutocompleteKind::Column) => "🏷️",
+                                        Some(crate::models::enums::AutocompleteKind::Syntax) => "⚡",
+                                        Some(crate::models::enums::AutocompleteKind::Function) => "🧩",
+                                        Some(crate::models::enums::AutocompleteKind::Snippet) => "📄",
+                                        Some(crate::models::enums::AutocompleteKind::Parameter) => "🔧",
+                                        None => "•",
+                                    };
+
+                                    // Left: Icon + Suggestion text
                                     ui.painter().text(
-                                        egui::pos2(rect.left() + 8.0, rect.center().y),
+                                        egui::pos2(rect.left() + 6.0, rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        icon,
+                                        small_font_id.clone(),
+                                        text_color,
+                                    );
+                                    ui.painter().text(
+                                        egui::pos2(rect.left() + 26.0, rect.center().y),
                                         egui::Align2::LEFT_CENTER,
                                         s,
                                         font_id.clone(),
@@ -2145,8 +2182,16 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
 
 pub fn trigger_manual(app: &mut Tabular) {
     update_autocomplete(app);
+    let casing = app.advanced_editor.keyword_casing;
+    let format_kw = |s: &str| -> String {
+        match casing {
+            crate::models::enums::KeywordCasing::Upper => s.to_ascii_uppercase(),
+            crate::models::enums::KeywordCasing::Lower => s.to_ascii_lowercase(),
+            crate::models::enums::KeywordCasing::Preserve => s.to_string(),
+        }
+    };
     if app.autocomplete_prefix.is_empty() {
-        app.autocomplete_suggestions = SQL_KEYWORDS.iter().map(|s| s.to_string()).collect();
+        app.autocomplete_suggestions = SQL_KEYWORDS.iter().map(|s| format_kw(s)).collect();
         app.autocomplete_suggestions.sort_unstable();
         app.selected_autocomplete_index = 0;
         app.show_autocomplete = true;
@@ -2164,7 +2209,7 @@ pub fn trigger_manual(app: &mut Tabular) {
                 k.to_lowercase()
                     .starts_with(&app.autocomplete_prefix.to_ascii_lowercase())
             })
-            .map(|s| s.to_string())
+            .map(|s| format_kw(s))
             .collect();
         if !app.autocomplete_suggestions.is_empty() {
             app.show_autocomplete = true;

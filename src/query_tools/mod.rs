@@ -1,3 +1,9 @@
+pub mod statement_parser;
+pub mod text_actions;
+
+pub use statement_parser::{find_statement_at_cursor, split_statements, SqlStatementSpan};
+pub use text_actions::{duplicate_lines, move_lines, toggle_line_comments};
+
 use sqlformat::{FormatOptions, Indent};
 use std::ops::Range;
 
@@ -47,6 +53,12 @@ const SNIPPETS: &[SnippetDefinition] = &[
         context: SnippetContext::Any,
     },
     SnippetDefinition {
+        label: "with -> WITH cte AS",
+        template: "WITH cte AS (\n    SELECT 1 AS id\n)\nSELECT * FROM cte;",
+        note: "Common Table Expression (CTE)",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
         label: "ins -> INSERT INTO",
         template: "INSERT INTO ",
         note: "Quick INSERT statement",
@@ -62,6 +74,24 @@ const SNIPPETS: &[SnippetDefinition] = &[
         label: "df -> DELETE FROM",
         template: "DELETE FROM ",
         note: "Quick DELETE statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "join -> JOIN ... ON",
+        template: "JOIN table_name ON condition",
+        note: "Inner JOIN statement",
+        context: SnippetContext::FromClause,
+    },
+    SnippetDefinition {
+        label: "gb -> GROUP BY",
+        template: "GROUP BY ",
+        note: "Group rows by column",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "ob -> ORDER BY",
+        template: "ORDER BY ",
+        note: "Order rows by column",
         context: SnippetContext::Any,
     },
     SnippetDefinition {
@@ -248,6 +278,16 @@ pub fn default_sqlformat_options() -> FormatOptions<'static> {
 
 pub fn format_sql(sql: &str) -> Option<String> {
     format_sql_with_options(sql, &default_sqlformat_options())
+}
+
+pub fn format_sql_with_casing(sql: &str, casing: crate::models::enums::KeywordCasing) -> Option<String> {
+    let mut opts = default_sqlformat_options();
+    match casing {
+        crate::models::enums::KeywordCasing::Upper => opts.uppercase = Some(true),
+        crate::models::enums::KeywordCasing::Lower => opts.uppercase = Some(false),
+        crate::models::enums::KeywordCasing::Preserve => opts.uppercase = None,
+    }
+    format_sql_with_options(sql, &opts)
 }
 
 pub fn format_sql_with_options(sql: &str, options: &FormatOptions) -> Option<String> {

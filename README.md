@@ -32,8 +32,25 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **Smart Sidebar Tree Search**: Case-insensitive instant filtering across Connections, Queries, History, and HTTP Collections. When searching for a folder name, the folder and all of its contents (connections, queries, history entries, subfolders) remain fully displayed and automatically expanded.
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 - **Editor Tab Drag & Drop Reordering & Pin Tab**: Group and reorder tabs via intuitive horizontal drag-and-drop, pin important queries/tables with 📌, prevent accidental closures, and manage tabs with full context menus
+- **Modern Developer SQL Editor**: Context-aware alias resolution (`u.`), Foreign Key auto-join completions, statement-level execution (`Ctrl+Enter`), quick query formatting (`Ctrl+Shift+F`), line comments (`Ctrl+/`), line duplication & moving (`Alt+Up/Down`), active line highlight, and multi-format result clipboard exports (Markdown, JSON, CSV, SQL INSERTs).
 
 ---
+
+### Modern Developer SQL Editor (New in v0.16)
+Next-generation SQL editing ergonomics tailored for developer velocity:
+- **IntelliSense 2.0**:
+  - Contextual table alias resolution (`FROM users u WHERE u.` suggests columns from `users`).
+  - Automated foreign key completion for `JOIN ... ON` clauses.
+  - Distinct iconography for completion candidates (⚡ Keywords, 📦 Tables, 🏷️ Columns, 🧩 Functions, 📄 Snippets, 🔧 Parameters).
+  - User-configurable keyword casing preferences (`UPPERCASE`, `lowercase`, or `Preserve`).
+- **Ergonomic Shortcuts & Navigation**:
+  - **Execute Current Statement (`Ctrl+Enter` / `Cmd+Enter`)**: Executes only the statement surrounding the cursor without requiring manual block selection.
+  - **Fast Query Formatting (`Ctrl+Shift+F` / `Cmd+Shift+F`)**: Instantly prettifies SQL queries with standardized indentation and casing.
+  - **Line & Block Comment Toggle (`Ctrl+/` / `Cmd+/`)**: Toggles `-- ` prefix on single or multi-line selections with exact indentation preservation.
+  - **Line Manipulation**: Duplicate lines downward (`Shift+Alt+Down`) and move lines up or down (`Alt+Up` / `Alt+Down`).
+  - **Active Line Highlighting**: Subtle real-time background indicator on the currently focused editor line.
+- **Quick Result Exports to Clipboard**:
+  - Export query results directly to clipboard as Markdown tables, JSON arrays, CSV with escaped strings, and SQL `INSERT INTO` statements.
 
 ### Editor Tab Drag & Drop & Tab Pinning (New in v0.15)
 Organize and group editor tabs seamlessly to enhance workflow when dealing with many queries, tables, and API requests.

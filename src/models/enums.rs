@@ -302,6 +302,15 @@ pub enum AutocompleteKind {
     Syntax,
     Snippet,
     Parameter,
+    Function,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KeywordCasing {
+    #[default]
+    Upper,
+    Lower,
+    Preserve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
