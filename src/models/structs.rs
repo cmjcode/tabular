@@ -839,6 +839,8 @@ pub struct AdvancedEditor {
     pub match_count: usize,
     pub regex_error: Option<String>,
     pub focus_find_input: bool,
+    pub keyword_casing: crate::models::enums::KeywordCasing,
+    pub highlight_active_line: bool,
 }
 
 impl Default for AdvancedEditor {
@@ -865,6 +867,8 @@ impl Default for AdvancedEditor {
             match_count: 0,
             regex_error: None,
             focus_find_input: false,
+            keyword_casing: crate::models::enums::KeywordCasing::default(),
+            highlight_active_line: true,
         }
     }
 }
