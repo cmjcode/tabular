@@ -275,6 +275,7 @@ pub struct Tabular {
     // Gear menu and about / account dialogs
     pub show_about_dialog: bool,
     pub show_account_dialog: bool,
+    pub account_dialog_tab: AccountDialogTab,
     // Plugin Extensibility & Wasm Automation
     pub plugin_manager: crate::plugin_runtime::PluginManager,
     pub plugin_modal_state: crate::plugin_runtime::PluginModalState,
@@ -768,6 +769,13 @@ pub enum PrefTab {
     AiAssistant,
     Sync,
     Plugins,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum AccountDialogTab {
+    #[default]
+    Profile,
+    Security,
 }
 
 impl Default for Tabular {
