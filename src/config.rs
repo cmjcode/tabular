@@ -228,10 +228,29 @@ pub struct AppPreferences {
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
     pub sync_server_url: Option<String>,
+    /// Timeout query per statement dalam detik; 0 berarti tanpa batas.
+    #[serde(default)]
+    pub query_timeout_secs: u32,
+    /// Jumlah baris maksimum yang disimpan dari satu result set tanpa paginasi.
+    #[serde(default = "default_max_result_rows")]
+    pub max_result_rows: u32,
+    /// Buka kembali tab query dari sesi sebelumnya (termasuk draft yang belum disimpan).
+    #[serde(default = "default_true")]
+    pub restore_session: bool,
 }
 
 fn default_redis_browser_auto_refresh_seconds() -> u32 {
     5
+}
+
+pub const DEFAULT_MAX_RESULT_ROWS: u32 = 50_000;
+
+fn default_max_result_rows() -> u32 {
+    DEFAULT_MAX_RESULT_ROWS
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppPreferences {
@@ -254,6 +273,9 @@ impl Default for AppPreferences {
             ai_base_url: String::new(),
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
+            query_timeout_secs: 0,
+            max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+            restore_session: true,
         }
     }
 }
@@ -366,6 +388,9 @@ impl ConfigStore {
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
+                query_timeout_secs: 0,
+                max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+                restore_session: true,
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -413,6 +438,11 @@ impl ConfigStore {
                         "sync_server_url" => {
                             prefs.sync_server_url = if v.is_empty() { None } else { Some(v) }
                         }
+                        "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
+                        "max_result_rows" => {
+                            prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS)
+                        }
+                        "restore_session" => prefs.restore_session = v == "1",
                         _ => {}
                     }
                 }
@@ -468,7 +498,9 @@ impl ConfigStore {
             // The key goes to the OS keychain; the row keeps only a sentinel.
             let ai_api_key_stored =
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
-            let entries: [(&str, &str); 16] = [
+            let query_timeout_secs = prefs.query_timeout_secs.to_string();
+            let max_result_rows = prefs.max_result_rows.to_string();
+            let entries: [(&str, &str); 19] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -507,6 +539,9 @@ impl ConfigStore {
                     "sync_server_url",
                     prefs.sync_server_url.as_deref().unwrap_or(""),
                 ),
+                ("query_timeout_secs", &query_timeout_secs),
+                ("max_result_rows", &max_result_rows),
+                ("restore_session", if prefs.restore_session { "1" } else { "0" }),
             ];
 
             for (k, v) in entries.iter() {

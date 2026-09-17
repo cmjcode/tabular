@@ -485,6 +485,37 @@ impl Tabular {
                                     }
                                 });
                                 ui.label(egui::RichText::new("Default interval used when Redis browser auto-refresh is enabled.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(8.0);
+                                ui.heading("Query Execution");
+                                ui.horizontal(|ui| {
+                                    ui.label("Query timeout (seconds):");
+                                    let mut secs = self.query_timeout_secs as i64;
+                                    if ui.add(egui::DragValue::new(&mut secs).range(0..=86_400)).changed() {
+                                        self.query_timeout_secs = secs.max(0) as u32;
+                                        self.prefs_dirty = true;
+                                        self.try_save_prefs();
+                                    }
+                                    if self.query_timeout_secs == 0 {
+                                        ui.label(egui::RichText::new("no limit").size(11.0).color(egui::Color32::from_gray(120)));
+                                    }
+                                });
+                                ui.label(egui::RichText::new("A statement running longer than this is cancelled on the server. 0 = never time out.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Max rows per result:");
+                                    let mut rows = self.max_result_rows as i64;
+                                    if ui.add(egui::DragValue::new(&mut rows).range(100..=5_000_000).speed(100)).changed() {
+                                        self.max_result_rows = rows.max(100) as u32;
+                                        self.prefs_dirty = true;
+                                        self.try_save_prefs();
+                                    }
+                                });
+                                ui.label(egui::RichText::new("Larger result sets are truncated (with a notice) so a stray SELECT * cannot exhaust memory.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.add_space(4.0);
+                                if ui.checkbox(&mut self.restore_session, "Restore open tabs and unsaved drafts on startup").changed() {
+                                    self.prefs_dirty = true;
+                                    self.try_save_prefs();
+                                }
                             }
                             PrefTab::DataDirectory => {
                                 ui.heading("Data Directory");
@@ -4573,6 +4604,9 @@ impl Tabular {
                     redis_browser_auto_refresh_seconds: self.redis_browser_auto_refresh_default_seconds.max(1),
                     sync_server_url: Some(self.sync_server_url.clone()),
                     ui_mode: self.ui_mode,
+                    query_timeout_secs: self.query_timeout_secs,
+                    max_result_rows: self.max_result_rows.max(1),
+                    restore_session: self.restore_session,
                 };
                 rt.block_on(store.save(&prefs));
                 log::debug!(
@@ -4933,6 +4967,9 @@ impl App for Tabular {
 
                     // Load server pagination preference
                     self.use_server_pagination = prefs.use_server_pagination;
+                    self.query_timeout_secs = prefs.query_timeout_secs;
+                    self.max_result_rows = prefs.max_result_rows.max(1);
+                    self.restore_session = prefs.restore_session;
 
                     self.config_store = Some(store);
                     self.last_saved_prefs = Some(prefs.clone());

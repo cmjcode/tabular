@@ -57,6 +57,30 @@ impl super::Tabular {
 
         let was_paginated = self.pending_paginated_jobs.remove(&message.job_id);
 
+        if message.truncated {
+            self.toasts.warning(format!(
+                "Result truncated to the first {} rows. Add a LIMIT or raise “Max rows per result” in Settings → Performance.",
+                message.rows.len()
+            ));
+        }
+
+        // User bisa saja pindah tab selama query berjalan. Hasil tab aktif
+        // disimpan di state tampilan global, sedangkan tab lain di field
+        // miliknya sendiri. Jadi hasil untuk tab di latar belakang ditulis
+        // langsung ke tab tersebut, tanpa menimpa data yang sedang tampil.
+        if let Some(origin_idx) = message
+            .tab_id
+            .and_then(|id| self.query_tabs.iter().position(|t| t.id == id))
+            && origin_idx != self.active_tab_index
+        {
+            self.apply_result_to_background_tab(origin_idx, &message, was_paginated);
+            if self.active_query_jobs.is_empty() {
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
+            }
+            return;
+        }
+
         if let Some(ast_sql) = message.ast_debug_sql.clone() {
             self.last_compiled_sql = Some(ast_sql);
         }
@@ -66,14 +90,7 @@ impl super::Tabular {
 
         // Update query message panel
         if message.success {
-            let duration_ms = message.duration.as_millis();
-            let row_count = message.affected_rows.unwrap_or(message.rows.len());
-            self.query_message = format!(
-                "Query executed successfully in {}.{:03}s • {} row(s) affected",
-                duration_ms / 1000,
-                duration_ms % 1000,
-                row_count
-            );
+            self.query_message = describe_query_outcome(&message);
             self.query_message_is_error = false;
             // Auto-switch to Data tab to show results
             self.table_bottom_view = models::structs::TableBottomView::Data;
@@ -187,6 +204,85 @@ impl super::Tabular {
             crate::connection::ensure_background_pool_creation(self, cid);
         }
     }
+    /// Menyimpan hasil query yang selesai ke tab yang sedang tidak ditampilkan.
+    /// Data masuk ke field hasil milik tab tersebut, lalu `switch_to_tab`
+    /// menukarnya ke tampilan saat user kembali ke tab itu.
+    fn apply_result_to_background_tab(
+        &mut self,
+        tab_index: usize,
+        message: &connection::QueryResultMessage,
+        was_paginated: bool,
+    ) {
+        let query_message = describe_query_outcome(message);
+        let tab_title;
+        {
+            let Some(tab) = self.query_tabs.get_mut(tab_index) else {
+                return;
+            };
+            tab_title = tab.title.clone();
+            tab.has_executed_query = true;
+            tab.query_message = query_message.clone();
+            tab.query_message_is_error = !message.success;
+
+            if !(was_paginated && message.success) {
+                let new_index = tab.results.len();
+                tab.results.push(models::structs::QueryResult {
+                    headers: message.headers.clone(),
+                    rows: message.rows.clone(),
+                    all_rows: message.rows.clone(),
+                    table_name: if message.success {
+                        format!("Result {}", new_index + 1)
+                    } else {
+                        "Error".to_string()
+                    },
+                    current_page: 0,
+                    page_size: tab.page_size.max(1),
+                    total_rows: message.rows.len(),
+                    query_message: query_message.clone(),
+                    query_message_is_error: !message.success,
+                    execution_time_ms: message.duration.as_millis(),
+                    column_metadata: message.column_metadata.clone(),
+                    explain_plan_json: None,
+                    pinned_columns: std::collections::HashSet::new(),
+                });
+                if new_index > 0 {
+                    // Statement berikutnya dalam batch hanya menambah tab hasil.
+                    tab.active_result_index = tab.active_result_index.min(new_index);
+                }
+            }
+
+            let is_primary = was_paginated || tab.results.len() <= 1;
+            if is_primary {
+                tab.active_result_index = 0;
+                tab.result_headers = message.headers.clone();
+                tab.result_all_rows = message.rows.clone();
+                tab.result_rows = message.rows.clone();
+                tab.result_column_metadata = message.column_metadata.clone();
+                tab.total_rows = message.rows.len();
+                if !was_paginated {
+                    tab.current_page = 0;
+                }
+                tab.result_table_name = if !message.success {
+                    "Error".to_string()
+                } else if message.rows.is_empty() {
+                    "Query executed successfully (no results)".to_string()
+                } else {
+                    format!("Query Results ({} rows)", message.rows.len())
+                };
+            }
+        }
+
+        if message.success && !was_paginated {
+            sidebar_history::save_query_to_history(self, &message.query, message.connection_id);
+        }
+
+        let summary = format!("“{}” finished: {}", tab_title, query_message);
+        if message.success {
+            self.toasts.info(summary);
+        } else {
+            self.toasts.error(summary);
+        }
+    }
     pub fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {
         self.current_table_headers = message.headers.clone();
         self.current_table_data = message.rows.clone();
@@ -213,8 +309,41 @@ impl super::Tabular {
             active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
         }
     }
+    /// Kirim perintah cancel ke server (pg_cancel_backend / KILL QUERY) untuk
+    /// job yang backend pid-nya sudah tercatat. `abort()` pada task saja hanya
+    /// menghentikan penantian di klien, query tetap berjalan di server.
+    fn cancel_queries_on_server(&self, job_ids: &[u64]) {
+        let Some(runtime) = self.runtime.clone() else {
+            return;
+        };
+        for job_id in job_ids {
+            let pid = self
+                .query_backend_pids
+                .lock()
+                .ok()
+                .and_then(|m| m.get(job_id).copied());
+            let pool = self
+                .active_query_jobs
+                .get(job_id)
+                .and_then(|status| self.connection_pools.get(&status.connection_id).cloned());
+            if let (Some(pid), Some(pool)) = (pid, pool) {
+                runtime.spawn(connection::execute::cancel_backend_query(pool, pid));
+            }
+        }
+    }
+
     pub fn cancel_active_query_job(&mut self, job_id: u64) -> bool {
         self.prune_cancelled_jobs();
+
+        let mut server_side_ids = vec![job_id];
+        if let Some((ids, _)) = self
+            .query_job_batches
+            .iter()
+            .find(|(ids, _)| ids.contains(&job_id))
+        {
+            server_side_ids.extend(ids.iter().copied().filter(|id| *id != job_id));
+        }
+        self.cancel_queries_on_server(&server_side_ids);
 
         let preview_text = self
             .active_query_jobs
@@ -266,11 +395,10 @@ impl super::Tabular {
                     } else {
                         preview
                     };
-                    self.error_message = format!("Query cancelled: {}", truncated.trim());
+                    self.toasts.info(format!("Query cancelled: {}", truncated.trim()));
                 } else {
-                    self.error_message = "Query cancelled.".to_string();
+                    self.toasts.info("Query cancelled.");
                 }
-                self.show_error_message = true;
                 self.current_table_name = "Query cancelled".to_string();
             }
 
@@ -301,4 +429,28 @@ impl super::Tabular {
         self.query_icon_hold_until =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
     }
+}
+
+/// Baris status untuk query yang selesai: jumlah baris yang dikembalikan untuk
+/// result set, jumlah baris terdampak untuk perubahan data (dari driver), atau
+/// teks error.
+pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -> String {
+    if !message.success {
+        return format!(
+            "Error: {}",
+            message.error.as_deref().unwrap_or("Unknown error")
+        );
+    }
+    let duration_ms = message.duration.as_millis();
+    let count = match message.affected_rows {
+        Some(n) => format!("{} row(s) affected", n),
+        None if message.truncated => format!("first {} row(s) returned (truncated)", message.rows.len()),
+        None => format!("{} row(s) returned", message.rows.len()),
+    };
+    format!(
+        "Query executed successfully in {}.{:03}s • {}",
+        duration_ms / 1000,
+        duration_ms % 1000,
+        count
+    )
 }

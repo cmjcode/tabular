@@ -24,6 +24,7 @@ pub(crate) fn create_new_tab(
     tabular.next_tab_id += 1;
 
     let new_tab = models::structs::QueryTab {
+        id: tab_id,
         title,
         content: content.clone(),
         file_path: None,
@@ -7189,12 +7190,12 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         }
                         Err(err) => {
                             tabular.active_query_jobs.remove(&job_id);
-                            debug!("Failed to spawn async job: {:?}", err);
+                            report_query_start_failure(tabular, &err);
                         }
                     }
                 }
                 Err(err) => {
-                    debug!("Failed to prepare async job: {:?}", err);
+                    report_query_start_failure(tabular, &err);
                 }
             }
         } else {
@@ -7226,7 +7227,14 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         jobs.push(job);
                     }
                     Err(err) => {
-                        debug!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
+                        // Tanpa statement ini urutan script jadi tidak utuh,
+                        // jadi batalkan seluruh batch daripada menjalankan sebagian.
+                        for job_id in &job_ids {
+                            tabular.active_query_jobs.remove(job_id);
+                        }
+                        log::warn!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
+                        report_query_start_failure(tabular, &err);
+                        return;
                     }
                 }
             }
@@ -7252,11 +7260,33 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                     for job_id in &job_ids {
                         tabular.active_query_jobs.remove(job_id);
                     }
-                    tabular.query_execution_in_progress = false;
-                    debug!("Failed to spawn batch job: {:?}", err);
+                    report_query_start_failure(tabular, &err);
                 }
             }
         }
+    }
+}
+
+/// Tampilkan alasan query gagal dimulai dan kembalikan status eksekusi ke idle.
+/// Sebelumnya kegagalan ini hanya masuk ke log debug, sehingga tombol Run
+/// terlihat tidak melakukan apa-apa dan spinner bisa terus berputar.
+fn report_query_start_failure(
+    tabular: &mut window_egui::Tabular,
+    err: &connection::types::QueryPreparationError,
+) {
+    use connection::types::QueryPreparationError as E;
+    let reason = match err {
+        E::ConnectionNotFound => "the connection for this tab no longer exists",
+        E::PoolUnavailable => "the database connection is not open yet — try again in a moment",
+        E::RuntimeUnavailable => "the background runtime is not available",
+        E::UnsupportedDatabase => "this database type does not support running queries here",
+    };
+    log::warn!("Query could not be started: {:?}", err);
+    tabular.toasts.error(format!("Query could not be started: {}", reason));
+    if tabular.active_query_jobs.is_empty() {
+        tabular.query_execution_in_progress = false;
+        tabular.current_table_name.clear();
+        tabular.extend_query_icon_hold();
     }
 }
 

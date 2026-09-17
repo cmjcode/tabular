@@ -301,9 +301,10 @@ pub async fn execute_user_manager_command(
             Ok(())
         }
         DatabasePool::MySQL(my_pool) => {
-            for stmt in query_owned.split(';') {
+            // Splitter yang paham quote: password seperti 'a;b' tidak ikut terpecah.
+            for stmt in crate::connection::split_sql_statements(&query_owned, true) {
                 let trimmed = stmt.trim();
-                if !trimmed.is_empty() {
+                if !crate::connection::sql::is_comment_only_statement(trimmed) {
                     sqlx::query(sqlx::AssertSqlSafe(trimmed))
                         .execute(&**my_pool)
                         .await

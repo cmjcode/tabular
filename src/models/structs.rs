@@ -705,6 +705,10 @@ pub struct QueryResult {
 
 #[derive(Clone, Debug)]
 pub struct QueryTab {
+    /// Identitas tab yang stabil. Berbeda dengan index di `query_tabs`, id ini
+    /// tidak berubah saat tab diurutkan ulang atau tab lain ditutup, sehingga
+    /// hasil query async bisa dikembalikan ke tab yang menjalankannya.
+    pub id: usize,
     pub title: String,
     pub content: String,
     pub file_path: Option<String>,
@@ -1786,6 +1790,7 @@ mod tests {
     #[test]
     fn test_query_tab_pinning() {
         let mut tab = QueryTab {
+            id: 1,
             title: "Test Tab".to_string(),
             content: "SELECT 1;".to_string(),
             file_path: None,

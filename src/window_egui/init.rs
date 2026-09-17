@@ -58,6 +58,9 @@ impl super::Tabular {
         self.auto_check_updates = prefs.auto_check_updates;
         self.use_server_pagination = prefs.use_server_pagination;
         self.enable_debug_logging = prefs.enable_debug_logging;
+        self.query_timeout_secs = prefs.query_timeout_secs;
+        self.max_result_rows = prefs.max_result_rows.max(1);
+        self.restore_session = prefs.restore_session;
         self.redis_browser_auto_refresh_default_seconds = prefs.redis_browser_auto_refresh_seconds.max(1);
         // Mirror AI settings
         self.ai_api_key = prefs.ai_api_key.clone();
@@ -263,6 +266,7 @@ impl super::Tabular {
             user_manager_result_receiver,
             active_query_jobs: std::collections::HashMap::new(),
             active_query_handles: std::collections::HashMap::new(),
+            query_backend_pids: Default::default(),
             cancelled_query_jobs: std::collections::HashMap::new(),
             query_job_batches: Vec::new(),
             pending_paginated_jobs: std::collections::HashSet::new(),
@@ -482,6 +486,9 @@ impl super::Tabular {
             update_stage_receiver: None,
             staged_update_script: None,
             enable_debug_logging: false, // Default to false
+            query_timeout_secs: 0,
+            max_result_rows: crate::config::DEFAULT_MAX_RESULT_ROWS,
+            restore_session: true,
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
