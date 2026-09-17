@@ -1242,30 +1242,7 @@ impl super::Tabular {
                                 self.current_connection_id = Some(connection_id);
                                 // Reset spreadsheet editing state when opening a key browse
                                 self.reset_spreadsheet_state();
-                                if let Some((headers, data)) = connection::execute_query_with_connection(
-                                    self,
-                                    connection_id,
-                                    redis_command,
-                                ) {
-                                    self.current_table_headers = headers;
-                                    self.current_table_data = data.clone();
-                                    self.all_table_data = data;
-                                    self.current_table_name = format!("Redis {}", table_name);
-                                    self.total_rows = self.all_table_data.len();
-                                    self.current_page = 0;
-                                    if let Some(active_tab) =
-                                        self.query_tabs.get_mut(self.active_tab_index)
-                                    {
-                                        active_tab.result_headers = self.current_table_headers.clone();
-                                        active_tab.result_rows = self.current_table_data.clone();
-                                        active_tab.result_all_rows = self.all_table_data.clone();
-                                        active_tab.result_table_name = self.current_table_name.clone();
-                                        active_tab.is_table_browse_mode = self.is_table_browse_mode;
-                                        active_tab.current_page = self.current_page;
-                                        active_tab.page_size = self.page_size;
-                                        active_tab.total_rows = self.total_rows;
-                                    }
-                                }
+                                self.run_query_for_active_tab(connection_id, redis_command);
                             }
                         }
                     }

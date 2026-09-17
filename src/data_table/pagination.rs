@@ -56,14 +56,25 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 );
 
                 ui.horizontal(|ui| {
-                    if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
-                        let actual_total = tabular.actual_total_rows.unwrap_or(0);
-                        if actual_total > 0 {
+                    if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
+                        let rows_on_page = tabular.current_table_data.len();
+                        if rows_on_page > 0 {
                             let start_row = tabular.current_page * tabular.page_size + 1;
-                            let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
-                            ui.label(format!("Showing rows {}-{}", start_row, end_row));
+                            let end_row = start_row + rows_on_page - 1;
+                            match tabular.actual_total_rows {
+                                Some(total) => ui.label(format!("Showing rows {}-{} of {}", start_row, end_row, total)),
+                                None => ui.label(format!("Showing rows {}-{}", start_row, end_row)),
+                            };
                         } else {
                             ui.label("0 rows");
+                        }
+                        if tabular.actual_total_rows.is_none()
+                            && ui
+                                .add(crate::window_egui::style::btn_secondary("Count rows"))
+                                .on_hover_text("Run SELECT COUNT(*) for this query on the server")
+                                .clicked()
+                        {
+                            tabular.request_total_row_count();
                         }
                         ui.colored_label(crate::window_egui::style::theme_success(ui.ctx()), "📡 Server pagination");
                     } else {
@@ -135,7 +146,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                     // Navigation buttons
                     let has_data = if tabular.use_server_pagination {
-                        tabular.actual_total_rows.unwrap_or(0) > 0
+                        !tabular.current_table_data.is_empty() || tabular.current_page > 0
                     } else {
                         tabular.total_rows > 0
                     };
@@ -157,11 +168,16 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     )
                     .clicked()
                     .then(|| previous_page(tabular));
-                    ui.label(format!(
-                        "Page {} of {}",
-                        tabular.current_page + 1,
-                        total_pages.max(1)
-                    ));
+                    let total_unknown = tabular.use_server_pagination && tabular.actual_total_rows.is_none();
+                    if total_unknown {
+                        ui.label(format!("Page {}", tabular.current_page + 1));
+                    } else {
+                        ui.label(format!(
+                            "Page {} of {}",
+                            tabular.current_page + 1,
+                            total_pages.max(1)
+                        ));
+                    }
                     ui.add_enabled(
                         has_data && tabular.current_page < total_pages.saturating_sub(1),
                         crate::window_egui::style::btn_secondary(&format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
@@ -169,7 +185,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     .clicked()
                     .then(|| next_page(tabular));
                     ui.add_enabled(
-                        has_data && total_pages > 1,
+                        has_data && total_pages > 1 && !total_unknown,
                         crate::window_egui::style::btn_secondary(&format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
                     )
                     .clicked()
@@ -525,7 +541,7 @@ pub(crate) fn go_to_page(tabular: &mut window_egui::Tabular, page: usize) {
     if tabular.use_server_pagination && has_base_query {
         // Server-side pagination
         let total_pages = get_total_pages_server(tabular);
-        if page < total_pages {
+        if page < total_pages || tabular.actual_total_rows.is_none() {
             tabular.current_page = page;
             tabular.execute_paginated_query();
             clear_table_selection(tabular);
@@ -551,7 +567,10 @@ pub(crate) fn get_total_pages_server(tabular: &mut window_egui::Tabular) -> usiz
     if let Some(actual_total) = tabular.actual_total_rows {
         actual_total.div_ceil(ps) // Ceiling division
     } else {
-        1
+        // Total belum diketahui: halaman berikutnya dianggap ada jika halaman
+        // saat ini terisi penuh.
+        let page_is_full = tabular.current_table_data.len() >= ps;
+        tabular.current_page + 1 + usize::from(page_is_full)
     }
 }
 

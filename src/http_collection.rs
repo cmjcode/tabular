@@ -202,15 +202,24 @@ fn collections_dir() -> std::path::PathBuf {
 
 /// Persist a list of workspaces to disk.
 /// Each workspace is stored as `{app_data}/http_collections/{workspace_id}.json`.
-pub fn save_workspaces(workspaces: &[HttpWorkspace]) {
+/// Mengembalikan error pertama yang terjadi (semua workspace tetap dicoba ditulis).
+pub fn save_workspaces(workspaces: &[HttpWorkspace]) -> Result<(), String> {
     let dir = collections_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    let mut first_error = None;
     for ws in workspaces {
         let path = dir.join(format!("{}.json", ws.id));
-        if let Ok(json) = serde_json::to_string_pretty(ws) {
-            let _ = std::fs::write(path, json);
+        let result = serde_json::to_string_pretty(ws)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                crate::directory::write_file_atomically(&path, json.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
+        if let Err(e) = result {
+            log::error!("Failed to save HTTP workspace '{}' to {}: {}", ws.name, path.display(), e);
+            first_error.get_or_insert(format!("Could not save workspace '{}': {}", ws.name, e));
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Load all persisted workspaces from disk.
@@ -225,13 +234,20 @@ pub fn load_workspaces() -> Vec<HttpWorkspace> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Skipping unreadable HTTP workspace {}: {}", path.display(), e);
+                continue;
+            }
         };
-        let Ok(ws) = serde_json::from_str::<HttpWorkspace>(&contents) else {
-            continue;
-        };
-        result.push(ws);
+        match serde_json::from_str::<HttpWorkspace>(&contents) {
+            Ok(ws) => result.push(ws),
+            Err(e) => {
+                // File tidak dihapus agar bisa dipulihkan manual.
+                log::warn!("Skipping corrupt HTTP workspace {}: {}", path.display(), e);
+            }
+        }
     }
     // Sort alphabetically by name for stable ordering.
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -262,7 +278,8 @@ pub fn create_workspace(workspaces: &mut Vec<HttpWorkspace>, ws_name: &str) -> H
         environments: Vec::new(),
     };
     workspaces.push(new_ws.clone());
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+    let _ = save_workspaces(workspaces);
     new_ws
 }
 
@@ -308,7 +325,9 @@ pub fn create_folder_in_workspace(
         ws.folders.push(new_folder.clone());
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     Some(new_folder)
 }
 
@@ -324,7 +343,8 @@ pub fn rename_workspace_in_workspaces(
     }
     if let Some(ws) = workspaces.iter_mut().find(|w| w.id == ws_id) {
         ws.name = trimmed.to_string();
-        save_workspaces(workspaces);
+        // Error sudah dicatat ke log di dalam save_workspaces.
+        let _ = save_workspaces(workspaces);
         true
     } else {
         false
@@ -356,7 +376,8 @@ pub fn rename_folder_in_workspaces(
     }
 
     if rename_in_tree(&mut ws.folders, folder_id, new_name) {
-        save_workspaces(workspaces);
+        // Error sudah dicatat ke log di dalam save_workspaces.
+        let _ = save_workspaces(workspaces);
         true
     } else {
         false
@@ -426,7 +447,9 @@ pub fn move_request(
         target_ws.requests.push(req);
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     true
 }
 
@@ -535,7 +558,9 @@ pub fn move_folder(
         target_ws.folders.push(folder);
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     true
 }
 

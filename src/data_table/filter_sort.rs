@@ -1,5 +1,5 @@
 use log::debug;
-use crate::{connection, driver_mssql, models, window_egui};
+use crate::{driver_mssql, models, window_egui};
 use super::{update_current_page_data, infer_current_table_name};
 
 pub use crate::models::structs::SqlValue;
@@ -640,7 +640,7 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
         tabular.use_server_pagination = true; // force server pagination for filtered browse
         tabular.current_base_query = base_query.clone();
         tabular.current_page = 0;
-        tabular.actual_total_rows = Some(10_000); // assume total rows for paging (default 10k)
+        tabular.actual_total_rows = None; // total belum diketahui sampai user menekan Count rows
         // Persist into active tab for consistent paging
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             tab.base_query = base_query;
@@ -657,12 +657,18 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
         crate::connection::add_auto_limit_if_needed(&sql_query, &connection.connection_type);
     debug!("🚀 Final query with auto-limit: {}", final_query);
 
-    if let Some((headers, data)) =
-        connection::execute_query_with_connection(tabular, connection_id, final_query)
-    {
-        tabular.current_table_headers = headers;
-        tabular.current_table_data = data.clone();
-        tabular.all_table_data = data;
+    tabular.run_query_with_callback(connection_id, final_query, |tabular, message| {
+        if !message.success {
+            debug!("❌ Failed to apply SQL filter");
+            tabular.toasts.error(format!(
+                "Failed to apply filter: {}",
+                message.error.clone().unwrap_or_default()
+            ));
+            return;
+        }
+        tabular.current_table_headers = message.headers.clone();
+        tabular.current_table_data = message.rows.clone();
+        tabular.all_table_data = message.rows.clone();
         tabular.total_rows = tabular.all_table_data.len();
         tabular.current_page = 0;
         update_current_page_data(tabular);
@@ -670,12 +676,7 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
             "✅ Filter applied successfully, {} rows returned",
             tabular.total_rows
         );
-    } else {
-        tabular.error_message =
-            "Failed to apply filter. Please check your WHERE clause syntax.".to_string();
-        tabular.show_error_message = true;
-        debug!("❌ Failed to apply SQL filter");
-    }
+    });
 }
 
 /// Renders the modular visual filter builder bar and condition rows directly above the data grid

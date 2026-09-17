@@ -7146,7 +7146,8 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 tabular.use_server_pagination = true;
                 tabular.current_base_query = base_query.clone();
                 tabular.current_page = 0;
-                tabular.actual_total_rows = Some(10_000);
+                // Total belum diketahui; dihitung hanya jika user meminta (Count rows).
+                tabular.actual_total_rows = None;
 
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                     tab.base_query = base_query;

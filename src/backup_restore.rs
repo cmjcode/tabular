@@ -507,7 +507,7 @@ impl SqliteBackupEngine {
             }
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.start("Copying SQLite database pages...");
             }
 
@@ -520,7 +520,7 @@ impl SqliteBackupEngine {
                     libsqlite3_sys::sqlite3_close(p_dest);
                     libsqlite3_sys::sqlite3_close(p_src);
                     let _ = std::fs::remove_file(&temp_dest);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.cancel();
                     return Ok(());
                 }
@@ -540,7 +540,7 @@ impl SqliteBackupEngine {
                 let bytes_est = (copied as u64) * 4096;
 
                 {
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.set_pages(copied, total);
                     trk.bytes_processed = bytes_est;
                 }
@@ -557,7 +557,7 @@ impl SqliteBackupEngine {
                     libsqlite3_sys::sqlite3_close(p_dest);
                     libsqlite3_sys::sqlite3_close(p_src);
                     let _ = std::fs::remove_file(&temp_dest);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.fail(format!("SQLite backup step error: {}", err_msg));
                     return Err(format!("SQLite backup failed: {}", err_msg));
                 }
@@ -571,7 +571,7 @@ impl SqliteBackupEngine {
         // If compression is requested, stream-compress the backup file to destination
         if compress_gzip {
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.set_stage("Compressing SQLite backup with gzip...");
                 trk.append_log("Compressing raw database file to .gz archive...");
             }
@@ -590,7 +590,7 @@ impl SqliteBackupEngine {
                 if cancel_token.load(Ordering::Relaxed) {
                     let _ = std::fs::remove_file(&temp_dest);
                     let _ = std::fs::remove_file(dest_db_path);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.cancel();
                     return Ok(());
                 }
@@ -608,7 +608,7 @@ impl SqliteBackupEngine {
                 total_compressed_in += read_bytes as u64;
 
                 {
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.bytes_processed = total_compressed_in;
                 }
             }
@@ -620,7 +620,7 @@ impl SqliteBackupEngine {
         }
 
         {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.complete();
         }
 
@@ -641,7 +641,7 @@ impl SqliteBackupEngine {
         let raw_source_path = if is_gzipped {
             let temp_uncompressed = dest_db_path.with_extension("tmp_restore_sqlite");
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.start("Decompressing gzip archive...");
             }
 
@@ -657,7 +657,7 @@ impl SqliteBackupEngine {
             loop {
                 if cancel_token.load(Ordering::Relaxed) {
                     let _ = std::fs::remove_file(&temp_uncompressed);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.cancel();
                     return Ok(());
                 }
@@ -675,7 +675,7 @@ impl SqliteBackupEngine {
                 decompressed_bytes += read_bytes as u64;
 
                 {
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.bytes_processed = decompressed_bytes;
                 }
             }
@@ -758,7 +758,7 @@ impl BackupRestoreRunner {
                         "Backup is not supported for {:?}",
                         config_clone.connection_type
                     );
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.fail(&err);
                     Err(err)
                 }
@@ -806,7 +806,7 @@ impl BackupRestoreRunner {
                         "Restore is not supported for {:?}",
                         config_clone.connection_type
                     );
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.fail(&err);
                     Err(err)
                 }
@@ -829,12 +829,12 @@ impl BackupRestoreRunner {
         let binary_info = BinaryDetector::find_binary("pg_dump", options.custom_binary_path.as_deref())
             .ok_or_else(|| {
                 let msg = "pg_dump binary not found in PATH or standard directories. Please install PostgreSQL client tools.".to_string();
-                tracker.lock().unwrap().fail(&msg);
+                tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
                 msg
             })?;
 
         {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.start("Spawning pg_dump process...");
             trk.append_log(format!(
                 "Using pg_dump: {} ({})",
@@ -965,12 +965,12 @@ impl BackupRestoreRunner {
                 BinaryDetector::find_binary("pg_restore", options.custom_binary_path.as_deref())
                     .ok_or_else(|| {
                         let msg = "pg_restore binary not found in PATH or standard directories.".to_string();
-                        tracker.lock().unwrap().fail(&msg);
+                        tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
                         msg
                     })?;
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.start("Spawning pg_restore process...");
                 trk.append_log(format!(
                     "Using pg_restore: {}",
@@ -1019,12 +1019,12 @@ impl BackupRestoreRunner {
                 BinaryDetector::find_binary("psql", options.custom_binary_path.as_deref())
                     .ok_or_else(|| {
                         let msg = "psql binary not found in PATH or standard directories.".to_string();
-                        tracker.lock().unwrap().fail(&msg);
+                        tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
                         msg
                     })?;
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.start("Spawning psql restore process...");
                 trk.append_log(format!("Using psql: {}", binary_info.path.display()));
             }
@@ -1077,12 +1077,12 @@ impl BackupRestoreRunner {
         let binary_info = BinaryDetector::find_binary("mysqldump", options.custom_binary_path.as_deref())
             .ok_or_else(|| {
                 let msg = "mysqldump binary not found in PATH or standard directories. Please install MySQL client tools.".to_string();
-                tracker.lock().unwrap().fail(&msg);
+                tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
                 msg
             })?;
 
         {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.start("Spawning mysqldump process...");
             trk.append_log(format!(
                 "Using mysqldump: {} ({})",
@@ -1178,12 +1178,12 @@ impl BackupRestoreRunner {
             BinaryDetector::find_binary("mysql", options.custom_binary_path.as_deref())
                 .ok_or_else(|| {
                     let msg = "mysql client binary not found in PATH or standard directories.".to_string();
-                    tracker.lock().unwrap().fail(&msg);
+                    tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
                     msg
                 })?;
 
         {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.start("Spawning mysql client restore process...");
             trk.append_log(format!("Using mysql: {}", binary_info.path.display()));
         }
@@ -1236,7 +1236,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(err_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_stderr.lock().unwrap();
+                    let mut t = trk_stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stderr] {}", line));
                 }
             });
@@ -1251,7 +1251,7 @@ impl BackupRestoreRunner {
             if cancel_token.load(Ordering::Relaxed) {
                 let _ = child.kill();
                 let _ = std::fs::remove_file(target_file);
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.cancel();
                 return Ok(());
             }
@@ -1268,7 +1268,7 @@ impl BackupRestoreRunner {
                 .map_err(|e| format!("Error writing compressed stream: {}", e))?;
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.add_bytes(read_bytes as u64);
             }
         }
@@ -1282,12 +1282,12 @@ impl BackupRestoreRunner {
             .map_err(|e| format!("Error waiting for process: {}", e))?;
 
         if status.success() {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.complete();
             Ok(())
         } else {
             let msg = format!("Process exited with status code {:?}", status.code());
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.fail(&msg);
             Err(msg)
         }
@@ -1308,7 +1308,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(err_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_stderr.lock().unwrap();
+                    let mut t = trk_stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stderr] {}", line));
                 }
             });
@@ -1322,7 +1322,7 @@ impl BackupRestoreRunner {
             if cancel_token.load(Ordering::Relaxed) {
                 let _ = child.kill();
                 let _ = std::fs::remove_file(target_file);
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.cancel();
                 return Ok(());
             }
@@ -1339,7 +1339,7 @@ impl BackupRestoreRunner {
                 .map_err(|e| format!("Error writing dump file: {}", e))?;
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.add_bytes(read_bytes as u64);
             }
         }
@@ -1351,12 +1351,12 @@ impl BackupRestoreRunner {
             .map_err(|e| format!("Error waiting for process: {}", e))?;
 
         if status.success() {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.complete();
             Ok(())
         } else {
             let msg = format!("Process exited with status code {:?}", status.code());
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.fail(&msg);
             Err(msg)
         }
@@ -1377,7 +1377,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(err_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_stderr.lock().unwrap();
+                    let mut t = trk_stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stderr] {}", line));
                 }
             });
@@ -1398,7 +1398,7 @@ impl BackupRestoreRunner {
         loop {
             if cancel_token.load(Ordering::Relaxed) {
                 let _ = child.kill();
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.cancel();
                 return Ok(());
             }
@@ -1415,7 +1415,7 @@ impl BackupRestoreRunner {
                 .map_err(|e| format!("Write error to database stdin: {}", e))?;
 
             {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.add_bytes(read_bytes as u64);
             }
         }
@@ -1427,12 +1427,12 @@ impl BackupRestoreRunner {
             .map_err(|e| format!("Error waiting for restore process: {}", e))?;
 
         if status.success() {
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.complete();
             Ok(())
         } else {
             let msg = format!("Restore process exited with code {:?}", status.code());
-            let mut trk = tracker.lock().unwrap();
+            let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.fail(&msg);
             Err(msg)
         }
@@ -1451,7 +1451,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(err_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_stderr.lock().unwrap();
+                    let mut t = trk_stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stderr] {}", line));
                 }
             });
@@ -1461,30 +1461,30 @@ impl BackupRestoreRunner {
             if cancel_token.load(Ordering::Relaxed) {
                 let _ = child.kill();
                 let _ = std::fs::remove_file(target_file);
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.cancel();
                 return Ok(());
             }
 
             if let Ok(metadata) = std::fs::metadata(target_file) {
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.bytes_processed = metadata.len();
             }
 
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if let Ok(metadata) = std::fs::metadata(target_file) {
-                        let mut trk = tracker.lock().unwrap();
+                        let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         trk.bytes_processed = metadata.len();
                     }
 
                     if status.success() {
-                        let mut trk = tracker.lock().unwrap();
+                        let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         trk.complete();
                         return Ok(());
                     } else {
                         let msg = format!("Process failed with exit code {:?}", status.code());
-                        let mut trk = tracker.lock().unwrap();
+                        let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         trk.fail(&msg);
                         return Err(msg);
                     }
@@ -1494,7 +1494,7 @@ impl BackupRestoreRunner {
                 }
                 Err(e) => {
                     let msg = format!("Error checking process status: {}", e);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.fail(&msg);
                     return Err(msg);
                 }
@@ -1516,7 +1516,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(out_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_out.lock().unwrap();
+                    let mut t = trk_out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stdout] {}", line));
                 }
             });
@@ -1527,7 +1527,7 @@ impl BackupRestoreRunner {
             std::thread::spawn(move || {
                 let reader = BufReader::new(err_pipe);
                 for line in reader.lines().map_while(Result::ok) {
-                    let mut t = trk_err.lock().unwrap();
+                    let mut t = trk_err.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     t.append_log(format!("[stderr] {}", line));
                 }
             });
@@ -1536,7 +1536,7 @@ impl BackupRestoreRunner {
         loop {
             if cancel_token.load(Ordering::Relaxed) {
                 let _ = child.kill();
-                let mut trk = tracker.lock().unwrap();
+                let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 trk.cancel();
                 return Ok(());
             }
@@ -1544,12 +1544,12 @@ impl BackupRestoreRunner {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
-                        let mut trk = tracker.lock().unwrap();
+                        let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         trk.complete();
                         return Ok(());
                     } else {
                         let msg = format!("Process exited with status {:?}", status.code());
-                        let mut trk = tracker.lock().unwrap();
+                        let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         trk.fail(&msg);
                         return Err(msg);
                     }
@@ -1559,7 +1559,7 @@ impl BackupRestoreRunner {
                 }
                 Err(e) => {
                     let msg = format!("Error checking process status: {}", e);
-                    let mut trk = tracker.lock().unwrap();
+                    let mut trk = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trk.fail(&msg);
                     return Err(msg);
                 }
@@ -1597,14 +1597,14 @@ mod tests {
         let tracker_arc = Arc::new(Mutex::new(tracker));
 
         {
-            let mut trk = tracker_arc.lock().unwrap();
+            let mut trk = tracker_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.start("Initiating dump...");
             trk.add_bytes(1024);
             trk.set_pages(10, 50);
             trk.append_log("Writing table schema...");
         }
 
-        let snap = tracker_arc.lock().unwrap().snapshot();
+        let snap = tracker_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
         assert_eq!(snap.status, OperationStatus::Running);
         assert_eq!(snap.bytes_processed, 1024);
         assert_eq!(snap.pages_copied, 10);
@@ -1612,11 +1612,11 @@ mod tests {
         assert!(snap.log_lines.len() >= 2);
 
         {
-            let mut trk = tracker_arc.lock().unwrap();
+            let mut trk = tracker_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             trk.complete();
         }
 
-        let snap_final = tracker_arc.lock().unwrap().snapshot();
+        let snap_final = tracker_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
         assert_eq!(snap_final.status, OperationStatus::Completed);
     }
 

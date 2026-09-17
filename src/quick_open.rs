@@ -800,29 +800,9 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                     );
                 }
 
-                // Execute query to populate data table
-                if let Some((headers, data)) = crate::connection::execute_query_with_connection(
-                    tabular,
-                    conn_id,
-                    query_content,
-                ) {
-                    tabular.current_table_headers = headers.clone();
-                    tabular.current_table_data = data.clone();
-                    tabular.all_table_data = data.clone();
-                    tabular.current_table_name = tab_title.clone();
-                    tabular.total_rows = tabular.all_table_data.len();
-                    tabular.current_page = 0;
-                    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                        active_tab.result_headers = headers;
-                        active_tab.result_rows = data.clone();
-                        active_tab.result_all_rows = data;
-                        active_tab.result_table_name = tab_title;
-                        active_tab.is_table_browse_mode = tabular.is_table_browse_mode;
-                        active_tab.current_page = tabular.current_page;
-                        active_tab.page_size = tabular.page_size;
-                        active_tab.total_rows = tabular.total_rows;
-                    }
-                }
+                // Jalankan query di latar belakang; hasil masuk ke tab ini lewat
+                // pipeline hasil query standar sehingga UI tidak freeze.
+                tabular.run_query_for_active_tab(conn_id, query_content);
             }
         }
         QuickOpenKind::Procedure | QuickOpenKind::Function => {

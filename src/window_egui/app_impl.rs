@@ -3267,10 +3267,8 @@ impl Tabular {
                                                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                                         tab.schema_name = Some(s.clone());
                                                     }
-                                                    if matches!(active_conn_type, Some(models::enums::DatabaseType::PostgreSQL)) {
-                                                        let set_path_query = format!("SET search_path TO {}, public;", s);
-                                                        let _ = crate::connection::execute_query_with_connection(self, cid, set_path_query);
-                                                    }
+                                                    // search_path diterapkan executor pada koneksi yang
+                                                    // menjalankan query (lihat QueryExecutionOptions::schema_name).
                                                     self.toasts.info(format!("Switched active schema to '{}'", s));
                                                 }
                                             }
@@ -4177,7 +4175,7 @@ impl Tabular {
                             .pivot(egui::Align2::CENTER_CENTER)
                             .fixed_size(egui::vec2(480.0, 160.0))
                             .show(ui.ctx(), |ui| {
-                                ui.label("Tindakan ini tidak dapat dibatalkan.");
+                                ui.label("This action cannot be undone.");
                                 ui.add_space(8.0);
                                 ui.code(format!("db.{}.{}.drop()", db, coll));
                                 ui.add_space(12.0);
@@ -4205,9 +4203,9 @@ impl Tabular {
                                             // Clear caches and refresh connection tree
                                             self.clear_connection_cache(conn_id);
                                             self.refresh_connection(conn_id);
-                                            self.toasts.success(format!("Collection '{}.{}' berhasil di-drop", db, coll));
+                                            self.toasts.success(format!("Collection '{}.{}' dropped", db, coll));
                                         } else {
-                                            self.toasts.error(format!("Gagal drop collection '{}.{}'", db, coll));
+                                            self.toasts.error(format!("Failed to drop collection '{}.{}'", db, coll));
                                         }
                                         self.pending_drop_collection = None;
                                     }
@@ -4217,7 +4215,7 @@ impl Tabular {
 
                     // Render DROP TABLE confirmation dialog if pending
                     if let Some((conn_id, ref db, ref table, ref stmt)) = self.pending_drop_table.clone() {
-                        let title = format!("Konfirmasi Drop Table: {}.{}", db, table);
+                        let title = format!("Drop Table {}.{}?", db, table);
                         let stmt_str = stmt.clone();
                         egui::Window::new(title)
                             .collapsible(false)
@@ -4225,7 +4223,7 @@ impl Tabular {
                             .pivot(egui::Align2::CENTER_CENTER)
                             .fixed_size(egui::vec2(480.0, 180.0))
                             .show(ui.ctx(), |ui| {
-                                ui.label("Tindakan ini tidak dapat dibatalkan.");
+                                ui.label("This action cannot be undone.");
                                 ui.add_space(8.0);
                                 ui.code(&stmt_str);
                                 ui.add_space(12.0);
@@ -4237,77 +4235,20 @@ impl Tabular {
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
                                     {
-                                        use log::{error};
-                                        debug!("🗑️ Executing DROP TABLE:");
-                                        debug!("   Connection ID: {}", conn_id);
-                                        debug!("   Database: {}", db);
-                                        debug!("   Table: {}", table);
-                                        debug!("   Statement: {}", stmt_str);
-                                        // Execute DROP TABLE statement
-                                        let result = crate::connection::execute_query_with_connection(
-                                            self,
-                                            conn_id,
-                                            stmt_str.clone(),
-                                        );
-                                        // Log detailed result
-                                        match &result {
-                                            Some((headers, rows)) => {
-                                                debug!("   Result: Success");
-                                                debug!("   Headers: {:?}", headers);
-                                                debug!("   Rows count: {}", rows.len());
-                                                if !rows.is_empty() {
-                                                    debug!("   First row: {:?}", rows.first());
-                                                }
-                                                // Check if it's an error result
-                                                if headers.first().map(|h| h == "Error").unwrap_or(false) {
-                                                    error!("   ⚠️ Query returned Error header!");
-                                                    if let Some(err_row) = rows.first() {
-                                                        error!("   Error message: {:?}", err_row);
-                                                    }
-                                                }
-                                            }
-                                            None => {
-                                                error!("   Result: None (Failed)");
-                                            }
-                                        }
-                                        // Check if result is successful (not None and not Error)
-                                        let is_success = match &result {
-                                            Some((headers, _)) => {
-                                                !headers.first().map(|h| h == "Error").unwrap_or(false)
-                                            }
-                                            None => false,
-                                        };
-                                        if is_success {
-                                            debug!("✅ DROP TABLE succeeded for {}.{}", db, table);
-                                            debug!("   Connection ID: {}", conn_id);
-                                            debug!("   Database: '{}'", db);
-                                            debug!("   Table: '{}'", table);
-                                            // Use incremental update: just remove the table from tree
-                                            debug!("🌲 Removing table from sidebar tree (incremental)...");
-                                            self.remove_table_from_tree(conn_id, db, table);
-                                            // Clear cache for this table (but don't refresh entire connection)
-                                            debug!("🧹 Clearing cache for table {}.{}", db, table);
-                                            self.clear_table_cache(conn_id, db, table);
-                                            // Force UI repaint to reflect changes immediately
-                                            ui.ctx().request_repaint();
-                                            self.toasts.success(format!("Table '{}.{}' berhasil di-drop", db, table));
-                                        } else {
-                                            error!("❌ DROP TABLE failed for {}.{}", db, table);
-                                            // Show error message from result if available
-                                            let error_msg = if let Some((headers, rows)) = result {
-                                                if headers.first().map(|h| h == "Error").unwrap_or(false) {
-                                                    rows.first()
-                                                        .and_then(|row| row.first())
-                                                        .cloned()
-                                                        .unwrap_or_else(|| format!("Gagal drop table '{}.{}'", db, table))
-                                                } else {
-                                                    format!("Gagal drop table '{}.{}'", db, table)
-                                                }
+                                        debug!("🗑️ Executing DROP TABLE on conn {}: {}", conn_id, stmt_str);
+                                        let (db_name, table_name) = (db.clone(), table.clone());
+                                        self.run_query_with_callback(conn_id, stmt_str.clone(), move |tabular, message| {
+                                            if message.success {
+                                                debug!("✅ DROP TABLE succeeded for {}.{}", db_name, table_name);
+                                                tabular.remove_table_from_tree(conn_id, &db_name, &table_name);
+                                                tabular.clear_table_cache(conn_id, &db_name, &table_name);
+                                                tabular.toasts.success(format!("Table '{}.{}' dropped", db_name, table_name));
                                             } else {
-                                                format!("Gagal drop table '{}.{}'", db, table)
-                                            };
-                                            self.toasts.error(error_msg);
-                                        }
+                                                let err = message.error.clone().unwrap_or_default();
+                                                log::error!("❌ DROP TABLE failed for {}.{}: {}", db_name, table_name, err);
+                                                tabular.toasts.error(format!("Failed to drop table '{}.{}': {}", db_name, table_name, err));
+                                            }
+                                        });
                                         self.pending_drop_table = None;
                                     }
                                 });
@@ -5013,6 +4954,8 @@ impl App for Tabular {
                 }
             }
         }
+
+        self.process_deferred_callback_queries();
 
         // If waiting for pool, check readiness and auto-run queued query
         if self.pool_wait_in_progress {

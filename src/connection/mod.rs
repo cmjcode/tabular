@@ -39,7 +39,7 @@ pub(crate) use pool::{
 
 // Query execution
 pub(crate) use execute::{
-    execute_query_with_connection, prepare_query_job, spawn_query_job, spawn_query_job_batch,
+    prepare_query_job, spawn_query_job, spawn_query_job_batch,
 };
 
 // Metadata / schema discovery

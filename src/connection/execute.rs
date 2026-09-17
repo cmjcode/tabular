@@ -6,13 +6,12 @@ use log::debug;
 use sqlx::{Column, Row, TypeInfo};
 use sqlx::Connection as SqlxConnection;
 use sqlx::mysql::MySqlConnection;
-use std::sync::Arc;
 use std::time::Instant;
 
-use super::pool::{resolve_connection_target_async, try_get_connection_pool};
+use super::pool::resolve_connection_target_async;
 use super::sql::{
     infer_column_origins, infer_select_headers, is_comment_only_statement,
-    is_simple_select_statement, query_contains_pagination, should_enable_auto_pagination,
+    is_simple_select_statement, query_contains_pagination,
     split_sql_statements, statement_returns_rows, strip_leading_sql_comments,
 };
 use super::types::{
@@ -157,6 +156,11 @@ pub(crate) fn prepare_query_job(
         connection,
         query,
         selected_database,
+        schema_name: tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.schema_name.clone())
+            .filter(|s| !s.trim().is_empty()),
         use_server_pagination: tabular.use_server_pagination,
         current_page: tabular.current_page,
         page_size: tabular.page_size,
@@ -1120,6 +1124,24 @@ async fn execute_postgres_query_job(
         .ok()
         .map(|pid| BackendPidGuard::register(&options.backend_pids, options.job_id, pid as i64));
 
+    // Terapkan schema aktif tab di koneksi ini juga. `SET search_path` yang
+    // dijalankan terpisah bisa mendarat di koneksi pool lain dan tidak berefek.
+    if let Some(schema) = options.schema_name.as_deref() {
+        let set_path = format!(
+            "SET search_path TO \"{}\", public",
+            schema.replace('"', "\"\"")
+        );
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(set_path.as_str()))
+            .execute(&mut *conn)
+            .await
+        {
+            return Err(QueryExecutionError::Message(format!(
+                "Cannot switch to schema '{}': {}",
+                schema, e
+            )));
+        }
+    }
+
     let mut final_headers = Vec::new();
     let mut final_data = Vec::new();
     let mut final_affected: Option<u64> = None;
@@ -1749,216 +1771,10 @@ async fn execute_mongodb_query_job(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Synchronous execution entry points
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub(crate) fn execute_query_with_connection(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    query: String,
-) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    debug!(
-        "Query execution requested for connection {} with query: {}",
-        connection_id, query
-    );
-
-    if let Some(connection) = tabular
-        .connections
-        .iter()
-        .find(|c| c.id == Some(connection_id))
-        .cloned()
-    {
-        let selected_db = tabular
-            .query_tabs
-            .get(tabular.active_tab_index)
-            .and_then(|t| t.database_name.clone())
-            .filter(|s| !s.is_empty());
-
-        let mut final_query = query.clone();
-        if let Some(db_name) = selected_db {
-            match connection.connection_type {
-                models::enums::DatabaseType::MsSQL => {
-                    let upper = final_query.to_uppercase();
-                    if !upper.starts_with("USE ") {
-                        final_query = format!("USE [{}];\n{}", db_name, final_query);
-                    }
-                }
-                models::enums::DatabaseType::MySQL => {
-                    let upper = final_query.to_uppercase();
-                    if !upper.starts_with("USE ") {
-                        final_query = format!("USE `{}`;\n{}", db_name, final_query);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        {
-            let should_auto_paginate = should_enable_auto_pagination(&final_query);
-
-            if should_auto_paginate {
-                match connection.connection_type {
-                    models::enums::DatabaseType::MySQL
-                    | models::enums::DatabaseType::PostgreSQL
-                    | models::enums::DatabaseType::SQLite => {
-                        let base = final_query.trim().trim_end_matches(';').to_string();
-                        tabular.use_server_pagination = true;
-                        tabular.current_base_query = base.clone();
-                        tabular.current_page = 0;
-                        tabular.actual_total_rows = Some(10_000);
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.base_query = base.clone();
-                            tab.current_page = tabular.current_page;
-                            tab.page_size = tabular.page_size;
-                        }
-                        let offset = tabular.current_page * tabular.page_size;
-                        final_query =
-                            format!("{} LIMIT {} OFFSET {}", base, tabular.page_size, offset);
-                        debug!(
-                            "🛑 Auto server-pagination (connection layer) applied. Rewritten query: {}",
-                            final_query
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        debug!("Final query to execute: {}", final_query);
-        execute_table_query_sync(tabular, connection_id, &connection, &final_query)
-    } else {
-        debug!("Connection not found for ID: {}", connection_id);
-        None
-    }
-}
-
-/// Jalankan query secara sinkron (memblokir thread pemanggil) dan kembalikan
-/// `(headers, rows)`. Jika gagal, hasilnya berupa satu kolom `"Error"` berisi
-/// pesan error, sesuai kontrak lama yang dipakai pemanggil.
-///
-/// Fungsi ini sekarang hanya pembungkus tipis di atas executor async
-/// (`execute_query_job`), sehingga pemisahan statement, decoding tipe,
-/// timeout, batas baris, dan cancel di server sama persis dengan eksekusi
-/// dari editor. Pemanggil baru sebaiknya memakai `prepare_query_job` +
-/// `spawn_query_job` supaya UI tidak freeze.
-pub(crate) fn execute_table_query_sync(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    connection: &models::structs::ConnectionConfig,
-    query: &str,
-) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    debug!("Executing query synchronously: {}", query);
-
-    let runtime = match &tabular.runtime {
-        Some(rt) => rt.clone(),
-        None => match tokio::runtime::Runtime::new() {
-            Ok(rt) => Arc::new(rt),
-            Err(e) => {
-                log::error!("Failed to create runtime for synchronous query: {}", e);
-                return None;
-            }
-        },
-    };
-
-    let Some(pool) = runtime.block_on(try_get_connection_pool(tabular, connection_id)) else {
-        debug!(
-            "Failed to get connection pool for connection_id: {}",
-            connection_id
-        );
-        return Some((
-            vec!["Error".to_string()],
-            vec![vec!["Failed to connect to database".to_string()]],
-        ));
-    };
-
-    let active_tab = tabular.query_tabs.get(tabular.active_tab_index);
-    let job_id = tabular.next_query_job_id;
-    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
-
-    let job = QueryJob {
-        job_id,
-        tab_id: active_tab.map(|t| t.id),
-        options: QueryExecutionOptions {
-            connection_id,
-            connection: connection.clone(),
-            query: query.to_string(),
-            selected_database: active_tab
-                .and_then(|t| t.database_name.clone())
-                .filter(|s| !s.trim().is_empty()),
-            use_server_pagination: tabular.use_server_pagination,
-            current_page: tabular.current_page,
-            page_size: tabular.page_size,
-            base_query: None,
-            dba_special_mode: active_tab.and_then(|t| t.dba_special_mode.clone()),
-            save_to_history: false,
-            ast_enabled: cfg!(feature = "query_ast"),
-            job_id,
-            query_timeout: (tabular.query_timeout_secs > 0)
-                .then(|| std::time::Duration::from_secs(tabular.query_timeout_secs as u64)),
-            max_rows: tabular.max_result_rows.max(1) as usize,
-            backend_pids: tabular.query_backend_pids.clone(),
-        },
-        connection_pool: pool,
-        started_at: Instant::now(),
-    };
-
-    let message = runtime.block_on(execute_query_job(job));
-    if let Some(sql) = message.ast_debug_sql.clone() {
-        tabular.last_compiled_sql = Some(sql);
-    }
-    if let Some(headers) = message.ast_headers.clone() {
-        tabular.last_compiled_headers = headers;
-    }
-    if message.truncated {
-        tabular.toasts.warning(format!(
-            "Result truncated to the first {} rows.",
-            message.rows.len()
-        ));
-    }
-    Some((message.headers, message.rows))
-}
-
-/// Execute multiple queries concurrently (non-blocking for slow connections).
-#[allow(dead_code)]
-pub(crate) async fn execute_multiple_queries_concurrently(
-    tabular: &mut Tabular,
-    query_requests: Vec<(i64, String)>,
-) -> Vec<Option<(Vec<String>, Vec<Vec<String>>)>> {
-    let mut results = Vec::new();
-
-    for (connection_id, query) in query_requests {
-        match try_get_connection_pool(tabular, connection_id).await {
-            Some(_pool) => {
-                if let Some(connection) = tabular
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
-                    .cloned()
-                {
-                    let result =
-                        execute_table_query_sync(tabular, connection_id, &connection, &query);
-                    results.push(result);
-                } else {
-                    results.push(None);
-                }
-            }
-            None => {
-                debug!(
-                    "⏳ Skipping query for connection {} as pool is not ready",
-                    connection_id
-                );
-                results.push(None);
-            }
-        }
-    }
-
-    results
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     async fn sqlite_job(query: &str, max_rows: usize) -> QueryResultMessage {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -1984,6 +1800,7 @@ mod tests {
                 connection,
                 query: query.to_string(),
                 selected_database: None,
+                schema_name: None,
                 use_server_pagination: false,
                 current_page: 0,
                 page_size: 100,

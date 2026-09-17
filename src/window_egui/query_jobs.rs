@@ -1,7 +1,7 @@
 use crate::{connection, editor, models, sidebar_history};
 
 impl super::Tabular {
-    pub fn handle_query_result_message(&mut self, message: connection::QueryResultMessage) {
+    pub fn handle_query_result_message(&mut self, mut message: connection::QueryResultMessage) {
         self.prune_cancelled_jobs();
         self.active_query_handles.remove(&message.job_id);
 
@@ -33,21 +33,10 @@ impl super::Tabular {
         }
         self.active_query_jobs.remove(&message.job_id);
 
-        // Structure-editor statements (Add/Drop Column, …) run through this
-        // same job pipeline but drive their own success/error handling
-        // instead of the query-tab/result-panel flow below — see
-        // `PendingStructureJob`.
-        if let Some(job) = self.pending_structure_jobs.remove(&message.job_id) {
-            if message.success {
-                (job.on_success)(self);
-            } else {
-                let err = message
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "Unknown error".to_string());
-                self.error_message = format!("{}: {}", job.error_prefix, err);
-                self.show_error_message = true;
-            }
+        // Job ber-callback (structure editor, simpan spreadsheet, wizard, …)
+        // menangani hasilnya sendiri, bukan lewat panel hasil tab.
+        if let Some(callback) = self.pending_callback_jobs.remove(&message.job_id) {
+            callback(self, &message);
             if self.active_query_jobs.is_empty() {
                 self.query_execution_in_progress = false;
                 self.extend_query_icon_hold();
@@ -115,59 +104,49 @@ impl super::Tabular {
             return;
         }
 
-        // Store result in multi-tab result list
-        let mut result_obj = models::structs::QueryResult {
+        // Simpan hasil ke daftar multi-result. Hanya `all_rows` yang disimpan;
+        // potongan halaman dibuat ulang saat result dipilih. Baris dari message
+        // dipindahkan (bukan di-clone) ke tampilan, sehingga satu result set
+        // cukup ada dua salinan: di daftar result dan di tampilan aktif.
+        let rows = std::mem::take(&mut message.rows);
+        let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) else {
+            editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), rows)), message.column_metadata.clone());
+            self.query_execution_in_progress = false;
+            self.extend_query_icon_hold();
+            return;
+        };
+        let new_index = active_tab.results.len();
+        active_tab.results.push(models::structs::QueryResult {
             headers: message.headers.clone(),
-            rows: message.rows.clone(),
-            all_rows: message.rows.clone(),
+            rows: Vec::new(),
+            all_rows: rows.clone(),
             table_name: if message.success {
-                format!("Result {}", self.next_query_job_id) // Placeholder, updated below
+                format!("Result {}", new_index + 1)
             } else {
                 "Error".to_string()
             },
             current_page: 0,
-            page_size: 500, // Default for now
-            total_rows: message.rows.len(),
+            page_size: self.page_size.max(1),
+            total_rows: rows.len(),
             query_message: self.query_message.clone(),
             query_message_is_error: self.query_message_is_error,
             execution_time_ms: message.duration.as_millis(),
             column_metadata: message.column_metadata.clone(),
             explain_plan_json: None,
             pinned_columns: std::collections::HashSet::new(),
-        };
+        });
 
-        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            // Determine index
-            let new_index = active_tab.results.len();
-            result_obj.table_name = format!("Result {}", new_index + 1);
-            
-            // If it's an error and we have results, maybe keep the error in a separate Result tab?
-            // For now, simple append.
-            active_tab.results.push(result_obj.clone());
-
-            // Logic to auto-switch logic:
-            // If this is the FIRST result, or if we are actively viewing the "latest" result (potentially),
-            // update the viewport.
-            // For simplicity: If this is the first result (index 0), switch to it.
-            // Or if the user hasn't manually switched to another result yet.
-            if new_index == 0 {
-                active_tab.active_result_index = 0;
-                editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())), message.column_metadata.clone());
-            } else {
-                // Save query to history for multi-statement execution results (new_index > 0)
-                if message.success {
-                    sidebar_history::save_query_to_history(self, &message.query, message.connection_id);
-                }
-            }
-        } else {
-             // Fallback for no active tab? Should not happen.
-             editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), message.rows.clone())), message.column_metadata.clone());
+        if new_index == 0 {
+            active_tab.active_result_index = 0;
+            editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), rows)), message.column_metadata.clone());
+        } else if message.success {
+            // Save query to history for multi-statement execution results (new_index > 0)
+            sidebar_history::save_query_to_history(self, &message.query, message.connection_id);
         }
 
+        // Baris hasil untuk tab aktif ada di state tampilan global; switch_to_tab
+        // memindahkannya ke field tab saat berpindah, jadi tidak perlu di-clone ke sini.
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            active_tab.result_headers = self.current_table_headers.clone();
-            active_tab.result_rows = self.current_table_data.clone();
-            active_tab.result_all_rows = self.current_table_data.clone();
             active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
             active_tab.current_page = self.current_page;
             active_tab.page_size = self.page_size;
@@ -303,12 +282,162 @@ impl super::Tabular {
         }
 
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            active_tab.result_headers = self.current_table_headers.clone();
-            active_tab.result_rows = self.current_table_data.clone();
-            active_tab.result_all_rows = self.current_table_data.clone();
             active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
         }
     }
+    /// True jika pool koneksi untuk `connection_id` sudah tersedia.
+    pub fn connection_pool_ready(&self, connection_id: i64) -> bool {
+        self.connection_pools.contains_key(&connection_id)
+            || self
+                .shared_connection_pools
+                .lock()
+                .map(|pools| pools.contains_key(&connection_id))
+                .unwrap_or(false)
+    }
+
+    /// Jalankan query di latar belakang dan tampilkan hasilnya di tab aktif,
+    /// sama seperti tombol Run. Jika pool belum siap, query diantrekan dan
+    /// dijalankan otomatis begitu koneksi terbentuk. Pengganti pemanggilan
+    /// `execute_query_with_connection` yang memblokir UI.
+    pub fn run_query_for_active_tab(&mut self, connection_id: i64, sql: String) {
+        if !self.connection_pool_ready(connection_id) {
+            connection::ensure_background_pool_creation(self, connection_id);
+            self.pool_wait_in_progress = true;
+            self.pool_wait_connection_id = Some(connection_id);
+            self.pool_wait_query = sql;
+            self.pool_wait_started_at = Some(std::time::Instant::now());
+            self.query_execution_in_progress = true;
+            self.current_table_name = "Connecting… waiting for pool".to_string();
+            return;
+        }
+
+        let job_id = self.next_query_job_id;
+        self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+        let result = connection::prepare_query_job(self, connection_id, sql.clone(), job_id)
+            .and_then(|job| connection::spawn_query_job(self, job, self.query_result_sender.clone()));
+        match result {
+            Ok(handle) => {
+                self.active_query_jobs.insert(
+                    job_id,
+                    connection::QueryJobStatus {
+                        job_id,
+                        connection_id,
+                        query_preview: sql.chars().take(80).collect(),
+                        started_at: std::time::Instant::now(),
+                        completed: false,
+                    },
+                );
+                self.active_query_handles.insert(job_id, handle);
+                self.query_execution_in_progress = true;
+                self.current_table_name = "Running query…".to_string();
+            }
+            Err(err) => {
+                log::warn!("Could not start query for active tab: {:?}", err);
+                self.toasts
+                    .error(format!("Query could not be started: {:?}", err));
+                if self.active_query_jobs.is_empty() {
+                    self.query_execution_in_progress = false;
+                }
+            }
+        }
+    }
+
+    /// Jalankan query di latar belakang dan serahkan hasilnya ke `on_result`
+    /// (sukses maupun gagal). Jika pool belum siap, query diantrekan sampai
+    /// koneksi terbentuk, gagal, atau menunggu terlalu lama.
+    pub fn run_query_with_callback(
+        &mut self,
+        connection_id: i64,
+        sql: String,
+        on_result: impl FnOnce(&mut super::Tabular, &connection::QueryResultMessage) + 'static,
+    ) {
+        let callback: super::QueryCallback = Box::new(on_result);
+        if self.connection_pool_ready(connection_id) {
+            self.spawn_callback_job(connection_id, sql, callback);
+        } else {
+            connection::ensure_background_pool_creation(self, connection_id);
+            self.deferred_callback_queries.push(super::DeferredCallbackQuery {
+                connection_id,
+                sql,
+                callback,
+                queued_at: std::time::Instant::now(),
+            });
+            self.query_execution_in_progress = true;
+        }
+    }
+
+    fn spawn_callback_job(&mut self, connection_id: i64, sql: String, callback: super::QueryCallback) {
+        let job_id = self.next_query_job_id;
+        self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+        let result = connection::prepare_query_job(self, connection_id, sql.clone(), job_id)
+            .and_then(|mut job| {
+                job.options.save_to_history = false;
+                connection::spawn_query_job(self, job, self.query_result_sender.clone())
+            });
+        match result {
+            Ok(handle) => {
+                self.active_query_jobs.insert(
+                    job_id,
+                    connection::QueryJobStatus {
+                        job_id,
+                        connection_id,
+                        query_preview: sql.chars().take(80).collect(),
+                        started_at: std::time::Instant::now(),
+                        completed: false,
+                    },
+                );
+                self.active_query_handles.insert(job_id, handle);
+                self.pending_callback_jobs.insert(job_id, callback);
+                self.query_execution_in_progress = true;
+                self.extend_query_icon_hold();
+            }
+            Err(err) => {
+                let message = failed_query_message(
+                    job_id,
+                    connection_id,
+                    &sql,
+                    format!("Query could not be started: {:?}", err),
+                );
+                callback(self, &message);
+            }
+        }
+    }
+
+    /// Dipanggil setiap frame: jalankan query ber-callback yang pool-nya
+    /// sudah siap, atau gagalkan jika koneksi error / menunggu lebih dari 60 detik.
+    pub fn process_deferred_callback_queries(&mut self) {
+        if self.deferred_callback_queries.is_empty() {
+            return;
+        }
+        let queued = std::mem::take(&mut self.deferred_callback_queries);
+        for item in queued {
+            if self.connection_pool_ready(item.connection_id) {
+                self.spawn_callback_job(item.connection_id, item.sql, item.callback);
+            } else if let Some(err) = self.connection_errors.get(&item.connection_id).cloned() {
+                let message = failed_query_message(
+                    0,
+                    item.connection_id,
+                    &item.sql,
+                    format!("Connection failed: {}", err),
+                );
+                (item.callback)(self, &message);
+            } else if item.queued_at.elapsed() > std::time::Duration::from_secs(60) {
+                let message = failed_query_message(
+                    0,
+                    item.connection_id,
+                    &item.sql,
+                    "Timed out waiting for the database connection".to_string(),
+                );
+                (item.callback)(self, &message);
+            } else {
+                self.deferred_callback_queries.push(item);
+            }
+        }
+        if self.deferred_callback_queries.is_empty() && self.active_query_jobs.is_empty() {
+            self.query_execution_in_progress = false;
+        }
+    }
+
     /// Kirim perintah cancel ke server (pg_cancel_backend / KILL QUERY) untuk
     /// job yang backend pid-nya sudah tercatat. `abort()` pada task saja hanya
     /// menghentikan penantian di klien, query tetap berjalan di server.
@@ -453,4 +582,30 @@ pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -
         duration_ms % 1000,
         count
     )
+}
+
+/// Pesan hasil gagal untuk query yang tidak sempat dijalankan.
+pub(crate) fn failed_query_message(
+    job_id: u64,
+    connection_id: i64,
+    sql: &str,
+    error: String,
+) -> connection::QueryResultMessage {
+    connection::QueryResultMessage {
+        job_id,
+        tab_id: None,
+        connection_id,
+        success: false,
+        headers: vec!["Error".to_string()],
+        rows: vec![vec![error.clone()]],
+        error: Some(error),
+        duration: std::time::Duration::ZERO,
+        query: sql.to_string(),
+        dba_special_mode: None,
+        ast_debug_sql: None,
+        ast_headers: None,
+        affected_rows: None,
+        column_metadata: None,
+        truncated: false,
+    }
 }
