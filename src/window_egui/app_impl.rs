@@ -464,16 +464,16 @@ impl Tabular {
                                 ui.horizontal(|ui| {
                                     if ui.checkbox(&mut self.enable_debug_logging, "Enable Debug Logging").changed() {
                                         self.prefs_dirty = true; self.try_save_prefs();
-                                        if self.enable_debug_logging {
-                                            self.prefs_save_feedback = Some("Debug logging enabled. Please restart the application for this to take effect.".to_string());
+                                        crate::app_logging::set_verbose(self.enable_debug_logging);
+                                        self.prefs_save_feedback = Some(if self.enable_debug_logging {
+                                            "Debug logging enabled.".to_string()
                                         } else {
-                                            self.prefs_save_feedback = Some("Debug logging disabled. Restart the application to improve performance.".to_string());
-                                        }
+                                            "Debug logging disabled.".to_string()
+                                        });
                                         self.prefs_last_saved_at = Some(std::time::Instant::now());
                                     }
-                                    ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
                                 });
-                                ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
+                                ui.label(egui::RichText::new(format!("Verbose logs (may include SQL text) are written to {}. Leave off for normal use.", crate::app_logging::log_file_path().display())).size(11.0).color(egui::Color32::from_gray(120)));
                                 ui.add_space(8.0);
                                 ui.horizontal(|ui| {
                                     ui.label("Redis browser auto-refresh default (seconds):");
@@ -2372,8 +2372,7 @@ impl Tabular {
                                                         text_color,
                                                     );
                                                     if close_resp.clicked() {
-                                                        eprintln!("[TabAction] Close button clicked: tab #{} ('{}')", i, tab.title);
-                                                        log::info!("[TabAction] Close button clicked: tab #{} ('{}')", i, tab.title);
+                                                        log::debug!("[TabAction] Close button clicked: tab #{} ('{}')", i, tab.title);
                                                         to_close = Some(i);
                                                     }
                                                 }
@@ -2466,34 +2465,29 @@ impl Tabular {
                                                 }
                                                 ui.separator();
                                                 if i > 0 && ui.button("⬅ Move Tab Left").clicked() {
-                                                    eprintln!("[TabAction] Context menu 'Move Tab Left' clicked: tab #{} (to {})", i, i - 1);
-                                                    log::info!("[TabAction] Context menu 'Move Tab Left' clicked: tab #{} (to {})", i, i - 1);
+                                                    log::debug!("[TabAction] Context menu 'Move Tab Left' clicked: tab #{} (to {})", i, i - 1);
                                                     to_move = Some((i, i - 1));
                                                     ui.close();
                                                 }
                                                 if i + 1 < cur_tabs_len && ui.button("➡ Move Tab Right").clicked() {
-                                                    eprintln!("[TabAction] Context menu 'Move Tab Right' clicked: tab #{} (to {})", i, i + 1);
-                                                    log::info!("[TabAction] Context menu 'Move Tab Right' clicked: tab #{} (to {})", i, i + 1);
+                                                    log::debug!("[TabAction] Context menu 'Move Tab Right' clicked: tab #{} (to {})", i, i + 1);
                                                     to_move = Some((i, i + 1));
                                                     ui.close();
                                                 }
                                                 ui.separator();
                                                 let show_close_menu = cur_tabs_len > 1 || !active;
                                                 if ui.add_enabled(show_close_menu, egui::Button::new("✕ Close Tab")).clicked() {
-                                                    eprintln!("[TabAction] Context menu 'Close Tab' clicked: tab #{} ('{}')", i, tab.title);
-                                                    log::info!("[TabAction] Context menu 'Close Tab' clicked: tab #{} ('{}')", i, tab.title);
+                                                    log::debug!("[TabAction] Context menu 'Close Tab' clicked: tab #{} ('{}')", i, tab.title);
                                                     to_close = Some(i);
                                                     ui.close();
                                                 }
                                                 if cur_tabs_len > 1 && ui.button("Close Other Tabs").clicked() {
-                                                    eprintln!("[TabAction] Context menu 'Close Other Tabs' clicked (keeping tab #{})", i);
-                                                    log::info!("[TabAction] Context menu 'Close Other Tabs' clicked (keeping tab #{})", i);
+                                                    log::debug!("[TabAction] Context menu 'Close Other Tabs' clicked (keeping tab #{})", i);
                                                     to_close_others = Some(i);
                                                     ui.close();
                                                 }
                                                 if i + 1 < cur_tabs_len && ui.button("Close Tabs to the Right").clicked() {
-                                                    eprintln!("[TabAction] Context menu 'Close Tabs to the Right' clicked for tab #{}", i);
-                                                    log::info!("[TabAction] Context menu 'Close Tabs to the Right' clicked for tab #{}", i);
+                                                    log::debug!("[TabAction] Context menu 'Close Tabs to the Right' clicked for tab #{}", i);
                                                     to_close_right = Some(i);
                                                     ui.close();
                                                 }
@@ -2509,8 +2503,7 @@ impl Tabular {
                                                 && self.dragged_tab_index.is_none()
                                             {
                                                 if !active {
-                                                    eprintln!("[TabAction] Tab #{} ('{}') clicked -> switching active tab from {} to {}", i, tab.title, self.active_tab_index, i);
-                                                    log::info!("[TabAction] Tab #{} ('{}') clicked -> switching active tab from {} to {}", i, tab.title, self.active_tab_index, i);
+                                                    log::debug!("[TabAction] Tab #{} ('{}') clicked -> switching active tab from {} to {}", i, tab.title, self.active_tab_index, i);
                                                     to_switch = Some(i);
                                                 } else {
                                                     self.scroll_to_active_tab = true;
@@ -2522,8 +2515,7 @@ impl Tabular {
                                                 && !tab.is_pinned
                                                 && (self.query_tabs.len() > 1 || !active)
                                             {
-                                                eprintln!("[TabAction] Middle-click close: tab #{} ('{}')", i, tab.title);
-                                                log::info!("[TabAction] Middle-click close: tab #{} ('{}')", i, tab.title);
+                                                log::debug!("[TabAction] Middle-click close: tab #{} ('{}')", i, tab.title);
                                                 to_close = Some(i);
                                             }
 
@@ -2756,32 +2748,27 @@ impl Tabular {
                                             any_tab_action = true;
                                         }
                                         if let Some((from, to)) = to_move {
-                                            eprintln!("[TabAction] Executing move_tab from {} to {}", from, to);
-                                            log::info!("[TabAction] Executing move_tab from {} to {}", from, to);
+                                            log::debug!("[TabAction] Executing move_tab from {} to {}", from, to);
                                             editor::move_tab(self, from, to);
                                             any_tab_action = true;
                                         }
                                         if let Some(i) = to_close {
-                                            eprintln!("[TabAction] Executing close_tab for index {}", i);
-                                            log::info!("[TabAction] Executing close_tab for index {}", i);
-                                            editor::close_tab(self, i);
+                                            log::debug!("[TabAction] Executing close_tab for index {}", i);
+                                            crate::session_restore::request_close_tab(self, i);
                                             any_tab_action = true;
                                         }
                                         if let Some(i) = to_close_others {
-                                            eprintln!("[TabAction] Executing close_other_tabs keeping index {}", i);
-                                            log::info!("[TabAction] Executing close_other_tabs keeping index {}", i);
-                                            editor::close_other_tabs(self, i);
+                                            log::debug!("[TabAction] Executing close_other_tabs keeping index {}", i);
+                                            crate::session_restore::request_close_other_tabs(self, i);
                                             any_tab_action = true;
                                         }
                                         if let Some(i) = to_close_right {
-                                            eprintln!("[TabAction] Executing close_tabs_to_the_right from index {}", i);
-                                            log::info!("[TabAction] Executing close_tabs_to_the_right from index {}", i);
-                                            editor::close_tabs_to_the_right(self, i);
+                                            log::debug!("[TabAction] Executing close_tabs_to_the_right from index {}", i);
+                                            crate::session_restore::request_close_tabs_to_the_right(self, i);
                                             any_tab_action = true;
                                         }
                                         if let Some(i) = to_switch {
-                                            eprintln!("[TabAction] Executing switch_to_tab to index {}", i);
-                                            log::info!("[TabAction] Executing switch_to_tab to index {}", i);
+                                            log::debug!("[TabAction] Executing switch_to_tab to index {}", i);
                                             editor::switch_to_tab(self, i);
                                             any_tab_action = true;
                                         }
@@ -3113,6 +3100,22 @@ impl Tabular {
                                                 && draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None)
                                             {
                                                 self.check_for_updates(true);
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            #[cfg(not(target_os = "ios"))]
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_FOLDER.codepoint, "Open Logs Folder", None) {
+                                                let dir = crate::app_logging::logs_dir();
+                                                let _ = std::fs::create_dir_all(&dir);
+                                                if let Err(e) = crate::url_opener::open_url(&dir.to_string_lossy()) {
+                                                    self.toasts.error(format!("Cannot open {}: {}", dir.display(), e));
+                                                }
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_CONTENT_COPY.codepoint, "Copy Diagnostics", None) {
+                                                ui.ctx().copy_text(crate::app_logging::diagnostics_report());
+                                                self.toasts.success("Diagnostics copied. Review it before sharing — recent log lines are included.");
                                                 self.show_settings_menu = false;
                                             }
 
@@ -5207,7 +5210,7 @@ impl App for Tabular {
                 && i.key_pressed(egui::Key::W)
                 && !self.query_tabs.is_empty()
             {
-                editor::close_tab(self, self.active_tab_index);
+                crate::session_restore::request_close_tab(self, self.active_tab_index);
             }
 
             // CMD+Q or CTRL+Q to quit application
@@ -5874,6 +5877,14 @@ impl App for Tabular {
         // Note: We only reach here if table/structure has potential focus (not editor/message)
         self.handle_table_copy_shortcut(ctx, copy_shortcut_detected);
 
+        // Pemulihan sesi dijalankan sekali setelah preferensi dimuat (blok
+        // lazy-load preferensi di atas), lalu sesi disimpan berkala.
+        crate::session_restore::restore_on_startup(self);
+        crate::session_restore::handle_close_request(self, ctx);
+        crate::session_restore::render_close_tab_dialog(self, ctx);
+        crate::session_restore::render_quit_dialog(self, ctx);
+        crate::session_restore::tick(self, ctx);
+
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.
         self.toasts.show(ctx);
@@ -5883,6 +5894,9 @@ impl App for Tabular {
     } // end update
 
     fn on_exit(&mut self) {
+        // Simpan sesi terakhir (jaring pengaman jika close_requested terlewat,
+        // misalnya saat OS mematikan aplikasi).
+        crate::session_restore::save_now(self, None);
         // Unwind connects that are still mid-handshake so their SSH child
         // processes are killed rather than orphaned when the app goes away.
         crate::connection::cancel_all_connection_attempts(self);
