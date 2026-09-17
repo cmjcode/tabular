@@ -328,7 +328,7 @@ fn render_save_dialog(
         .collection_panel
         .active_workspace_id
         .as_ref()
-        .map_or(false, |id| state.workspaces.iter().any(|w| &w.id == id));
+        .is_some_and(|id| state.workspaces.iter().any(|w| &w.id == id));
     if !active_ws_valid {
         if let Some(first) = state.workspaces.first() {
             state.collection_panel.active_workspace_id = Some(first.id.clone());
@@ -589,6 +589,7 @@ fn render_code_dialog(
 /// - Else if associated with an HTTP connection (`connection_id`), saves connection state to disk.
 /// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
 ///   (Also updates HTTP connection state draft if `connection_id` is present).
+///
 /// Returns `true` if workspace collection or connection state was modified.
 pub fn save_or_update_http_tab(
     connection_id: Option<i64>,

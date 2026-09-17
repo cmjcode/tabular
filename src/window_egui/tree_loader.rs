@@ -2043,21 +2043,9 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> (Vec<String>, Vec<String>) {
-        let pk_columns = if let Some(pks) =
-            cache_data::get_primary_keys_from_cache(self, connection_id, database_name, table_name)
-        {
-            pks
-        } else {
-            Vec::new()
-        };
+        let pk_columns = cache_data::get_primary_keys_from_cache(self, connection_id, database_name, table_name).unwrap_or_default();
 
-        let indexes_list = if let Some(names) =
-            cache_data::get_index_names_from_cache(self, connection_id, database_name, table_name)
-        {
-            names
-        } else {
-            Vec::new()
-        };
+        let indexes_list = cache_data::get_index_names_from_cache(self, connection_id, database_name, table_name).unwrap_or_default();
 
         (indexes_list, pk_columns)
     }

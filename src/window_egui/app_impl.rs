@@ -1977,9 +1977,10 @@ impl Tabular {
                                                 if ui.button("🌐 Add HTTP Connection").clicked() {
                                                     self.test_connection_status = None;
                                                     self.test_connection_in_progress = false;
-                                                    let mut new_conn = models::structs::ConnectionConfig::default();
-                                                    new_conn.connection_type = models::enums::DatabaseType::ApiHttp;
-                                                    self.new_connection = new_conn;
+                                                    self.new_connection = models::structs::ConnectionConfig {
+                                                        connection_type: models::enums::DatabaseType::ApiHttp,
+                                                        ..Default::default()
+                                                    };
                                                     self.show_add_connection = true;
                                                     ui.close();
                                                 }
@@ -4983,21 +4984,20 @@ impl App for Tabular {
                     let queued = self.pool_wait_query.clone();
                     
                     // Execute asynchronously to avoid freezing if connection is still slow
-                    let job_id = self.next_query_job_id;
-                    self.next_query_job_id += 1;
+                    let job_id = self.jobs.allocate_id();
                     
                     match crate::connection::prepare_query_job(self, conn_id, queued.clone(), job_id) {
                         Ok(job) => {
                             match crate::connection::spawn_query_job(self, job.clone(), self.query_result_sender.clone()) {
                                 Ok(handle) => {
-                                    self.active_query_jobs.insert(job_id, crate::connection::QueryJobStatus {
+                                    self.jobs.active.insert(job_id, crate::connection::QueryJobStatus {
                                         job_id,
                                         connection_id: conn_id,
                                         query_preview: queued.chars().take(50).collect(),
                                         started_at: std::time::Instant::now(),
                                         completed: false,
                                     });
-                                    self.active_query_handles.insert(job_id, handle);
+                                    self.jobs.handles.insert(job_id, handle);
                                     log::debug!("🚀 Asynchronously queued pool-wait query (Job {})", job_id);
                                 }
                                 Err(e) => {

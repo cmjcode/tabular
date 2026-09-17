@@ -158,8 +158,10 @@ pub(crate) fn open_dba_monitor_tab(
         }
     }
 
-    let mut monitor_state = models::structs::DbaMonitorState::default();
-    monitor_state.selected_tab = initial_tab;
+    let monitor_state = models::structs::DbaMonitorState {
+        selected_tab: initial_tab,
+        ..Default::default()
+    };
 
     let tab_id = create_new_tab_with_connection(
         tabular,
@@ -200,8 +202,10 @@ pub(crate) fn open_user_manager_tab(
         }
     }
 
-    let mut user_mgr_state = crate::user_manager::UserManagerState::default();
-    user_mgr_state.selected_tab = initial_tab;
+    let user_mgr_state = crate::user_manager::UserManagerState {
+        selected_tab: initial_tab,
+        ..Default::default()
+    };
 
     let tab_id = create_new_tab_with_connection(
         tabular,
@@ -7062,8 +7066,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 return;
             }
 
-            let job_id = tabular.next_query_job_id;
-            tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+            let job_id = tabular.jobs.allocate_id();
 
             match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
                 Ok(job) => {
@@ -7074,16 +7077,16 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         started_at: Instant::now(),
                         completed: false,
                     };
-                    tabular.active_query_jobs.insert(job_id, status);
+                    tabular.jobs.active.insert(job_id, status);
 
                     match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
                     {
                         Ok(handle) => {
-                            tabular.active_query_handles.insert(job_id, handle);
+                            tabular.jobs.handles.insert(job_id, handle);
                             tabular.current_table_name = "Running query…".to_string();
                         }
                         Err(err) => {
-                            tabular.active_query_jobs.remove(&job_id);
+                            tabular.jobs.active.remove(&job_id);
                             report_query_start_failure(tabular, &err);
                         }
                     }
@@ -7103,8 +7106,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
 
             for (idx, stmt) in statements.into_iter().enumerate() {
                 debug!("Preparing statement {}/{}: {}", idx + 1, total, stmt);
-                let job_id = tabular.next_query_job_id;
-                tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+                let job_id = tabular.jobs.allocate_id();
 
                 match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
                     Ok(job) => {
@@ -7116,7 +7118,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                             started_at: Instant::now(),
                             completed: false,
                         };
-                        tabular.active_query_jobs.insert(job_id, status);
+                        tabular.jobs.active.insert(job_id, status);
                         job_ids.push(job_id);
                         jobs.push(job);
                     }
@@ -7124,7 +7126,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         // Tanpa statement ini urutan script jadi tidak utuh,
                         // jadi batalkan seluruh batch daripada menjalankan sebagian.
                         for job_id in &job_ids {
-                            tabular.active_query_jobs.remove(job_id);
+                            tabular.jobs.active.remove(job_id);
                         }
                         log::warn!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
                         report_query_start_failure(tabular, &err);
@@ -7145,14 +7147,14 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                     // job id aborts the entire batch (see cancel_active_query_job).
                     let last_id = *job_ids.last().expect("jobs not empty");
                     tabular
-                        .query_job_batches
+                        .jobs.batches
                         .push((job_ids, handle.abort_handle()));
-                    tabular.active_query_handles.insert(last_id, handle);
+                    tabular.jobs.handles.insert(last_id, handle);
                     tabular.current_table_name = format!("Running {} queries…", total);
                 }
                 Err(err) => {
                     for job_id in &job_ids {
-                        tabular.active_query_jobs.remove(job_id);
+                        tabular.jobs.active.remove(job_id);
                     }
                     report_query_start_failure(tabular, &err);
                 }
@@ -7177,7 +7179,7 @@ fn report_query_start_failure(
     };
     log::warn!("Query could not be started: {:?}", err);
     tabular.toasts.error(format!("Query could not be started: {}", reason));
-    if tabular.active_query_jobs.is_empty() {
+    if tabular.jobs.active.is_empty() {
         tabular.query_execution_in_progress = false;
         tabular.current_table_name.clear();
         tabular.extend_query_icon_hold();
@@ -7231,8 +7233,7 @@ fn execute_statements_in_session(
 
     let total = statements.len();
     for (idx, stmt) in statements.into_iter().enumerate() {
-        let job_id = tabular.next_query_job_id;
-        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+        let job_id = tabular.jobs.allocate_id();
         let preview: String = stmt.chars().take(72).collect();
         let status = connection::QueryJobStatus {
             job_id,
@@ -7245,13 +7246,13 @@ fn execute_statements_in_session(
             started_at: Instant::now(),
             completed: false,
         };
-        tabular.active_query_jobs.insert(job_id, status);
+        tabular.jobs.active.insert(job_id, status);
 
         if !session.send(crate::connection::session::SessionCommand::Execute {
             job_id,
             sql: stmt,
         }) {
-            tabular.active_query_jobs.remove(&job_id);
+            tabular.jobs.active.remove(&job_id);
             tabular.toasts.error("Session connection is gone; toggle manual commit off and on again".to_string());
             tabular.query_execution_in_progress = false;
             return;
@@ -7277,8 +7278,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
     else {
         return;
     };
-    let job_id = tabular.next_query_job_id;
-    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+    let job_id = tabular.jobs.allocate_id();
     let verb = if commit { "COMMIT" } else { "ROLLBACK" };
     let status = connection::QueryJobStatus {
         job_id,
@@ -7287,7 +7287,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
         started_at: Instant::now(),
         completed: false,
     };
-    tabular.active_query_jobs.insert(job_id, status);
+    tabular.jobs.active.insert(job_id, status);
     tabular.query_execution_in_progress = true;
 
     let command = if commit {
@@ -7296,7 +7296,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
         crate::connection::session::SessionCommand::Rollback { job_id }
     };
     if !session.send(command) {
-        tabular.active_query_jobs.remove(&job_id);
+        tabular.jobs.active.remove(&job_id);
         tabular.query_execution_in_progress = false;
     }
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {

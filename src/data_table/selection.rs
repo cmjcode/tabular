@@ -361,6 +361,8 @@ pub(crate) fn export_selected_to_markdown(tabular: &window_egui::Tabular) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

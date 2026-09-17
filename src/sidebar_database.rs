@@ -1895,7 +1895,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                                     .connect_with(opts)
                                     .await
                             }
-                            Err(url_err) => Err(url_err.into()),
+                            Err(url_err) => Err(url_err),
                         }
                     } else {
                         Err(e)

@@ -1,29 +1,10 @@
+// Lint yang sengaja diizinkan global karena perbaikannya struktural (fungsi
+// UI dengan banyak parameter, tipe callback kompleks) atau menyentuh ratusan
+// lokasi sekaligus (collapsible_if). Lint lain wajib lolos `clippy -D warnings`.
 #![allow(
     clippy::collapsible_if,
     clippy::too_many_arguments,
     clippy::type_complexity,
-    clippy::field_reassign_with_default,
-    clippy::needless_borrows_for_generic_args,
-    clippy::unnecessary_cast,
-    clippy::manual_clamp,
-    clippy::unnecessary_map_or,
-    clippy::manual_is_multiple_of,
-    clippy::manual_div_ceil,
-    clippy::derivable_impls,
-    clippy::manual_unwrap_or_default,
-    clippy::vec_init_then_push,
-    clippy::get_first,
-    clippy::single_char_add_str,
-    clippy::redundant_closure,
-    clippy::needless_borrow,
-    clippy::needless_late_init,
-    clippy::nonminimal_bool,
-    clippy::collapsible_str_replace,
-    clippy::doc_lazy_continuation,
-    clippy::redundant_pattern_matching,
-    clippy::unnecessary_sort_by,
-    clippy::useless_conversion,
-    clippy::unwrap_or_default,
 )]
 
 use eframe::egui;

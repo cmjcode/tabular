@@ -172,7 +172,7 @@ pub(crate) fn prepare_query_job(
         query_timeout: (tabular.query_timeout_secs > 0)
             .then(|| std::time::Duration::from_secs(tabular.query_timeout_secs as u64)),
         max_rows: tabular.max_result_rows.max(1) as usize,
-        backend_pids: tabular.query_backend_pids.clone(),
+        backend_pids: tabular.jobs.backend_pids.clone(),
     };
 
     let tab_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);

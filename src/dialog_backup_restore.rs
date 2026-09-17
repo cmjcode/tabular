@@ -65,7 +65,7 @@ impl BackupDialogState {
         );
 
         let default_target = dirs::download_dir()
-            .or_else(|| dirs::home_dir())
+            .or_else(dirs::home_dir)
             .map(|p| p.join(&default_file_name));
 
         Self {

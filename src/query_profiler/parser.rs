@@ -544,7 +544,7 @@ fn extract_xml_attr(text: &str, attr_name: &str) -> Option<String> {
         None
     } else {
         // Clean out brackets e.g. [dbo].[Users] -> dbo.Users
-        Some(val.replace('[', "").replace(']', ""))
+        Some(val.replace(['[', ']'], ""))
     }
 }
 

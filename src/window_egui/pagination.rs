@@ -39,8 +39,7 @@ impl super::Tabular {
             let paginated_query = self.build_paginated_query(offset, self.page_size);
             debug!("🔥 Built paginated query: {}", paginated_query);
 
-            let job_id = self.next_query_job_id;
-            self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+            let job_id = self.jobs.allocate_id();
 
             match connection::prepare_query_job(
                 self,
@@ -57,12 +56,12 @@ impl super::Tabular {
                         started_at: std::time::Instant::now(),
                         completed: false,
                     };
-                    self.active_query_jobs.insert(job_id, status);
-                    self.pending_paginated_jobs.insert(job_id);
+                    self.jobs.active.insert(job_id, status);
+                    self.jobs.paginated.insert(job_id);
 
                     match connection::spawn_query_job(self, job, self.query_result_sender.clone()) {
                         Ok(handle) => {
-                            self.active_query_handles.insert(job_id, handle);
+                            self.jobs.handles.insert(job_id, handle);
                             self.current_table_name =
                                 format!("Loading page {}…", self.current_page.saturating_add(1));
                             return;
@@ -72,8 +71,8 @@ impl super::Tabular {
                                 "⚠️ Failed to spawn paginated query job {:?}. Falling back to sync execution.",
                                 err
                             );
-                            self.active_query_jobs.remove(&job_id);
-                            self.pending_paginated_jobs.remove(&job_id);
+                            self.jobs.active.remove(&job_id);
+                            self.jobs.paginated.remove(&job_id);
                         }
                     }
                 }

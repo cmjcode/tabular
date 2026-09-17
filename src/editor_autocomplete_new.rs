@@ -700,7 +700,7 @@ fn get_cached_columns(
         // 3) If missing in memory: mark warmed and insert placeholder immediately to prevent repeated lookups
         if !app.autocomplete_cols_warmed.contains(&key) {
             app.autocomplete_cols_warmed.insert(key.clone());
-            app.autocomplete_cols_mem.entry(key.clone()).or_insert_with(Vec::new);
+            app.autocomplete_cols_mem.entry(key.clone()).or_default();
 
             if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
                 let warm_tx = app.autocomplete_warm_sender.clone();

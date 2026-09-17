@@ -666,7 +666,7 @@ pub fn import_all_data(
                                             Ok(_) => {
                                                 crate::sidebar_database::externalize_connection_secrets(
                                                     &rt,
-                                                    &pool,
+                                                    pool,
                                                     eid,
                                                     &conn.password,
                                                     &conn.ssh_private_key,
@@ -728,7 +728,7 @@ pub fn import_all_data(
                                                 let new_id = res.last_insert_rowid();
                                                 crate::sidebar_database::externalize_connection_secrets(
                                                     &rt,
-                                                    &pool,
+                                                    pool,
                                                     new_id,
                                                     &conn.password,
                                                     &conn.ssh_private_key,

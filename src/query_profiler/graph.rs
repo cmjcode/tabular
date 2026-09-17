@@ -129,7 +129,7 @@ fn render_profiler_header(
             ui.selectable_value(
                 &mut state.view_mode,
                 ProfilerViewMode::Advisor,
-                &format!("💡 Advisor ({})", summary.warnings_count),
+                format!("💡 Advisor ({})", summary.warnings_count),
             );
             ui.selectable_value(&mut state.view_mode, ProfilerViewMode::TreeList, "🌲 Tree List");
             ui.selectable_value(&mut state.view_mode, ProfilerViewMode::VisualGraph, "📊 Graph");
@@ -1043,7 +1043,7 @@ fn render_advisor_view(
     }
 
     // Sort by severity descending
-    all_warnings.sort_by(|a, b| b.1.severity.cmp(&a.1.severity));
+    all_warnings.sort_by_key(|w| std::cmp::Reverse(w.1.severity));
 
     egui::ScrollArea::vertical()
         .id_salt("profiler_advisor_scroll")

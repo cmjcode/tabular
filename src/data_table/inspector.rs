@@ -347,7 +347,7 @@ impl CellInspectorState {
         }
 
         // 3. Binary / Hex Check (Contains null bytes or non-printable controls)
-        if self.raw_value.bytes().any(|b| b == 0 || (b < 9 && b != 0)) || val_trimmed.starts_with("0x") || val_trimmed.starts_with("\\x") {
+        if self.raw_value.bytes().any(|b| b < 9) || val_trimmed.starts_with("0x") || val_trimmed.starts_with("\\x") {
             return InspectorTab::Hex;
         }
 
@@ -367,7 +367,7 @@ impl CellInspectorState {
 pub fn try_decode_base64(input: &str) -> Option<Vec<u8>> {
     use base64::Engine;
     let clean: String = input.chars().filter(|c| !c.is_whitespace()).collect();
-    if clean.len() < 4 || clean.len() % 4 != 0 {
+    if clean.len() < 4 || !clean.len().is_multiple_of(4) {
         return None;
     }
     base64::engine::general_purpose::STANDARD.decode(clean).ok()
@@ -391,7 +391,7 @@ pub fn try_decode_hex_str(input: &str) -> Option<Vec<u8>> {
         .filter(|c| c.is_ascii_hexdigit())
         .collect();
 
-    if sanitized.len() >= 2 && sanitized.len() % 2 == 0 {
+    if sanitized.len() >= 2 && sanitized.len().is_multiple_of(2) {
         hex::decode(sanitized).ok()
     } else {
         None
@@ -934,7 +934,7 @@ fn render_tab_hex(
     }
 
     let bytes_per_row = state.hex_bytes_per_row.max(8);
-    let total_rows = (total_bytes + bytes_per_row - 1) / bytes_per_row;
+    let total_rows = total_bytes.div_ceil(bytes_per_row);
     let row_height = 20.0;
 
     // Header column labels
@@ -946,7 +946,7 @@ fn render_tab_hex(
         for i in 0..bytes_per_row {
             header_hex.push_str(&format!("{:02X} ", i));
             if (i + 1) % 8 == 0 && (i + 1) < bytes_per_row {
-                header_hex.push_str(" ");
+                header_hex.push(' ');
             }
         }
         ui.label(egui::RichText::new(header_hex).monospace().strong().color(ui.visuals().weak_text_color()));
@@ -983,7 +983,7 @@ fn render_tab_hex(
                     for (i, b) in row_bytes.iter().enumerate() {
                         hex_part.push_str(&format!("{:02X} ", b));
                         if (i + 1) % 8 == 0 && (i + 1) < bytes_per_row {
-                            hex_part.push_str(" ");
+                            hex_part.push(' ');
                         }
                     }
                     // Pad remaining if last line is short
@@ -991,8 +991,8 @@ fn render_tab_hex(
                         let missing = bytes_per_row - row_bytes.len();
                         for i in 0..missing {
                             hex_part.push_str("   ");
-                            if (row_bytes.len() + i + 1) % 8 == 0 && (row_bytes.len() + i + 1) < bytes_per_row {
-                                hex_part.push_str(" ");
+                            if (row_bytes.len() + i + 1).is_multiple_of(8) && (row_bytes.len() + i + 1) < bytes_per_row {
+                                hex_part.push(' ');
                             }
                         }
                     }

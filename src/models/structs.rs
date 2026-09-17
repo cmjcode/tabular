@@ -450,7 +450,9 @@ impl ForeignKeyRelation {
 
 /// Zero-copy & memory-efficient cell representation for large payloads (JSON, BLOB, Text)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum CellValue {
+    #[default]
     Null,
     Text(String),
     Number(f64),
@@ -463,11 +465,6 @@ pub enum CellValue {
 /// Type alias for SQL values and query parameters
 pub type SqlValue = CellValue;
 
-impl Default for CellValue {
-    fn default() -> Self {
-        CellValue::Null
-    }
-}
 
 impl std::fmt::Display for CellValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

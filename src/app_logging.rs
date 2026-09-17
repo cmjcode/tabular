@@ -61,7 +61,10 @@ fn open_log_file() -> Option<std::fs::File> {
     let dir = logs_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let path = log_file_path();
-    if std::fs::metadata(&path).map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > MAX_LOG_BYTES)
+        .unwrap_or(false)
+    {
         let _ = std::fs::rename(&path, dir.join("tabular.log.1"));
     }
     std::fs::OpenOptions::new()
@@ -89,7 +92,10 @@ pub fn init() {
     if result.is_ok() {
         // Filter per modul mengizinkan Debug, tetapi level global default
         // Info agar log tidak berisik; "Enable Debug Logging" menaikkannya.
-        let verbose_from_env = std::env::var_os("RUST_LOG").is_some();
+        // RUST_LOG hanya dihormati jika berisi spesifikasi level yang valid
+        // (mis. "debug" atau "tabular=debug"); nilai lain diabaikan.
+        let verbose_from_env = std::env::var("RUST_LOG")
+            .is_ok_and(|v| v.contains('=') || v.parse::<log::LevelFilter>().is_ok());
         if !verbose_from_env {
             log::set_max_level(log::LevelFilter::Info);
         }
