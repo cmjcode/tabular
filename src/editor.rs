@@ -297,8 +297,7 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     tabular.dragged_tab_index = None;
     let tab_count = tabular.query_tabs.len();
     if from == to || from >= tab_count || to >= tab_count {
-        eprintln!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
-        info!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
+        log::debug!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
         return;
     }
 
@@ -312,12 +311,10 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     // If moved out of pinned region (>= pinned_count_before), unpin it.
     if !was_pinned && to < pinned_count_before {
         tab.is_pinned = true;
-        eprintln!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
-        info!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
+        log::debug!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
     } else if was_pinned && to >= pinned_count_before {
         tab.is_pinned = false;
-        eprintln!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
-        info!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
+        log::debug!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
     }
 
     tabular.query_tabs.insert(to, tab);
@@ -350,8 +347,7 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
 pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
     let tab_count = tabular.query_tabs.len();
     if from >= tab_count {
-        eprintln!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
-        info!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
+        log::debug!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
         tabular.dragged_tab_index = None;
         return;
     }
@@ -360,8 +356,7 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
     } else {
         insert_at.min(tab_count - 1)
     };
-    eprintln!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
-    info!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
+    log::debug!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
     move_tab(tabular, from, to);
 }
 
@@ -369,8 +364,7 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
 pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        eprintln!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
-        info!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = true;
@@ -414,8 +408,7 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        eprintln!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
-        info!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = false;
@@ -466,13 +459,11 @@ pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        eprintln!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
-        info!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
         return;
     }
     let is_pinned = tabular.query_tabs[tab_index].is_pinned;
-    eprintln!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
-    info!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    log::debug!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
     if is_pinned {
         unpin_tab(tabular, tab_index);
     } else {
@@ -6336,7 +6327,7 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         "Query: Close Tab" => {
             if !tabular.query_tabs.is_empty() {
                 let idx = tabular.active_tab_index;
-                close_tab(tabular, idx);
+                crate::session_restore::request_close_tab(tabular, idx);
             }
         }
         "Query: Save Tab" => {

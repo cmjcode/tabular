@@ -58,6 +58,7 @@ impl super::Tabular {
         self.auto_check_updates = prefs.auto_check_updates;
         self.use_server_pagination = prefs.use_server_pagination;
         self.enable_debug_logging = prefs.enable_debug_logging;
+        crate::app_logging::set_verbose(prefs.enable_debug_logging);
         self.query_timeout_secs = prefs.query_timeout_secs;
         self.max_result_rows = prefs.max_result_rows.max(1);
         self.restore_session = prefs.restore_session;
@@ -489,6 +490,12 @@ impl super::Tabular {
             query_timeout_secs: 0,
             max_result_rows: crate::config::DEFAULT_MAX_RESULT_ROWS,
             restore_session: true,
+            pending_tab_close: None,
+            show_quit_confirm: false,
+            quit_confirmed: false,
+            session_restore_done: false,
+            session_last_check: None,
+            session_last_fingerprint: None,
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
@@ -705,6 +712,14 @@ impl super::Tabular {
 
         // Clear any old cached pools
         app.connection_pools.clear();
+
+        // Beri tahu user jika sesi sebelumnya berakhir karena crash.
+        if let Some(report) = crate::app_logging::take_unseen_crash_report() {
+            app.toasts.warning(format!(
+                "Tabular closed unexpectedly last time. A crash report was saved to {} — Settings menu → “Copy Diagnostics” helps when reporting the bug.",
+                report.display()
+            ));
+        }
 
         // Asynchronously initialize database and load connections in background thread
         crate::log_startup_step("spawning async background thread for initialize_database");

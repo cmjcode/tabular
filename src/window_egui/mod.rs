@@ -454,6 +454,16 @@ pub struct Tabular {
     pub max_result_rows: u32,
     /// Buka kembali tab dari sesi sebelumnya saat startup.
     pub restore_session: bool,
+    /// Aksi tutup tab yang menunggu konfirmasi (ada perubahan belum disimpan).
+    pub pending_tab_close: Option<crate::session_restore::PendingTabClose>,
+    /// Dialog konfirmasi keluar aplikasi sedang tampil.
+    pub show_quit_confirm: bool,
+    /// User sudah mengonfirmasi keluar; permintaan close berikutnya diteruskan.
+    pub quit_confirmed: bool,
+    /// Pemulihan sesi sudah dijalankan (sekali per proses).
+    pub session_restore_done: bool,
+    pub session_last_check: Option<std::time::Instant>,
+    pub session_last_fingerprint: Option<u64>,
     // Auto updater instance
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
     // Preferences window active tab

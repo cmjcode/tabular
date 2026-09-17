@@ -29,6 +29,7 @@
 use eframe::egui;
 
 pub mod ai_assistant;
+pub mod app_logging;
 pub mod auto_updater;
 pub mod backup_restore;
 pub mod cache_data;
@@ -70,6 +71,7 @@ pub mod safety_guard;
 pub mod secrets;
 pub mod sample_data;
 pub mod self_update;
+pub mod session_restore;
 pub mod url_opener;
 pub mod sidebar_collection;
 pub mod sidebar_database;
@@ -180,13 +182,9 @@ pub fn run() -> Result<(), eframe::Error> {
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
 
-    let _ = env_logger::Builder::from_default_env()
-        // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log::LevelFilter::Info)
-        .filter_module("winit", log::LevelFilter::Warn)
-        .filter_module("tracing", log::LevelFilter::Warn)
-        .is_test(false)
-        .try_init();
+    // Log ke file + crash report; setelah init_data_dir agar folder log benar.
+    app_logging::init();
+    app_logging::install_panic_hook();
 
     log::debug!(
         "Application starting with data directory: {}",
@@ -196,6 +194,10 @@ pub fn run() -> Result<(), eframe::Error> {
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
+    if let Some(geometry) = session_restore::saved_window_geometry() {
+        options.viewport.inner_size = Some(egui::vec2(geometry.width, geometry.height));
+        options.viewport.maximized = Some(geometry.maximized);
+    }
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }

@@ -130,7 +130,7 @@ pub fn start_oauth_flow(
     if let Err(e) = open_url(&url) {
         warn!("Failed to open browser: {}", e);
     }
-    info!("Opened OAuth URL: {}", url);
+    log::debug!("Opened OAuth URL: {}", url);
 
     // 5. Spawn background worker to await authentication via HTTPS polling or loopback callback
     let server_url_owned = server_url.trim_end_matches('/').to_string();
