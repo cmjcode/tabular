@@ -1,23 +1,12 @@
 use eframe::egui;
-use crate::{connection, models, window_egui};
+use crate::{models, window_egui};
 use super::{load_structure_info_for_current_table, infer_current_table_name};
 
-/// Run a structure-editing statement (ADD COLUMN, DROP COLUMN, CREATE INDEX,
-/// …) without blocking the UI thread on the database round trip. Previously
-/// these all called `connection::execute_query_with_connection` directly,
-/// which runs on a `tokio` runtime via `block_on` on the UI thread itself —
-/// any slow response (network latency, or MySQL waiting on a metadata lock
-/// for an in-progress transaction on the table) froze the whole app until it
-/// returned or hit its internal timeout.
-///
-/// This dispatches through the same background job pipeline the editor's
-/// "Run" button already uses (see `connection::prepare_query_job` /
-/// `spawn_query_job`), so the UI stays responsive while it runs. `on_success`
-/// fires once the statement succeeds; on failure `error_prefix` is prefixed
-/// to the database error and shown via the normal error dialog. Falls back
-/// to the old synchronous call only if the job can't be prepared/spawned at
-/// all (e.g. no pool cached yet), matching the safety-net pattern already
-/// used for paginated queries.
+/// Jalankan statement pengubah struktur (ADD COLUMN, DROP COLUMN, CREATE INDEX,
+/// …) di latar belakang agar UI tidak freeze saat menunggu database (misalnya
+/// MySQL menunggu metadata lock). `on_success` dipanggil jika statement sukses;
+/// jika gagal, `error_prefix` ditambahkan di depan pesan error database.
+/// Jika pool belum siap, statement diantrekan sampai koneksi terbentuk.
 fn run_structure_statement(
     tabular: &mut window_egui::Tabular,
     conn_id: i64,
@@ -25,76 +14,18 @@ fn run_structure_statement(
     error_prefix: &str,
     on_success: impl FnOnce(&mut window_egui::Tabular) + 'static,
 ) {
-    let job_id = tabular.next_query_job_id;
-    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
-
-    match connection::prepare_query_job(tabular, conn_id, stmt.clone(), job_id) {
-        Ok(job) => {
-            match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone()) {
-                Ok(handle) => {
-                    tabular.active_query_jobs.insert(
-                        job_id,
-                        connection::QueryJobStatus {
-                            job_id,
-                            connection_id: conn_id,
-                            query_preview: stmt.chars().take(80).collect(),
-                            started_at: std::time::Instant::now(),
-                            completed: false,
-                        },
-                    );
-                    tabular.active_query_handles.insert(job_id, handle);
-                    tabular.pending_structure_jobs.insert(
-                        job_id,
-                        window_egui::PendingStructureJob {
-                            error_prefix: error_prefix.to_string(),
-                            on_success: Box::new(on_success),
-                        },
-                    );
-                    tabular.query_execution_in_progress = true;
-                    tabular.extend_query_icon_hold();
-                }
-                Err(err) => {
-                    log::debug!(
-                        "⚠️ Failed to spawn structure job ({error_prefix}): {err:?}. Falling back to sync execution."
-                    );
-                    run_structure_statement_sync(tabular, conn_id, stmt, error_prefix, on_success);
-                }
-            }
-        }
-        Err(err) => {
-            log::debug!(
-                "⚠️ Failed to prepare structure job ({error_prefix}): {err:?}. Falling back to sync execution."
-            );
-            run_structure_statement_sync(tabular, conn_id, stmt, error_prefix, on_success);
-        }
-    }
-}
-
-/// Safety-net path for `run_structure_statement`: identical outcome, just
-/// synchronous. Only reached when the background job couldn't be prepared.
-fn run_structure_statement_sync(
-    tabular: &mut window_egui::Tabular,
-    conn_id: i64,
-    stmt: String,
-    error_prefix: &str,
-    on_success: impl FnOnce(&mut window_egui::Tabular),
-) {
-    if let Some((headers, data)) =
-        connection::execute_query_with_connection(tabular, conn_id, stmt)
-    {
-        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
-        if is_error {
-            let err = data
-                .first()
-                .and_then(|row| row.first())
-                .cloned()
-                .unwrap_or_else(|| "Unknown error".to_string());
-            tabular.error_message = format!("{}: {}", error_prefix, err);
-            tabular.show_error_message = true;
-        } else {
+    let error_prefix = error_prefix.to_string();
+    tabular.run_query_with_callback(conn_id, stmt, move |tabular, message| {
+        if message.success {
             on_success(tabular);
+        } else {
+            let err = message
+                .error
+                .clone()
+                .unwrap_or_else(|| "Unknown error".to_string());
+            tabular.toasts.error(format!("{}: {}", error_prefix, err));
         }
-    }
+    });
 }
 
 pub(crate) fn data_types_for_current_conn(tabular: &window_egui::Tabular) -> &'static [&'static str] {

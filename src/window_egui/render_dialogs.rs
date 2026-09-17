@@ -1163,30 +1163,37 @@ impl super::Tabular {
                         
                         if ui.add(btn).clicked() {
                             // Switch result tab!
+                             let mut switched = false;
                              if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                 tab.active_result_index = i;
                                 if let Some(res) = tab.results.get(i) {
-                                    // Sync to viewport fields
+                                    // Sinkronkan ke tampilan; potongan halaman dibuat
+                                    // dari all_rows di bawah (sebelumnya seluruh baris
+                                    // ditampilkan sekaligus dan paginasi terabaikan).
                                     self.current_table_headers = res.headers.clone();
-                                    self.current_table_data = res.rows.clone();
                                     self.all_table_data = res.all_rows.clone();
                                     self.current_table_name = res.table_name.clone();
                                     self.total_rows = res.total_rows;
                                     self.current_page = res.current_page;
-                                    self.page_size = res.page_size;
+                                    self.page_size = res.page_size.max(1);
+                                    self.current_column_metadata = res.column_metadata.clone();
                                     self.query_message = res.query_message.clone();
                                     self.query_message_is_error = res.query_message_is_error;
                                     self.show_message_panel = true; // Always show message panel context
-                                     // Also update Viewport fields in Tab
-                                    tab.result_headers = res.headers.clone();
-                                    tab.result_rows = res.rows.clone();
-                                    tab.result_all_rows = res.all_rows.clone();
                                     tab.result_table_name = res.table_name.clone();
                                     tab.query_message = res.query_message.clone();
                                     tab.query_message_is_error = res.query_message_is_error;
                                     tab.total_rows = res.total_rows;
                                     tab.current_page = res.current_page;
+                                    switched = true;
                                 }
+                             }
+                             if switched {
+                                 // Result dari batch bukan hasil server pagination.
+                                 self.use_server_pagination = false;
+                                 self.current_base_query.clear();
+                                 self.actual_total_rows = None;
+                                 data_table::update_current_page_data(self);
                              }
                         }
                     }
@@ -1684,7 +1691,9 @@ impl super::Tabular {
 
             if confirm_delete {
                 if crate::sidebar_collection::delete_request_from_workspaces(&mut self.yaak_workspaces, &req_id) {
-                    crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                    if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                        self.toasts.error(e);
+                    }
                     self.toasts.success(format!("Deleted request: {}", req_name));
                 }
             }
@@ -1748,7 +1757,9 @@ impl super::Tabular {
 
             if confirm_delete {
                 crate::sidebar_collection::delete_folder_from_workspaces(&mut self.yaak_workspaces, &ws_id, &folder_id);
-                crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                    self.toasts.error(e);
+                }
                 self.toasts.success(format!("Deleted folder: {}", folder_name));
             }
             if close_dialog {
@@ -1867,7 +1878,9 @@ impl super::Tabular {
                 let trimmed = edit_name.trim();
                 if !trimmed.is_empty() {
                     if crate::sidebar_collection::rename_request_in_workspaces(&mut self.yaak_workspaces, &req_id, trimmed) {
-                        crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                        if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                            self.toasts.error(e);
+                        }
                         for tab in &mut self.query_tabs {
                             if let Some(ref state) = tab.http_client_state {
                                 if state.saved_request_id.as_deref() == Some(&req_id) {

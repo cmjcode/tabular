@@ -1805,25 +1805,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.reset_spreadsheet_state();
                 tabular.current_table_name = format!("Table: {} (FK: {} = {})", target_table, target_col, filter_val);
 
-                if let Some((res_headers, res_data)) = crate::connection::execute_query_with_connection(tabular, cid, query_sql.clone()) {
-                    tabular.current_table_headers = res_headers.clone();
-                    tabular.current_table_data = res_data.clone();
-                    tabular.all_table_data = res_data.clone();
-                    tabular.total_rows = res_data.len();
-                    tabular.current_page = 0;
-                    tabular.is_table_browse_mode = false;
-                    if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                        active_tab.result_headers = res_headers;
-                        active_tab.result_rows = res_data.clone();
-                        active_tab.result_all_rows = res_data;
-                        active_tab.result_table_name = tabular.current_table_name.clone();
-                        active_tab.total_rows = tabular.total_rows;
-                        active_tab.is_table_browse_mode = false;
-                        active_tab.has_executed_query = true;
-                        active_tab.query_message = format!("Loaded {} records from {} where {} = '{}'", tabular.total_rows, target_table, target_col, filter_val);
-                        active_tab.query_message_is_error = false;
-                    }
-                }
+                tabular.is_table_browse_mode = false;
+                tabular.run_query_for_active_tab(cid, query_sql.clone());
                 tabular.toasts.info(format!("Navigated to FK: {}.{} = {}", target_table, target_col, filter_val));
             }
 

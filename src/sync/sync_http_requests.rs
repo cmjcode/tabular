@@ -309,7 +309,8 @@ pub fn pull_http_requests_from_server(
         }
 
         if saved > 0 {
-            save_workspaces(&workspaces);
+            // Sinkronisasi latar belakang: error sudah dicatat ke log di dalam save_workspaces.
+            let _ = save_workspaces(&workspaces);
         }
 
         info!("✅ [sync_http] Downloaded {} HTTP requests from server", saved);

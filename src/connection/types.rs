@@ -41,6 +41,9 @@ pub struct QueryExecutionOptions {
     pub connection: models::structs::ConnectionConfig,
     pub query: String,
     pub selected_database: Option<String>,
+    /// Schema aktif tab (PostgreSQL): diterapkan sebagai `search_path` pada
+    /// koneksi yang menjalankan query.
+    pub schema_name: Option<String>,
     pub use_server_pagination: bool,
     pub current_page: usize,
     pub page_size: usize,

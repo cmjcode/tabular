@@ -1,4 +1,4 @@
-use crate::{connection, models, window_egui::Tabular};
+use crate::{models, window_egui::Tabular};
 use log::debug;
 use std::collections::HashMap;
 
@@ -704,47 +704,48 @@ impl SpreadsheetOperations for Tabular {
     }
 
     fn execute_spreadsheet_sql(&mut self, sql: String) {
-        if let Some(conn_id) = self.current_connection_id {
-            if let Some((headers, data)) =
-                connection::execute_query_with_connection(self, conn_id, sql)
-            {
-                // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
-                let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
-                if is_error_table {
-                    let msg = data
-                        .first()
-                        .and_then(|r| r.first())
-                        .cloned()
-                        .unwrap_or_else(|| "Unknown query error".to_string());
-                    debug!("❌ SQL execution returned error table: {}", msg);
-                    self.error_message = msg;
-                    self.show_error_message = true;
-                    // Do NOT clear pending operations on failure
-                } else {
-                    debug!("🔥 SQL executed successfully, clearing pending operations");
-                    self.spreadsheet_state.pending_operations.clear();
-                    self.spreadsheet_state.is_dirty = false;
-
-                    // Clear newly created rows highlight after successful save
-                    self.newly_created_rows.clear();
-
-                    // Refresh grid after save so inserted rows become visible
-                    if self.is_table_browse_mode {
-                        if self.use_server_pagination && !self.current_base_query.is_empty() {
-                            // Re-run current page of the base query
-                            self.execute_paginated_query();
-                        } else {
-                            // Client-side mode: simply re-sync current page slice
-                            self.update_current_page_data();
-                        }
-                    }
-                }
-            } else {
-                debug!("🔥 SQL execution failed");
-                self.error_message = "Failed to save table changes".to_string();
-                self.show_error_message = true;
+        let Some(conn_id) = self.current_connection_id else {
+            return;
+        };
+        // Jumlah operasi yang ikut disimpan. Edit yang dibuat selama proses
+        // simpan berjalan tidak boleh ikut terhapus saat simpan sukses.
+        let submitted_ops = self.spreadsheet_state.pending_operations.len();
+        self.run_query_with_callback(conn_id, sql, move |tabular, message| {
+            if !message.success {
+                let msg = message
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Unknown query error".to_string());
+                debug!("❌ Spreadsheet save failed: {}", msg);
+                // Operasi tetap disimpan agar user bisa memperbaiki lalu mencoba lagi.
+                tabular
+                    .toasts
+                    .error(format!("Failed to save table changes: {}", msg));
+                return;
             }
-        }
+            debug!("🔥 SQL executed successfully, clearing saved pending operations");
+            let state = &mut tabular.spreadsheet_state;
+            let saved = submitted_ops.min(state.pending_operations.len());
+            state.pending_operations.drain(..saved);
+            state.is_dirty = !state.pending_operations.is_empty();
+            if state.pending_operations.is_empty() {
+                // Clear newly created rows highlight after successful save
+                tabular.newly_created_rows.clear();
+            }
+            match message.affected_rows {
+                Some(n) => tabular.toasts.success(format!("Saved changes ({} row(s) affected)", n)),
+                None => tabular.toasts.success("Saved changes"),
+            }
+
+            // Refresh grid after save so inserted rows become visible
+            if tabular.is_table_browse_mode {
+                if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
+                    tabular.execute_paginated_query();
+                } else {
+                    tabular.update_current_page_data();
+                }
+            }
+        });
     }
 
     fn reset_spreadsheet_state(&mut self) {

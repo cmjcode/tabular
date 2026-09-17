@@ -438,7 +438,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             }
             RequestAction::Duplicate => {
                 duplicate_request_in_workspaces(&mut app.yaak_workspaces, &req);
-                save_workspaces(&app.yaak_workspaces);
+                if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                    app.toasts.error(e);
+                }
                 app.toasts
                     .info(format!("Duplicated request '{}'", req.display_name()));
             }
@@ -502,7 +504,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             } else {
                 ws.requests.push(new_req.clone());
             }
-            save_workspaces(&app.yaak_workspaces);
+            if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                app.toasts.error(e);
+            }
             apply_collection_request_to_active_tab(app, &new_req);
             app.toasts
                 .success(format!("Added new HTTP request to '{}'", parent_name));
@@ -728,7 +732,9 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from {} workspace(s)",
@@ -772,7 +778,9 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from Postman ({})",

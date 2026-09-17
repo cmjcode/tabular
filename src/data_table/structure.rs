@@ -1,5 +1,5 @@
 use log::debug;
-use crate::{connection, driver_mssql, models, window_egui};
+use crate::{driver_mssql, models, window_egui};
 
 pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::Tabular) {
     // Determine current target
@@ -670,13 +670,25 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                 }
                 _ => String::new(),
             };
-            if !query.is_empty()
-                && let Some((headers, data)) =
-                    connection::execute_query_with_connection(tabular, conn_id, query)
-            {
-                tabular.current_table_headers = headers;
-                tabular.current_table_data = data.clone();
-                tabular.all_table_data = data;
+            if query.is_empty() {
+                return;
+            }
+            let tab_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
+            tabular.run_query_with_callback(conn_id, query, move |tabular, message| {
+                if !message.success {
+                    tabular.toasts.error(format!(
+                        "Refresh failed: {}",
+                        message.error.clone().unwrap_or_default()
+                    ));
+                    return;
+                }
+                // Abaikan hasil jika user sudah pindah ke tab lain selama refresh.
+                if tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id) != tab_id {
+                    return;
+                }
+                tabular.current_table_headers = message.headers.clone();
+                tabular.current_table_data = message.rows.clone();
+                tabular.all_table_data = message.rows.clone();
                 tabular.total_rows = tabular.all_table_data.len();
                 tabular.current_page = 0;
                 if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
@@ -705,7 +717,7 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                     "💾 Cached first 100 rows after manual refresh for {}/{}",
                     db_name, table
                 );
-            }
+            });
         }
     }
 }

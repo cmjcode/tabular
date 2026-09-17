@@ -38,8 +38,6 @@ impl super::Tabular {
             );
             let paginated_query = self.build_paginated_query(offset, self.page_size);
             debug!("🔥 Built paginated query: {}", paginated_query);
-            let prev_headers = self.current_table_headers.clone();
-            let requested_page = self.current_page;
 
             let job_id = self.next_query_job_id;
             self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
@@ -87,115 +85,20 @@ impl super::Tabular {
                 }
             }
 
-            if let Some((headers, data)) =
-                connection::execute_query_with_connection(self, connection_id, paginated_query)
-            {
-                debug!(
-                    "[execute_paginated_query] got result: rows={}, cols={}",
-                    data.len(),
-                    headers.len()
-                );
-                // If we navigated past the last page (offset beyond available rows), keep previous headers and revert page
-                if data.is_empty() && offset > 0 {
-                    // Heuristic: previous page had < page_size rows or actual_total_rows known and offset >= actual_total_rows
-                    let past_end = if let Some(total) = self.actual_total_rows {
-                        offset >= total
-                    } else {
-                        self.current_page > 0 && self.total_rows < self.page_size
-                    };
-                    if past_end {
-                        debug!(
-                            "🔙 Requested page {} out of range (offset {}), reverting to previous page",
-                            requested_page + 1,
-                            offset
-                        );
-                        // Revert page index
-                        if requested_page > 0 {
-                            self.current_page = requested_page - 1;
-                        }
-                        // Keep previous headers and data (do not overwrite)
-                        self.current_table_headers = prev_headers;
-                        // No further sync needed
-                        self.query_execution_in_progress = false;
-                        self.extend_query_icon_hold();
-                        return;
-                    }
-                }
-
-                // Normal assignment (including empty last page that is valid)
-                self.current_table_headers = if headers.is_empty() {
-                    if !prev_headers.is_empty() {
-                        prev_headers
-                    } else {
-                        headers
-                    }
+            // Job tidak bisa dimulai sekarang (biasanya pool belum siap). Jangan
+            // jatuh ke eksekusi sinkron yang memblokir UI: antrekan halaman ini
+            // dan terapkan hasilnya begitu koneksi siap.
+            self.run_query_with_callback(connection_id, paginated_query, |tabular, message| {
+                if message.success {
+                    tabular.apply_paginated_query_result(message);
                 } else {
-                    headers
-                };
-                debug!(
-                    "[execute_paginated_query] assigning to current_table: rows={}, cols={}",
-                    self.current_table_data.len(),
-                    self.current_table_headers.len()
-                );
-                self.current_table_data = data;
-                // For server pagination, total_rows represents current page row count only (used for UI row count display)
-                self.total_rows = self.current_table_data.len();
-                // Sync ke tab aktif agar mode table tab (tanpa editor) bisa menampilkan Data
-                if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    debug!(
-                        "[execute_paginated_query] sync to tab {}: rows={} cols={}",
-                        self.active_tab_index,
-                        self.current_table_data.len(),
-                        self.current_table_headers.len()
-                    );
-                    active_tab.result_headers = self.current_table_headers.clone();
-                    active_tab.result_rows = self.current_table_data.clone();
-                    active_tab.result_all_rows = self.current_table_data.clone(); // single page snapshot
-                    active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
-                    active_tab.current_page = self.current_page;
-                    active_tab.page_size = self.page_size;
-                    // Note: is_table_browse_mode is not forced here - it inherits from self
-                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
-
-                    // Detect EXPLAIN output JSON/text and set active view to Explain
-                    let first_cell = self.current_table_data.first().and_then(|r| r.first()).cloned().unwrap_or_default();
-                    let is_explain = self.current_table_headers.iter().any(|h| h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN"))
-                        || first_cell.trim().starts_with('[')
-                        || first_cell.trim().starts_with('{');
-                    if is_explain && !first_cell.trim().is_empty() {
-                        active_tab.explain_plan_json = Some(first_cell.clone());
-                        self.table_bottom_view = models::structs::TableBottomView::Explain;
-                    }
+                    tabular.toasts.error(format!(
+                        "Failed to load page: {}",
+                        message.error.clone().unwrap_or_default()
+                    ));
                 }
-
-                // Save this first page into row cache (only when on first page)
-                if self.current_page == 0 {
-                    // Determine database and table names for cache key
-                    let db_name = self
-                        .query_tabs
-                        .get(self.active_tab_index)
-                        .and_then(|t| t.database_name.clone())
-                        .unwrap_or_default();
-                    let table = data_table::infer_current_table_name(self);
-                    if !db_name.is_empty() && !table.is_empty() {
-                        let snapshot: Vec<Vec<String>> =
-                            self.current_table_data.iter().take(100).cloned().collect();
-                        let headers_clone = self.current_table_headers.clone();
-                        crate::cache_data::save_table_rows_to_cache(
-                            self,
-                            connection_id,
-                            &db_name,
-                            &table,
-                            &headers_clone,
-                            &snapshot,
-                        );
-                        debug!(
-                            "💾 Cached first 100 rows (server pagination) for {}/{}",
-                            db_name, table
-                        );
-                    }
-                }
-            }
+            });
+            return;
         } else {
             debug!("🔥 No connection_id available in active tab for paginated query");
         }
@@ -331,17 +234,51 @@ impl super::Tabular {
             data_table::clear_table_selection(self);
         }
     }
+    /// Total baris untuk server pagination. `COUNT(*)` tidak dijalankan otomatis
+    /// karena bisa sangat mahal di tabel besar; sebelumnya fungsi ini
+    /// mengembalikan angka palsu 10.000 yang membuat navigasi halaman
+    /// menyesatkan. Total kini `None` (belum diketahui) sampai user menekan
+    /// "Count rows" (lihat `request_total_row_count`).
     pub fn execute_count_query(&mut self) -> Option<usize> {
-        // For large tables, we don't want to run actual count queries as they can be very slow
-        // or cause timeouts. Instead, we assume a reasonable default size for pagination.
-        // This prevents the server from being overwhelmed by expensive COUNT(*) operations.
+        None
+    }
 
-        debug!("📊 Using default row count assumption for large table pagination");
-        debug!("✅ Assuming table has data with default pagination size of 10,000 rows");
-
-        // Return a reasonable default that enables pagination
-        // This allows users to navigate through pages without expensive count operations
-        Some(10000)
+    /// Hitung total baris query paginasi aktif di latar belakang.
+    pub fn request_total_row_count(&mut self) {
+        let Some(tab) = self.query_tabs.get(self.active_tab_index) else {
+            return;
+        };
+        let (Some(connection_id), tab_id) = (tab.connection_id, tab.id) else {
+            return;
+        };
+        let base_query = tab.base_query.trim().trim_end_matches(';').to_string();
+        if base_query.is_empty() {
+            return;
+        }
+        let count_sql = format!("SELECT COUNT(*) FROM ({}) AS tabular_row_count", base_query);
+        self.run_query_with_callback(connection_id, count_sql, move |tabular, message| {
+            if !message.success {
+                tabular.toasts.error(format!(
+                    "Could not count rows: {}",
+                    message.error.clone().unwrap_or_default()
+                ));
+                return;
+            }
+            let count = message
+                .rows
+                .first()
+                .and_then(|row| row.first())
+                .and_then(|value| value.trim().parse::<usize>().ok());
+            let still_same_query = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .is_some_and(|t| t.id == tab_id && t.base_query.trim().trim_end_matches(';') == base_query);
+            match count {
+                Some(total) if still_same_query => tabular.actual_total_rows = Some(total),
+                Some(_) => {}
+                None => tabular.toasts.error("Could not read the row count returned by the server"),
+            }
+        });
     }
     pub fn initialize_server_pagination(&mut self, base_query: String) {
         debug!(

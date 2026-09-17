@@ -189,7 +189,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if let Some(state) = &mut tabular.backup_state {
         // Poll progress if tracker is active
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap().snapshot();
+            let snap = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -554,7 +554,7 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     if let Some(state) = &mut tabular.restore_state {
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap().snapshot();
+            let snap = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
             ctx.request_repaint_after(std::time::Duration::from_millis(150));

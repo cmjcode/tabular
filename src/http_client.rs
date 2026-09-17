@@ -29,8 +29,13 @@ pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
     );
 
     let path = dir.join(format!("{}.json", connection_id));
-    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(path, json);
+    let result = serde_json::to_string_pretty(&persisted)
+        .map_err(|e| e.to_string())
+        .and_then(|json| {
+            crate::directory::write_file_atomically(&path, json.as_bytes()).map_err(|e| e.to_string())
+        });
+    if let Err(e) = result {
+        log::error!("Failed to save HTTP request state to {}: {}", path.display(), e);
     }
 }
 
@@ -456,7 +461,9 @@ fn render_save_dialog(
             };
             workspaces.push(new_ws);
         }
-        crate::http_collection::save_workspaces(&workspaces);
+        if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+            toasts.error(e);
+        }
         state.workspaces = workspaces;
         state.saved_request_id = Some(new_req.id.clone());
         state.saved_workspace_id = Some(ws_id.clone());
@@ -468,7 +475,7 @@ fn render_save_dialog(
             save_http_state(conn_id, state);
         }
 
-        toasts.success(format!("Request '{}' berhasil disimpan ✓", req_name));
+        toasts.success(format!("Request '{}' saved ✓", req_name));
     }
 
     if close {
@@ -645,7 +652,9 @@ pub fn save_or_update_http_tab(
         }
 
         if updated {
-            crate::http_collection::save_workspaces(&workspaces);
+            if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+                toasts.error(e);
+            }
             state.workspaces = workspaces;
             if let Some(conn_id) = connection_id {
                 save_http_state(conn_id, state);
@@ -655,7 +664,7 @@ pub fn save_or_update_http_tab(
             } else {
                 state.save_dialog_name.trim()
             };
-            toasts.success(format!("Tersimpan '{}' ✓", display_name));
+            toasts.success(format!("Saved '{}' ✓", display_name));
             true
         } else {
             // Request missing from workspaces, fallback to save dialog
@@ -675,7 +684,7 @@ pub fn save_or_update_http_tab(
         }
     } else if let Some(conn_id) = connection_id {
         save_http_state(conn_id, state);
-        toasts.success("HTTP connection state disimpan ✓");
+        toasts.success("HTTP connection state saved ✓");
         true
     } else {
         // Unsaved request: open save dialog so user can name it and choose collection

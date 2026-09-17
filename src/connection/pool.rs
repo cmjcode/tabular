@@ -1321,32 +1321,6 @@ pub(crate) async fn pool_if_connected_or_start(
     None
 }
 
-/// Non-blocking version. Returns None immediately if pool is currently being created.
-pub(crate) async fn try_get_connection_pool(
-    tabular: &mut Tabular,
-    connection_id: i64,
-) -> Option<models::enums::DatabasePool> {
-    cleanup_completed_background_pools(tabular);
-    cleanup_stuck_pending_connections(tabular);
-
-    if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
-        debug!(
-            "✅ Using cached connection pool for connection {}",
-            connection_id
-        );
-        return Some(cached_pool.clone());
-    }
-
-    if tabular.pending_connection_pools.contains(&connection_id) {
-        debug!(
-            "⏳ Connection pool creation in progress for connection {}, skipping for now",
-            connection_id
-        );
-        return None;
-    }
-
-    get_or_create_connection_pool(tabular, connection_id).await
-}
 
 /// Retry-based pool retrieval. Waits between retries if pool is being created.
 #[allow(dead_code)]

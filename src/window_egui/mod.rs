@@ -29,15 +29,16 @@ pub mod style;
 pub mod sync_tick;
 pub mod device_profile;
 
-/// A structure-modifying statement (ADD COLUMN, DROP COLUMN, CREATE INDEX, …)
-/// dispatched through the same background query-job pipeline the "Run"
-/// button uses, so it no longer blocks the UI thread while the database
-/// processes it (e.g. waiting on a metadata lock). `on_success` runs once
-/// the job reports success; on failure `error_prefix` is prepended to the
-/// database error and shown in the error dialog instead.
-pub struct PendingStructureJob {
-    pub error_prefix: String,
-    pub on_success: Box<dyn FnOnce(&mut Tabular)>,
+/// Callback untuk job query yang hasilnya ditangani sendiri oleh pemanggil
+/// (bukan lewat panel hasil tab). Dipanggil tepat sekali, sukses maupun gagal.
+pub type QueryCallback = Box<dyn FnOnce(&mut Tabular, &connection::QueryResultMessage)>;
+
+/// Query ber-callback yang menunggu pool koneksi siap.
+pub struct DeferredCallbackQuery {
+    pub connection_id: i64,
+    pub sql: String,
+    pub callback: QueryCallback,
+    pub queued_at: std::time::Instant,
 }
 
 /// Results from non-blocking background metadata warming tasks for autocomplete
@@ -143,9 +144,11 @@ pub struct Tabular {
     /// the whole batch (cancelling any member cancels the entire batch).
     pub query_job_batches: Vec<(Vec<u64>, tokio::task::AbortHandle)>,
     pub pending_paginated_jobs: std::collections::HashSet<u64>,
-    /// Structure-editor statements (Add/Drop Column, Create/Drop Index, …)
-    /// running via the background job pipeline. See [`PendingStructureJob`].
-    pub pending_structure_jobs: std::collections::HashMap<u64, PendingStructureJob>,
+    /// Job query yang hasilnya diteruskan ke callback pemanggil (structure
+    /// editor, simpan spreadsheet, wizard, drop table, …).
+    pub pending_callback_jobs: std::collections::HashMap<u64, QueryCallback>,
+    /// Query ber-callback yang menunggu pool koneksi dibuat.
+    pub deferred_callback_queries: Vec<DeferredCallbackQuery>,
     pub next_query_job_id: u64,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,

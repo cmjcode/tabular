@@ -143,15 +143,8 @@ fn fingerprint(snapshot: &SessionSnapshot) -> u64 {
     hasher.finish()
 }
 
-/// Tulis file secara atomik: tulis ke file sementara lalu rename, supaya
-/// crash di tengah penulisan tidak merusak sesi sebelumnya.
 fn write_atomically(path: &std::path::Path, json: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(tmp, path)
+    crate::directory::write_file_atomically(path, json.as_bytes())
 }
 
 /// Thread penulis tunggal: menerima JSON terbaru dan hanya menulis versi
