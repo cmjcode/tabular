@@ -285,27 +285,26 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     let mut open_flag = true;
     let screen_rect = ctx.content_rect();
-    // Generous and responsive dimensions: taller to eliminate excessive scrolling,
-    // wider for a balanced two-card or structured layout.
-    let dialog_w = (screen_rect.width() - 40.0).clamp(480.0, 680.0);
-    let dialog_h = (screen_rect.height() - 50.0).clamp(520.0, 780.0);
-
     let is_logged_in = tabular.sync_account.is_some();
 
-    egui::Window::new("👤 Account & Profile")
-        .open(&mut open_flag)
-        .collapsible(false)
-        .resizable(true)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(screen_rect.center())
-        .min_width(480.0)
-        .default_width(dialog_w)
-        .max_width(screen_rect.width() - 24.0)
-        .min_height(520.0)
-        .default_height(dialog_h)
-        .max_height(screen_rect.height() - 32.0)
-        .show(ctx, |ui| {
-            if is_logged_in {
+    if is_logged_in {
+        let dialog_w = (screen_rect.width() - 40.0).clamp(480.0, 680.0);
+        let dialog_h = (screen_rect.height() - 50.0).clamp(480.0, 720.0);
+
+        egui::Window::new("👤 Account & Profile")
+            .id(egui::Id::new("account_profile_dialog"))
+            .open(&mut open_flag)
+            .collapsible(false)
+            .resizable(true)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(screen_rect.center())
+            .min_width(480.0)
+            .default_width(dialog_w)
+            .max_width(screen_rect.width() - 24.0)
+            .min_height(420.0)
+            .default_height(dialog_h)
+            .max_height(screen_rect.height() - 32.0)
+            .show(ctx, |ui| {
                 // Top Tab Bar
                 ui.add_space(2.0);
                 render_account_tab_bar(tabular, ui);
@@ -364,28 +363,89 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         }
                     });
                 });
-            } else {
-                let content_h = (ui.available_height() - 44.0).max(180.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("account_login_dialog_scroll")
-                    .max_height(content_h)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        render_account_login_view(tabular, ui);
-                    });
+            });
+    } else {
+        let login_w = 400.0f32.min(screen_rect.width() - 32.0);
+        let max_scroll_h = (screen_rect.height() - 120.0).max(200.0);
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(6.0);
+        egui::Window::new("account_login_dialog")
+            .id(egui::Id::new("account_login_dialog"))
+            .open(&mut open_flag)
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(screen_rect.center())
+            .min_width(login_w)
+            .max_width(login_w)
+            .default_width(login_w)
+            .max_height(screen_rect.height() - 32.0)
+            .frame(
+                egui::Frame::window(&ctx.global_style())
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 12,
+                        top: 12,
+                        bottom: 16,
+                    })
+                    .shadow(egui::Shadow {
+                        offset: [0, 16],
+                        blur: 48,
+                        spread: 4,
+                        color: egui::Color32::from_black_alpha(200),
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if ctx.global_style().visuals.dark_mode {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+                        },
+                    )),
+            )
+            .show(ctx, |ui| {
+                // Header row: Title on the left, Close (X) button right in the top-right corner
                 ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new("Sign In to Tabular")
+                            .size(17.0)
+                            .strong(),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(style::btn_secondary("Close")).clicked() {
+                        let close_btn = egui::Button::new(
+                            egui_icons::icons::ICON_CLOSE
+                                .rich_text()
+                                .size(16.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(close_btn)
+                            .on_hover_text("Close")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             tabular.show_account_dialog = false;
                         }
                     });
                 });
-            }
-        });
+
+                ui.add_space(8.0);
+
+                egui::ScrollArea::vertical()
+                    .id_salt("account_login_dialog_scroll")
+                    .max_height(max_scroll_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        render_account_login_view(tabular, ui);
+                    });
+            });
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            tabular.show_account_dialog = false;
+        }
+    }
 
     if !open_flag {
         tabular.show_account_dialog = false;
@@ -1005,64 +1065,116 @@ fn do_delete_account(tabular: &mut Tabular) {
     tabular.delete_account_receiver = Some(rx);
 }
 
+/// Helper to render an OAuth provider tile button with icon on top and small label underneath.
+fn render_oauth_tile(
+    ui: &mut egui::Ui,
+    icon: egui_icons::MaterialIcon,
+    label: &str,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let accent = style::theme_accent(ui.ctx());
+        let is_hovered = response.hovered();
+        let is_pressed = response.is_pointer_button_down_on();
+
+        let bg_fill = if is_pressed {
+            accent.gamma_multiply(0.8)
+        } else if is_hovered {
+            accent.gamma_multiply(0.9)
+        } else {
+            accent
+        };
+
+        ui.painter().rect_filled(rect, 6.0, bg_fill);
+
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        child_ui.vertical_centered(|ui| {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(
+                icon.rich_text()
+                    .size(20.0)
+                    .color(egui::Color32::WHITE),
+            ));
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(
+                egui::RichText::new(label)
+                    .size(10.0)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            ));
+        });
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Render logged-out login / create account view.
 fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.vertical(|ui| {
-        ui.add_space(6.0);
-        ui.heading("👤 Sign In to Tabular");
-        ui.add_space(4.0);
-        ui.label("Connect your account to sync connections, queries, and collaborate in real-time.");
-        ui.small("💡 Note: An account is completely optional. Tabular is offline-first and fully functional without login.");
-        ui.add_space(12.0);
-
-        // Server URL input
-        ui.label(egui::RichText::new("Server URL:").strong());
-        let server_url = &mut tabular.sync_server_url;
-        let url_resp = ui.add(
-            egui::TextEdit::singleline(server_url)
-                .hint_text("https://api.tabular.id")
-                .desired_width(f32::INFINITY),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("Connect your account to sync connections, queries, and collaborate in real-time.")
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
         );
-        if url_resp.lost_focus() || url_resp.changed() {
-            tabular.prefs_dirty = true;
-        }
-        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 193, 7),
-                "⚠ Use https:// — plain http:// is only accepted for localhost",
-            );
-        }
-        ui.add_space(12.0);
+        ui.add_space(3.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("💡 Note: An account is completely optional. Tabular is offline-first and fully functional without login.")
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
+        );
+        ui.add_space(14.0);
 
-        // Sign in with Apple sits above the others: Guideline 4.8 wants it at
-        // least as prominent as the third-party options it stands in for.
-        let apple_btn = style::btn_primary_ctx(ui.ctx(), "  Sign in with Apple  ")
-            .min_size(egui::vec2(328.0, 36.0));
-        if ui.add(apple_btn).clicked() {
-            start_oauth(tabular, OAuthProvider::Apple);
+        // Ensure default sync server url is set even when input is hidden
+        if tabular.sync_server_url.trim().is_empty() {
+            tabular.sync_server_url = "https://api.tabular.id".to_string();
         }
 
-        ui.add_space(8.0);
+        // OAuth buttons: Apple, Google, GitHub side-by-side in one row with increased height and label
+        let total_spacing = 8.0 * 2.0;
+        let btn_w = ((ui.available_width() - total_spacing) / 3.0).max(60.0);
+        let btn_size = egui::vec2(btn_w, 54.0);
 
-        // OAuth buttons
         ui.horizontal(|ui| {
-            let google_btn = style::btn_primary_ctx(
-                ui.ctx(),
-                "  Sign in with Google  "
-            ).min_size(egui::vec2(160.0, 36.0));
+            // 1. Apple
+            let apple_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_APPLE,
+                "Sign with Apple",
+                btn_size,
+            );
+            if apple_resp.on_hover_text("Sign in with Apple").clicked() {
+                start_oauth(tabular, OAuthProvider::Apple);
+            }
 
-            if ui.add(google_btn).clicked() {
+            ui.add_space(8.0);
+
+            // 2. Google
+            let google_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_GOOGLE,
+                "Sign with Google",
+                btn_size,
+            );
+            if google_resp.on_hover_text("Sign in with Google").clicked() {
                 start_oauth(tabular, OAuthProvider::Google);
             }
 
             ui.add_space(8.0);
 
-            let github_btn = style::btn_primary_ctx(
-                ui.ctx(),
-                "  Sign in with GitHub  "
-            ).min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add(github_btn).clicked() {
+            // 3. GitHub
+            let github_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_GITHUB,
+                "Sign with GitHub",
+                btn_size,
+            );
+            if github_resp.on_hover_text("Sign in with GitHub").clicked() {
                 start_oauth(tabular, OAuthProvider::GitHub);
             }
         });
@@ -1116,8 +1228,14 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
         }
 
         ui.add_space(10.0);
-        ui.separator();
-        ui.small("Your connection credentials remain encrypted locally before being sent to the server.");
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("🔒 Your connection credentials remain encrypted locally before being sent to the server.")
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
+        );
     });
 }
 
@@ -1139,8 +1257,7 @@ fn is_server_url_acceptable(url: &str) -> bool {
 
 fn start_oauth(tabular: &mut Tabular, provider: OAuthProvider) {
     if tabular.sync_server_url.trim().is_empty() {
-        tabular.sync_login_error = Some("Please enter a server URL first".to_string());
-        return;
+        tabular.sync_server_url = "https://api.tabular.id".to_string();
     }
     if !is_server_url_acceptable(&tabular.sync_server_url) {
         tabular.sync_login_error = Some(

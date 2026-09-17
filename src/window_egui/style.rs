@@ -186,6 +186,18 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme, metrics: &DeviceUiMetri
             egui::FontId::new(metrics.font_heading_size, egui::FontFamily::Proportional),
         );
     });
+
+    // Synchronize OS-level window titlebar and frame theme with application theme
+    let sys_theme = match theme {
+        AppTheme::Dark => egui::SystemTheme::Dark,
+        AppTheme::Light | AppTheme::LightSoft => egui::SystemTheme::Light,
+    };
+    let theme_id = egui::Id::new("tabular_applied_viewport_theme");
+    let prev_theme = ctx.data(|d| d.get_temp::<egui::SystemTheme>(theme_id));
+    if prev_theme != Some(sys_theme) {
+        ctx.data_mut(|d| d.insert_temp(theme_id, sys_theme));
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(sys_theme));
+    }
 }
 
 pub fn theme_accent(_ctx: &egui::Context) -> egui::Color32 {
@@ -560,9 +572,15 @@ pub fn animate_modal_progress(ctx: &egui::Context, id_source: &str, open: bool, 
 pub fn render_modal_backdrop(ctx: &egui::Context, id_source: &str, open: bool) -> f32 {
     let progress = animate_modal_progress(ctx, id_source, open, 0.18);
     if progress > 0.01 {
-        let max_alpha = if ctx.global_style().visuals.dark_mode { 160 } else { 90 };
+        let is_dark = ctx.global_style().visuals.dark_mode;
+        let max_alpha = if is_dark { 200 } else { 130 };
         let alpha = (max_alpha as f32 * progress) as u8;
         let screen_rect = ctx.content_rect();
+        let fill_color = if is_dark {
+            egui::Color32::from_rgba_unmultiplied(10, 12, 18, alpha)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(15, 23, 42, alpha)
+        };
         
         egui::Area::new(egui::Id::new(format!("{}_backdrop_area", id_source)))
             .order(egui::Order::Middle)
@@ -571,7 +589,7 @@ pub fn render_modal_backdrop(ctx: &egui::Context, id_source: &str, open: bool) -
                 ui.painter().rect_filled(
                     screen_rect,
                     0.0,
-                    egui::Color32::from_black_alpha(alpha),
+                    fill_color,
                 );
             });
     }

@@ -212,6 +212,8 @@ impl super::Tabular {
 
         let has_account = loaded_account.is_some();
 
+        let fast_prefs = crate::config::load_fast_preferences();
+
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
@@ -320,10 +322,10 @@ impl super::Tabular {
             quick_open_state: crate::quick_open::QuickOpenState::default(),
             theme_selector_selected_index: 0,
             request_theme_selector: false,
-            // App UI theme (default dark)
-            app_theme: crate::config::AppTheme::Dark,
-            ui_mode: crate::config::UiModePreference::Auto,
-            link_editor_theme: true,
+            // App UI theme (loaded from saved preferences, default dark if none)
+            app_theme: fast_prefs.theme,
+            ui_mode: fast_prefs.ui_mode,
+            link_editor_theme: fast_prefs.link_editor_theme,
             show_settings_window: false,
             // Database search functionality
             database_search_text: String::new(),

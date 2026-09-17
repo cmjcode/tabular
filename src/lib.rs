@@ -185,12 +185,19 @@ pub fn run() -> Result<(), eframe::Error> {
     }
     log_startup_step("starting eframe::run_native");
 
+    let fast_prefs = config::load_fast_preferences();
+    let initial_sys_theme = match fast_prefs.theme {
+        config::AppTheme::Dark => egui::SystemTheme::Dark,
+        config::AppTheme::Light | config::AppTheme::LightSoft => egui::SystemTheme::Light,
+    };
+
     eframe::run_native(
         "Tabular",
         options,
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
             egui_icons::initialize(&cc.egui_ctx);
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
             Ok(Box::new(app))
