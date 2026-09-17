@@ -4321,7 +4321,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // TRIGGER: only when user just pressed Enter (completing the closing --)
         if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty()
             && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
-                let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
+                let schema_context = crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
                 let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
 
                 // Insert a loading placeholder at the current cursor position (new empty line after --)
@@ -4879,7 +4879,10 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                         }
                     };
 
-                    let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
+                    // Prompt + SQL aktif dipakai untuk memilih tabel yang relevan.
+                    let retrieval_query = format!("{} {context_sql}", tabular.ai_input);
+                    let schema_context =
+                        crate::ai_assistant::build_schema_context_for_prompt(tabular, &retrieval_query, 30);
                     let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
                     let user = if context_sql.is_empty() {
                         tabular.ai_input.clone()

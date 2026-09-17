@@ -35,6 +35,10 @@ sqlx = { version = "0.9", features = [
 # NOTE: capped at 0.37 — sqlx-sqlite 0.9 requires libsqlite3-sys <0.38 and the
 # `links = "sqlite3"` constraint allows only one version in the tree.
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+# Vector search (vec_distance_cosine, dll.) untuk retrieval skema AI & history.
+# Dikompilasi dengan SQLITE_CORE, jadi memakai SQLite bundled di atas — tanpa
+# library SQLite kedua; jalan di desktop, iOS, dan Android.
+sqlite-vec = "0.1.9"
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
 redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }

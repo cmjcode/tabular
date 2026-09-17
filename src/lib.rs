@@ -50,6 +50,7 @@ pub mod query_tools;
 pub mod quick_open;
 pub mod redis_browser;
 pub mod safety_guard;
+pub mod search_match;
 pub mod secrets;
 pub mod sample_data;
 pub mod self_update;
@@ -63,6 +64,7 @@ pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
 pub mod user_manager;
+pub mod vector_index;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
 pub mod query_ast;
@@ -159,6 +161,8 @@ pub fn log_startup_step(step: &str) {
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
     log_startup_step("run() entrypoint started");
+    // Harus sebelum pool SQLite pertama dibuka agar vec_* tersedia di semua koneksi.
+    vector_index::register_sqlite_vec();
     dotenvy::dotenv().ok();
     log_startup_step("dotenv loaded");
     config::init_data_dir();

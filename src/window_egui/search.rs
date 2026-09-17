@@ -44,9 +44,8 @@ impl super::Tabular {
         node: &models::structs::TreeNode,
         search_text: &str,
     ) -> Option<models::structs::TreeNode> {
-        // Case-insensitive LIKE search
-        let search_lower = search_text.to_lowercase();
-        let self_matches = node.name.to_lowercase().contains(&search_lower);
+        // Substring (case-insensitive) atau kemiripan isi — lihat search_match.
+        let self_matches = crate::search_match::SearchQuery::new(search_text).matches(&node.name);
 
         // If this node is a folder and matches the search text, preserve all of its contents (children)
         // and recursively expand all nested subfolders.
@@ -207,61 +206,47 @@ impl super::Tabular {
         &mut self,
         connection_id: i64,
         search_text: &str,
-        db_type: &models::enums::DatabaseType,
+        _db_type: &models::enums::DatabaseType,
     ) {
         // Search through cached table data and column data
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
-            let search_pattern = format!("*{}*", search_text); // Using GLOB pattern for case-sensitive search
             let rt = self.get_runtime();
+            let query = crate::search_match::SearchQuery::new(search_text);
 
-            // Search tables
-            let table_search_results = rt.block_on(async {
-                let query = match db_type {
-                    models::enums::DatabaseType::SQLite => {
-                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name GLOB ? ORDER BY table_name"
-                    }
-                    _ => {
-                        "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? AND table_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
-                    }
-                };
-
-                let search_param = match db_type {
-                    models::enums::DatabaseType::SQLite => &search_pattern,
-                    _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
-                };
-
-                sqlx::query_as::<_, (String, String, String)>(query)
-                    .bind(connection_id)
-                    .bind(search_param)
-                    .fetch_all(pool_clone.as_ref())
-                    .await
-                    .unwrap_or_default()
+            // Ambil semua nama dari cache lalu cocokkan di memori (substring atau
+            // kemiripan isi), diurutkan dari skor tertinggi.
+            let (all_tables, all_columns) = rt.block_on(async {
+                let tables = sqlx::query_as::<_, (String, String, String)>(
+                    "SELECT table_name, database_name, table_type FROM table_cache WHERE connection_id = ? ORDER BY database_name, table_name",
+                )
+                .bind(connection_id)
+                .fetch_all(pool_clone.as_ref())
+                .await
+                .unwrap_or_default();
+                let columns = sqlx::query_as::<_, (String, String, String, String)>(
+                    "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? ORDER BY database_name, table_name",
+                )
+                .bind(connection_id)
+                .fetch_all(pool_clone.as_ref())
+                .await
+                .unwrap_or_default();
+                (tables, columns)
             });
 
-            // Search columns
-            let column_search_results = rt.block_on(async {
-                let query = match db_type {
-                    models::enums::DatabaseType::SQLite => {
-                        "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? AND column_name GLOB ? ORDER BY table_name"
-                    }
-                    _ => {
-                        "SELECT DISTINCT table_name, database_name, column_name, data_type FROM column_cache WHERE connection_id = ? AND column_name LIKE ? COLLATE BINARY ORDER BY database_name, table_name"
-                    }
-                };
+            let mut table_search_results: Vec<(f32, (String, String, String))> = all_tables
+                .into_iter()
+                .filter_map(|row| query.score(&row.0).map(|score| (score, row)))
+                .collect();
+            table_search_results.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let table_search_results = table_search_results.into_iter().map(|(_, row)| row);
 
-                let search_param = match db_type {
-                    models::enums::DatabaseType::SQLite => &search_pattern,
-                    _ => &format!("%{}%", search_text), // For non-SQLite, use LIKE with COLLATE BINARY for case sensitivity
-                };
-
-                sqlx::query_as::<_, (String, String, String, String)>(query)
-                    .bind(connection_id)
-                    .bind(search_param)
-                    .fetch_all(pool_clone.as_ref())
-                    .await
-                    .unwrap_or_default()
-            });
+            let mut column_search_results: Vec<(f32, (String, String, String, String))> = all_columns
+                .into_iter()
+                .filter_map(|row| query.score(&row.2).map(|score| (score, row)))
+                .collect();
+            column_search_results.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let column_search_results = column_search_results.into_iter().map(|(_, row)| row);
 
             // Group table results by database
             let mut table_results_by_db: std::collections::HashMap<String, Vec<String>> =

@@ -7,6 +7,17 @@ use crate::config::AiProvider;
 /// Returns an empty string if cache is empty or no connection is active.
 /// Caps at `max_tables` tables to avoid bloating the prompt.
 pub fn build_schema_context(tabular: &crate::window_egui::Tabular, max_tables: usize) -> String {
+    build_schema_context_for_prompt(tabular, "", max_tables)
+}
+
+/// Sama seperti [`build_schema_context`], tetapi bila jumlah tabel melebihi
+/// `max_tables`, tabel dipilih berdasarkan kemiripan dengan `prompt` lewat
+/// indeks vektor lokal (bukan sekadar urutan abjad).
+pub fn build_schema_context_for_prompt(
+    tabular: &crate::window_egui::Tabular,
+    prompt: &str,
+    max_tables: usize,
+) -> String {
     let conn_id = match tabular.current_connection_id {
         Some(id) => id,
         None => return String::new(),
@@ -23,12 +34,50 @@ pub fn build_schema_context(tabular: &crate::window_egui::Tabular, max_tables: u
         // Try to pick first available database from in-memory cache
         if let Some(dbs) = tabular.database_cache.get(&conn_id)
             && let Some(first_db) = dbs.first() {
-                return build_schema_for_db(tabular, conn_id, first_db, max_tables);
+                return build_schema_for_db(tabular, conn_id, first_db, max_tables, prompt);
         }
         return String::new();
     }
 
-    build_schema_for_db(tabular, conn_id, &db_name, max_tables)
+    build_schema_for_db(tabular, conn_id, &db_name, max_tables, prompt)
+}
+
+/// Urutkan tabel dari yang paling relevan dengan `prompt`. Jika indeks vektor
+/// tidak tersedia atau gagal, urutan asli dipertahankan. Nilai kedua `true`
+/// bila urutan berasal dari ranking relevansi.
+fn order_tables_by_relevance(
+    tabular: &crate::window_egui::Tabular,
+    conn_id: i64,
+    db_name: &str,
+    tables: Vec<String>,
+    prompt: &str,
+) -> (Vec<String>, bool) {
+    let (Some(pool), Some(rt)) = (tabular.db_pool.clone(), tabular.runtime.clone()) else {
+        return (tables, false);
+    };
+    let ranked = rt.block_on(async {
+        crate::vector_index::sync_schema_embeddings(&pool, conn_id, db_name).await?;
+        crate::vector_index::rank_tables(&pool, conn_id, db_name, prompt, tables.len()).await
+    });
+
+    match ranked {
+        Ok(ranked) if !ranked.is_empty() => {
+            let known: std::collections::HashSet<&str> = tables.iter().map(String::as_str).collect();
+            let mut ordered: Vec<String> = ranked
+                .into_iter()
+                .map(|(table, _)| table)
+                .filter(|t| known.contains(t.as_str()))
+                .collect();
+            let picked: std::collections::HashSet<String> = ordered.iter().cloned().collect();
+            ordered.extend(tables.into_iter().filter(|t| !picked.contains(t)));
+            (ordered, true)
+        }
+        Ok(_) => (tables, false),
+        Err(e) => {
+            log::warn!("Schema relevance ranking failed, using default order: {e}");
+            (tables, false)
+        }
+    }
 }
 
 fn build_schema_for_db(
@@ -36,11 +85,19 @@ fn build_schema_for_db(
     conn_id: i64,
     db_name: &str,
     max_tables: usize,
+    prompt: &str,
 ) -> String {
     // Fetch tables from cache
     let tables = match crate::cache_data::get_tables_from_cache(tabular, conn_id, db_name, "table") {
         Some(t) if !t.is_empty() => t,
         _ => return String::new(),
+    };
+
+    // Ranking hanya diperlukan bila tidak semua tabel muat di prompt.
+    let (tables, ranked) = if tables.len() > max_tables && !prompt.trim().is_empty() {
+        order_tables_by_relevance(tabular, conn_id, db_name, tables, prompt)
+    } else {
+        (tables, false)
     };
 
     let mut out = format!("-- Database: {db_name}\n");
@@ -66,8 +123,13 @@ fn build_schema_for_db(
 
     if tables.len() > max_tables {
         out.push_str(&format!(
-            "-- ... and {} more tables (showing first {max_tables})\n",
-            tables.len() - max_tables
+            "-- ... and {} more tables (showing {})\n",
+            tables.len() - max_tables,
+            if ranked {
+                format!("the {max_tables} most relevant to the request")
+            } else {
+                format!("first {max_tables}")
+            }
         ));
     }
 

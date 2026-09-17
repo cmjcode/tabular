@@ -1685,7 +1685,7 @@ fn render_users_and_roles_tab(
     db_type: Option<&DatabaseType>,
     out_action: &mut Option<UserManagerAction>,
 ) {
-    let filter_text = state.search_text.to_lowercase();
+    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
 
     ui.columns(2, |cols| {
         cols[0].group(|ui| {
@@ -1718,10 +1718,7 @@ fn render_users_and_roles_tab(
                     }
 
                     for (idx, user) in state.users.iter().enumerate() {
-                        if !filter_text.is_empty()
-                            && !user.username.to_lowercase().contains(&filter_text)
-                            && !user.host.to_lowercase().contains(&filter_text)
-                        {
+                        if !filter_text.matches_any([user.username.as_str(), user.host.as_str()]) {
                             continue;
                         }
 
@@ -1784,7 +1781,7 @@ fn render_users_and_roles_tab(
                         ui.separator();
 
                         for role in &state.roles {
-                            if !filter_text.is_empty() && !role.role_name.to_lowercase().contains(&filter_text) {
+                            if !filter_text.matches(&role.role_name) {
                                 continue;
                             }
                             ui.horizontal(|ui| {
@@ -2174,7 +2171,7 @@ fn render_object_grants_matrix_tab(
     out_action: &mut Option<UserManagerAction>,
 ) {
     let active_db_type = db_type.cloned().unwrap_or(DatabaseType::PostgreSQL);
-    let filter_text = state.search_text.to_lowercase();
+    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Target Grantee:").strong());
@@ -2320,10 +2317,7 @@ fn render_object_grants_matrix_tab(
                     ui.end_row();
 
                     for entry in &mut state.object_grants {
-                        if !filter_text.is_empty()
-                            && !entry.object_name.to_lowercase().contains(&filter_text)
-                            && !entry.schema.to_lowercase().contains(&filter_text)
-                        {
+                        if !filter_text.matches_any([entry.object_name.as_str(), entry.schema.as_str()]) {
                             continue;
                         }
 

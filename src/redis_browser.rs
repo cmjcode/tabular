@@ -50,19 +50,28 @@ fn elide_middle(text: &str, max_chars: usize) -> String {
 }
 
 fn filtered_key_indices(state: &RedisBrowserState) -> Vec<usize> {
-    let needle = state.filter_text.trim().to_ascii_lowercase();
+    let query = crate::search_match::SearchQuery::new(&state.filter_text);
     state
         .keys
         .iter()
         .enumerate()
         .filter(|(_, entry)| {
             state.type_filter.matches_type(&entry.key_type)
-                && (needle.is_empty()
-                    || entry.key_name.to_ascii_lowercase().contains(&needle)
-                    || entry.key_type.to_ascii_lowercase().contains(&needle))
+                && query.matches_any([entry.key_name.as_str(), entry.key_type.as_str()])
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Apakah ada key lokal yang mengandung filter secara persis. Dipakai untuk
+/// memutuskan pencarian ke server (SCAN MATCH), yang hanya mengenal pola.
+fn has_exact_local_match(state: &RedisBrowserState) -> bool {
+    let needle = state.filter_text.trim().to_ascii_lowercase();
+    state.keys.iter().any(|entry| {
+        state.type_filter.matches_type(&entry.key_type)
+            && (entry.key_name.to_ascii_lowercase().contains(&needle)
+                || entry.key_type.to_ascii_lowercase().contains(&needle))
+    })
 }
 
 fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
@@ -145,7 +154,7 @@ pub fn render_redis_browser(
     if trimmed_filter.is_empty() {
         state.last_remote_search = None;
         state.remote_search_in_progress = false;
-    } else if filtered.is_empty()
+    } else if !has_exact_local_match(state)
         && !state.remote_search_in_progress
         && state.last_remote_search.as_deref() != Some(trimmed_filter.as_str())
     {

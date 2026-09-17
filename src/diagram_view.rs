@@ -698,23 +698,27 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                  }
                  
                  if response.changed() {
-                     let query = state.search_query.to_lowercase();
+                     let query = crate::search_match::SearchQuery::new(&state.search_query);
                      if !query.is_empty() {
-                         // Find match
-                         let mut target_pan = None;
+                         // Pilih node dengan skor tertinggi (nama tabel atau kolom);
+                         // bila seri, node pertama yang menang.
+                         let mut best: Option<(f32, &_)> = None;
                          for node in &state.nodes {
-                             let node_match = node.title.to_lowercase().contains(&query);
-                             let col_match = node.columns.iter().any(|c| c.to_lowercase().contains(&query));
-                             
-                             if node_match || col_match {
-                                  // Found!                                  
-                                  let node_center = node.pos + node.size / 2.0;
-                                  let view_center = rect.size() / 2.0;
-                                  let new_pan = view_center - node_center.to_vec2() * state.zoom;
-                                  target_pan = Some(new_pan);
-                                  break; // Jump to first match
+                             let score = query.best_score(
+                                 std::iter::once(node.title.as_str())
+                                     .chain(node.columns.iter().map(String::as_str)),
+                             );
+                             if let Some(score) = score
+                                 && best.is_none_or(|(best_score, _)| score > best_score)
+                             {
+                                 best = Some((score, node));
                              }
                          }
+                         let target_pan = best.map(|(_, node)| {
+                             let node_center = node.pos + node.size / 2.0;
+                             let view_center = rect.size() / 2.0;
+                             view_center - node_center.to_vec2() * state.zoom
+                         });
                          
                          if let Some(pan) = target_pan {
                              state.pan = pan;

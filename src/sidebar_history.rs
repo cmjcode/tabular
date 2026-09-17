@@ -277,14 +277,14 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
     }
 
     tabular.filtered_history_tree.clear();
-    let search_lower = search_text.to_lowercase();
+    let query = crate::search_match::SearchQuery::new(search_text);
 
     for date_node in &tabular.history_tree {
         let mut filtered_date_node = date_node.clone();
         filtered_date_node.children.clear();
 
         // If the date folder itself matches the search text, keep all items in this folder
-        let folder_matches = date_node.name.to_lowercase().contains(&search_lower);
+        let folder_matches = query.matches(&date_node.name);
 
         if folder_matches {
             filtered_date_node.children = date_node.children.clone();
@@ -293,7 +293,6 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
         } else {
             for item_node in &date_node.children {
                 // Search in query text and connection name
-                let query_text = item_node.name.to_lowercase();
                 let connection_name = item_node
                     .connection_id
                     .and_then(|id| {
@@ -301,11 +300,11 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
                             .connections
                             .iter()
                             .find(|c| c.id == Some(id))
-                            .map(|c| c.name.to_lowercase())
+                            .map(|c| c.name.clone())
                     })
                     .unwrap_or_default();
 
-                if query_text.contains(&search_lower) || connection_name.contains(&search_lower) {
+                if query.matches_any([item_node.name.as_str(), connection_name.as_str()]) {
                     filtered_date_node.children.push(item_node.clone());
                 }
             }

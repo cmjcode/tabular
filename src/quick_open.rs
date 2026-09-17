@@ -209,6 +209,7 @@ impl QuickOpenState {
         let (filter_kind, clean_query) = parse_query_prefix(raw_query);
         let effective_category = filter_kind.or(self.active_category);
         let clean_lower = clean_query.to_lowercase();
+        let semantic = crate::search_match::SearchQuery::new(clean_query);
 
         let mut scored: Vec<(usize, i32)> = Vec::with_capacity(self.items.len().min(1024));
 
@@ -237,6 +238,8 @@ impl QuickOpenState {
                 scored.push((idx, base_score));
             } else if let Some(score) = score_fuzzy_match_fast(&clean_lower, item) {
                 scored.push((idx, score));
+            } else if let Some(similarity) = item_similarity(&semantic, item) {
+                scored.push((idx, semantic_score(similarity)));
             }
         }
 
@@ -254,6 +257,23 @@ impl QuickOpenState {
             self.selected_index = 0;
         }
     }
+}
+
+/// Similarity terbaik item terhadap query (judul, nama tabel, atau isi SQL),
+/// hanya bila melewati ambang [`crate::search_match::MIN_SIMILARITY`].
+fn item_similarity(query: &crate::search_match::SearchQuery, item: &QuickOpenItem) -> Option<f32> {
+    [Some(item.title.as_str()), item.table_name.as_deref(), item.sql_content.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|text| query.similarity(text))
+        .filter(|s| *s >= crate::search_match::MIN_SIMILARITY)
+        .reduce(f32::max)
+}
+
+/// Skor Quick Open untuk hasil kemiripan: 100..=300, sengaja di bawah semua
+/// skor kecocokan teks literal (>= 800) agar hasil persis tetap di atas.
+fn semantic_score(similarity: f32) -> i32 {
+    100 + (similarity.clamp(0.0, 1.0) * 200.0) as i32
 }
 
 /// Parse search prefix shortcuts from input query
@@ -864,6 +884,8 @@ pub fn open_quick_open(tabular: &mut Tabular) {
     if tabular.quick_open_state.items.is_empty() {
         let items = load_all_quick_open_items(tabular);
         tabular.quick_open_state.items = items;
+        // Indeks tabel cukup diperbarui saat daftar item dimuat ulang.
+        sync_schema_index(tabular);
     }
     tabular.quick_open_state.is_open = true;
     tabular.quick_open_state.query.clear();
@@ -873,6 +895,117 @@ pub fn open_quick_open(tabular: &mut Tabular) {
     tabular.quick_open_state.scroll_to_selected = true;
     tabular.quick_open_state.refilter();
     tabular.show_command_palette = false;
+    sync_history_index(tabular);
+}
+
+/// Perbarui embedding tabel (nama + kolom) untuk semua database di cache.
+fn sync_schema_index(tabular: &mut Tabular) {
+    let Some(pool) = tabular.db_pool.clone() else {
+        return;
+    };
+    let rt = tabular.get_runtime();
+    if let Err(e) = rt.block_on(crate::vector_index::sync_all_schema_embeddings(&pool)) {
+        log::debug!("Schema vector index sync failed: {e}");
+    }
+}
+
+/// Perbarui embedding history (hanya baris yang berubah) agar pencarian
+/// semantik memakai data terbaru.
+fn sync_history_index(tabular: &mut Tabular) {
+    let Some(pool) = tabular.db_pool.clone() else {
+        return;
+    };
+    let rt = tabular.get_runtime();
+    if let Err(e) = rt.block_on(crate::vector_index::sync_history_embeddings(&pool)) {
+        log::debug!("History vector index sync failed: {e}");
+    }
+}
+
+/// Tambahkan history yang isinya mirip dengan query (via indeks vektor) ke
+/// hasil filter, termasuk yang tidak cocok secara fuzzy. Skornya sengaja di
+/// bawah kecocokan teks literal agar hasil persis tetap di atas.
+fn apply_semantic_history(tabular: &mut Tabular) {
+    let raw_query = tabular.quick_open_state.query.clone();
+    let (filter_kind, clean_query) = parse_query_prefix(raw_query.trim());
+    let category = filter_kind.or(tabular.quick_open_state.active_category);
+    if clean_query.chars().count() < 3 {
+        return;
+    }
+    let Some(pool) = tabular.db_pool.clone() else {
+        return;
+    };
+    let want_history = matches!(category, None | Some(QuickOpenKind::History));
+    let want_tables = matches!(category, None | Some(QuickOpenKind::Table));
+
+    let rt = tabular.get_runtime();
+    let (history_hits, table_hits) = rt.block_on(async {
+        let history = if want_history {
+            crate::vector_index::search_history(&pool, clean_query, 10, crate::vector_index::HISTORY_MAX_DISTANCE)
+                .await
+        } else {
+            Ok(Vec::new())
+        };
+        let tables = if want_tables {
+            crate::vector_index::search_tables(&pool, clean_query, 20, crate::vector_index::TABLE_MAX_DISTANCE)
+                .await
+        } else {
+            Ok(Vec::new())
+        };
+        (history, tables)
+    });
+    let history_hits = history_hits.unwrap_or_else(|e| {
+        log::debug!("Semantic history search failed: {e}");
+        Vec::new()
+    });
+    let table_hits = table_hits.unwrap_or_else(|e| {
+        log::debug!("Semantic table search failed: {e}");
+        Vec::new()
+    });
+
+    let state = &mut tabular.quick_open_state;
+    let mut matched: Vec<(usize, i32)> = Vec::new();
+    for (sql, distance) in history_hits {
+        if let Some(idx) = state
+            .items
+            .iter()
+            .position(|it| it.kind == QuickOpenKind::History && it.sql_content.as_deref() == Some(sql.as_str()))
+        {
+            matched.push((idx, semantic_score(1.0 - distance)));
+        }
+    }
+    for (conn_id, db_name, table, distance) in table_hits {
+        if let Some(idx) = state.items.iter().position(|it| {
+            it.kind == QuickOpenKind::Table
+                && it.connection_id == Some(conn_id)
+                && it.database_name.as_deref() == Some(db_name.as_str())
+                && it.table_name.as_deref() == Some(table.as_str())
+        }) {
+            matched.push((idx, semantic_score(1.0 - distance)));
+        }
+    }
+
+    let mut changed = false;
+    for (idx, semantic_score) in matched {
+        match state.filtered_items.iter_mut().find(|(i, _)| *i == idx) {
+            Some(entry) if entry.1 < semantic_score => {
+                entry.1 = semantic_score;
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                state.filtered_items.push((idx, semantic_score));
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        let items = &state.items;
+        state.filtered_items.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| items[a.0].title.len().cmp(&items[b.0].title.len()))
+        });
+    }
 }
 
 /// Helper function to navigate Quick Open modal
@@ -974,6 +1107,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
 
                                     if resp.changed() {
                                         tabular.quick_open_state.refilter();
+                                        apply_semantic_history(tabular);
                                         tabular.quick_open_state.selected_index = 0;
                                         tabular.quick_open_state.scroll_to_selected = true;
                                     }
