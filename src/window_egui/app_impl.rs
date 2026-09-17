@@ -5836,6 +5836,10 @@ impl App for Tabular {
         }
     } // end update
 
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.window_fill.to_normalized_gamma_f32()
+    }
+
     fn on_exit(&mut self) {
         // Simpan sesi terakhir (jaring pengaman jika close_requested terlewat,
         // misalnya saat OS mematikan aplikasi).
