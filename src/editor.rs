@@ -1187,30 +1187,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let editor_id = ui.make_persistent_id("sql_editor");
 
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
-    let mut trigger_format_sql = false;
-    ui.input(|i| {
-        // Accept platform command (command on macOS, control elsewhere)
-        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::F)
-        {
-            trigger_format_sql = true;
-        }
-    });
+    let trigger_format_sql = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FormatSql);
     if trigger_format_sql {
-        // Consume the key event so TextEdit doesn't see it
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::F,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         reformat_current_sql(tabular, ui);
         request_scroll_to_cursor = true;
         // Early repaint for snappy UX
@@ -1218,29 +1196,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     
     // Shortcut: Toggle Comment (Cmd/Ctrl + /)
-    let mut trigger_toggle_comment = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
-            && !i.modifiers.shift
-            && i.key_pressed(egui::Key::Slash)
-        {
-            trigger_toggle_comment = true;
-        }
-    });
+    let trigger_toggle_comment = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ToggleComment);
     if trigger_toggle_comment {
-        // Consume the key event so TextEdit doesn't see it
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Slash,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         toggle_line_comment(tabular);
         request_scroll_to_cursor = true;
         // Early repaint for snappy UX
@@ -1248,28 +1205,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Toggle AI Panel (Cmd/Ctrl + Shift + A)
-    let mut trigger_toggle_ai = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::A)
-        {
-            trigger_toggle_ai = true;
-        }
-    });
+    let trigger_toggle_ai = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ToggleAiPanel);
     if trigger_toggle_ai {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         tabular.show_ai_panel = !tabular.show_ai_panel;
         if tabular.show_ai_panel && tabular.ai_input.is_empty() {
             // Pre-fill the AI prompt with selected text or the whole editor content (capped)
@@ -1290,28 +1227,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Explain Query (Cmd/Ctrl + Shift + E)
-    let mut trigger_explain_query = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::E)
-        {
-            trigger_explain_query = true;
-        }
-    });
+    let trigger_explain_query = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ExplainQuery);
     if trigger_explain_query {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::E,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         let id = egui::Id::new("sql_editor");
         let mut direct_selected = String::new();
         if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
@@ -1361,26 +1278,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Find (Cmd/Ctrl + F)
-    let mut trigger_find = false;
-    ui.input(|i| {
-        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
-        if cmd_or_ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::F) {
-            trigger_find = true;
-        }
-    });
+    let trigger_find = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FindReplace);
     if trigger_find {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::F,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         tabular.advanced_editor.show_find_replace = true;
         tabular.advanced_editor.focus_find_input = true;
         if tabular.selection_start < tabular.selection_end
@@ -6464,6 +6363,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         "Preferences: Settings" => {
             tabular.show_settings_window = true;
         }
+        "Help: Keyboard Shortcuts" => {
+            tabular.show_shortcuts_window = true;
+        }
         _ => {
             debug!("Unknown command: {}", key);
         }
@@ -7322,9 +7224,7 @@ fn execute_statements_in_session(
         .get(tabular.active_tab_index)
         .and_then(|t| t.session.clone())
     else {
-        tabular.error_message =
-            "Cannot start a session connection for manual-commit mode".to_string();
-        tabular.show_error_message = true;
+        tabular.toasts.error("Cannot start a session connection for manual-commit mode".to_string());
         tabular.query_execution_in_progress = false;
         return;
     };
@@ -7352,9 +7252,7 @@ fn execute_statements_in_session(
             sql: stmt,
         }) {
             tabular.active_query_jobs.remove(&job_id);
-            tabular.error_message =
-                "Session connection is gone; toggle manual commit off and on again".to_string();
-            tabular.show_error_message = true;
+            tabular.toasts.error("Session connection is gone; toggle manual commit off and on again".to_string());
             tabular.query_execution_in_progress = false;
             return;
         }

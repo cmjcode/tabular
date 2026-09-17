@@ -673,8 +673,7 @@ impl super::Tabular {
                     );
                     self.table_bottom_view = models::structs::TableBottomView::Query;
                 } else {
-                    self.error_message = format!("Could not generate DDL for table '{}'. It might not be supported for this database type.", table_name);
-                    self.show_error_message = true;
+                    self.toasts.error(format!("Could not generate DDL for table '{}'. It might not be supported for this database type.", table_name));
                 }
             }
         }
@@ -1301,10 +1300,8 @@ impl super::Tabular {
                             }
                             }
                         } else {
-                            self.error_message =
-                                "MongoDB requires a database; please select a database."
-                                    .to_string();
-                            self.show_error_message = true;
+                            self.toasts.error("MongoDB requires a database; please select a database."
+                                    .to_string());
                         }
                     }
                     _ => {

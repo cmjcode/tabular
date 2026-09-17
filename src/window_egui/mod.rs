@@ -137,6 +137,12 @@ pub struct Tabular {
     pub user_manager_result_receiver: Receiver<(usize, crate::user_manager::UserManagerResult)>,
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
     pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
+    /// Registry shortcut keyboard (bisa diubah user, lihat keymap.rs).
+    pub keymap: crate::keymap::Keymap,
+    pub show_shortcuts_window: bool,
+    pub shortcuts_filter: String,
+    /// Lokasi error query terakhir: (id tab, lokasi). Dipakai tombol "Go to error".
+    pub last_error_location: Option<(usize, crate::connection::types::ErrorLocation)>,
     /// Backend pid per job yang sedang berjalan, untuk cancel di sisi server.
     pub query_backend_pids: crate::connection::types::BackendPidRegistry,
     pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,

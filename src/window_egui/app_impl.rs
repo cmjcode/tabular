@@ -372,14 +372,14 @@ impl Tabular {
                                 ui.add_space(14.0);
                                 ui.separator();
                                 ui.add_space(8.0);
-                                ui.heading("📱 Mode Antarmuka (Desktop / Tablet Touch)");
-                                ui.label(egui::RichText::new("Sesuaikan ukuran tombol, area sentuh, dan layout agar nyaman untuk mouse atau sentuhan jari pada iPad / Android tablet.").size(12.0).color(egui::Color32::from_gray(130)));
+                                ui.heading("📱 Interface Mode (Desktop / Tablet Touch)");
+                                ui.label(egui::RichText::new("Adjust button sizes, touch targets and layout for a mouse or for touch on iPad / Android tablets.").size(12.0).color(egui::Color32::from_gray(130)));
                                 ui.add_space(6.0);
 
                                 let mode_options = [
-                                    (crate::config::UiModePreference::Auto, "🌐 Otomatis", "Deteksi otomatis berdasarkan sistem (iOS/Android) atau resolusi layar."),
-                                    (crate::config::UiModePreference::Desktop, "💻 Desktop", "Ukuran tombol kompak dan padat untuk mouse & keyboard fisik."),
-                                    (crate::config::UiModePreference::TouchTablet, "📱 Tablet / Touch", "Target sentuh 44pt, baris tabel 38px, dan quick keyword toolbar."),
+                                    (crate::config::UiModePreference::Auto, "🌐 Automatic", "Detect from the system (iOS/Android) or the screen resolution."),
+                                    (crate::config::UiModePreference::Desktop, "💻 Desktop", "Compact, dense controls for mouse and physical keyboard."),
+                                    (crate::config::UiModePreference::TouchTablet, "📱 Tablet / Touch", "44pt touch targets, 38px table rows and a quick keyword toolbar."),
                                 ];
 
                                 for (mode, name, desc) in mode_options {
@@ -536,7 +536,7 @@ impl Tabular {
                                                 self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
                                                 log::debug!("Data directory changed to: {}", self.data_directory);
                                             }
-                                            Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
+                                            Err(e) => { self.toasts.error(format!("Failed to change data directory: {}", e)); }
                                         }
                                     }
                                     if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
@@ -1077,8 +1077,7 @@ impl Tabular {
                                 self.pool_wait_query.clear();
                                 self.pool_wait_started_at = None;
                                 self.query_execution_in_progress = false;
-                                self.error_message = format!("Connection failed: {}", error_message);
-                                self.show_error_message = true;
+                                self.toasts.error(format!("Connection failed: {}", error_message));
                                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                     tab.query_message = format!("Connection error: {}", error_message);
                                     tab.query_message_is_error = true;
@@ -3113,6 +3112,11 @@ impl Tabular {
                                                 self.show_settings_menu = false;
                                             }
 
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_KEYBOARD.codepoint, "Keyboard Shortcuts", None) {
+                                                self.show_shortcuts_window = true;
+                                                self.show_settings_menu = false;
+                                            }
+
                                             if draw_menu_item(ui, egui_icons::icons::ICON_CONTENT_COPY.codepoint, "Copy Diagnostics", None) {
                                                 ui.ctx().copy_text(crate::app_logging::diagnostics_report());
                                                 self.toasts.success("Diagnostics copied. Review it before sharing — recent log lines are included.");
@@ -4168,7 +4172,7 @@ impl Tabular {
 
                     // Render MongoDB drop collection confirmation dialog if pending
                     if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
-                        let title = format!("Konfirmasi Drop Collection: {}.{}", db, coll);
+                        let title = format!("Drop Collection {}.{}?", db, coll);
                         egui::Window::new(title)
                             .collapsible(false)
                             .resizable(false)
@@ -4998,15 +5002,13 @@ impl App for Tabular {
                                 }
                                 Err(e) => {
                                     log::error!("Failed to spawn queued query: {:?}", e);
-                                    self.error_message = format!("Failed to spawn queued query: {:?}", e);
-                                    self.show_error_message = true;
+                                    self.toasts.error(format!("Failed to spawn queued query: {:?}", e));
                                 }
                             }
                         }
                         Err(e) => {
                              log::error!("Failed to prepare queued query: {:?}", e);
-                             self.error_message = format!("Failed to prepare queued query: {:?}", e);
-                             self.show_error_message = true;
+                             self.toasts.error(format!("Failed to prepare queued query: {:?}", e));
                         }
                     }
 
@@ -5032,8 +5034,7 @@ impl App for Tabular {
                     self.pool_wait_query.clear();
                     self.pool_wait_started_at = None;
                     self.query_execution_in_progress = false;
-                    self.error_message = format!("Connection failed: {}", err);
-                    self.show_error_message = true;
+                    self.toasts.error(format!("Connection failed: {}", err));
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                         tab.query_message = format!("Connection error: {}", err);
                         tab.query_message_is_error = true;
@@ -5047,8 +5048,7 @@ impl App for Tabular {
                     self.pool_wait_query.clear();
                     self.pool_wait_started_at = None;
                     self.query_execution_in_progress = false;
-                    self.error_message = "Connection attempt timed out after 30 seconds.".to_string();
-                    self.show_error_message = true;
+                    self.toasts.error("Connection attempt timed out after 30 seconds.".to_string());
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                         tab.query_message = "Connection attempt timed out after 30 seconds.".to_string();
                         tab.query_message_is_error = true;
@@ -5136,55 +5136,34 @@ impl App for Tabular {
             false
         };
 
-        if !is_diagram_active {
-            ctx.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
-                    || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
-                {
-                    save_shortcut = true;
-                }
-            });
-        }
-
-        // Handle keyboard shortcuts
-        ctx.input(|i| {
-            // CMD+W or CTRL+W to close current tab
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
-                && i.key_pressed(egui::Key::W)
-                && !self.query_tabs.is_empty()
-            {
+        {
+            use crate::keymap::{consume, Action};
+            // Shortcut global dari registry keymap. Setiap shortcut dikonsumsi
+            // agar tidak diproses dua kali oleh widget atau handler lain.
+            if !is_diagram_active && consume(ctx, &self.keymap, Action::SaveTab) {
+                save_shortcut = true;
+            }
+            let overlay_open = self.show_command_palette || self.quick_open_state.is_open;
+            if consume(ctx, &self.keymap, Action::CloseTab) && !self.query_tabs.is_empty() {
                 crate::session_restore::request_close_tab(self, self.active_tab_index);
             }
-
-            // CMD+Q or CTRL+Q to quit application
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::Q) {
+            if consume(ctx, &self.keymap, Action::Quit) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-
-            // CMD/CTRL+P, CMD+SHIFT+P, or CMD/CTRL+K to open universal quick open
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
-                && (i.key_pressed(egui::Key::P) || i.key_pressed(egui::Key::K))
-                && !self.show_command_palette
-            {
+            if !self.show_command_palette && consume(ctx, &self.keymap, Action::QuickOpen) {
                 if self.quick_open_state.is_open {
                     self.quick_open_state.close();
                 } else {
                     crate::quick_open::open_quick_open(self);
                 }
             }
-
-            // F12 — Go to definition (navigate sidebar to table under cursor)
-            if i.key_pressed(egui::Key::F12) && !self.show_command_palette && !self.quick_open_state.is_open {
+            if !overlay_open && consume(ctx, &self.keymap, Action::GoToDefinition) {
                 editor::go_to_definition(self);
             }
-
-            // F2 — Rename symbol under cursor
-            if i.key_pressed(egui::Key::F2) && !self.show_command_palette && !self.quick_open_state.is_open {
+            if !overlay_open && consume(ctx, &self.keymap, Action::RenameSymbol) {
                 editor::begin_rename_symbol(self);
             }
-
-            // CMD/CTRL+R to refresh current view
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::R) {
+            if consume(ctx, &self.keymap, Action::Refresh) {
                 match self.table_bottom_view {
                     models::structs::TableBottomView::Structure => {
                         self.request_structure_refresh = true;
@@ -5195,7 +5174,31 @@ impl App for Tabular {
                     }
                 }
             }
+            if consume(ctx, &self.keymap, Action::NewTab) {
+                editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+            }
+            if consume(ctx, &self.keymap, Action::OpenSettings) {
+                self.show_settings_window = true;
+            }
+            if consume(ctx, &self.keymap, Action::ShowShortcuts) {
+                self.show_shortcuts_window = !self.show_shortcuts_window;
+            }
+            if consume(ctx, &self.keymap, Action::ToggleTransactionMode) {
+                editor::execute_command(self, "Transaction: Begin / Toggle");
+                let enabled = self
+                    .query_tabs
+                    .get(self.active_tab_index)
+                    .is_some_and(|t| t.tx_mode);
+                self.toasts.info(if enabled {
+                    "Manual-commit mode on: statements run in a transaction until you commit or roll back."
+                } else {
+                    "Manual-commit mode off."
+                });
+            }
+        }
 
+        // Handle keyboard shortcuts
+        ctx.input(|i| {
             // Handle table cell navigation with arrow keys
             // Only allow table navigation when table was recently clicked
             if !self.show_command_palette
@@ -5478,18 +5481,13 @@ impl App for Tabular {
                     "🔥 Calling spreadsheet_save_changes with {} operations",
                     op_count
                 );
+                // Hasil simpan (sukses/gagal) dilaporkan oleh callback job di
+                // execute_spreadsheet_sql karena penyimpanan berjalan di latar belakang.
                 self.spreadsheet_save_changes();
-                if !self.spreadsheet_state.is_dirty {
-                    self.toasts.success(format!("Berhasil menyimpan {} perubahan tabel", op_count));
-                } else if self.show_error_message {
-                    self.toasts.error(format!("Gagal menyimpan tabel: {}", self.error_message));
-                }
             } else if !self.query_tabs.is_empty() {
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
 
                 if let Err(error) = editor::save_current_tab(self) {
-                    self.error_message = format!("Save failed: {}", error);
-                    self.show_error_message = true;
                     self.toasts.error(format!("Save failed: {}", error));
                 }
             }
@@ -5819,6 +5817,8 @@ impl App for Tabular {
         // Handle copy operations AFTER UI render (state already updated)
         // Note: We only reach here if table/structure has potential focus (not editor/message)
         self.handle_table_copy_shortcut(ctx, copy_shortcut_detected);
+
+        crate::keymap::render_shortcuts_window(self, ctx);
 
         // Pemulihan sesi dijalankan sekali setelah preferensi dimuat (blok
         // lazy-load preferensi di atas), lalu sesi disimpan berkala.

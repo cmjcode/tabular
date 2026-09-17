@@ -256,8 +256,7 @@ pub(crate) fn render_create_folder_dialog(tabular: &mut window_egui::Tabular, ct
                         };
 
                         if let Err(err) = result {
-                            tabular.error_message = err;
-                            tabular.show_error_message = true;
+                            tabular.toasts.error(err);
                         } else {
                             // Force immediate UI repaint after successful folder creation
                             ui.ctx().request_repaint();
@@ -400,8 +399,7 @@ pub(crate) fn render_rename_query_folder_dialog(
         let trimmed = edit_name.trim().to_string();
         if !trimmed.is_empty() && trimmed != current_name {
             if let Err(err) = rename_query_folder(tabular, &relative_path, &trimmed) {
-                tabular.error_message = err;
-                tabular.show_error_message = true;
+                tabular.toasts.error(err);
             } else {
                 ctx.request_repaint();
             }
@@ -446,16 +444,14 @@ pub(crate) fn render_move_to_folder_dialog(
                                 if let Err(err) =
                                     sidebar_query::move_query_to_root(tabular, &query_path)
                                 {
-                                    tabular.error_message = err;
-                                    tabular.show_error_message = true;
+                                    tabular.toasts.error(err);
                                 }
                             } else if let Err(err) = sidebar_query::move_query_to_folder(
                                 tabular,
                                 &query_path,
                                 &tabular.target_folder_name.clone(),
                             ) {
-                                tabular.error_message = err;
-                                tabular.show_error_message = true;
+                                tabular.toasts.error(err);
                             }
                         }
                         tabular.show_move_to_folder_dialog = false;

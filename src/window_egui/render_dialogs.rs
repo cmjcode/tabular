@@ -100,6 +100,14 @@ impl super::Tabular {
                                     {
                                         close_msg_toast = true;
                                     }
+                                    if self.query_message_is_error
+                                        && self.error_location_in_editor().is_some()
+                                        && ui.add(egui::Button::new(egui::RichText::new("↪ Go to error").size(11.0)).frame(false))
+                                            .on_hover_text("Move the cursor to where the database reported the error")
+                                            .clicked()
+                                    {
+                                        self.jump_to_error_location();
+                                    }
                                     if ui.add(egui::Button::new(egui::RichText::new("📋").size(11.0).weak()).frame(false))
                                         .on_hover_text("Copy message")
                                         .clicked()
@@ -1070,7 +1078,7 @@ impl super::Tabular {
                 }
 
                 // Keyboard shortcut: Run (Cmd/Ctrl + Enter)
-                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && !i.modifiers.shift && i.key_pressed(egui::Key::Enter)) {
+                if crate::keymap::consume(ui.ctx(), &self.keymap, crate::keymap::Action::RunQuery) {
                     let has_q = if !self.selected_text.trim().is_empty() {
                         true
                     } else {
@@ -1101,7 +1109,7 @@ impl super::Tabular {
                 }
 
                 // Keyboard shortcut: Explain (Cmd/Ctrl + Shift + E)
-                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && i.modifiers.shift && i.key_pressed(egui::Key::E)) {
+                if crate::keymap::consume(ui.ctx(), &self.keymap, crate::keymap::Action::ExplainQuery) {
                     let id = egui::Id::new("sql_editor");
                     let mut direct_selected = String::new();
                     if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {

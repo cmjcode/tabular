@@ -1647,7 +1647,7 @@ pub(crate) fn commit_edit_column(tabular: &mut window_egui::Tabular) {
     }
     tabular.editing_column = false;
     // Execute in the background so a slow/locked ALTER doesn't freeze the UI.
-    run_structure_statement(tabular, conn_id, full, "Gagal edit kolom", |tabular| {
+    run_structure_statement(tabular, conn_id, full, "Failed to edit column", |tabular| {
         tabular.request_structure_refresh = true;
         load_structure_info_for_current_table(tabular);
         crate::sidebar_database::refresh_connections_tree(tabular);
@@ -1663,7 +1663,7 @@ pub(crate) fn render_drop_column_confirmation(
     }
     let col_name = tabular.pending_drop_column_name.clone().unwrap();
     let stmt = tabular.pending_drop_column_stmt.clone().unwrap();
-    egui::Window::new("Konfirmasi Drop Column")
+    egui::Window::new("Drop Column?")
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -1692,7 +1692,7 @@ pub(crate) fn render_drop_column_confirmation(
                             tabular,
                             conn_id,
                             stmt.clone(),
-                            "Gagal drop kolom",
+                            "Failed to drop column",
                             move |tabular| {
                                 tabular.structure_columns.retain(|it| it.name != victim);
                                 tabular.request_structure_refresh = true;
@@ -1735,8 +1735,7 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
         .to_string();
     if table_name.is_empty() {
         // Inform user explicitly
-        tabular.error_message = "Gagal menambah kolom: nama tabel tidak ditemukan (buka data table atau klik tabel dulu).".to_string();
-        tabular.show_error_message = true;
+        tabular.toasts.error("Cannot add column: table name not found (open the table data or select a table first).".to_string());
         return;
     }
     let col_name = tabular
@@ -1812,7 +1811,7 @@ fn commit_new_column(tabular: &mut window_egui::Tabular) {
     // Execute in the background and refresh structure on success, so a
     // slow/locked ALTER TABLE doesn't freeze the UI thread.
     if !stmt.starts_with("--") {
-        run_structure_statement(tabular, conn_id, stmt, "Gagal menambah kolom", |tabular| {
+        run_structure_statement(tabular, conn_id, stmt, "Failed to add column", |tabular| {
             // Reload from source to ensure correct view
             tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
@@ -1865,8 +1864,7 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
     let table_name = infer_current_table_name(tabular);
     if table_name.is_empty() {
         // Don't silently fail; tell user
-        tabular.error_message = "Gagal membuat index: nama tabel tidak ditemukan (buka data table atau klik tabel dulu).".to_string();
-        tabular.show_error_message = true;
+        tabular.toasts.error("Cannot create index: table name not found (open the table data or select a table first).".to_string());
         return;
     }
     let idx_name = tabular.new_index_name.trim();
@@ -2002,7 +2000,7 @@ fn commit_new_index(tabular: &mut window_egui::Tabular) {
     // Auto execute in the background and refresh, so a slow/locked CREATE
     // INDEX doesn't freeze the UI thread.
     if !stmt.starts_with("--") {
-        run_structure_statement(tabular, conn_id, stmt, "Gagal CREATE INDEX", |tabular| {
+        run_structure_statement(tabular, conn_id, stmt, "CREATE INDEX failed", |tabular| {
             tabular.request_structure_refresh = true;
             load_structure_info_for_current_table(tabular);
         });
@@ -2018,7 +2016,7 @@ pub(crate) fn render_drop_index_confirmation(
     }
     let idx_name = tabular.pending_drop_index_name.clone().unwrap();
     let stmt = tabular.pending_drop_index_stmt.clone().unwrap();
-    egui::Window::new("Konfirmasi Drop Index")
+    egui::Window::new("Drop Index?")
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -2047,7 +2045,7 @@ pub(crate) fn render_drop_index_confirmation(
                             tabular,
                             conn_id,
                             stmt.clone(),
-                            "Gagal drop index",
+                            "Failed to drop index",
                             move |tabular| {
                                 tabular.structure_indexes.retain(|it| it.name != victim);
                                 tabular.request_structure_refresh = true;

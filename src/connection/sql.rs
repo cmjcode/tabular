@@ -678,9 +678,94 @@ pub fn statement_returns_rows(sql: &str) -> bool {
         .any(|word| word.eq_ignore_ascii_case("RETURNING") || word.eq_ignore_ascii_case("OUTPUT"))
 }
 
+/// Ambil nomor baris dari pesan error MySQL/MariaDB, misalnya
+/// "... near 'FORM users' at line 2".
+pub fn mysql_error_line(message: &str) -> Option<usize> {
+    let idx = message.rfind("at line ")?;
+    message[idx + "at line ".len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// Ubah lokasi error menjadi offset byte di dalam teks editor. Statement dicari
+/// apa adanya di teks editor; mengembalikan None jika statement tidak ditemukan
+/// (misalnya teks sudah diubah setelah query dijalankan).
+pub fn locate_error_in_text(
+    text: &str,
+    location: &super::types::ErrorLocation,
+) -> Option<usize> {
+    let statement = location.statement.as_str();
+    if statement.is_empty() {
+        return None;
+    }
+    let start = text.find(statement)?;
+    let relative = if let Some(char_offset) = location.char_offset {
+        statement
+            .char_indices()
+            .nth(char_offset)
+            .map(|(byte, _)| byte)
+            .unwrap_or(statement.len())
+    } else if let Some(line) = location.line {
+        let mut byte = 0;
+        for (index, piece) in statement.split_inclusive('\n').enumerate() {
+            if index + 1 == line {
+                // Lompat ke karakter non-spasi pertama di baris tersebut.
+                let indent = piece.len() - piece.trim_start().len();
+                return Some(start + byte + indent.min(piece.trim_end_matches('\n').len()));
+            }
+            byte += piece.len();
+        }
+        0
+    } else {
+        0
+    };
+    Some(start + relative)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_mysql_error_line() {
+        assert_eq!(
+            mysql_error_line("You have an error in your SQL syntax; check the manual ... near 'FORM t' at line 3"),
+            Some(3)
+        );
+        assert_eq!(mysql_error_line("Table 'x.y' doesn't exist"), None);
+    }
+
+    #[test]
+    fn locates_error_by_char_offset_and_line() {
+        use crate::connection::types::ErrorLocation;
+        let text = "SELECT 1;\n\n-- ✓ komentar\nSELECT naem\nFROM users;";
+        let statement = "-- ✓ komentar\nSELECT naem\nFROM users";
+        let by_offset = ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: Some(21),
+            line: None,
+        };
+        let pos = locate_error_in_text(text, &by_offset).unwrap();
+        assert!(text[pos..].starts_with("naem"));
+
+        let by_line = ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: None,
+            line: Some(3),
+        };
+        let pos = locate_error_in_text(text, &by_line).unwrap();
+        assert!(text[pos..].starts_with("FROM users"));
+
+        let missing = ErrorLocation {
+            statement: "SELECT gone".to_string(),
+            char_offset: Some(0),
+            line: None,
+        };
+        assert_eq!(locate_error_in_text(text, &missing), None);
+    }
 
     #[test]
     fn leading_comments_are_stripped() {

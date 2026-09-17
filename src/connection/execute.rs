@@ -256,6 +256,7 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
         affected_rows: None,
         column_metadata: None,
         truncated: false,
+        error_location: None,
     }
 }
 
@@ -307,9 +308,10 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
             affected_rows: output.affected_rows.map(|n| n as usize),
             column_metadata: output.column_metadata,
             truncated: output.truncated,
+            error_location: None,
         },
         Err(err) => {
-            let message = describe_execution_error(err);
+            let (message, error_location) = describe_execution_error(err);
             QueryResultMessage {
                 job_id: job.job_id,
                 tab_id,
@@ -326,14 +328,34 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
                 affected_rows: None,
                 column_metadata: None,
                 truncated: false,
+                error_location,
             }
         }
     }
 }
 
-fn describe_execution_error(err: QueryExecutionError) -> String {
+fn describe_execution_error(
+    err: QueryExecutionError,
+) -> (String, Option<super::types::ErrorLocation>) {
     match err {
-        QueryExecutionError::Message(msg) => msg,
+        QueryExecutionError::Message(msg) => (msg, None),
+        QueryExecutionError::Located(msg, location) => (msg, Some(location)),
+    }
+}
+
+/// Posisi error dari PostgreSQL (field `position`, dalam karakter, 1-based).
+fn postgres_error_location(err: &sqlx::Error, statement: &str) -> Option<super::types::ErrorLocation> {
+    let sqlx::Error::Database(db_err) = err else {
+        return None;
+    };
+    let pg = db_err.try_downcast_ref::<sqlx::postgres::PgDatabaseError>()?;
+    match pg.position()? {
+        sqlx::postgres::PgErrorPosition::Original(position) => Some(super::types::ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: Some(position.saturating_sub(1)),
+            line: None,
+        }),
+        _ => None,
     }
 }
 
@@ -451,6 +473,7 @@ async fn execute_mysql_query_job(
     let max_attempts = 3;
     let mut last_error: Option<String> = None;
     let mut failing_stmt_preview: Option<String> = None;
+    let mut error_location: Option<super::types::ErrorLocation> = None;
 
     while attempts < max_attempts {
         attempts += 1;
@@ -968,6 +991,13 @@ async fn execute_mysql_query_job(
                         if failing_stmt_preview.is_none() {
                             failing_stmt_preview = Some(preview_text(trimmed, 200));
                         }
+                        if let Some(line) = super::sql::mysql_error_line(&err_str) {
+                            error_location = Some(super::types::ErrorLocation {
+                                statement: trimmed.to_string(),
+                                char_offset: None,
+                                line: Some(line),
+                            });
+                        }
                         if err_str.contains("1146")
                             || err_str.to_lowercase().contains("doesn't exist")
                         {
@@ -1042,7 +1072,10 @@ async fn execute_mysql_query_job(
     if let Some(stmt) = failing_stmt_preview {
         final_err = format!("{}\n\nFailed statement (preview): {}", final_err, stmt);
     }
-    Err(QueryExecutionError::Message(final_err))
+    Err(match error_location {
+        Some(location) => QueryExecutionError::Located(final_err, location),
+        None => QueryExecutionError::Message(final_err),
+    })
 }
 
 async fn execute_postgres_query_job(
@@ -1207,10 +1240,11 @@ async fn execute_postgres_query_job(
                 }
             }
             Ok(Err(e)) => {
-                return Err(QueryExecutionError::Message(format!(
-                    "PostgreSQL error: {}",
-                    e
-                )));
+                let message = format!("PostgreSQL error: {}", e);
+                return Err(match postgres_error_location(&e, trimmed) {
+                    Some(location) => QueryExecutionError::Located(message, location),
+                    None => QueryExecutionError::Message(message),
+                });
             }
             Err(_) => {
                 // Drop future tidak menghentikan query di server; kirim

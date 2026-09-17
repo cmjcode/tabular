@@ -701,11 +701,15 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ("View: Refresh", "Refresh active database or table", "⌘R"),
         ("Preferences: Color Theme", "Change editor and UI color palette", ""),
         ("Preferences: Settings", "Configure application settings", "⌘,"),
+        ("Help: Keyboard Shortcuts", "View and customize keyboard shortcuts", ""),
         ("Export All Data (ZIP)", "Export all connections, queries, HTTP APIs, and history to a ZIP file", ""),
         ("Import All Data (ZIP)", "Restore all connections, queries, HTTP APIs, and history from a ZIP file", ""),
     ];
 
     for (cmd_title, cmd_sub, sc) in commands {
+        // Label shortcut diambil dari keymap agar selalu sesuai binding aktif.
+        let bound = command_shortcut_action(cmd_title).map(|a| tabular.keymap.label(a));
+        let sc = bound.as_deref().unwrap_or(sc);
         let id = format!("cmd_{}", cmd_title);
         if seen_ids.insert(id.clone()) {
             items.push(QuickOpenItem::new(
@@ -1390,4 +1394,25 @@ mod tests {
         assert_eq!(state.filtered_items.len(), 1);
         assert_eq!(state.items[state.filtered_items[0].0].title, "user_view");
     }
+}
+
+/// Aksi keymap untuk judul command Quick Open (jika punya shortcut).
+fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
+    use crate::keymap::Action;
+    Some(match title {
+        "Query: Run" => Action::RunQuery,
+        "Query: Format SQL" => Action::FormatSql,
+        "Query: Explain" => Action::ExplainQuery,
+        "Query: New Tab" => Action::NewTab,
+        "Query: Close Tab" => Action::CloseTab,
+        "Query: Save Tab" => Action::SaveTab,
+        "Editor: Go to Definition" => Action::GoToDefinition,
+        "Editor: Rename Symbol" => Action::RenameSymbol,
+        "Editor: Toggle Find & Replace" => Action::FindReplace,
+        "Transaction: Begin / Toggle" => Action::ToggleTransactionMode,
+        "View: Refresh" => Action::Refresh,
+        "Preferences: Settings" => Action::OpenSettings,
+        "Help: Keyboard Shortcuts" => Action::ShowShortcuts,
+        _ => return None,
+    })
 }

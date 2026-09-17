@@ -59,7 +59,7 @@ impl UiModePreference {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            UiModePreference::Auto => "Otomatis (Sesuai Layar / Perangkat)",
+            UiModePreference::Auto => "Automatic (screen / device)",
             UiModePreference::Desktop => "Desktop (Kompak & Mouse)",
             UiModePreference::TouchTablet => "Tablet / Touch (Area Sentuh Nyaman)",
         }
