@@ -473,7 +473,7 @@ fn render_catalog_tab(
     ui.add_space(4.0);
 
     let plugins = manager.get_plugins();
-    let search_lower = state.search_query.to_lowercase();
+    let search = crate::search_match::SearchQuery::new(&state.search_query);
 
     let filtered_plugins: Vec<&PluginManifest> = plugins
         .into_iter()
@@ -483,9 +483,8 @@ fn render_catalog_tab(
                     return false;
                 }
             }
-            if !search_lower.is_empty() {
-                return p.name.to_lowercase().contains(&search_lower)
-                    || p.description.to_lowercase().contains(&search_lower);
+            if !search.is_empty() {
+                return search.matches_any([p.name.as_str(), p.description.as_str()]);
             }
             true
         })

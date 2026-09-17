@@ -845,17 +845,20 @@ fn filter_process(p: &ProcessInfo, state: &DbaMonitorState) -> bool {
     }
 
     // 2. Search text filter
-    let search = state.search_text.trim().to_lowercase();
+    let search = crate::search_match::SearchQuery::new(&state.search_text);
     if search.is_empty() {
         return true;
     }
 
-    p.pid.to_string().contains(&search)
-        || p.user.to_lowercase().contains(&search)
-        || p.db.to_lowercase().contains(&search)
-        || p.host.to_lowercase().contains(&search)
-        || p.query.to_lowercase().contains(&search)
-        || p.state.to_lowercase().contains(&search)
+    let pid = p.pid.to_string();
+    search.matches_any([
+        pid.as_str(),
+        p.user.as_str(),
+        p.db.as_str(),
+        p.host.as_str(),
+        p.query.as_str(),
+        p.state.as_str(),
+    ])
 }
 
 fn render_processlist_table(

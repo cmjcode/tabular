@@ -66,15 +66,17 @@ pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
 
 /// Filter queries tree based on database_search_text
 pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
-    let search_text = tabular.database_search_text.trim().to_lowercase();
+    let search_text = crate::search_match::SearchQuery::new(&tabular.database_search_text);
     if search_text.is_empty() {
         tabular.filtered_queries_tree.clear();
         return;
     }
 
-    fn filter_node(node: &models::structs::TreeNode, search_text: &str) -> Option<models::structs::TreeNode> {
-        let name_lower = node.name.to_lowercase();
-        let matches = name_lower.contains(search_text);
+    fn filter_node(
+        node: &models::structs::TreeNode,
+        search_text: &crate::search_match::SearchQuery,
+    ) -> Option<models::structs::TreeNode> {
+        let matches = search_text.matches(&node.name);
 
         // If this node is a folder and matches the search text, preserve all of its contents (children)
         // and recursively expand all nested subfolders.

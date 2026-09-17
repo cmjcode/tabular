@@ -544,10 +544,12 @@ fn render_node_card(
 
     // Search query match highlight
     if !search_query.trim().is_empty() {
-        let q = search_query.to_lowercase();
-        let matches = node.node_type.to_lowercase().contains(&q)
-            || node.relation_name.as_deref().unwrap_or("").to_lowercase().contains(&q)
-            || node.index_name.as_deref().unwrap_or("").to_lowercase().contains(&q);
+        let q = crate::search_match::SearchQuery::new(search_query);
+        let matches = q.matches_any([
+            node.node_type.as_str(),
+            node.relation_name.as_deref().unwrap_or(""),
+            node.index_name.as_deref().unwrap_or(""),
+        ]);
         if matches {
             border_color = Color32::from_rgb(255, 215, 0);
         }

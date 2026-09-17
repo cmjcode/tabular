@@ -1438,13 +1438,13 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
 
                 // ── Results ───────────────────────────────────────────────
                 if let Some(result) = &state.result {
-                    let filter = state.filter_text.to_lowercase();
+                    let filter = crate::search_match::SearchQuery::new(&state.filter_text);
                     let show_same = state.show_same;
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let diffs: Vec<_> = result.diffs.iter()
                             .filter(|d| show_same || d.status != DiffStatus::Same)
-                            .filter(|d| filter.is_empty() || d.table_name.to_lowercase().contains(&filter))
+                            .filter(|d| filter.matches(&d.table_name))
                             .collect();
 
                         if diffs.is_empty() {
