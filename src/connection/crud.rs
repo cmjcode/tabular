@@ -157,7 +157,7 @@ pub(crate) fn test_database_connection(
 ) -> (bool, String) {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
-        Err(e) => return (false, format!("Gagal menyiapkan runtime: {}", e)),
+        Err(e) => return (false, format!("Failed to prepare the runtime: {}", e)),
     };
 
     rt.block_on(async {
@@ -362,7 +362,7 @@ pub(crate) fn test_database_connection(
             Err(_) => (
                 false,
                 format!(
-                    "Koneksi tidak merespons dalam {} detik.",
+                    "The connection did not respond within {} seconds.",
                     super::pool::CONNECT_TIMEOUT.as_secs()
                 ),
             ),

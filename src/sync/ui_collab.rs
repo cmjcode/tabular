@@ -34,10 +34,10 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         ui.group(|ui| {
             if session_expired {
                 ui.label(egui::RichText::new("⚠️ Sesi Telah Berakhir (401)").small().strong().color(egui::Color32::from_rgb(255, 170, 0)));
-                ui.label(egui::RichText::new("Sesi login Anda telah habis. Silakan login kembali untuk melanjutkan kolaborasi.").small().weak());
+                ui.label(egui::RichText::new("Your session has expired. Sign in again to continue collaborating.").small().weak());
             } else {
                 ui.label(egui::RichText::new("🔒 Belum Login").small().strong());
-                ui.label(egui::RichText::new("Silakan login akun Tabular untuk menggunakan fitur kolaborasi.").small().weak());
+                ui.label(egui::RichText::new("Sign in to your Tabular account to use collaboration.").small().weak());
             }
             ui.add_space(6.0);
             if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "🔑 Login Kembali")).clicked() {
@@ -138,7 +138,7 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let create_resp = if can_create {
             create_resp.on_hover_text("Create room")
         } else {
-            create_resp.on_hover_text("Ketik nama room dulu")
+            create_resp.on_hover_text("Enter a room name first")
         };
         if create_resp.clicked() {
             create_room(tabular);
@@ -301,7 +301,7 @@ fn create_room(tabular: &mut Tabular) {
     let name = tabular.new_collab_room_name.trim().to_string();
     log::debug!("[collab] create_room clicked, name='{}'", name);
     if name.is_empty() {
-        tabular.toasts.warning("Room name tidak boleh kosong");
+        tabular.toasts.warning("Room name must not be empty");
         return;
     }
 
@@ -309,7 +309,7 @@ fn create_room(tabular: &mut Tabular) {
         Some(a) => a.clone(),
         None => {
             log::warn!("[collab] create_room: sync_account is None, aborting");
-            tabular.toasts.warning("Silakan login terlebih dahulu");
+            tabular.toasts.warning("Please sign in first");
             return;
         }
     };

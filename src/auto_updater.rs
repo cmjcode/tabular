@@ -466,7 +466,7 @@ impl AutoUpdater {
         let status = std::process::Command::new("msiexec.exe")
             .args([
                 "/i",
-                msi_path.to_str().ok_or("MSI path tidak valid (non-UTF8)")?,
+                msi_path.to_str().ok_or("MSI path is not valid UTF-8")?,
                 "/qn",
                 "/norestart",
                 "/l*v",
@@ -492,12 +492,12 @@ impl AutoUpdater {
                 } else {
                     let log_hint = self.temp_dir.join("msi_install.log");
                     Err(format!(
-                        "msiexec gagal dengan exit code {}. Lihat log: {:?}",
+                        "msiexec failed with exit code {}. See log: {:?}",
                         code, log_hint
                     ).into())
                 }
             }
-            Err(e) => Err(format!("Gagal menjalankan msiexec: {}", e).into()),
+            Err(e) => Err(format!("Failed to run msiexec: {}", e).into()),
         }
     }
 
@@ -581,7 +581,7 @@ impl AutoUpdater {
             }
         }
 
-        Err("Tidak ada file .exe ditemukan di dalam ZIP archive".into())
+        Err("No .exe file found in the ZIP archive".into())
     }
 
     /// Periksa apakah path memerlukan hak administrator untuk ditulis.
@@ -633,14 +633,14 @@ impl AutoUpdater {
 
         info!("🔄 Rename {:?} → {:?}", current_exe, old_exe);
         fs::rename(current_exe, &old_exe)
-            .map_err(|e| format!("Gagal rename exe lama: {}", e))?;
+            .map_err(|e| format!("Failed to rename the old executable: {}", e))?;
 
         info!("📋 Copy binary baru {:?} → {:?}", new_binary, current_exe);
         if let Err(e) = fs::copy(new_binary, current_exe) {
             // Rollback: kembalikan exe lama
             warn!("Copy gagal ({}), rolling back...", e);
             let _ = fs::rename(&old_exe, current_exe);
-            return Err(format!("Gagal copy binary baru: {}", e).into());
+            return Err(format!("Failed to copy the new binary: {}", e).into());
         }
 
         info!("✅ Binary berhasil diganti in-place (Windows portable)");
@@ -721,7 +721,7 @@ Remove-Item -Path '{script}' -Force -ErrorAction SilentlyContinue
         );
 
         fs::write(&script_path, ps_script.as_bytes())
-            .map_err(|e| format!("Gagal menulis PowerShell helper script: {}", e))?;
+            .map_err(|e| format!("Failed to write the PowerShell helper script: {}", e))?;
 
         info!("🚀 Spawning PowerShell helper dengan UAC elevation: {:?}", script_path);
 
@@ -749,7 +749,7 @@ Remove-Item -Path '{script}' -Force -ErrorAction SilentlyContinue
                  Coba update manual dari halaman release GitHub.",
                 s.code()
             ).into()),
-            Err(e) => Err(format!("Gagal menjalankan PowerShell: {}", e).into()),
+            Err(e) => Err(format!("Failed to run PowerShell: {}", e).into()),
         }
     }
 }

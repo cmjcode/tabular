@@ -56,7 +56,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         Some(a) if !session_expired => a.clone(),
         _ => {
             ui.label(
-                egui::RichText::new("🔒 Login untuk mengakses Teams.")
+                egui::RichText::new("🔒 Sign in to access Teams.")
                     .small()
                     .weak(),
             );
@@ -125,7 +125,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Team list tree ────────────────────────────────────────────────────
     if tabular.teams.is_empty() {
         ui.label(
-            egui::RichText::new("Belum ada Team. Buat Team untuk berbagi folder & Room.")
+            egui::RichText::new("No teams yet. Create a team to share folders and rooms.")
                 .small()
                 .weak(),
         );
@@ -402,7 +402,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
                                 .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
-                        .on_hover_text("Buat Room baru untuk Team ini")
+                        .on_hover_text("Create a new room for this team")
                         .clicked()
                         {
                             add_room_clicked = true;
@@ -410,7 +410,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     }).body(|ui| {
                         ui.indent(format!("rooms_body_{}", team.id), |ui| {
                             if team_rooms.is_empty() {
-                                ui.label(egui::RichText::new("Belum ada Room untuk Team ini.").small().weak());
+                                ui.label(egui::RichText::new("This team has no rooms yet.").small().weak());
                             } else {
                                 for r in &team_rooms {
                                     ui.horizontal(|ui| {
@@ -487,7 +487,7 @@ pub fn refresh_teams(tabular: &mut Tabular) {
 fn create_team(tabular: &mut Tabular) {
     let name = tabular.new_team_name.trim().to_string();
     if name.is_empty() {
-        tabular.toasts.warning("Nama Team tidak boleh kosong");
+        tabular.toasts.warning("Team name must not be empty");
         return;
     }
 
@@ -710,7 +710,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             if tabular.teams.is_empty() {
                 ui.label(
-                    egui::RichText::new("Anda belum memiliki atau bergabung di Team manapun.")
+                    egui::RichText::new("You have not created or joined any team yet.")
                         .weak()
                         .small(),
                 );
@@ -759,7 +759,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             ui.separator();
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Shared dengan Team:").small().strong());
+            ui.label(egui::RichText::new("Shared with team:").small().strong());
 
             let (active_res_type, active_folder_path) = match &preset_target {
                 Some((rt, fp)) => (rt.clone(), fp.clone()),
@@ -848,7 +848,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         };
 
         if folder_path.is_empty() {
-            tabular.toasts.warning("Folder path tidak boleh kosong");
+            tabular.toasts.warning("Folder path must not be empty");
         } else {
             let team_id = tabular
                 .share_folder_selected_team_id
@@ -1083,7 +1083,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             ui.add_sized(
                 [ui.available_width(), 26.0],
                 egui::TextEdit::singleline(&mut tabular.add_member_identifier)
-                    .hint_text("Ketik min. 5 karakter untuk mencari…"),
+                    .hint_text("Type at least 5 characters to search…"),
             );
 
             let trimmed_input = tabular.add_member_identifier.trim().to_string();
@@ -1113,7 +1113,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             if char_count < 5 {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Ketik {} karakter lagi untuk mencari…",
+                        "Type {} more character(s) to search…",
                         5 - char_count
                     ))
                     .small()
@@ -1193,7 +1193,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         add_clicked = true;
                     }
 
-                    if ui.button("Batal").clicked() {
+                    if ui.button("Cancel").clicked() {
                         close_requested = true;
                     }
                 });
@@ -1348,7 +1348,7 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut do_delete = false;
     let mut close = false;
 
-    egui::Window::new("🗑 Hapus Team")
+    egui::Window::new("🗑 Delete Team")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1357,7 +1357,7 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             ui.vertical_centered(|ui| {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Apakah Anda yakin ingin menghapus Team ini?")
+                    egui::RichText::new("Are you sure you want to delete this team?")
                         .strong()
                         .size(14.0),
                 );
@@ -1382,13 +1382,13 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     let avail_w = ui.available_width();
                     let btn_w = (avail_w - 12.0) / 2.0;
 
-                    if ui.add_sized([btn_w, 28.0], egui::Button::new("Batal")).clicked() {
+                    if ui.add_sized([btn_w, 28.0], egui::Button::new("Cancel")).clicked() {
                         close = true;
                     }
 
                     if ui.add_sized(
                         [btn_w, 28.0],
-                        egui::Button::new(egui::RichText::new("🗑 Hapus Team").color(egui::Color32::WHITE))
+                        egui::Button::new(egui::RichText::new("🗑 Delete Team").color(egui::Color32::WHITE))
                             .fill(egui::Color32::from_rgb(200, 50, 50)),
                     ).clicked() {
                         do_delete = true;

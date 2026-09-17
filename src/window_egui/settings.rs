@@ -10,7 +10,7 @@ impl super::Tabular {
         let current_dir = self.data_directory.clone();
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("Pilih Lokasi Data Directory")
+                .set_title("Choose Data Directory")
                 .set_directory(&current_dir)
                 .pick_folder()
             {
@@ -34,7 +34,7 @@ impl super::Tabular {
 
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("Pilih File / Folder SQLite")
+                .set_title("Choose SQLite File / Folder")
                 .set_directory(&default_dir)
                 .pick_folder()
             {
@@ -57,7 +57,7 @@ impl super::Tabular {
 
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("Pilih Lokasi Penyimpanan Query")
+                .set_title("Choose Query Folder")
                 .set_directory(&default_dir)
                 .pick_folder()
             {

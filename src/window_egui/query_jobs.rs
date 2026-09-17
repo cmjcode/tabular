@@ -77,6 +77,24 @@ impl super::Tabular {
             self.last_compiled_headers = ast_headers;
         }
 
+        // Simpan lokasi error untuk tombol "Go to error"; hapus saat query sukses.
+        let active_tab_id = self.query_tabs.get(self.active_tab_index).map(|t| t.id);
+        match (&message.error_location, active_tab_id) {
+            (Some(location), Some(tab_id)) if !message.success => {
+                self.last_error_location = Some((tab_id, location.clone()));
+            }
+            (_, Some(tab_id))
+                if message.success
+                    && self
+                        .last_error_location
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == tab_id) =>
+            {
+                self.last_error_location = None;
+            }
+            _ => {}
+        }
+
         // Update query message panel
         if message.success {
             self.query_message = describe_query_outcome(&message);
@@ -285,6 +303,35 @@ impl super::Tabular {
             active_tab.total_rows = self.actual_total_rows.unwrap_or(self.total_rows);
         }
     }
+    /// Offset byte lokasi error query terakhir di editor tab aktif, jika ada
+    /// dan statement-nya masih ada di teks editor.
+    pub fn error_location_in_editor(&self) -> Option<usize> {
+        let (tab_id, location) = self.last_error_location.as_ref()?;
+        let active_id = self.query_tabs.get(self.active_tab_index)?.id;
+        if *tab_id != active_id {
+            return None;
+        }
+        connection::sql::locate_error_in_text(&self.editor.text, location)
+    }
+
+    /// Pindahkan kursor editor ke lokasi error query terakhir.
+    pub fn jump_to_error_location(&mut self) {
+        let Some(pos) = self.error_location_in_editor() else {
+            self.toasts
+                .info("The failing statement is no longer in the editor.");
+            return;
+        };
+        let pos = pos.min(self.editor.text.len());
+        self.multi_selection.clear();
+        self.multi_selection.add_collapsed(pos);
+        self.cursor_position = pos;
+        self.selection_start = pos;
+        self.selection_end = pos;
+        self.selection_force_clear = true;
+        self.pending_cursor_set = Some(pos);
+        self.editor_focus_boost_frames = self.editor_focus_boost_frames.max(6);
+    }
+
     /// True jika pool koneksi untuk `connection_id` sudah tersedia.
     pub fn connection_pool_ready(&self, connection_id: i64) -> bool {
         self.connection_pools.contains_key(&connection_id)
@@ -607,5 +654,6 @@ pub(crate) fn failed_query_message(
         affected_rows: None,
         column_metadata: None,
         truncated: false,
+        error_location: None,
     }
 }

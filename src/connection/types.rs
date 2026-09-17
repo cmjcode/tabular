@@ -78,6 +78,18 @@ pub struct QueryJobStatus {
     pub completed: bool,
 }
 
+/// Lokasi error SQL di dalam statement yang gagal, relatif terhadap teks
+/// statement itu sendiri (bukan terhadap seluruh isi editor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorLocation {
+    /// Teks statement yang dikirim ke server.
+    pub statement: String,
+    /// Offset karakter (0-based) di dalam statement, jika server memberikannya.
+    pub char_offset: Option<usize>,
+    /// Nomor baris (1-based) di dalam statement, jika hanya baris yang diketahui.
+    pub line: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueryResultMessage {
     pub job_id: u64,
@@ -97,6 +109,8 @@ pub struct QueryResultMessage {
     pub column_metadata: Option<Vec<models::structs::ColumnMetadata>>,
     /// True jika result set dipotong karena mencapai batas baris.
     pub truncated: bool,
+    /// Posisi error di statement (untuk tombol "Go to error").
+    pub error_location: Option<ErrorLocation>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,4 +136,6 @@ pub enum QueryPreparationError {
 #[derive(Debug)]
 pub enum QueryExecutionError {
     Message(String),
+    /// Error yang posisinya di dalam statement diketahui.
+    Located(String, ErrorLocation),
 }

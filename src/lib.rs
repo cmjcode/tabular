@@ -60,6 +60,7 @@ pub mod export_import_all;
 pub mod http_client;
 pub mod http_code_export;
 pub mod http_collection;
+pub mod keymap;
 pub mod models;
 pub mod modules;
 pub mod plugin_runtime;

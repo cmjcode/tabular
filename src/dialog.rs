@@ -2100,7 +2100,7 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button(
-                                egui::RichText::new("🚀 Eksekusi Query")
+                                egui::RichText::new("🚀 Run Query")
                                     .strong()
                                     .color(egui::Color32::WHITE),
                             )
@@ -2108,7 +2108,7 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                         {
                             execute_clicked = true;
                         }
-                        if ui.button("Batal").clicked() {
+                        if ui.button("Cancel").clicked() {
                             cancel_clicked = true;
                         }
                     });
@@ -2135,7 +2135,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
     let mut confirm_clicked = false;
     let mut cancel_clicked = false;
 
-    egui::Window::new("⚠️ Peringatan: Query Berbahaya (Unsafe DML)")
+    egui::Window::new("⚠️ Unsafe Statement")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -2145,7 +2145,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Perintah {} ini TIDAK memiliki klausa WHERE!",
+                        "This {} statement has NO WHERE clause!",
                         tabular.unsafe_dml_type
                     ))
                     .color(window_egui::style::theme_danger(ctx))
@@ -2154,7 +2154,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    "Mengeksekusi perintah ini akan mengubah atau menghapus SELURUH baris data pada tabel target. Apakah Anda yakin ingin melanjutkan?",
+                    "Running it will change or delete EVERY row in the target table. Are you sure you want to continue?",
                 );
                 ui.add_space(8.0);
 
@@ -2174,7 +2174,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .button(
-                                egui::RichText::new("Ya, Eksekusi Perintah")
+                                egui::RichText::new("Yes, Run It")
                                     .strong()
                                     .color(egui::Color32::WHITE),
                             )
@@ -2182,7 +2182,7 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                         {
                             confirm_clicked = true;
                         }
-                        if ui.button("Batal").clicked() {
+                        if ui.button("Cancel").clicked() {
                             cancel_clicked = true;
                         }
                     });

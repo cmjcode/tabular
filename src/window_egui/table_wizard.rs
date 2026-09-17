@@ -10,20 +10,17 @@ impl super::Tabular {
         {
             Some(conn) => conn,
             None => {
-                self.error_message = format!(
-                    "Connection {} tidak ditemukan untuk Create Table.",
+                self.toasts.error(format!(
+                    "Connection {} was not found for Create Table.",
                     connection_id
-                );
-                self.show_error_message = true;
+                ));
                 return;
             }
         };
 
         match connection.connection_type {
             models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB => {
-                self.error_message =
-                    "Create Table tidak tersedia untuk jenis database ini.".to_string();
-                self.show_error_message = true;
+                self.toasts.error("Create Table is not available for this database type.".to_string());
                 return;
             }
             _ => {}

@@ -109,8 +109,7 @@ impl super::Tabular {
             self.show_create_folder_dialog = true;
         } else {
             debug!("❌ No parent folder set for creation! This should not happen.");
-            self.error_message = "No parent folder selected for creation".to_string();
-            self.show_error_message = true;
+            self.toasts.error("No parent folder selected for creation".to_string());
         }
     }
     pub fn handle_remove_folder_request(&mut self, hash: i64) {
@@ -134,28 +133,25 @@ impl super::Tabular {
                         }
                         Err(e) => {
                             debug!("❌ Failed to remove folder: {}", e);
-                            self.error_message = format!(
+                            self.toasts.error(format!(
                                 "Failed to remove folder '{}': {}",
                                 folder_relative_path, e
-                            );
-                            self.show_error_message = true;
+                            ));
                         }
                     }
                 } else {
                     // Offer option to remove folder and all contents
-                    self.error_message = format!(
+                    self.toasts.error(format!(
                         "Folder '{}' is not empty.\n\nWould you like to remove it and all its contents?",
                         folder_relative_path
-                    );
-                    self.show_error_message = true;
+                    ));
                     debug!(
                         "❌ Cannot remove non-empty folder: {}",
                         folder_relative_path
                     );
                 }
             } else {
-                self.error_message = format!("Folder '{}' does not exist", folder_relative_path);
-                self.show_error_message = true;
+                self.toasts.error(format!("Folder '{}' does not exist", folder_relative_path));
                 debug!("❌ Folder does not exist: {}", folder_relative_path);
             }
 
@@ -180,28 +176,24 @@ impl super::Tabular {
                             }
                             Err(e) => {
                                 debug!("❌ Failed to remove folder: {}", e);
-                                self.error_message = format!(
+                                self.toasts.error(format!(
                                     "Failed to remove folder '{}': {}",
                                     folder_relative_path, e
-                                );
-                                self.show_error_message = true;
+                                ));
                             }
                         }
                     } else {
-                        self.error_message = format!(
+                        self.toasts.error(format!(
                             "Folder '{}' is not empty.\n\nWould you like to remove it and all its contents?",
                             folder_relative_path
-                        );
-                        self.show_error_message = true;
+                        ));
                         debug!(
                             "❌ Cannot remove non-empty folder: {}",
                             folder_relative_path
                         );
                     }
                 } else {
-                    self.error_message =
-                        format!("Folder '{}' does not exist", folder_relative_path);
-                    self.show_error_message = true;
+                    self.toasts.error(format!("Folder '{}' does not exist", folder_relative_path));
                     debug!("❌ Folder does not exist: {}", folder_relative_path);
                 }
 

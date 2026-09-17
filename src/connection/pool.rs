@@ -106,7 +106,7 @@ fn reachability_target(
             connection.ssh_port.trim()
         };
         if h.is_empty() {
-            return Err("SSH host tidak boleh kosong".to_string());
+            return Err("SSH host must not be empty".to_string());
         }
         (h, p)
     } else {
@@ -117,7 +117,7 @@ fn reachability_target(
             connection.port.trim()
         };
         if h.is_empty() {
-            return Err("Database host tidak boleh kosong".to_string());
+            return Err("Database host must not be empty".to_string());
         }
         (h, p)
     };
@@ -131,7 +131,7 @@ fn reachability_target(
 
 fn unreachable_error(host: &str, port_str: &str) -> String {
     format!(
-        "Gagal terhubung ke host [{}:{}]: Jaringan/Internet tidak terjangkau (Host Offline).",
+        "Cannot reach host [{}:{}]: network unreachable (host offline).",
         host, port_str
     )
 }
@@ -156,9 +156,9 @@ fn resolve_addrs_blocking(
 
     match rx.recv_timeout(budget) {
         Ok(Ok(addrs)) => Ok(addrs),
-        Ok(Err(e)) => Err(format!("Jaringan/Internet tidak terhubung ({})", e)),
+        Ok(Err(e)) => Err(format!("Network is not connected ({})", e)),
         Err(_) => Err(format!(
-            "DNS tidak merespons dalam {} detik",
+            "DNS did not respond within {} seconds",
             budget.as_secs()
         )),
     }
@@ -183,10 +183,10 @@ pub(crate) fn check_host_reachability(
 
     let addr_str = format!("{}:{}", host, port_str);
     let socket_addrs = resolve_addrs_blocking(&addr_str, DNS_TIMEOUT)
-        .map_err(|e| format!("Gagal resolve host '{}': {}", host, e))?;
+        .map_err(|e| format!("Cannot resolve host '{}': {}", host, e))?;
 
     if socket_addrs.is_empty() {
-        return Err(format!("Host '{}' tidak valid", host));
+        return Err(format!("Host '{}' is not valid", host));
     }
 
     // The budget covers the whole probe, not each address: a host with several
@@ -222,13 +222,13 @@ pub(crate) async fn check_host_reachability_async(
             Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
             Ok(Err(e)) => {
                 return Err(format!(
-                    "Gagal resolve host '{}': Jaringan/Internet tidak terhubung ({})",
+                    "Cannot resolve host '{}': network is not connected ({})",
                     host, e
                 ));
             }
             Err(_) => {
                 return Err(format!(
-                    "Gagal resolve host '{}': DNS tidak merespons dalam {} detik",
+                    "Cannot resolve host '{}': DNS did not respond within {} seconds",
                     host,
                     DNS_TIMEOUT.as_secs()
                 ));
@@ -236,7 +236,7 @@ pub(crate) async fn check_host_reachability_async(
         };
 
     if socket_addrs.is_empty() {
-        return Err(format!("Host '{}' tidak valid", host));
+        return Err(format!("Host '{}' is not valid", host));
     }
 
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -381,7 +381,7 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
                 .entry(connection_id)
                 .or_insert_with(|| {
                     format!(
-                        "Koneksi tidak merespons dalam {} detik dan dihentikan. Silakan coba hubungkan ulang.",
+                        "The connection did not respond within {} seconds and was stopped. Please try connecting again.",
                         PENDING_POOL_MAX_AGE.as_secs()
                     )
                 });
@@ -429,7 +429,7 @@ pub(crate) async fn create_connection_pool_for_config(
             // Dropping `attempt` here tears down the half-open socket instead of
             // leaving it to run to completion in the background.
             debug!("🚫 Connect cancelled for connection {:?}", connection.id);
-            Err("Percobaan koneksi dibatalkan.".to_string())
+            Err("Connection attempt cancelled.".to_string())
         }
     }
 }
@@ -447,7 +447,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MySQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return Err(format!("Gagal resolve target host: {}", err));
+                    return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
             let port_num = target_port.parse::<u16>().unwrap_or(3306);
@@ -564,7 +564,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for PostgreSQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return Err(format!("Gagal resolve target host: {}", err));
+                    return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
             let port_num = target_port.parse::<u16>().unwrap_or(5432);
@@ -663,7 +663,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for Redis connection {:?}: {}",
                         connection.id, err
                     );
-                    return Err(format!("Gagal resolve target host: {}", err));
+                    return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
             let connection_string = if connection.password.is_empty() {
@@ -718,7 +718,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MongoDB connection {:?}: {}",
                         connection.id, err
                     );
-                    return Err(format!("Gagal resolve target host: {}", err));
+                    return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
             let uri = if connection.username.is_empty() {
@@ -766,7 +766,7 @@ async fn create_connection_pool_for_config_inner(
                         "Failed to resolve connection target for MsSQL connection {:?}: {}",
                         connection.id, err
                     );
-                    return Err(format!("Gagal resolve target host: {}", err));
+                    return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
 
@@ -1099,7 +1099,7 @@ pub(crate) async fn create_connection_pool_by_id(
         Ok(pool) => Ok(pool),
         Err(err) => {
             if connect_was_cancelled(connection_id) {
-                Err("Percobaan koneksi dibatalkan.".to_string())
+                Err("Connection attempt cancelled.".to_string())
             } else {
                 Err(err)
             }
@@ -1400,7 +1400,7 @@ pub(crate) fn cancel_connection_attempt(tabular: &mut Tabular, connection_id: i6
     tabular.refreshing_connections.remove(&connection_id);
     tabular.connection_errors.insert(
         connection_id,
-        "Percobaan koneksi dibatalkan oleh pengguna.".to_string(),
+        "Connection attempt cancelled by the user.".to_string(),
     );
 
     // Tear down a tunnel the attempt may already have opened. Non-blocking, so
