@@ -1,5 +1,5 @@
-/// Utilities for exporting query result sets to clipboard in various formats:
-/// Markdown Table, JSON, CSV, and SQL INSERT statements.
+//! Utilities for exporting query result sets to clipboard in various formats:
+//! Markdown Table, JSON, CSV, and SQL INSERT statements.
 
 pub fn format_as_markdown_table(headers: &[String], rows: &[Vec<String>]) -> String {
     if headers.is_empty() {

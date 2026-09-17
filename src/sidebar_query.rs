@@ -526,7 +526,10 @@ pub(crate) fn open_query_file(
         };
     let effective_connection_id = resolved_connection_id.or(auto_single_connection);
 
+    let tab_id = tabular.next_tab_id;
+    tabular.next_tab_id += 1;
     let new_tab = models::structs::QueryTab {
+        id: tab_id,
         title: filename,
         content: content.clone(),
         file_path: Some(file_path.to_string()),

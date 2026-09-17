@@ -86,6 +86,7 @@ pub fn spawn_session(
         return None;
     };
 
+    let tab_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
     let runtime = tabular.runtime.clone()?;
     let result_sender = tabular.query_result_sender.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -93,6 +94,7 @@ pub fn spawn_session(
     let handle = runtime.spawn(run_session(
         pool,
         connection_type,
+        tab_id,
         connection_id,
         database_name,
         rx,
@@ -109,6 +111,7 @@ pub fn spawn_session(
 async fn run_session(
     pool: models::enums::DatabasePool,
     connection_type: models::enums::DatabaseType,
+    tab_id: Option<usize>,
     connection_id: i64,
     database_name: Option<String>,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<SessionCommand>,
@@ -127,6 +130,7 @@ async fn run_session(
                         Err(e) => {
                             let _ = result_sender.send(session_message(
                                 job_id,
+                                tab_id,
                                 connection_id,
                                 &sql,
                                 Err(format!("Cannot open session connection: {}", e)),
@@ -148,6 +152,7 @@ async fn run_session(
                     if let Err(e) = run_simple(c, begin).await {
                         let _ = result_sender.send(session_message(
                             job_id,
+                            tab_id,
                             connection_id,
                             &sql,
                             Err(format!("BEGIN failed: {}", e)),
@@ -158,9 +163,10 @@ async fn run_session(
                     tx_open = true;
                 }
 
-                let outcome = run_query(c, &sql).await;
+                let outcome = run_statement(c, &sql).await;
                 let _ = result_sender.send(session_message(
                     job_id,
+                    tab_id,
                     connection_id,
                     &sql,
                     outcome,
@@ -169,9 +175,12 @@ async fn run_session(
             }
             SessionCommand::Commit { job_id } => {
                 let started = Instant::now();
-                let outcome = finish_tx(conn.as_mut(), &mut tx_open, "COMMIT").await;
+                let outcome = finish_tx(conn.as_mut(), &mut tx_open, "COMMIT")
+                    .await
+                    .map(|(h, r)| (h, r, None));
                 let _ = result_sender.send(session_message(
                     job_id,
+                    tab_id,
                     connection_id,
                     "COMMIT",
                     outcome,
@@ -180,9 +189,12 @@ async fn run_session(
             }
             SessionCommand::Rollback { job_id } => {
                 let started = Instant::now();
-                let outcome = finish_tx(conn.as_mut(), &mut tx_open, "ROLLBACK").await;
+                let outcome = finish_tx(conn.as_mut(), &mut tx_open, "ROLLBACK")
+                    .await
+                    .map(|(h, r)| (h, r, None));
                 let _ = result_sender.send(session_message(
                     job_id,
+                    tab_id,
                     connection_id,
                     "ROLLBACK",
                     outcome,
@@ -291,6 +303,46 @@ async fn run_simple(conn: &mut SessionConn, sql: &str) -> Result<(), String> {
     }
 }
 
+/// Hasil satu statement di sesi: header, baris, dan jumlah baris terdampak
+/// (Some hanya untuk statement pengubah data).
+type StatementOutput = (Vec<String>, Vec<Vec<String>>, Option<u64>);
+
+/// Jalankan satu statement di koneksi sesi. Statement pengubah data dijalankan
+/// lewat `execute()` supaya jumlah baris terdampak dari driver bisa dilaporkan.
+async fn run_statement(conn: &mut SessionConn, sql: &str) -> Result<StatementOutput, String> {
+    if !crate::connection::sql::statement_returns_rows(sql) {
+        let affected = match conn {
+            SessionConn::MySql(c) => Some(
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .execute(&mut **c)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .rows_affected(),
+            ),
+            SessionConn::Postgres(c) => Some(
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .execute(&mut **c)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .rows_affected(),
+            ),
+            SessionConn::Sqlite(c) => Some(
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .execute(&mut **c)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .rows_affected(),
+            ),
+            // Driver MsSQL mengembalikan hasil lewat jalur query biasa.
+            SessionConn::MsSQL(_) => None,
+        };
+        if let Some(n) = affected {
+            return Ok((Vec::new(), Vec::new(), Some(n)));
+        }
+    }
+    run_query(conn, sql).await.map(|(h, r)| (h, r, None))
+}
+
 async fn run_query(
     conn: &mut SessionConn,
     sql: &str,
@@ -319,29 +371,10 @@ async fn run_query(
                 .first()
                 .map(|r| r.columns().iter().map(|c| c.name().to_string()).collect())
                 .unwrap_or_default();
-            let data = rows
-                .into_iter()
-                .map(|row| {
-                    (0..row.len())
-                        .map(|idx| match row.try_get::<Option<String>, _>(idx) {
-                            Ok(Some(v)) => v,
-                            Ok(None) => "NULL".to_string(),
-                            Err(_) => {
-                                if let Ok(val) = row.try_get::<i64, _>(idx) {
-                                    val.to_string()
-                                } else if let Ok(val) = row.try_get::<f64, _>(idx) {
-                                    val.to_string()
-                                } else if let Ok(val) = row.try_get::<bool, _>(idx) {
-                                    val.to_string()
-                                } else {
-                                    "[unsupported]".to_string()
-                                }
-                            }
-                        })
-                        .collect()
-                })
-                .collect();
-            Ok((headers, data))
+            Ok((
+                headers,
+                crate::driver_postgres::convert_postgres_rows_to_table_data(rows),
+            ))
         }
         SessionConn::Sqlite(c) => {
             let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -368,17 +401,20 @@ async fn run_query(
 
 fn session_message(
     job_id: u64,
+    tab_id: Option<usize>,
     connection_id: i64,
     query: &str,
-    outcome: Result<(Vec<String>, Vec<Vec<String>>), String>,
+    outcome: Result<StatementOutput, String>,
     started: Instant,
 ) -> QueryResultMessage {
     match outcome {
-        Ok((headers, rows)) => QueryResultMessage {
+        Ok((headers, rows, affected)) => QueryResultMessage {
             job_id,
+            tab_id,
             connection_id,
             success: true,
-            affected_rows: Some(rows.len()),
+            affected_rows: affected.map(|n| n as usize),
+            truncated: false,
             headers,
             rows,
             error: None,
@@ -391,6 +427,7 @@ fn session_message(
         },
         Err(message) => QueryResultMessage {
             job_id,
+            tab_id,
             connection_id,
             success: false,
             headers: vec!["Error".to_string()],
@@ -403,6 +440,7 @@ fn session_message(
             ast_headers: None,
             affected_rows: None,
             column_metadata: None,
+            truncated: false,
         },
     }
 }

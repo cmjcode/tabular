@@ -300,3 +300,100 @@ pub(crate) fn fetch_tables_from_postgres_connection(
               }
        })
 }
+
+/// Mengubah satu nilai PostgreSQL menjadi teks tampilan.
+///
+/// sqlx mengecek kompatibilitas tipe secara ketat (kolom `INT4` tidak bisa dibaca
+/// sebagai `i64`, `NUMERIC` tidak bisa sebagai `String`), jadi setiap keluarga tipe
+/// di-decode dengan tipe Rust yang sesuai. Tipe yang tidak dikenal memakai byte
+/// mentah dari protokol.
+fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
+    use sqlx::{Column, TypeInfo, ValueRef};
+
+    fn show<T: ToString>(v: Result<Option<T>, sqlx::Error>) -> Option<String> {
+        v.ok().map(|o| o.map(|x| x.to_string()).unwrap_or_else(|| "NULL".to_string()))
+    }
+    fn show_array<T: ToString>(v: Result<Option<Vec<Option<T>>>, sqlx::Error>) -> Option<String> {
+        v.ok().map(|o| match o {
+            None => "NULL".to_string(),
+            Some(items) => format!(
+                "{{{}}}",
+                items
+                    .iter()
+                    .map(|i| i.as_ref().map(|x| x.to_string()).unwrap_or_else(|| "NULL".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        })
+    }
+
+    match row.try_get_raw(idx) {
+        Ok(raw) if raw.is_null() => return "NULL".to_string(),
+        Err(e) => return format!("[error: {}]", e),
+        Ok(_) => {}
+    }
+
+    let type_name = row.columns()[idx].type_info().name().to_ascii_uppercase();
+    let decoded = match type_name.as_str() {
+        "BOOL" => show(row.try_get::<Option<bool>, _>(idx)),
+        "INT2" | "SMALLINT" | "SMALLSERIAL" => show(row.try_get::<Option<i16>, _>(idx)),
+        "INT4" | "INT" | "SERIAL" => show(row.try_get::<Option<i32>, _>(idx)),
+        "INT8" | "BIGINT" | "BIGSERIAL" => show(row.try_get::<Option<i64>, _>(idx)),
+        "OID" => show(row.try_get::<Option<sqlx::postgres::types::Oid>, _>(idx).map(|o| o.map(|v| v.0))),
+        "FLOAT4" | "REAL" => show(row.try_get::<Option<f32>, _>(idx)),
+        "FLOAT8" | "DOUBLE PRECISION" => show(row.try_get::<Option<f64>, _>(idx)),
+        "NUMERIC" => show(row.try_get::<Option<rust_decimal::Decimal>, _>(idx)),
+        "TIMESTAMP" => show(row.try_get::<Option<chrono::NaiveDateTime>, _>(idx)),
+        "TIMESTAMPTZ" => show(row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx)),
+        "DATE" => show(row.try_get::<Option<chrono::NaiveDate>, _>(idx)),
+        "TIME" => show(row.try_get::<Option<chrono::NaiveTime>, _>(idx)),
+        "JSON" | "JSONB" => show(row.try_get::<Option<sqlx::types::JsonValue>, _>(idx)),
+        "BYTEA" => row.try_get::<Option<Vec<u8>>, _>(idx).ok().map(|o| match o {
+            None => "NULL".to_string(),
+            Some(b) => format!("\\x{}", hex::encode(b)),
+        }),
+        "UUID" => row.try_get_raw(idx).ok().and_then(|raw| {
+            let bytes = raw.as_bytes().ok()?;
+            (bytes.len() == 16).then(|| {
+                let h = hex::encode(bytes);
+                format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+            })
+        }),
+        "INT2[]" => show_array(row.try_get::<Option<Vec<Option<i16>>>, _>(idx)),
+        "INT4[]" => show_array(row.try_get::<Option<Vec<Option<i32>>>, _>(idx)),
+        "INT8[]" => show_array(row.try_get::<Option<Vec<Option<i64>>>, _>(idx)),
+        "FLOAT8[]" => show_array(row.try_get::<Option<Vec<Option<f64>>>, _>(idx)),
+        "BOOL[]" => show_array(row.try_get::<Option<Vec<Option<bool>>>, _>(idx)),
+        "TEXT[]" | "VARCHAR[]" | "NAME[]" | "BPCHAR[]" => {
+            show_array(row.try_get::<Option<Vec<Option<String>>>, _>(idx))
+        }
+        _ => None,
+    };
+    if let Some(text) = decoded {
+        return text;
+    }
+
+    // Tipe mirip teks (TEXT, VARCHAR, NAME, CITEXT, enum, …) di-decode sebagai String.
+    if let Ok(v) = row.try_get_unchecked::<Option<String>, _>(idx)
+        && let Some(s) = v
+    {
+        return s;
+    }
+    match row.try_get_raw(idx).ok().and_then(|raw| raw.as_bytes().ok()) {
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(s) if s.chars().all(|c| !c.is_control() || c.is_whitespace()) => s.to_string(),
+            _ => format!("\\x{}", hex::encode(bytes)),
+        },
+        None => format!("[unsupported {}]", type_name),
+    }
+}
+
+/// Mengubah baris PostgreSQL menjadi string tampilan, dengan men-decode setiap
+/// kolom memakai tipe aslinya (lihat [`pg_value_to_string`]).
+pub(crate) fn convert_postgres_rows_to_table_data(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| (0..row.len()).map(|idx| pg_value_to_string(row, idx)).collect())
+        .collect()
+}

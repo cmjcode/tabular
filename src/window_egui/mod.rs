@@ -136,6 +136,8 @@ pub struct Tabular {
     pub user_manager_result_receiver: Receiver<(usize, crate::user_manager::UserManagerResult)>,
     pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
     pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
+    /// Backend pid per job yang sedang berjalan, untuk cancel di sisi server.
+    pub query_backend_pids: crate::connection::types::BackendPidRegistry,
     pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,
     /// Sequential statement batches: member job ids + one abort handle for
     /// the whole batch (cancelling any member cancels the entire batch).
@@ -446,6 +448,12 @@ pub struct Tabular {
     /// passed to `restart_app()` on "Restart Now".
     pub staged_update_script: Option<std::path::PathBuf>,
     pub enable_debug_logging: bool, // New field for debug logging
+    /// Timeout query per statement dalam detik (0 = tanpa batas).
+    pub query_timeout_secs: u32,
+    /// Jumlah baris maksimum yang disimpan dari satu result set tanpa paginasi.
+    pub max_result_rows: u32,
+    /// Buka kembali tab dari sesi sebelumnya saat startup.
+    pub restore_session: bool,
     // Auto updater instance
     pub auto_updater: Option<crate::auto_updater::AutoUpdater>,
     // Preferences window active tab
