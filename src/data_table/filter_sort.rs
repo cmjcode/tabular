@@ -488,7 +488,7 @@ pub fn build_where_from_visual_filter(
                     .split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .map(|s| quote_val(s))
+                    .map(&quote_val)
                     .collect();
                 if items.is_empty() {
                     continue;

@@ -131,6 +131,7 @@ impl QuickOpenItem {
 
 /// State for Quick Open modal
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct QuickOpenState {
     pub is_open: bool,
     pub query: String,
@@ -142,20 +143,6 @@ pub struct QuickOpenState {
     pub scroll_to_selected: bool,
 }
 
-impl Default for QuickOpenState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            query: String::new(),
-            selected_index: 0,
-            active_category: None,
-            items: Vec::new(),
-            filtered_items: Vec::new(),
-            request_focus: false,
-            scroll_to_selected: false,
-        }
-    }
-}
 
 impl QuickOpenState {
     /// Invalidate items cache so next open will reload from database/tree
@@ -1267,7 +1254,30 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
         });
 }
 
+/// Aksi keymap untuk judul command Quick Open (jika punya shortcut).
+fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
+    use crate::keymap::Action;
+    Some(match title {
+        "Query: Run" => Action::RunQuery,
+        "Query: Format SQL" => Action::FormatSql,
+        "Query: Explain" => Action::ExplainQuery,
+        "Query: New Tab" => Action::NewTab,
+        "Query: Close Tab" => Action::CloseTab,
+        "Query: Save Tab" => Action::SaveTab,
+        "Editor: Go to Definition" => Action::GoToDefinition,
+        "Editor: Rename Symbol" => Action::RenameSymbol,
+        "Editor: Toggle Find & Replace" => Action::FindReplace,
+        "Transaction: Begin / Toggle" => Action::ToggleTransactionMode,
+        "View: Refresh" => Action::Refresh,
+        "Preferences: Settings" => Action::OpenSettings,
+        "Help: Keyboard Shortcuts" => Action::ShowShortcuts,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -1394,25 +1404,4 @@ mod tests {
         assert_eq!(state.filtered_items.len(), 1);
         assert_eq!(state.items[state.filtered_items[0].0].title, "user_view");
     }
-}
-
-/// Aksi keymap untuk judul command Quick Open (jika punya shortcut).
-fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
-    use crate::keymap::Action;
-    Some(match title {
-        "Query: Run" => Action::RunQuery,
-        "Query: Format SQL" => Action::FormatSql,
-        "Query: Explain" => Action::ExplainQuery,
-        "Query: New Tab" => Action::NewTab,
-        "Query: Close Tab" => Action::CloseTab,
-        "Query: Save Tab" => Action::SaveTab,
-        "Editor: Go to Definition" => Action::GoToDefinition,
-        "Editor: Rename Symbol" => Action::RenameSymbol,
-        "Editor: Toggle Find & Replace" => Action::FindReplace,
-        "Transaction: Begin / Toggle" => Action::ToggleTransactionMode,
-        "View: Refresh" => Action::Refresh,
-        "Preferences: Settings" => Action::OpenSettings,
-        "Help: Keyboard Shortcuts" => Action::ShowShortcuts,
-        _ => return None,
-    })
 }

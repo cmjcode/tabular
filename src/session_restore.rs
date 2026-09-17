@@ -245,9 +245,9 @@ fn load() -> Option<SessionSnapshot> {
 /// Hanya ukuran yang dipulihkan (bukan posisi) agar window tidak muncul di
 /// luar layar ketika konfigurasi monitor berubah.
 pub fn saved_window_geometry() -> Option<WindowGeometry> {
-    load()?
-        .window
-        .filter(|w| w.width.is_finite() && w.height.is_finite() && w.width >= 400.0 && w.height >= 300.0)
+    load()?.window.filter(|w| {
+        w.width.is_finite() && w.height.is_finite() && w.width >= 400.0 && w.height >= 300.0
+    })
 }
 
 /// Pulihkan tab dari sesi sebelumnya. Hanya dijalankan sekali, dan hanya jika
@@ -425,9 +425,15 @@ pub fn render_close_tab_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .default_width(380.0)
         .show(ctx, |ui| {
             if titles.len() == 1 {
-                ui.label(format!("“{}” has changes that have not been saved.", titles[0]));
+                ui.label(format!(
+                    "“{}” has changes that have not been saved.",
+                    titles[0]
+                ));
             } else {
-                ui.label(format!("{} tabs have changes that have not been saved:", titles.len()));
+                ui.label(format!(
+                    "{} tabs have changes that have not been saved:",
+                    titles.len()
+                ));
                 for title in titles.iter().take(8) {
                     ui.label(egui::RichText::new(format!("• {}", title)).monospace());
                 }
@@ -447,10 +453,14 @@ pub fn render_close_tab_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if ui.add(discard).clicked() {
                         choice = Some(Choice::Discard);
                     }
-                    if matches!(pending, PendingTabClose::Single { .. }) && ui.button("Save…").clicked() {
+                    if matches!(pending, PendingTabClose::Single { .. })
+                        && ui.button("Save…").clicked()
+                    {
                         choice = Some(Choice::Save);
                     }
-                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if ui.button("Cancel").clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
                         choice = Some(Choice::Cancel);
                     }
                 });

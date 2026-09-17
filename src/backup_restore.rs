@@ -636,7 +636,7 @@ impl SqliteBackupEngine {
     ) -> Result<(), String> {
         let is_gzipped = source_backup_path
             .extension()
-            .map_or(false, |ext| ext == "gz");
+            .is_some_and(|ext| ext == "gz");
 
         let raw_source_path = if is_gzipped {
             let temp_uncompressed = dest_db_path.with_extension("tmp_restore_sqlite");
@@ -956,7 +956,7 @@ impl BackupRestoreRunner {
         tracker: Arc<Mutex<ProgressTracker>>,
         cancel_token: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        let is_custom_format = options.source_file.extension().map_or(false, |ext| {
+        let is_custom_format = options.source_file.extension().is_some_and(|ext| {
             ext == "dump" || ext == "pgdump" || ext == "tar" || ext == "dir"
         });
 
@@ -1383,7 +1383,7 @@ impl BackupRestoreRunner {
             });
         }
 
-        let is_gzipped = source_file.extension().map_or(false, |ext| ext == "gz");
+        let is_gzipped = source_file.extension().is_some_and(|ext| ext == "gz");
         let file = File::open(source_file)
             .map_err(|e| format!("Failed to open source file for restore: {}", e))?;
 

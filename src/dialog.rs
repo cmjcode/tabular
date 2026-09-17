@@ -1972,12 +1972,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     let mut jobs = Vec::new();
                     let mut all_ok = true;
                     for (i, sql) in batches.into_iter().enumerate() {
-                        let job_id = tabular.next_query_job_id;
-                        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+                        let job_id = tabular.jobs.allocate_id();
                         match crate::connection::prepare_query_job(tabular, connection_id, sql, job_id) {
                             Ok(job) => {
                                 let preview = format!("CSV import batch {}/{}", i + 1, batch_count);
-                                tabular.active_query_jobs.insert(
+                                tabular.jobs.active.insert(
                                     job_id,
                                     crate::connection::QueryJobStatus {
                                         job_id,

@@ -41,7 +41,7 @@ impl Default for ExportAllDialogState {
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let default_filename = format!("tabular_backup_{}.zip", timestamp);
         let default_path = dirs::download_dir()
-            .or_else(|| dirs::home_dir())
+            .or_else(dirs::home_dir)
             .map(|p| p.join(default_filename));
 
         Self {
@@ -59,6 +59,7 @@ impl Default for ExportAllDialogState {
 // ─── Import Dialog State ────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ImportAllDialogState {
     pub archive_path: Option<PathBuf>,
     pub manifest_preview: Option<ExportAllManifest>,
@@ -69,19 +70,6 @@ pub struct ImportAllDialogState {
     pub summary: Option<ImportSummary>,
 }
 
-impl Default for ImportAllDialogState {
-    fn default() -> Self {
-        Self {
-            archive_path: None,
-            manifest_preview: None,
-            options: ImportAllOptions::default(),
-            is_running: false,
-            status_message: None,
-            error_message: None,
-            summary: None,
-        }
-    }
-}
 
 // ─── Render Export Dialog ───────────────────────────────────────────────────
 
@@ -119,7 +107,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     crate::window_egui::style::render_modal_backdrop(ctx, "export_all_dialog", is_open);
 
     let screen_rect = ctx.content_rect();
-    let dialog_w = (screen_rect.width() - 32.0).min(560.0).max(420.0);
+    let dialog_w = (screen_rect.width() - 32.0).clamp(420.0, 560.0);
 
     egui::Window::new("📦 Export All Application Data (ZIP)")
         .open(&mut is_open)
@@ -402,7 +390,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     crate::window_egui::style::render_modal_backdrop(ctx, "import_all_dialog", is_open);
 
     let screen_rect = ctx.content_rect();
-    let dialog_w = (screen_rect.width() - 32.0).min(580.0).max(440.0);
+    let dialog_w = (screen_rect.width() - 32.0).clamp(440.0, 580.0);
 
     egui::Window::new("📥 Import & Restore All Data (ZIP)")
         .open(&mut is_open)

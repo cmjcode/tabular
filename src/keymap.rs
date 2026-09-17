@@ -40,6 +40,8 @@ pub struct ActionSpec {
     pub defaults: &'static [&'static str],
 }
 
+// Satu baris per aksi agar tabel mudah dipindai.
+#[rustfmt::skip]
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { action: Action::RunQuery, id: "run_query", label: "Run query / selection", category: "Query", defaults: &["Cmd+Enter"] },
     ActionSpec { action: Action::ExplainQuery, id: "explain_query", label: "Explain query", category: "Query", defaults: &["Cmd+Shift+E"] },
@@ -56,7 +58,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { action: Action::QuickOpen, id: "quick_open", label: "Quick open / command palette", category: "Navigation", defaults: &["Cmd+P", "Cmd+K"] },
     ActionSpec { action: Action::Refresh, id: "refresh", label: "Refresh data / structure", category: "Navigation", defaults: &["Cmd+R"] },
     ActionSpec { action: Action::OpenSettings, id: "open_settings", label: "Open settings", category: "Application", defaults: &["Cmd+Comma"] },
-    ActionSpec { action: Action::ShowShortcuts, id: "show_shortcuts", label: "Keyboard shortcuts", category: "Application", defaults: &["Cmd+Shift+Slash", "F1"] },
+    ActionSpec { action: Action::ShowShortcuts, id: "show_shortcuts", label: "Keyboard shortcuts", category: "Application", defaults: &["F1", "Cmd+Shift+Questionmark", "Cmd+Shift+Slash"] },
     ActionSpec { action: Action::Quit, id: "quit", label: "Quit Tabular", category: "Application", defaults: &["Cmd+Q"] },
 ];
 
@@ -188,7 +190,10 @@ impl Default for Keymap {
 }
 
 fn default_shortcuts(spec: &ActionSpec) -> Vec<Shortcut> {
-    spec.defaults.iter().filter_map(|d| Shortcut::parse(d)).collect()
+    spec.defaults
+        .iter()
+        .filter_map(|d| Shortcut::parse(d))
+        .collect()
 }
 
 fn keybindings_path() -> std::path::PathBuf {
@@ -220,7 +225,11 @@ impl Keymap {
                 .filter_map(|text| {
                     let parsed = Shortcut::parse(text);
                     if parsed.is_none() {
-                        log::warn!("Invalid shortcut '{}' for '{}' in keybindings.json", text, id);
+                        log::warn!(
+                            "Invalid shortcut '{}' for '{}' in keybindings.json",
+                            text,
+                            id
+                        );
                     }
                     parsed
                 })
@@ -237,7 +246,10 @@ impl Keymap {
             .map(|spec| {
                 (
                     spec.id,
-                    self.shortcuts(spec.action).iter().map(|s| s.to_config()).collect(),
+                    self.shortcuts(spec.action)
+                        .iter()
+                        .map(|s| s.to_config())
+                        .collect(),
                 )
             })
             .collect();
@@ -263,7 +275,8 @@ impl Keymap {
     }
 
     pub fn reset(&mut self, action: Action) {
-        self.bindings.insert(action, default_shortcuts(spec(action)));
+        self.bindings
+            .insert(action, default_shortcuts(spec(action)));
     }
 
     /// Aksi lain yang memakai shortcut yang sama.
@@ -338,7 +351,9 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                 tabular.keymap.set(action, vec![shortcut]);
                 tabular.keymap.recording = None;
                 if let Err(e) = tabular.keymap.save() {
-                    tabular.toasts.error(format!("Could not save keybindings: {}", e));
+                    tabular
+                        .toasts
+                        .error(format!("Could not save keybindings: {}", e));
                 } else if !conflicts.is_empty() {
                     let names: Vec<&str> = conflicts.iter().map(|a| spec(*a).label).collect();
                     tabular.toasts.warning(format!(

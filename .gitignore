@@ -1,5 +1,6 @@
 target/
 target/*
+patches/**/Cargo.lock
 data/connections.db
 data/connections copy.db
 .vscode/
@@ -16,7 +17,6 @@ flatpak/cargo-vendor
 flatpak/repo
 .claude
 .agents
-Cargo.lock
 .idea
 
 # Databases and logs
@@ -34,3 +34,6 @@ build/
 xcuserdata/
 DerivedData/
 .agent
+
+# Local environment (see .env.example)
+.env

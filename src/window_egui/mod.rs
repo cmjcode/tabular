@@ -41,6 +41,38 @@ pub struct DeferredCallbackQuery {
     pub queued_at: std::time::Instant,
 }
 
+/// State job query latar belakang yang sebelumnya tersebar sebagai sembilan
+/// field terpisah di `Tabular`.
+#[derive(Default)]
+pub struct QueryJobsState {
+    /// Job yang sedang berjalan, per job id.
+    pub active: std::collections::HashMap<u64, connection::QueryJobStatus>,
+    pub handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
+    /// Backend pid per job yang sedang berjalan, untuk cancel di sisi server.
+    pub backend_pids: crate::connection::types::BackendPidRegistry,
+    /// Job yang dibatalkan beserta waktunya; hasil yang datang terlambat diabaikan.
+    pub cancelled: std::collections::HashMap<u64, std::time::Instant>,
+    /// Batch statement berurutan: id anggota + satu abort handle untuk seluruh
+    /// batch (membatalkan satu anggota membatalkan seluruh batch).
+    pub batches: Vec<(Vec<u64>, tokio::task::AbortHandle)>,
+    /// Job yang hasilnya adalah satu halaman server pagination.
+    pub paginated: std::collections::HashSet<u64>,
+    /// Job yang hasilnya diteruskan ke callback pemanggil (structure editor,
+    /// simpan spreadsheet, wizard, drop table, …).
+    pub callbacks: std::collections::HashMap<u64, QueryCallback>,
+    /// Query ber-callback yang menunggu pool koneksi dibuat.
+    pub deferred_callbacks: Vec<DeferredCallbackQuery>,
+    last_id: u64,
+}
+
+impl QueryJobsState {
+    /// Ambil id job baru yang unik.
+    pub fn allocate_id(&mut self) -> u64 {
+        self.last_id = self.last_id.wrapping_add(1);
+        self.last_id
+    }
+}
+
 /// Results from non-blocking background metadata warming tasks for autocomplete
 #[derive(Debug)]
 pub enum AutocompleteWarmResult {
@@ -135,27 +167,14 @@ pub struct Tabular {
     pub dba_result_receiver: Receiver<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>,
     pub user_manager_result_sender: Sender<(usize, crate::user_manager::UserManagerResult)>,
     pub user_manager_result_receiver: Receiver<(usize, crate::user_manager::UserManagerResult)>,
-    pub active_query_jobs: std::collections::HashMap<u64, connection::QueryJobStatus>,
-    pub active_query_handles: std::collections::HashMap<u64, tokio::task::JoinHandle<()>>,
     /// Registry shortcut keyboard (bisa diubah user, lihat keymap.rs).
     pub keymap: crate::keymap::Keymap,
     pub show_shortcuts_window: bool,
     pub shortcuts_filter: String,
     /// Lokasi error query terakhir: (id tab, lokasi). Dipakai tombol "Go to error".
     pub last_error_location: Option<(usize, crate::connection::types::ErrorLocation)>,
-    /// Backend pid per job yang sedang berjalan, untuk cancel di sisi server.
-    pub query_backend_pids: crate::connection::types::BackendPidRegistry,
-    pub cancelled_query_jobs: std::collections::HashMap<u64, std::time::Instant>,
-    /// Sequential statement batches: member job ids + one abort handle for
-    /// the whole batch (cancelling any member cancels the entire batch).
-    pub query_job_batches: Vec<(Vec<u64>, tokio::task::AbortHandle)>,
-    pub pending_paginated_jobs: std::collections::HashSet<u64>,
-    /// Job query yang hasilnya diteruskan ke callback pemanggil (structure
-    /// editor, simpan spreadsheet, wizard, drop table, …).
-    pub pending_callback_jobs: std::collections::HashMap<u64, QueryCallback>,
-    /// Query ber-callback yang menunggu pool koneksi dibuat.
-    pub deferred_callback_queries: Vec<DeferredCallbackQuery>,
-    pub next_query_job_id: u64,
+    /// State semua job query yang sedang berjalan (lihat QueryJobsState).
+    pub jobs: QueryJobsState,
     // Background refresh status tracking
     pub refreshing_connections: std::collections::HashSet<i64>,
     // Track connection errors (connection_id -> error_message)

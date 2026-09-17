@@ -380,20 +380,19 @@ impl super::Tabular {
                     .unwrap_or(false);
 
             if pool_ready {
-                let job_id = self.next_query_job_id;
-                self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+                let job_id = self.jobs.allocate_id();
                 match connection::prepare_query_job(self, conn_id, query.clone(), job_id) {
                     Ok(job) => {
                         match connection::spawn_query_job(self, job, self.query_result_sender.clone()) {
                             Ok(handle) => {
-                                self.active_query_jobs.insert(job_id, connection::QueryJobStatus {
+                                self.jobs.active.insert(job_id, connection::QueryJobStatus {
                                     job_id,
                                     connection_id: conn_id,
                                     query_preview: query.chars().take(80).collect(),
                                     started_at: std::time::Instant::now(),
                                     completed: false,
                                 });
-                                self.active_query_handles.insert(job_id, handle);
+                                self.jobs.handles.insert(job_id, handle);
                                 self.current_table_name = "Running query…".to_string();
                             }
                             Err(err) => {
@@ -1599,8 +1598,7 @@ impl super::Tabular {
                                     self.current_table_name =
                                         "Connecting… waiting for pool".to_string();
                                 } else {
-                                    let job_id = self.next_query_job_id;
-                                    self.next_query_job_id = self.next_query_job_id.wrapping_add(1);
+                                    let job_id = self.jobs.allocate_id();
                                     if let Ok(mut job) = connection::prepare_query_job(
                                         self,
                                         connection_id,
@@ -1615,7 +1613,7 @@ impl super::Tabular {
                                             started_at: std::time::Instant::now(),
                                             completed: false,
                                         };
-                                        self.active_query_jobs.insert(job_id, status);
+                                        self.jobs.active.insert(job_id, status);
                                         self.query_execution_in_progress = true;
                                         self.extend_query_icon_hold();
                                         self.current_table_name = format!(

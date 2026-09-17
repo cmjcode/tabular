@@ -87,7 +87,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     // Execution time indicator
                     if let Some(ms) = exec_ms {
                         ui.separator();
-                        crate::window_egui::style::render_execution_pill(ui, ms as u128, tabular.total_rows);
+                        crate::window_egui::style::render_execution_pill(ui, ms, tabular.total_rows);
                     }
 
                     // Grid Summary Bar (Sum, Avg, Count, Min, Max for selected cells)
@@ -158,13 +158,13 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary(&format!("{} First", egui_icons::icons::ICON_FIRST_PAGE.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("{} First", egui_icons::icons::ICON_FIRST_PAGE.codepoint)),
                     )
                     .clicked()
                     .then(|| go_to_page(tabular, 0));
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary(&format!("{} Prev", egui_icons::icons::ICON_CHEVRON_LEFT.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("{} Prev", egui_icons::icons::ICON_CHEVRON_LEFT.codepoint)),
                     )
                     .clicked()
                     .then(|| previous_page(tabular));
@@ -180,13 +180,13 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     }
                     ui.add_enabled(
                         has_data && tabular.current_page < total_pages.saturating_sub(1),
-                        crate::window_egui::style::btn_secondary(&format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
                     )
                     .clicked()
                     .then(|| next_page(tabular));
                     ui.add_enabled(
                         has_data && total_pages > 1 && !total_unknown,
-                        crate::window_egui::style::btn_secondary(&format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
                     )
                     .clicked()
                     .then(|| {

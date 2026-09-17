@@ -287,8 +287,8 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let screen_rect = ctx.content_rect();
     // Generous and responsive dimensions: taller to eliminate excessive scrolling,
     // wider for a balanced two-card or structured layout.
-    let dialog_w = (screen_rect.width() - 40.0).min(680.0).max(480.0);
-    let dialog_h = (screen_rect.height() - 50.0).min(780.0).max(520.0);
+    let dialog_w = (screen_rect.width() - 40.0).clamp(480.0, 680.0);
+    let dialog_h = (screen_rect.height() - 50.0).clamp(520.0, 780.0);
 
     let is_logged_in = tabular.sync_account.is_some();
 

@@ -1215,14 +1215,14 @@ impl super::Tabular {
     }
     pub fn render_active_query_jobs_overlay(&mut self, ctx: &egui::Context) {
         self.prune_cancelled_jobs();
-        if self.active_query_jobs.is_empty() {
+        if self.jobs.active.is_empty() {
             return;
         }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
         let mut jobs: Vec<connection::QueryJobStatus> =
-            self.active_query_jobs.values().cloned().collect();
+            self.jobs.active.values().cloned().collect();
         jobs.sort_by_key(|status| status.started_at);
 
         let count = jobs.len();
@@ -1974,12 +1974,12 @@ impl super::Tabular {
             if confirm_create {
                 let trimmed = folder_name.trim();
                 if !trimmed.is_empty() {
-                    if let Some(_) = crate::http_collection::create_folder_in_workspace(
+                    if crate::http_collection::create_folder_in_workspace(
                         &mut self.yaak_workspaces,
                         &ws_id,
                         parent_id_opt.as_deref(),
                         trimmed,
-                    ) {
+                    ).is_some() {
                         self.toasts
                             .success(format!("Created folder '{}'", trimmed));
                     } else {

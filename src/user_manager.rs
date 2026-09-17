@@ -925,7 +925,7 @@ async fn fetch_mysql_user_data(
                                 let grantee: String = row.try_get("GRANTEE").unwrap_or_default();
                                 let clean = grantee.replace('\'', "");
                                 let parts: Vec<&str> = clean.split('@').collect();
-                                let user = parts.get(0).copied().unwrap_or("unknown").to_string();
+                                let user = parts.first().copied().unwrap_or("unknown").to_string();
                                 let host = parts.get(1).copied().unwrap_or("%").to_string();
                                 users.push(UserInfo {
                                     username: user.clone(),
@@ -957,7 +957,7 @@ async fn fetch_mysql_user_data(
                                         let cur: String = row.try_get("cur_user").unwrap_or_default();
                                         let clean = cur.replace('\'', "");
                                         let parts: Vec<&str> = clean.split('@').collect();
-                                        let user = parts.get(0).copied().unwrap_or("current_user").to_string();
+                                        let user = parts.first().copied().unwrap_or("current_user").to_string();
                                         let host = parts.get(1).copied().unwrap_or("%").to_string();
                                         users.push(UserInfo {
                                             username: user,
@@ -1295,8 +1295,7 @@ async fn fetch_sqlite_user_data(
     sq_pool: &sqlx::SqlitePool,
 ) -> Result<UserManagerDataPayload, String> {
     let mut executed_queries = Vec::new();
-    let mut users = Vec::new();
-    users.push(UserInfo {
+    let users = vec![UserInfo {
         username: "sqlite_master".to_string(),
         host: "embedded (local file)".to_string(),
         is_superuser: true,
@@ -1311,7 +1310,7 @@ async fn fetch_sqlite_user_data(
             ("Storage Mode".to_string(), "Single-File / Serverless".to_string()),
             ("Security Model".to_string(), "OS File Permissions".to_string()),
         ],
-    });
+    }];
 
     let tables_query = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;";
     let rows = match query_sqlite_timeout(sq_pool, tables_query, 4, "SQLite Objects").await {
@@ -2626,6 +2625,8 @@ fn render_bool_badge(ui: &mut egui::Ui, val: bool) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

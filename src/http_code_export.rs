@@ -451,21 +451,20 @@ fn to_nodejs(export: &ReqExport) -> String {
 fn to_go(export: &ReqExport) -> String {
     let mut imports = vec!["\"fmt\"", "\"io\"", "\"net/http\""];
     let mut preamble = String::new();
-    let body_expr: String;
     let is_multipart = matches!(export.body, BodyExport::Multipart(_));
 
-    match &export.body {
+    let body_expr = match &export.body {
         BodyExport::None => {
-            body_expr = "nil".to_string();
+            "nil".to_string()
         }
         BodyExport::Unsupported(msg) => {
             preamble.push_str(&format!("\t// NOTE: {msg}\n"));
-            body_expr = "nil".to_string();
+            "nil".to_string()
         }
         BodyExport::Raw { text, .. } => {
             imports.push("\"strings\"");
             preamble.push_str(&format!("\tpayload := strings.NewReader({})\n", go_string_literal(text)));
-            body_expr = "payload".to_string();
+            "payload".to_string()
         }
         BodyExport::Form(pairs) => {
             imports.push("\"net/url\"");
@@ -479,7 +478,7 @@ fn to_go(export: &ReqExport) -> String {
                 ));
             }
             preamble.push_str("\tpayload := strings.NewReader(form.Encode())\n");
-            body_expr = "payload".to_string();
+            "payload".to_string()
         }
         BodyExport::Multipart(pairs) => {
             imports.push("\"bytes\"");
@@ -493,9 +492,9 @@ fn to_go(export: &ReqExport) -> String {
                 ));
             }
             preamble.push_str("\twriter.Close()\n\tpayload := &buf\n");
-            body_expr = "payload".to_string();
+            "payload".to_string()
         }
-    }
+    };
 
     imports.sort();
     imports.dedup();

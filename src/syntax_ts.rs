@@ -424,7 +424,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -536,7 +536,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -734,7 +734,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -798,7 +798,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -957,7 +957,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -1044,7 +1044,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
