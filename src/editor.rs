@@ -4886,6 +4886,41 @@ enum AiPanelAction {
     RevertEdit(usize, usize),
     /// Isi input composer (contoh prompt di empty state).
     SetInput(String),
+    /// Simpan jawaban (index pesan) sebagai catatan memory di vault Obsidian.
+    SaveToVault(usize),
+}
+
+/// Judul + isi catatan memory dari satu jawaban assistant: pertanyaan user
+/// yang mendahuluinya jadi judul dan ikut disimpan sebagai konteks.
+fn ai_memory_note_from_chat(
+    chat: &[crate::models::structs::AiChatMessage],
+    mi: usize,
+) -> Option<(String, String)> {
+    use crate::models::structs::AiChatRole;
+
+    let answer = chat.get(mi)?.text.trim();
+    if answer.is_empty() {
+        return None;
+    }
+    let question = chat[..mi]
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, AiChatRole::User))
+        .map(|m| m.text.trim())
+        .unwrap_or_default();
+    let title: String = question
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(60)
+        .collect();
+    let content = if question.is_empty() {
+        answer.to_string()
+    } else {
+        format!("> [!question] Asked in Tabular\n> {}\n\n{answer}", question.replace('\n', "\n> "))
+    };
+    Some((title, content))
 }
 
 fn ai_tab_index_by_id(tabular: &window_egui::Tabular, id: usize) -> Option<usize> {
@@ -5185,6 +5220,7 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
         tabular.ai_error = Some(e);
         return;
     }
+    tabular.ai_obsidian_save_message = None;
     let cfg = crate::ai_assistant::chat_backend(tabular);
     let (system, user) = crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text);
 
@@ -6250,6 +6286,7 @@ fn ai_render_assistant_message(
     mi: usize,
     msg: &crate::models::structs::AiChatMessage,
     cache: &mut egui_commonmark::CommonMarkCache,
+    can_save_note: bool,
     actions: &mut Vec<AiPanelAction>,
 ) {
     use crate::window_egui::style;
@@ -6336,6 +6373,16 @@ fn ai_render_assistant_message(
             {
                 actions.push(AiPanelAction::InsertAtCursor(ai_extract_sql_blocks(&msg.text)));
             }
+            if can_save_note
+                && style::ai_icon_button(
+                    ui,
+                    icons::ICON_BOOKMARK_ADD.codepoint,
+                    "Save this answer as a note in your Obsidian vault (Tabular Memory) so the AI remembers it",
+                )
+                .clicked()
+            {
+                actions.push(AiPanelAction::SaveToVault(mi));
+            }
             if let Some(usage) = &msg.usage {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new(usage).size(10.0).color(muted));
@@ -6353,6 +6400,9 @@ fn ai_render_transcript(
 
     let chat = std::mem::take(&mut tabular.ai_chat);
     let mut cache = std::mem::take(&mut tabular.ai_markdown_cache);
+    // Tombol ini aksi eksplisit user, jadi cukup vault aktif (tidak perlu izin
+    // "Allow AI to save notes" yang mengatur tool `save_note` milik agent).
+    let can_save_note = tabular.obsidian_root().is_some();
 
     if chat.is_empty() {
         ai_render_empty_state(ui, actions);
@@ -6361,9 +6411,27 @@ fn ai_render_transcript(
     for (mi, msg) in chat.iter().enumerate() {
         match msg.role {
             AiChatRole::User => ai_render_user_message(ui, msg),
-            AiChatRole::Assistant => ai_render_assistant_message(ui, mi, msg, &mut cache, actions),
+            AiChatRole::Assistant => {
+                ai_render_assistant_message(ui, mi, msg, &mut cache, can_save_note, actions)
+            }
         }
         ui.add_space(14.0);
+    }
+
+    if let Some(result) = &tabular.ai_obsidian_save_message {
+        let ctx = ui.ctx().clone();
+        let (color, text) = match result {
+            Ok(path) => (
+                crate::window_egui::style::theme_muted_text(&ctx),
+                format!("Saved to vault: {path}"),
+            ),
+            Err(e) => (
+                crate::window_egui::style::theme_danger(&ctx),
+                format!("Could not save note: {e}"),
+            ),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(color)).wrap());
+        ui.add_space(6.0);
     }
 
     tabular.ai_chat = chat;
@@ -6744,6 +6812,11 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                 }
                 ui.ctx().request_repaint();
             }
+            AiPanelAction::SaveToVault(mi) => {
+                if let Some((title, content)) = ai_memory_note_from_chat(&tabular.ai_chat, mi) {
+                    tabular.save_chat_to_vault(&title, &content);
+                }
+            }
             AiPanelAction::ApplyEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, false),
             AiPanelAction::RevertEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, true),
             AiPanelAction::SetInput(text) => {
@@ -6761,6 +6834,30 @@ mod ai_panel_tests {
         AiMdBlock, ai_count_schema_tables, ai_extract_sql_blocks, ai_is_sql_lang,
         ai_normalize_markdown, ai_parse_heading, ai_split_markdown_blocks,
     };
+
+    #[test]
+    fn memory_note_uses_preceding_question_as_title_and_context() {
+        use crate::models::structs::{AiChatMessage, AiChatRole};
+        let mk = |role, text: &str| AiChatMessage {
+            role,
+            text: text.to_string(),
+            ..Default::default()
+        };
+        let chat = vec![
+            mk(AiChatRole::User, "what does status 3 mean?\nin trx_h"),
+            mk(AiChatRole::Assistant, "Status 3 = void."),
+            mk(AiChatRole::Assistant, "   "),
+        ];
+        let (title, content) = super::ai_memory_note_from_chat(&chat, 1).expect("note");
+        assert_eq!(title, "what does status 3 mean?");
+        assert_eq!(
+            content,
+            "> [!question] Asked in Tabular\n> what does status 3 mean?\n> in trx_h\n\nStatus 3 = void."
+        );
+        // Jawaban kosong atau index di luar jangkauan tidak menghasilkan catatan.
+        assert!(super::ai_memory_note_from_chat(&chat, 2).is_none());
+        assert!(super::ai_memory_note_from_chat(&chat, 9).is_none());
+    }
 
     #[test]
     fn split_separates_headings_prose_and_code_in_order() {

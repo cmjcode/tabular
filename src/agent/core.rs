@@ -24,6 +24,7 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
+use crate::config::ObsidianSettings;
 use crate::connection::types::{QueryExecutionOptions, QueryJob};
 use crate::models::enums::{DatabasePool, DatabaseType};
 use crate::models::structs::ConnectionConfig;
@@ -48,6 +49,9 @@ pub enum AgentError {
     Cache(#[from] sqlx::Error),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    /// Masalah vault Obsidian (belum diaktifkan, catatan tidak ditemukan, ...).
+    #[error("{0}")]
+    Notes(String),
 }
 
 /// Batas ukuran hasil yang dikirim ke agent.
@@ -175,6 +179,29 @@ pub struct ExplainResult {
     pub summary: Option<crate::query_profiler::ExplainSummary>,
     pub warnings: Vec<String>,
     pub plan: Option<crate::query_profiler::ExplainNode>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteSearchResult {
+    pub results: Vec<crate::vector_index::NoteHit>,
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteContent {
+    /// Path relatif terhadap root vault.
+    pub path: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    /// Target `[[wikilink]]` di catatan ini; bisa diberikan lagi ke `read_note`.
+    pub links: Vec<String>,
+    /// Isi mentah (Markdown Obsidian).
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedNote {
+    pub path: String,
 }
 
 /// Sesi headless: satu cache pool SQLite + pool driver per koneksi.
@@ -738,6 +765,108 @@ impl HeadlessSession {
             log::warn!("[AGENT] failed to record history: {e}");
         }
     }
+
+    // ── Vault Obsidian (memory) ─────────────────────────────────────────
+
+    /// Root vault aktif, atau penjelasan untuk agent kenapa tidak tersedia.
+    fn notes_root(settings: &ObsidianSettings) -> Result<std::path::PathBuf, AgentError> {
+        let root = settings.active_root().ok_or_else(|| {
+            AgentError::Notes(
+                "no Obsidian vault is enabled; the user can add one in Tabular under Settings > AI Assistant > Memory"
+                    .to_string(),
+            )
+        })?;
+        if !root.is_dir() {
+            return Err(AgentError::Notes(format!(
+                "vault folder {} is not accessible",
+                root.display()
+            )));
+        }
+        Ok(root)
+    }
+
+    /// Cari kutipan catatan yang relevan. Indeks disinkronkan dulu (inkremental)
+    /// supaya catatan yang baru ditulis user langsung ikut.
+    pub async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<NoteSearchResult, AgentError> {
+        self.search_notes_with(&ObsidianSettings::load_headless(), query, limit).await
+    }
+
+    pub(crate) async fn search_notes_with(
+        &self,
+        settings: &ObsidianSettings,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<NoteSearchResult, AgentError> {
+        let root = Self::notes_root(settings)?;
+        crate::vector_index::sync_note_embeddings(&self.cache_pool, &root)
+            .await
+            .map_err(AgentError::Notes)?;
+        let hits = crate::vector_index::search_notes(
+            &self.cache_pool,
+            &root,
+            query,
+            limit.unwrap_or(5).clamp(1, 20),
+            crate::vector_index::NOTE_MAX_DISTANCE,
+        )
+        .await?;
+        Ok(NoteSearchResult {
+            hint: hits
+                .is_empty()
+                .then(|| "no matching notes; try other keywords (notes may be in another language)".to_string()),
+            results: hits,
+        })
+    }
+
+    /// Baca satu catatan utuh berdasarkan path relatif, nama, atau `[[wikilink]]`.
+    pub async fn read_note(&self, note: &str) -> Result<NoteContent, AgentError> {
+        self.read_note_with(&ObsidianSettings::load_headless(), note)
+    }
+
+    pub(crate) fn read_note_with(&self, settings: &ObsidianSettings, note: &str) -> Result<NoteContent, AgentError> {
+        let root = Self::notes_root(settings)?;
+        let rel_path = crate::obsidian::find_note(&root, note).map_err(AgentError::Notes)?;
+        let content = crate::obsidian::read_note(&root, &rel_path).map_err(AgentError::Notes)?;
+        let parsed = crate::obsidian::parse_note(&rel_path, &content);
+        Ok(NoteContent {
+            path: rel_path,
+            title: parsed.title,
+            tags: parsed.tags,
+            links: parsed.links,
+            content,
+        })
+    }
+
+    /// Simpan catatan memory baru di `<vault>/Tabular Memory/`.
+    pub async fn save_note(&self, title: &str, content: &str, tags: &[String]) -> Result<SavedNote, AgentError> {
+        self.save_note_with(&ObsidianSettings::load_headless(), title, content, tags)
+            .await
+    }
+
+    pub(crate) async fn save_note_with(
+        &self,
+        settings: &ObsidianSettings,
+        title: &str,
+        content: &str,
+        tags: &[String],
+    ) -> Result<SavedNote, AgentError> {
+        let root = Self::notes_root(settings)?;
+        if !settings.allow_write {
+            return Err(AgentError::Refused(
+                "saving notes is turned off; the user can enable \"Allow AI to save notes\" in Tabular under \
+                 Settings > AI Assistant > Memory. Give them the note text to save themselves instead."
+                    .to_string(),
+            ));
+        }
+        let path =
+            crate::obsidian::save_memory_note(&root, title, content, tags).map_err(AgentError::Notes)?;
+        log::info!("[AGENT] saved memory note {path}");
+        // Indeks ulang supaya catatan baru langsung bisa dicari; kegagalan di
+        // sini tidak membatalkan penyimpanan.
+        if let Err(e) = crate::vector_index::sync_note_embeddings(&self.cache_pool, &root).await {
+            log::warn!("[AGENT] re-index after save_note failed: {e}");
+        }
+        Ok(SavedNote { path })
+    }
 }
 
 /// Buang awalan `EXPLAIN ...` yang mungkin sudah ditulis agent supaya prefix
@@ -1012,5 +1141,49 @@ mod tests {
         assert!(matches!(missing, Err(AgentError::ConnectionNotFound(99))));
 
         let _ = std::fs::remove_file(&db_file);
+    }
+
+    #[tokio::test]
+    async fn notes_tools_respect_vault_settings() {
+        use crate::obsidian::tests::TempVault;
+
+        crate::vector_index::register_sqlite_vec();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool in-memory");
+        let session = HeadlessSession::new(pool);
+        let vault = TempVault::new("agent");
+        vault.write("db/Orders.md", "# Status codes\nStatus 3 means void. See [[Customers]].\n");
+        vault.write("db/Customers.md", "Customer master data.\n");
+
+        let mut settings = ObsidianSettings {
+            vault_path: vault.0.to_string_lossy().to_string(),
+            enabled: false,
+            allow_write: false,
+        };
+        // Memory mati: semua tool menolak dengan pesan yang bisa ditindaklanjuti.
+        let err = session.search_notes_with(&settings, "void", None).await.unwrap_err();
+        assert!(err.to_string().contains("no Obsidian vault is enabled"));
+
+        settings.enabled = true;
+        let found = session.search_notes_with(&settings, "order status void", None).await.unwrap();
+        assert_eq!(found.results[0].rel_path, "db/Orders.md");
+
+        let note = session.read_note_with(&settings, "[[Orders]]").unwrap();
+        assert_eq!(note.path, "db/Orders.md");
+        assert_eq!(note.links, vec!["Customers"]);
+        assert!(session.read_note_with(&settings, "../secret").is_err());
+
+        // Menulis butuh izin terpisah.
+        let err = session.save_note_with(&settings, "Refunds", "Status 9 = refunded", &[]).await.unwrap_err();
+        assert!(matches!(err, AgentError::Refused(_)));
+        settings.allow_write = true;
+        let saved = session.save_note_with(&settings, "Refunds", "Status 9 = refunded", &[]).await.unwrap();
+        assert_eq!(saved.path, "Tabular Memory/Refunds.md");
+        // Catatan baru langsung bisa dicari.
+        let found = session.search_notes_with(&settings, "refunded", None).await.unwrap();
+        assert_eq!(found.results[0].rel_path, "Tabular Memory/Refunds.md");
     }
 }

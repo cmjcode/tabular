@@ -1,7 +1,8 @@
 //! Bagian "Backend" di Settings → AI Assistant: memilih HTTP API atau CLI
 //! agent (`agy` / `claude` / `gemini` / custom), plus pekerjaan latar yang juga
 //! dipakai panel chat: tes koneksi CLI dan pemeriksaan/registrasi MCP server
-//! Tabular di konfigurasi global CLI.
+//! Tabular di konfigurasi global CLI. Juga bagian "Memory": vault Obsidian yang
+//! dipakai sebagai memory AI (pemilihan folder, indeks latar, simpan catatan).
 
 use std::sync::mpsc;
 
@@ -79,9 +80,29 @@ impl Tabular {
         self.ai_cli_test_receiver = Some(rx);
     }
 
-    /// Ambil hasil thread latar (tes koneksi, cek MCP). Dipanggil tiap frame
-    /// oleh panel chat dan tab settings.
+    /// Ambil hasil thread latar (tes koneksi, cek MCP, indeks vault).
+    /// Dipanggil tiap frame oleh panel chat dan tab settings.
     pub(crate) fn poll_ai_cli_background(&mut self, ctx: &egui::Context) {
+        self.ensure_obsidian_index();
+        if let Some(rx) = &self.ai_obsidian_index_receiver {
+            match rx.try_recv() {
+                Ok(result) => {
+                    if let Err(e) = &result {
+                        log::warn!("[OBSIDIAN] indexing failed: {e}");
+                    }
+                    self.ai_obsidian_index = Some(result);
+                    self.ai_obsidian_index_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.ai_obsidian_index =
+                        Some(Err("Indexing thread stopped unexpectedly.".to_string()));
+                    self.ai_obsidian_index_receiver = None;
+                }
+            }
+        }
         if let Some(rx) = &self.ai_cli_mcp_receiver {
             match rx.try_recv() {
                 Ok(Ok(registered)) => {
@@ -393,7 +414,7 @@ impl Tabular {
                 status(
                     ui,
                     Tone::Success,
-                    "✓ Passed to Claude Code on every request (--mcp-config); only Tabular's read-only tools are allowed.",
+                    "✓ Passed to Claude Code on every request (--mcp-config); only Tabular's own tools are allowed and database access is read-only.",
                 );
             }
             CliAgentKind::Custom => {
@@ -469,5 +490,194 @@ impl Tabular {
              under Tabular's data folder. Database access goes through Tabular's read-only MCP tools; \
              write statements must still be run by you.",
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Memory: vault Obsidian
+// ─────────────────────────────────────────────────────────────────────────
+
+impl Tabular {
+    /// Root vault bila memory aktif dan folder sudah dipilih.
+    pub(crate) fn obsidian_root(&self) -> Option<std::path::PathBuf> {
+        let path = self.ai_obsidian_vault_path.trim();
+        (self.ai_obsidian_enabled && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+    }
+
+    /// Sinkronkan indeks vault di thread latar. Hasilnya diambil oleh
+    /// [`Self::poll_ai_cli_background`].
+    pub(crate) fn start_obsidian_index(&mut self) {
+        let (Some(root), Some(pool), Some(rt)) = (
+            self.obsidian_root(),
+            self.db_pool.clone(),
+            self.runtime.clone(),
+        ) else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = rt.block_on(crate::vector_index::sync_note_embeddings(&pool, &root));
+            let _ = tx.send(result);
+        });
+        self.ai_obsidian_index_receiver = Some(rx);
+    }
+
+    /// Indeks sekali per sesi begitu panel AI / settings pertama kali dibuka.
+    /// Sinkronisasi inkremental, jadi murah bila vault tidak berubah.
+    fn ensure_obsidian_index(&mut self) {
+        if self.ai_obsidian_index.is_none() && self.ai_obsidian_index_receiver.is_none() {
+            self.start_obsidian_index();
+        }
+    }
+
+    /// Simpan satu jawaban chat sebagai catatan memory di vault, lalu indeks
+    /// ulang supaya langsung bisa di-recall.
+    pub(crate) fn save_chat_to_vault(&mut self, title: &str, content: &str) {
+        let Some(root) = self.obsidian_root() else {
+            return;
+        };
+        let result = crate::obsidian::save_memory_note(&root, title, content, &[]);
+        match &result {
+            Ok(path) => log::info!("[OBSIDIAN] saved memory note: {path}"),
+            Err(e) => log::warn!("[OBSIDIAN] save failed: {e}"),
+        }
+        if result.is_ok() && self.ai_obsidian_index_receiver.is_none() {
+            self.start_obsidian_index();
+        }
+        self.ai_obsidian_save_message = Some(result);
+    }
+
+    /// Bagian "Memory" di Settings → AI Assistant; berlaku untuk semua backend.
+    pub(crate) fn render_ai_memory_settings(&mut self, ui: &mut egui::Ui) {
+        if IS_MOBILE {
+            return;
+        }
+        self.poll_ai_cli_background(ui.ctx());
+
+        section(ui, "Memory (Obsidian vault)", |ui| {
+            hint(
+                ui,
+                "Point Tabular at an Obsidian vault (or any folder of Markdown notes) with your schema notes, \
+                 business rules and query conventions. The most relevant note excerpts are added to each AI \
+                 request, and CLI agents can search and read the notes themselves.",
+            );
+            ui.add_space(4.0);
+
+            row(ui, "Vault folder", None, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if self.ai_obsidian_vault_path.is_empty() {
+                        hint(ui, "No folder selected");
+                    } else {
+                        ui.label(egui::RichText::new(&self.ai_obsidian_vault_path).monospace());
+                    }
+                    let label = if self.ai_obsidian_vault_path.is_empty() {
+                        "Add Obsidian folder…"
+                    } else {
+                        "Change…"
+                    };
+                    if ui.add(style::btn_secondary(label)).clicked()
+                        && let Some(path) = crate::rfd::FileDialog::new()
+                            .set_title("Select Obsidian vault folder")
+                            .pick_folder()
+                    {
+                        self.ai_obsidian_vault_path = path.to_string_lossy().to_string();
+                        self.ai_obsidian_enabled = true;
+                        self.ai_obsidian_index = None;
+                        self.save_ai_prefs();
+                        self.start_obsidian_index();
+                    }
+                    if !self.ai_obsidian_vault_path.is_empty()
+                        && ui.add(style::btn_secondary("Remove")).clicked()
+                    {
+                        self.ai_obsidian_vault_path.clear();
+                        self.ai_obsidian_enabled = false;
+                        self.ai_obsidian_allow_write = false;
+                        self.ai_obsidian_index = None;
+                        self.save_ai_prefs();
+                    }
+                });
+            });
+
+            if self.ai_obsidian_vault_path.is_empty() {
+                return;
+            }
+            let root = std::path::PathBuf::from(self.ai_obsidian_vault_path.trim());
+            if !root.is_dir() {
+                status(
+                    ui,
+                    Tone::Danger,
+                    "✗ Vault folder not found or not accessible. Choose it again.",
+                );
+                return;
+            }
+            if !root.join(".obsidian").is_dir() {
+                status(
+                    ui,
+                    Tone::Muted,
+                    "This folder has no .obsidian settings; it is used as a plain Markdown folder.",
+                );
+            }
+            divider(ui);
+
+            if toggle_row(
+                ui,
+                &mut self.ai_obsidian_enabled,
+                "Use notes as AI memory",
+                Some(
+                    "Relevant excerpts of your notes are sent to the AI provider together with your request. \
+                     Turn this off to keep the vault private.",
+                ),
+            ) {
+                self.ai_obsidian_index = None;
+                self.save_ai_prefs();
+            }
+            if !self.ai_obsidian_enabled {
+                return;
+            }
+
+            if toggle_row(
+                ui,
+                &mut self.ai_obsidian_allow_write,
+                "Allow AI to save notes",
+                Some(
+                    "Lets the assistant store things worth remembering as new notes in the \
+                     \"Tabular Memory\" folder of the vault. Existing notes are never modified.",
+                ),
+            ) {
+                self.save_ai_prefs();
+            }
+            divider(ui);
+
+            ui.horizontal_wrapped(|ui| {
+                let indexing = self.ai_obsidian_index_receiver.is_some();
+                if indexing {
+                    ui.spinner();
+                    hint(ui, "Indexing…");
+                } else {
+                    match &self.ai_obsidian_index {
+                        Some(Ok(stats)) => status(
+                            ui,
+                            Tone::Success,
+                            format!("✓ {} notes indexed ({} excerpts)", stats.notes, stats.chunks),
+                        ),
+                        Some(Err(e)) => status(ui, Tone::Danger, format!("✗ {e}")),
+                        None => hint(ui, "Not indexed yet"),
+                    }
+                }
+                if ui
+                    .add_enabled(!indexing, style::btn_secondary("Re-index"))
+                    .on_hover_text("Only new and changed notes are read again")
+                    .clicked()
+                {
+                    self.start_obsidian_index();
+                }
+            });
+            if harness::is_app_sandboxed() {
+                hint(
+                    ui,
+                    "App Store build: macOS may revoke access to the folder after a restart; choose it again if indexing fails.",
+                );
+            }
+        });
     }
 }

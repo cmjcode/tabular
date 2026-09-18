@@ -360,6 +360,16 @@ pub struct AppPreferences {
     /// Tulis blok `sql tabular:tab=…` dari agent langsung ke editor saat streaming.
     #[serde(default = "default_true")]
     pub ai_cli_auto_apply_edits: bool,
+    /// Folder vault Obsidian yang dipakai sebagai memory AI; kosong berarti
+    /// belum dipilih. Path lokal per mesin, tidak ikut sync.
+    #[serde(default)]
+    pub ai_obsidian_vault_path: String,
+    /// Sertakan catatan vault yang relevan di prompt dan buka tool notes MCP.
+    #[serde(default)]
+    pub ai_obsidian_enabled: bool,
+    /// Izinkan AI menulis catatan baru ke `<vault>/Tabular Memory/`.
+    #[serde(default)]
+    pub ai_obsidian_allow_write: bool,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
@@ -421,6 +431,9 @@ impl Default for AppPreferences {
             ai_cli_effort: String::new(),
             ai_cli_extra_args: String::new(),
             ai_cli_auto_apply_edits: true,
+            ai_obsidian_vault_path: String::new(),
+            ai_obsidian_enabled: false,
+            ai_obsidian_allow_write: false,
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
             query_timeout_secs: 0,
@@ -547,6 +560,9 @@ impl ConfigStore {
                 ai_cli_effort: String::new(),
                 ai_cli_extra_args: String::new(),
                 ai_cli_auto_apply_edits: true,
+                ai_obsidian_vault_path: String::new(),
+                ai_obsidian_enabled: false,
+                ai_obsidian_allow_write: false,
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
@@ -614,6 +630,9 @@ impl ConfigStore {
                         "ai_cli_effort" => prefs.ai_cli_effort = v,
                         "ai_cli_extra_args" => prefs.ai_cli_extra_args = v,
                         "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
+                        "ai_obsidian_vault_path" => prefs.ai_obsidian_vault_path = v,
+                        "ai_obsidian_enabled" => prefs.ai_obsidian_enabled = v == "1",
+                        "ai_obsidian_allow_write" => prefs.ai_obsidian_allow_write = v == "1",
                         "redis_browser_auto_refresh_seconds" => {
                             prefs.redis_browser_auto_refresh_seconds = v
                                 .parse()
@@ -692,7 +711,7 @@ impl ConfigStore {
             let query_timeout_secs = prefs.query_timeout_secs.to_string();
             let max_result_rows = prefs.max_result_rows.to_string();
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
-            let entries: [(&str, &str); 27] = [
+            let entries: [(&str, &str); 30] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -735,6 +754,22 @@ impl ConfigStore {
                 (
                     "ai_cli_auto_apply_edits",
                     if prefs.ai_cli_auto_apply_edits {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                ),
+                (
+                    "ai_obsidian_vault_path",
+                    prefs.ai_obsidian_vault_path.as_str(),
+                ),
+                (
+                    "ai_obsidian_enabled",
+                    if prefs.ai_obsidian_enabled { "1" } else { "0" },
+                ),
+                (
+                    "ai_obsidian_allow_write",
+                    if prefs.ai_obsidian_allow_write {
                         "1"
                     } else {
                         "0"
@@ -872,6 +907,44 @@ impl ConfigStore {
                 .execute(pool)
                 .await;
         }
+    }
+}
+
+/// Pengaturan vault Obsidian yang dibutuhkan proses headless (`tabular mcp`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObsidianSettings {
+    pub vault_path: String,
+    pub enabled: bool,
+    pub allow_write: bool,
+}
+
+impl ObsidianSettings {
+    /// Root vault bila fitur aktif dan folder sudah dipilih.
+    pub fn active_root(&self) -> Option<PathBuf> {
+        (self.enabled && !self.vault_path.trim().is_empty())
+            .then(|| PathBuf::from(self.vault_path.trim()))
+    }
+
+    fn from_json(content: &str) -> Self {
+        let value: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+        Self {
+            vault_path: value["ai_obsidian_vault_path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            enabled: value["ai_obsidian_enabled"].as_bool().unwrap_or(false),
+            allow_write: value["ai_obsidian_allow_write"].as_bool().unwrap_or(false),
+        }
+    }
+
+    /// Baca dari `preferences.json` (cermin yang ditulis GUI tiap kali
+    /// preferensi disimpan). Sengaja tidak lewat [`ConfigStore::load`] supaya
+    /// proses headless tidak menyentuh keychain, dan dibaca ulang tiap
+    /// pemanggilan supaya perubahan toggle di GUI langsung berlaku.
+    pub fn load_headless() -> Self {
+        std::fs::read_to_string(ConfigStore::json_path())
+            .map(|content| Self::from_json(&content))
+            .unwrap_or_default()
     }
 }
 
@@ -1066,4 +1139,29 @@ pub fn load_fast_preferences() -> AppPreferences {
         return prefs;
     }
     AppPreferences::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obsidian_settings_read_from_prefs_json_mirror() {
+        let prefs = AppPreferences {
+            ai_obsidian_vault_path: "/vaults/work".into(),
+            ai_obsidian_enabled: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&prefs).expect("serialize prefs");
+        let settings = ObsidianSettings::from_json(&json);
+        assert_eq!(settings.vault_path, "/vaults/work");
+        assert!(settings.enabled && !settings.allow_write);
+        assert_eq!(settings.active_root(), Some(PathBuf::from("/vaults/work")));
+
+        // Mati, belum dipilih, atau file rusak -> tidak ada vault aktif.
+        let off = ObsidianSettings { enabled: false, ..settings.clone() };
+        assert_eq!(off.active_root(), None);
+        assert_eq!(ObsidianSettings::from_json("{}").active_root(), None);
+        assert_eq!(ObsidianSettings::from_json("not json"), ObsidianSettings::default());
+    }
 }
