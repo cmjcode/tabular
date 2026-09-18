@@ -13,7 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::models::structs::{DiagramColumn, DiagramGroup, DiagramNode, DiagramState, ForeignKey};
+use crate::models::structs::{
+    DiagramColumn, DiagramGroup, DiagramNode, DiagramState, RelationOrigin, VirtualRelation,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ErColumn {
@@ -39,6 +41,9 @@ pub struct ErRelation {
     pub child_column: String,
     pub parent: String,
     pub parent_column: String,
+    /// Relasi hasil tebakan / buatan user (bukan FK di database); ditulis
+    /// sebagai garis putus-putus `..` di Mermaid.
+    pub inferred: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -93,7 +98,11 @@ impl ErModel {
                         name: name.clone(),
                         type_name: meta.map(|m| m.type_name.clone()).unwrap_or_default(),
                         is_pk: meta.is_some_and(|m| m.is_pk),
-                        is_fk: node.is_fk_column(name),
+                        is_fk: node.is_fk_column(name)
+                            || state
+                                .virtual_relations
+                                .iter()
+                                .any(|v| v.child == node.id && v.child_column == *name),
                         nullable: meta.map(|m| m.nullable),
                     }
                 })
@@ -113,10 +122,28 @@ impl ErModel {
                     child_column: fk.column_name.clone(),
                     parent: fk.referenced_table_name.clone(),
                     parent_column: fk.referenced_column_name.clone(),
+                    inferred: false,
                 };
                 if !relations.contains(&rel) {
                     relations.push(rel);
                 }
+            }
+        }
+        for v in &state.virtual_relations {
+            let duplicate = relations.iter().any(|r| {
+                r.child == v.child
+                    && r.child_column == v.child_column
+                    && r.parent == v.parent
+                    && r.parent_column == v.parent_column
+            });
+            if !duplicate {
+                relations.push(ErRelation {
+                    child: v.child.clone(),
+                    child_column: v.child_column.clone(),
+                    parent: v.parent.clone(),
+                    parent_column: v.parent_column.clone(),
+                    inferred: v.origin != RelationOrigin::Imported,
+                });
             }
         }
         Self { entities, relations }
@@ -193,7 +220,12 @@ impl ErModel {
                 .and_then(|e| e.columns.iter().find(|c| c.name == rel.child_column))
                 .and_then(|c| c.nullable)
                 .unwrap_or(false);
-            let cardinality = if optional { "|o--o{" } else { "||--o{" };
+            let line = if rel.inferred { ".." } else { "--" };
+            let cardinality = if optional {
+                format!("|o{line}o{{")
+            } else {
+                format!("||{line}o{{")
+            };
             out.push_str(&format!(
                 "    {} {cardinality} {} : \"{} -> {}\"\n",
                 ids.get(&rel.parent),
@@ -231,7 +263,15 @@ pub fn schema_note_markdown(title: &str, model: &ErModel) -> String {
             .relations
             .iter()
             .filter(|r| r.child == entity.name)
-            .map(|r| format!("{} → {}.{}", r.child_column, r.parent, r.parent_column))
+            .map(|r| {
+                format!(
+                    "{} → {}.{}{}",
+                    r.child_column,
+                    r.parent,
+                    r.parent_column,
+                    if r.inferred { " (inferred)" } else { "" }
+                )
+            })
             .collect();
         if !fks.is_empty() {
             line.push_str(&format!(", FK {}", fks.join("; ")));
@@ -471,7 +511,7 @@ pub fn parse_mermaid_er(text: &str) -> Result<ParsedEr, String> {
         entities,
         relations: Vec::new(),
     };
-    for (parent, child, label, _card) in relations {
+    for (parent, child, label, card) in relations {
         let parent = resolve(&parent);
         let child = resolve(&child);
         let (child_column, parent_column) = match label.split_once("->") {
@@ -497,6 +537,7 @@ pub fn parse_mermaid_er(text: &str) -> Result<ParsedEr, String> {
             child_column,
             parent,
             parent_column,
+            inferred: card.contains(".."),
         };
         if !model.relations.contains(&rel) {
             model.relations.push(rel);
@@ -696,41 +737,43 @@ pub fn merge_into_state(state: &mut DiagramState, model: &ErModel) -> MergeStats
                     foreign_keys: Vec::new(),
                     group_id,
                     column_meta: meta,
+                    detached: true,
                 });
                 stats.added_tables += 1;
             }
         }
     }
 
+    // Relasi impor disimpan sebagai relasi virtual (bukan FK node) supaya
+    // tidak tertimpa saat skema database di-refresh.
     for rel in &model.relations {
-        let Some(child) = state.nodes.iter_mut().find(|n| n.id == rel.child) else {
-            continue;
-        };
-        let exists = child.foreign_keys.iter().any(|fk| {
-            fk.referenced_table_name == rel.parent
-                && fk.column_name == rel.child_column
-                && fk.referenced_column_name == rel.parent_column
+        let is_db_fk = state.nodes.iter().any(|n| {
+            n.id == rel.child
+                && n.foreign_keys.iter().any(|fk| {
+                    fk.referenced_table_name == rel.parent
+                        && fk.column_name == rel.child_column
+                        && fk.referenced_column_name == rel.parent_column
+                })
         });
-        if !exists {
-            child.foreign_keys.push(ForeignKey {
-                constraint_name: format!("mermaid_{}_{}", rel.child, rel.child_column),
-                table_name: rel.child.clone(),
-                column_name: rel.child_column.clone(),
-                referenced_table_name: rel.parent.clone(),
-                referenced_column_name: rel.parent_column.clone(),
-            });
-            stats.added_relations += 1;
+        if is_db_fk {
+            continue;
         }
-        if !state
-            .edges
-            .iter()
-            .any(|e| e.source == rel.child && e.target == rel.parent)
-        {
-            state.edges.push(crate::models::structs::DiagramEdge {
-                source: rel.child.clone(),
-                target: rel.parent.clone(),
-                label: String::new(),
-            });
+        let added = crate::diagram_relations::add_virtual_relation(
+            state,
+            VirtualRelation {
+                child: rel.child.clone(),
+                child_column: rel.child_column.clone(),
+                parent: rel.parent.clone(),
+                parent_column: rel.parent_column.clone(),
+                origin: if rel.inferred {
+                    RelationOrigin::Inferred
+                } else {
+                    RelationOrigin::Imported
+                },
+            },
+        );
+        if added {
+            stats.added_relations += 1;
         }
     }
 
@@ -798,6 +841,7 @@ mod tests {
                 child_column: "customer_id".into(),
                 parent: "customers".into(),
                 parent_column: "id".into(),
+                inferred: false,
             }],
         }
     }
@@ -921,7 +965,11 @@ mod tests {
         let stats = merge_into_state(&mut state, &sample());
         assert_eq!(stats.added_tables, 2);
         assert_eq!(stats.added_relations, 1);
-        assert_eq!(state.edges.len(), 1);
+        // Relasi impor disimpan sebagai relasi virtual, bukan edge/FK database.
+        assert!(state.edges.is_empty());
+        assert_eq!(state.virtual_relations.len(), 1);
+        assert_eq!(state.virtual_relations[0].origin, RelationOrigin::Imported);
+        assert!(state.nodes.iter().all(|n| n.detached));
         assert_eq!(state.groups.len(), 1);
 
         let back = ErModel::from_diagram(&state);
@@ -935,7 +983,21 @@ mod tests {
         assert_eq!(again.added_tables, 0);
         assert_eq!(again.updated_tables, 2);
         assert_eq!(again.added_relations, 0);
-        assert_eq!(state.edges.len(), 1);
+        assert_eq!(state.virtual_relations.len(), 1);
+    }
+
+    #[test]
+    fn inferred_relations_use_dotted_line_and_round_trip() {
+        let mut model = sample();
+        model.relations[0].inferred = true;
+        let text = model.to_mermaid(MermaidOptions::default());
+        assert!(text.contains("customers |o..o{ orders"));
+        let parsed = parse_mermaid_er(&text).unwrap();
+        assert!(parsed.model.relations[0].inferred);
+
+        let mut state = DiagramState::default();
+        merge_into_state(&mut state, &parsed.model);
+        assert_eq!(state.virtual_relations[0].origin, RelationOrigin::Inferred);
     }
 
     #[test]

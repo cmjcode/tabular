@@ -143,17 +143,18 @@ impl Tabular {
                     database_name,
                     table_name,
                     columns,
+                    columns_detail,
                     indexes,
                     partitions,
                 } => {
                     self.is_refreshing_structure = false;
-                    if let Some(cols) = columns {
+                    if let Some(cols) = &columns {
                         crate::cache_data::save_columns_to_cache(
                             self,
                             connection_id,
                             &database_name,
                             &table_name,
-                            &cols,
+                            cols,
                         );
                         let active_db = self
                             .query_tabs
@@ -184,13 +185,28 @@ impl Tabular {
                             && table_matches
                         {
                             self.structure_columns.clear();
-                            for (name, dtype) in cols {
-                                self.structure_columns
-                                    .push(models::structs::ColumnStructInfo {
-                                        name,
-                                        data_type: dtype,
-                                        ..Default::default()
-                                    });
+                            if let Some(detail) = columns_detail {
+                                if !detail.is_empty() {
+                                    self.structure_columns = detail;
+                                } else {
+                                    for (name, dtype) in cols {
+                                        self.structure_columns
+                                            .push(models::structs::ColumnStructInfo {
+                                                name: name.clone(),
+                                                data_type: dtype.clone(),
+                                                ..Default::default()
+                                            });
+                                    }
+                                }
+                            } else {
+                                for (name, dtype) in cols {
+                                    self.structure_columns
+                                        .push(models::structs::ColumnStructInfo {
+                                            name: name.clone(),
+                                            data_type: dtype.clone(),
+                                            ..Default::default()
+                                        });
+                                }
                             }
                             self.last_structure_target =
                                 Some((connection_id, database_name.clone(), table_name.clone()));
@@ -4751,7 +4767,7 @@ impl App for Tabular {
                     let (max_rows, max_cols) = match self.structure_sub_view {
                         models::structs::StructureSubView::Columns => {
                             let cols = if self.structure_col_widths.is_empty() {
-                                6
+                                7
                             } else {
                                 self.structure_col_widths.len()
                             };

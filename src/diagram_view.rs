@@ -1,6 +1,6 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use crate::models::structs::{DiagramState, DiagramNode};
+use crate::models::structs::{DiagramNode, DiagramState, RelationOrigin, VirtualRelation};
 use crate::rfd;
 
 /// Palet warna group (tanpa duplikat), dipakai menu warna, grouping otomatis,
@@ -129,6 +129,9 @@ fn import_mermaid(state: &mut DiagramState) -> Option<DiagramAction> {
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
     let mut action: Option<DiagramAction> = None;
     let rect = ui.available_rect_before_wrap();
+    // Semua gambar & interaksi dibatasi ke area diagram, supaya node/group
+    // yang digeser ke atas tidak menutupi tab bar.
+    ui.set_clip_rect(rect.intersect(ui.clip_rect()));
     
     // Handle Pan and Zoom
     let response = ui.interact(rect, ui.id().with("diagram_bg"), egui::Sense::click_and_drag());
@@ -207,9 +210,6 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         state.is_centered = true;
     }
 
-    // Clip to rect
-    let _clip_rect = ui.clip_rect();
-    
     // Scale helper
     let scale = state.zoom;
     let pan = state.pan;
@@ -217,6 +217,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let to_screen = move |pos: egui::Pos2| -> egui::Pos2 {
         rect.min + pan + pos.to_vec2() * scale
     };
+
+    if state.show_grid {
+        draw_grid(ui, rect, pan, scale);
+    }
 
     // Draw Groups (Containers)
     let mut _group_rename_request: Option<(usize, String)> = None;
@@ -516,7 +520,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
         }
 
-    let edge_was_clicked = clicked_edge.is_some();
+    let virtual_clicked = draw_virtual_relations(ui, state, rect, &to_screen, pointer_down);
+    let edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
     if let Some(edge) = clicked_edge {
         state.selected_edge = Some(edge);
     } else if pointer_down {
@@ -534,6 +539,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // For manual interaction:
     let selected_column = state.selected_column.clone();
+    let shift_down = ui.input(|i| i.modifiers.shift);
+    let mut link_request: Option<VirtualRelation> = None;
+    let mut remove_node_request: Option<String> = None;
 
     for node in &mut state.nodes {
         // Estimate height based on columns
@@ -554,7 +562,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         
         if node_response.clicked() {
             node_clicked = true;
-            // Selecting a node could perhaps select edges? For now, just prevent deselection.
+        }
+        if node.detached {
+            node_response.context_menu(|ui| {
+                ui.label(
+                    egui::RichText::new("This table is not in the database (imported)").weak(),
+                );
+                if ui.button("Remove from diagram").clicked() {
+                    ui.close();
+                    remove_node_request = Some(node.id.clone());
+                }
+            });
         }
 
         if node_response.dragged() {
@@ -657,11 +675,22 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         );
         
         // Simplified rounding to avoid compilation error
-        ui.painter().rect_filled(
-            header_rect, 
-            4.0 * scale,
+        // Header ungu untuk tabel yang tidak ada di database.
+        let header_fill = if node.detached {
+            egui::Color32::from_rgb(72, 52, 100)
+        } else {
             egui::Color32::from_rgb(50, 50, 60)
-        );
+        };
+        ui.painter().rect_filled(header_rect, 4.0 * scale, header_fill);
+        if node.detached {
+            ui.painter().text(
+                egui::pos2(header_rect.right() - 6.0 * scale, header_rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "not in DB",
+                egui::FontId::proportional(9.0 * scale),
+                egui::Color32::from_gray(190),
+            );
+        }
         
         // Title
         ui.painter().text(
@@ -695,7 +724,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             let col_id = ui.id().with("col").with(&node.id).with(col);
             let response = ui.interact(col_rect, col_id, egui::Sense::click());
             if response.clicked() {
-                column_clicked_request = Some((node.id.clone(), col.clone()));
+                // Shift+klik kolom di tabel lain = buat relasi manual dari
+                // kolom terpilih (child) ke kolom ini (parent).
+                match selected_column.as_ref() {
+                    Some((sel_table, sel_col)) if shift_down && *sel_table != node.id => {
+                        link_request = Some(VirtualRelation {
+                            child: sel_table.clone(),
+                            child_column: sel_col.clone(),
+                            parent: node.id.clone(),
+                            parent_column: col.clone(),
+                            origin: RelationOrigin::Manual,
+                        });
+                    }
+                    _ => column_clicked_request = Some((node.id.clone(), col.clone())),
+                }
             }
 
             let is_selected_col = selected_column
@@ -765,11 +807,36 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
          if ui.rect_contains_pointer(rect) {
              state.selected_edge = None;
              state.selected_column = None;
+             state.selected_virtual = None;
          }
     }
     
     if let Some(req) = column_clicked_request {
         state.selected_column = Some(req);
+    }
+    if let Some(rel) = link_request {
+        let label = format!(
+            "Linked {}.{} → {}.{}",
+            rel.child, rel.child_column, rel.parent, rel.parent_column
+        );
+        if crate::diagram_relations::add_virtual_relation(state, rel) {
+            state.save_requested = true;
+            action = Some(DiagramAction::Info(label));
+        }
+        state.selected_column = None;
+    }
+    if let Some(id) = remove_node_request {
+        state.nodes.retain(|n| n.id != id);
+        state.virtual_relations.retain(|r| r.child != id && r.parent != id);
+        state.selected_virtual = None;
+        state.save_requested = true;
+    }
+    // Delete / Backspace menghapus relasi virtual terpilih (bila tidak sedang mengetik).
+    if let Some(idx) = state.selected_virtual
+        && ui.memory(|m| m.focused().is_none())
+        && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+    {
+        remove_virtual(state, idx);
     }
 
     if let Some(id) = dragging_node_id
@@ -778,10 +845,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
 
     // Toolbar kanan atas: Export / Import (JSON & Mermaid) dan Save to Vault.
-    let toolbar_width = 320.0;
+    let toolbar_width = 480.0;
     let toolbar_rect = egui::Rect::from_min_size(
-        rect.right_top() + egui::vec2(-toolbar_width, -10.0),
-        egui::vec2(toolbar_width, 40.0),
+        rect.right_top() + egui::vec2(-toolbar_width, 4.0),
+        egui::vec2(toolbar_width, 32.0),
     );
     let accent = egui::Color32::from_rgb(255, 100, 100);
     let label = |text: &str| egui::RichText::new(text).color(accent);
@@ -795,6 +862,51 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 .clicked()
             {
                 action = Some(DiagramAction::SaveToVault);
+            }
+            ui.add_space(10.0);
+            ui.menu_button(label("Relations"), |ui| {
+                if ui.button("Suggest from similar column names…").clicked() {
+                    ui.close();
+                    let suggestions = crate::diagram_relations::suggest_relations(state);
+                    state.relation_suggestions =
+                        Some(suggestions.into_iter().map(|s| (s, true)).collect());
+                }
+                let removable = state
+                    .virtual_relations
+                    .iter()
+                    .filter(|r| r.origin != RelationOrigin::Imported)
+                    .count();
+                if ui
+                    .add_enabled(
+                        removable > 0,
+                        egui::Button::new(format!("Remove suggested & manual relations ({removable})")),
+                    )
+                    .clicked()
+                {
+                    ui.close();
+                    state
+                        .virtual_relations
+                        .retain(|r| r.origin == RelationOrigin::Imported);
+                    state.selected_virtual = None;
+                    state.save_requested = true;
+                }
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(
+                        "Manual link: click a column, then Shift+click the column\nit refers to in another table. Select a dashed line and\npress Delete to remove it.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            });
+            ui.add_space(10.0);
+            if ui
+                .selectable_label(state.show_grid, label("Grid"))
+                .on_hover_text("Show or hide the background grid")
+                .clicked()
+            {
+                state.show_grid = !state.show_grid;
+                state.save_requested = true;
             }
             ui.add_space(10.0);
             ui.menu_button(label("Import"), |ui| {
@@ -943,7 +1055,250 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
     }
 
+    if let Some(a) = render_relation_suggestions(ui.ctx(), state) {
+        action = Some(a);
+    }
+
     action
+}
+
+/// Grid latar mengikuti pan & zoom; tiap garis ke-5 lebih tegas.
+fn draw_grid(ui: &egui::Ui, rect: egui::Rect, pan: egui::Vec2, scale: f32) {
+    let spacing = 40.0 * scale;
+    if spacing < 6.0 {
+        return;
+    }
+    let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let minor = egui::Stroke::new(1.0, base.linear_multiply(0.25));
+    let major = egui::Stroke::new(1.0, base.linear_multiply(0.55));
+    let origin = rect.min + pan;
+    let painter = ui.painter();
+
+    let first = ((rect.left() - origin.x) / spacing).floor() as i64;
+    let last = ((rect.right() - origin.x) / spacing).ceil() as i64;
+    for k in first..=last {
+        let x = origin.x + k as f32 * spacing;
+        let stroke = if k % 5 == 0 { major } else { minor };
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], stroke);
+    }
+    let first = ((rect.top() - origin.y) / spacing).floor() as i64;
+    let last = ((rect.bottom() - origin.y) / spacing).ceil() as i64;
+    for k in first..=last {
+        let y = origin.y + k as f32 * spacing;
+        let stroke = if k % 5 == 0 { major } else { minor };
+        painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], stroke);
+    }
+}
+
+/// Titik tengah vertikal baris kolom (koordinat diagram), mengikuti layout
+/// node di `render_diagram`: header 24, padding 4, tinggi baris 16.
+fn column_anchor_y(node: &DiagramNode, column: &str) -> f32 {
+    match node.columns.iter().position(|c| c == column) {
+        Some(i) => node.pos.y + 24.0 + 4.0 + i as f32 * 16.0 + 8.0,
+        None => node.pos.y + node.size.y / 2.0,
+    }
+}
+
+fn remove_virtual(state: &mut DiagramState, idx: usize) {
+    if idx < state.virtual_relations.len() {
+        state.virtual_relations.remove(idx);
+        state.save_requested = true;
+    }
+    state.selected_virtual = None;
+}
+
+/// Gambar relasi virtual sebagai garis putus-putus dari baris kolom child ke
+/// baris kolom parent. Mengembalikan `true` bila salah satunya diklik.
+fn draw_virtual_relations(
+    ui: &mut egui::Ui,
+    state: &mut DiagramState,
+    rect: egui::Rect,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    pointer_down: bool,
+) -> bool {
+    let scale = state.zoom;
+    let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
+    // Klik di atas node milik node, bukan garis di bawahnya.
+    let over_node = hover.is_some_and(|p| {
+        state
+            .nodes
+            .iter()
+            .any(|n| egui::Rect::from_min_size(to_screen(n.pos), n.size * scale).contains(p))
+    });
+
+    let mut clicked: Option<usize> = None;
+    let mut remove: Option<usize> = None;
+    for (idx, rel) in state.virtual_relations.iter().enumerate() {
+        let (Some(child), Some(parent)) = (
+            state.nodes.iter().find(|n| n.id == rel.child),
+            state.nodes.iter().find(|n| n.id == rel.parent),
+        ) else {
+            continue;
+        };
+        // Keluar dari sisi yang menghadap tabel tujuan.
+        let parent_is_right = parent.pos.x + parent.size.x / 2.0 >= child.pos.x + child.size.x / 2.0;
+        let (cx, px, dir) = if parent_is_right {
+            (child.pos.x + child.size.x, parent.pos.x, 1.0)
+        } else {
+            (child.pos.x, parent.pos.x + parent.size.x, -1.0)
+        };
+        let start = to_screen(egui::pos2(cx, column_anchor_y(child, &rel.child_column)));
+        let end = to_screen(egui::pos2(px, column_anchor_y(parent, &rel.parent_column)));
+        let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
+        let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+            [
+                start,
+                start + egui::vec2(bend * dir, 0.0),
+                end - egui::vec2(bend * dir, 0.0),
+                end,
+            ],
+            false,
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::NONE,
+        );
+        let points: Vec<egui::Pos2> = (0..=24).map(|i| bezier.sample(i as f32 / 24.0)).collect();
+
+        let hovered = !over_node
+            && hover.is_some_and(|p| {
+                egui::Rect::from_points(&points).expand(8.0).contains(p)
+                    && points.iter().any(|q| q.distance(p) < 8.0)
+            });
+        if hovered && pointer_down {
+            clicked = Some(idx);
+        }
+        let selected = state.selected_virtual == Some(idx);
+        let base = match rel.origin {
+            RelationOrigin::Imported => egui::Color32::from_rgb(147, 112, 219),
+            RelationOrigin::Inferred | RelationOrigin::Manual => egui::Color32::from_rgb(0, 190, 200),
+        };
+        let (color, width) = if selected {
+            (egui::Color32::from_rgb(255, 215, 0), 2.5)
+        } else if hovered {
+            (base, 2.5)
+        } else {
+            (base.linear_multiply(0.85), 1.5)
+        };
+        ui.painter().extend(egui::Shape::dashed_line(
+            &points,
+            egui::Stroke::new(width * scale.max(0.5), color),
+            6.0 * scale,
+            4.0 * scale,
+        ));
+        ui.painter().circle_filled(end, 3.0 * scale, color);
+
+        if selected || hovered {
+            let mid = bezier.sample(0.5);
+            let origin = match rel.origin {
+                RelationOrigin::Inferred => "suggested",
+                RelationOrigin::Manual => "manual",
+                RelationOrigin::Imported => "imported",
+            };
+            ui.painter().text(
+                mid - egui::vec2(0.0, 10.0),
+                egui::Align2::CENTER_BOTTOM,
+                format!("{} → {} ({origin})", rel.child_column, rel.parent_column),
+                egui::FontId::proportional(11.0),
+                color,
+            );
+            if selected {
+                let btn = egui::Rect::from_center_size(mid + egui::vec2(0.0, 12.0), egui::vec2(64.0, 20.0));
+                if ui.put(btn, egui::Button::new("Remove").small()).clicked() {
+                    remove = Some(idx);
+                }
+            }
+        }
+    }
+
+    if let Some(idx) = remove {
+        remove_virtual(state, idx);
+        return true;
+    }
+    if let Some(idx) = clicked {
+        state.selected_virtual = Some(idx);
+        state.selected_edge = None;
+        return true;
+    }
+    false
+}
+
+/// Jendela daftar saran relasi; user mencentang lalu menambahkan.
+fn render_relation_suggestions(ctx: &egui::Context, state: &mut DiagramState) -> Option<DiagramAction> {
+    let mut suggestions = state.relation_suggestions.take()?;
+    let mut open = true;
+    let mut close = false;
+    let mut result = None;
+
+    egui::Window::new("Suggested relations")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(460.0)
+        .show(ctx, |ui| {
+            if suggestions.is_empty() {
+                ui.label("No new relations found. Columns such as `customer_id`, `id_customer` or a column that matches another table's primary key are detected automatically.");
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+                return;
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Based on column names and types. Accepted relations are saved with the diagram and shown as dashed lines.",
+                )
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                if ui.small_button("Select all").clicked() {
+                    suggestions.iter_mut().for_each(|(_, on)| *on = true);
+                }
+                if ui.small_button("Select none").clicked() {
+                    suggestions.iter_mut().for_each(|(_, on)| *on = false);
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (s, on) in suggestions.iter_mut() {
+                    let r = &s.relation;
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            on,
+                            format!("{}.{} → {}.{}", r.child, r.child_column, r.parent, r.parent_column),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}% · {}", s.score * 100.0, s.reason))
+                                .weak()
+                                .small(),
+                        );
+                    });
+                }
+            });
+            ui.separator();
+            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(chosen > 0, egui::Button::new(format!("Add {chosen} relation(s)")))
+                    .clicked()
+                {
+                    let mut added = 0;
+                    for (s, on) in &suggestions {
+                        if *on && crate::diagram_relations::add_virtual_relation(state, s.relation.clone()) {
+                            added += 1;
+                        }
+                    }
+                    state.save_requested = true;
+                    result = Some(DiagramAction::Info(format!("Added {added} relation(s)")));
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+
+    if open && !close {
+        state.relation_suggestions = Some(suggestions);
+    }
+    result
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
