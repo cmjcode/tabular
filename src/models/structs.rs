@@ -751,6 +751,15 @@ pub struct DiagramState {
     /// Jendela saran relasi yang sedang terbuka: (saran, dicentang).
     #[serde(skip)]
     pub relation_suggestions: Option<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>,
+    /// Judul / target kolom pencarian relasi (misal "devices.imei" atau "imei").
+    #[serde(skip)]
+    pub relation_suggestions_title: Option<String>,
+    /// Teks input pencarian relasi berdasarkan nama kolom.
+    #[serde(skip)]
+    pub relation_column_search_query: String,
+    /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
+    #[serde(skip)]
+    pub hand_tool: bool,
 }
 
 impl Default for DiagramState {
@@ -781,6 +790,9 @@ impl Default for DiagramState {
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
+            relation_suggestions_title: None,
+            relation_column_search_query: String::new(),
+            hand_tool: false,
         }
     }
 }
