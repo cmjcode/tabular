@@ -2384,14 +2384,13 @@ impl super::Tabular {
 
                 let icon = match node.node_type {
                     models::enums::NodeType::Database => egui_icons::icons::MDI_DATABASE.codepoint,
-                    models::enums::NodeType::Table => "",
-                    // Use a plain bullet to avoid emoji font issues for column icons
-                    models::enums::NodeType::Column => "•",
+                    models::enums::NodeType::Table => egui_icons::icons::MDI_TABLE.codepoint,
+                    models::enums::NodeType::Column => egui_icons::icons::ICON_VIEW_COLUMN.codepoint,
                     models::enums::NodeType::ColumnsFolder => egui_icons::icons::ICON_VIEW_COLUMN.codepoint,
                     models::enums::NodeType::IndexesFolder => egui_icons::icons::ICON_TAG.codepoint,
                     models::enums::NodeType::PrimaryKeysFolder => egui_icons::icons::ICON_KEY.codepoint,
                     models::enums::NodeType::PartitionsFolder => egui_icons::icons::ICON_BAR_CHART.codepoint,
-                    models::enums::NodeType::Index => "#",
+                    models::enums::NodeType::Index => egui_icons::icons::ICON_TAG.codepoint,
                     models::enums::NodeType::Query => egui_icons::icons::ICON_SEARCH.codepoint,
                     models::enums::NodeType::QueryHistItem => "",
                     models::enums::NodeType::Connection => "",
@@ -2417,15 +2416,15 @@ impl super::Tabular {
                     models::enums::NodeType::UserFunction => egui_icons::icons::MDI_FUNCTION.codepoint,
                     models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                     models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
-                    models::enums::NodeType::MySQLFolder => "🐬",
-                    models::enums::NodeType::PostgreSQLFolder => "🐘",
-                    models::enums::NodeType::SQLiteFolder => "📄",
-                    models::enums::NodeType::RedisFolder => "🔴",
-                    models::enums::NodeType::MongoDBFolder => "🍃",
+                    models::enums::NodeType::MySQLFolder
+                    | models::enums::NodeType::PostgreSQLFolder
+                    | models::enums::NodeType::SQLiteFolder
+                    | models::enums::NodeType::RedisFolder
+                    | models::enums::NodeType::MongoDBFolder
+                    | models::enums::NodeType::MsSQLFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::CustomFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::QueryFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::HistoryDateFolder => "",
-                    models::enums::NodeType::MsSQLFolder => "🗳️",
                     models::enums::NodeType::DiagramsFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::Diagram => egui_icons::icons::ICON_SCHEMA.codepoint,
                 };
@@ -2524,14 +2523,45 @@ impl super::Tabular {
                     )
                 } else {
                     // Non-connection nodes: icon + name, truncated to available width and clickable
-                    let label_text = if icon.is_empty() {
-                        node.name.clone()
+                    let is_dark = ui.visuals().dark_mode;
+                    let (icon_color, text_color) =
+                        super::style::sidebar_node_colors(&node.node_type, is_dark);
+
+                    let mut job = egui::text::LayoutJob::default();
+                    if !icon.is_empty() {
+                        job.append(
+                            icon,
+                            0.0,
+                            egui::TextFormat {
+                                color: icon_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
+                        job.append(
+                            &format!(" {}", node.name),
+                            0.0,
+                            egui::TextFormat {
+                                color: text_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
                     } else {
-                        format!("{} {}", icon, node.name)
-                    };
+                        job.append(
+                            &node.name,
+                            0.0,
+                            egui::TextFormat {
+                                color: text_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
+                    }
+
                     // Left-align non-connection labels as well; rely on parent row width for truncation.
                     ui.add(
-                        egui::Label::new(label_text)
+                        egui::Label::new(job)
                             .selectable(false)
                             .truncate()
                             .sense(egui::Sense::click()),
@@ -3933,9 +3963,12 @@ impl super::Tabular {
                         models::enums::NodeType::Database => {
                             egui_icons::icons::MDI_DATABASE.codepoint
                         }
-                        models::enums::NodeType::Table => "",
-                        // Use a plain bullet again for columns in fallback rendering
-                        models::enums::NodeType::Column => "•",
+                        models::enums::NodeType::Table => {
+                            egui_icons::icons::MDI_TABLE.codepoint
+                        }
+                        models::enums::NodeType::Column => {
+                            egui_icons::icons::ICON_VIEW_COLUMN.codepoint
+                        }
                         models::enums::NodeType::Query => egui_icons::icons::ICON_SEARCH.codepoint,
                         models::enums::NodeType::Connection => {
                             egui_icons::icons::ICON_LINK.codepoint
@@ -3996,12 +4029,14 @@ impl super::Tabular {
                         }
                         models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                         models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
-                        models::enums::NodeType::MySQLFolder => "🐬",
-                        models::enums::NodeType::PostgreSQLFolder => "🐘",
-                        models::enums::NodeType::SQLiteFolder => "📄",
-                        models::enums::NodeType::RedisFolder => "🔴",
-                        models::enums::NodeType::MongoDBFolder => "🍃",
-                        models::enums::NodeType::MsSQLFolder => "⛁",
+                        models::enums::NodeType::MySQLFolder
+                        | models::enums::NodeType::PostgreSQLFolder
+                        | models::enums::NodeType::SQLiteFolder
+                        | models::enums::NodeType::RedisFolder
+                        | models::enums::NodeType::MongoDBFolder
+                        | models::enums::NodeType::MsSQLFolder => {
+                            egui_icons::icons::ICON_FOLDER.codepoint
+                        }
                         models::enums::NodeType::CustomFolder => {
                             egui_icons::icons::ICON_FOLDER.codepoint
                         }
@@ -4021,14 +4056,49 @@ impl super::Tabular {
                         models::enums::NodeType::PartitionsFolder => {
                             egui_icons::icons::ICON_BAR_CHART.codepoint
                         }
-                        models::enums::NodeType::Index => "#",
-                        _ => "🧾",
+                        models::enums::NodeType::Index => egui_icons::icons::ICON_TAG.codepoint,
+                        _ => egui_icons::icons::ICON_DESCRIPTION.codepoint,
                     };
 
-                    let label_text = format!("{} {}", icon, node.name);
+                    let is_dark = ui.visuals().dark_mode;
+                    let (icon_color, text_color) =
+                        super::style::sidebar_node_colors(&node.node_type, is_dark);
+
+                    let mut job = egui::text::LayoutJob::default();
+                    if !icon.is_empty() {
+                        job.append(
+                            icon,
+                            0.0,
+                            egui::TextFormat {
+                                color: icon_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
+                        job.append(
+                            &format!(" {}", node.name),
+                            0.0,
+                            egui::TextFormat {
+                                color: text_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
+                    } else {
+                        job.append(
+                            &node.name,
+                            0.0,
+                            egui::TextFormat {
+                                color: text_color,
+                                font_id: egui::FontId::proportional(13.0),
+                                ..Default::default()
+                            },
+                        );
+                    }
+
                     // Use left-aligned label without forcing a full-row size to avoid centered look.
                     ui.add(
-                        egui::Label::new(label_text)
+                        egui::Label::new(job)
                             .selectable(false)
                             .truncate()
                             .sense(egui::Sense::click()),

@@ -276,20 +276,17 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             egui::Color32::from_gray(200)
                         };
                         let thin_stroke = egui::Stroke::new(0.5, border_color);
-                        let hdr_fill = if ui.visuals().dark_mode {
-                            egui::Color32::from_gray(40)
-                        } else {
-                            egui::Color32::from_gray(240)
-                        };
+                        let (hdr_fill, _) =
+                            crate::window_egui::style::table_header_colors(ui.visuals().dark_mode, false);
                         ui.painter().rect_filled(rect, 0.0, hdr_fill);
                         ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
                         ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
                         ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
                         ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
                         let text_color = if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(220, 220, 255)
+                            egui::Color32::from_rgb(148, 163, 184)
                         } else {
-                            egui::Color32::from_rgb(60, 60, 120)
+                            egui::Color32::from_rgb(100, 116, 139)
                         };
                         ui.painter().text(
                             rect.center(),
@@ -336,17 +333,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::Color32::from_gray(200)
                             };
                             let thin_stroke = egui::Stroke::new(0.5, border_color);
-                            let hdr_fill = if is_pinned {
-                                if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgba_unmultiplied(45, 60, 95, 230)
-                                } else {
-                                    egui::Color32::from_rgba_unmultiplied(225, 238, 255, 240)
-                                }
-                            } else if ui.visuals().dark_mode {
-                                egui::Color32::from_gray(40)
-                            } else {
-                                egui::Color32::from_gray(240)
-                            };
+                            let (hdr_fill, header_text_color) =
+                                crate::window_egui::style::table_header_colors(ui.visuals().dark_mode, is_pinned);
                             ui.painter().rect_filled(rect, 0.0, hdr_fill);
                             ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
                             ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
@@ -369,19 +357,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::pos2((rect.max.x - total_buttons_w).max(rect.min.x), rect.max.y),
                             );
 
-                            let text_color = if is_pinned {
-                                if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(180, 215, 255)
-                                } else {
-                                    egui::Color32::from_rgb(25, 80, 185)
-                                }
-                            } else {
-                                ui.visuals().text_color()
-                            };
+                            let text_color = header_text_color;
                             let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
                             let mut header_display_title = header.clone();
                             if fk_info.is_some() {
-                                header_display_title = format!("🔗 {}", header_display_title);
+                                header_display_title = format!("{} {}", egui_icons::icons::ICON_LINK.codepoint, header_display_title);
                             }
                             let max_header_chars = ((label_rect.width() / 8.0).floor() as usize).max(3);
                             let display_header = if header_display_title.chars().count() > max_header_chars {
@@ -524,7 +504,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::Sense::click(),
                             );
                             if let Some(fk) = fk_info {
-                                header_click_resp.clone().on_hover_text(format!("🔗 Foreign Key -> {}.{}", fk.referenced_table_name, fk.referenced_column_name));
+                                header_click_resp.clone().on_hover_text(format!("{} Foreign Key -> {}.{}", egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name));
                             }
                             if header_click_resp.clicked() {
                                 let modifiers = ui.input(|i| i.modifiers);
@@ -951,8 +931,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             let mut cell_resp = cell_response;
                                             if is_fk_link && let Some(fk) = fk_info {
                                                 cell_resp = cell_resp.on_hover_text(format!(
-                                                    "🔗 Foreign Key -> {}.{}\nValue: {}\n(Cmd/Ctrl+Click or right-click to jump to record)",
-                                                    fk.referenced_table_name, fk.referenced_column_name, cell
+                                                    "{} Foreign Key -> {}.{}\nValue: {}\n(Cmd/Ctrl+Click or right-click to jump to record)",
+                                                    egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell
                                                 ));
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                             } else if cell.chars().count() > max_chars || !cell.is_empty() {
@@ -1172,27 +1152,60 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 // Show normal cell text
                                                 let text_pos = rect.left_top()
                                                     + egui::vec2(5.0, rect.height() * 0.5);
-                                                ui.painter().text(
-                                                    text_pos,
-                                                    egui::Align2::LEFT_CENTER,
-                                                    &display_text,
-                                                    egui::FontId::default(),
-                                                    if is_selected_cell {
-                                                        if ui.visuals().dark_mode {
-                                                            egui::Color32::WHITE
-                                                        } else {
-                                                            egui::Color32::BLACK
-                                                        }
+
+                                                let col_type_hint = tab
+                                                    .current_column_metadata
+                                                    .as_ref()
+                                                    .and_then(|meta| meta.get(col_index))
+                                                    .map(|m| m.type_name.as_str());
+
+                                                let (type_color, is_null) =
+                                                    crate::window_egui::style::table_cell_style(
+                                                        &cell,
+                                                        col_type_hint,
+                                                        ui.visuals().dark_mode,
+                                                    );
+
+                                                let draw_color = if is_selected_cell {
+                                                    if ui.visuals().dark_mode {
+                                                        egui::Color32::WHITE
                                                     } else {
-                                                        ui.visuals().text_color()
-                                                    },
-                                                );
+                                                        egui::Color32::BLACK
+                                                    }
+                                                } else {
+                                                    type_color
+                                                };
+
+                                                if is_null {
+                                                    let mut job = egui::text::LayoutJob::default();
+                                                    job.append(
+                                                        &display_text,
+                                                        0.0,
+                                                        egui::TextFormat {
+                                                            color: draw_color,
+                                                            font_id: egui::FontId::proportional(12.5),
+                                                            italics: true,
+                                                            ..Default::default()
+                                                        },
+                                                    );
+                                                    let text_galley = ui.painter().layout_job(job);
+                                                    let pos = egui::pos2(rect.left() + 5.0, rect.center().y - text_galley.size().y * 0.5);
+                                                    ui.painter().galley(pos, text_galley, draw_color);
+                                                } else {
+                                                    ui.painter().text(
+                                                        text_pos,
+                                                        egui::Align2::LEFT_CENTER,
+                                                        &display_text,
+                                                        egui::FontId::default(),
+                                                        draw_color,
+                                                    );
+                                                }
                                             }
                                             cell_resp.context_menu(|ui| {
                                                 ui.set_min_width(160.0);
                                                 ui.vertical(|ui| {
                                                     if is_fk_link && let Some(fk) = fk_info && let Some(cid) = conn_id {
-                                                        if ui.button(format!("🔗 Open {}.{} = '{}'", fk.referenced_table_name, fk.referenced_column_name, cell)).clicked() {
+                                                        if ui.button(format!("{} Open {}.{} = '{}'", egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell)).clicked() {
                                                             fk_nav_request = Some((
                                                                 cid,
                                                                 db_name.clone(),
