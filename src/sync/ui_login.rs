@@ -860,11 +860,6 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("Sync Server:");
-                    ui.monospace(&tabular.sync_server_url);
-                });
-                ui.add_space(3.0);
-                ui.horizontal(|ui| {
                     ui.label("Signed in as:");
                     ui.label(egui::RichText::new(&account.email).strong());
                 });
