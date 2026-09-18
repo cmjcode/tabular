@@ -288,36 +288,76 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let is_logged_in = tabular.sync_account.is_some();
 
     if is_logged_in {
-        let dialog_w = (screen_rect.width() - 40.0).clamp(480.0, 680.0);
-        let dialog_h = (screen_rect.height() - 50.0).clamp(480.0, 720.0);
+        let dialog_w = 580.0f32.min(screen_rect.width() - 32.0);
+        let max_scroll_h = (screen_rect.height() - 140.0).max(250.0);
 
-        egui::Window::new("👤 Account & Profile")
+        egui::Window::new("account_profile_dialog")
             .id(egui::Id::new("account_profile_dialog"))
             .open(&mut open_flag)
             .collapsible(false)
-            .resizable(true)
+            .resizable(false)
+            .title_bar(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(screen_rect.center())
-            .min_width(480.0)
+            .min_width(dialog_w)
+            .max_width(dialog_w)
             .default_width(dialog_w)
-            .max_width(screen_rect.width() - 24.0)
-            .min_height(420.0)
-            .default_height(dialog_h)
             .max_height(screen_rect.height() - 32.0)
+            .frame(
+                egui::Frame::window(&ctx.global_style())
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 20,
+                        top: 16,
+                        bottom: 18,
+                    })
+                    .shadow(egui::Shadow {
+                        offset: [0, 16],
+                        blur: 48,
+                        spread: 4,
+                        color: egui::Color32::from_black_alpha(200),
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if ctx.global_style().visuals.dark_mode {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+                        },
+                    )),
+            )
             .show(ctx, |ui| {
-                // Top Tab Bar
-                ui.add_space(2.0);
-                render_account_tab_bar(tabular, ui);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
+                // Header row: Tabs on the left, Close (X) button on the right
+                ui.horizontal(|ui| {
+                    render_account_tab_bar(tabular, ui);
 
-                // Scrollable main content (leaves 48px for fixed footer)
-                let content_h = (ui.available_height() - 48.0).max(180.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close_btn = egui::Button::new(
+                            egui_icons::icons::ICON_CLOSE
+                                .rich_text()
+                                .size(16.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(close_btn)
+                            .on_hover_text("Close (Esc)")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            tabular.show_account_dialog = false;
+                        }
+                    });
+                });
+
+                ui.add_space(14.0);
+
+                // Scrollable main content with auto_shrink [false, true] to prevent infinite height expansion
                 egui::ScrollArea::vertical()
                     .id_salt("account_dialog_content_scroll")
-                    .max_height(content_h)
-                    .auto_shrink([false, false])
+                    .max_height(max_scroll_h)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         match tabular.account_dialog_tab {
                             crate::window_egui::AccountDialogTab::Profile => {
@@ -329,40 +369,35 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         }
                     });
 
-                // Fixed Bottom Action Bar (Footer) — always visible without scrolling
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let saving = tabular.profile_update_receiver.is_some();
-                    if saving {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Saving changes…")
-                                .size(12.0)
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_enabled_ui(!saving, |ui| {
-                            if ui
-                                .add(style::btn_primary_ctx(
-                                    ui.ctx(),
-                                    if saving { "💾  Saving…" } else { "💾  Save Changes" },
-                                ))
-                                .clicked()
-                            {
-                                save_profile(tabular);
-                            }
-                        });
-
-                        ui.add_space(8.0);
-                        if ui.add(style::btn_secondary("Close")).clicked() {
-                            tabular.show_account_dialog = false;
+                // Fixed Bottom Action Bar — clean without separator or redundant close button
+                if tabular.account_dialog_tab == crate::window_egui::AccountDialogTab::Profile {
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        let saving = tabular.profile_update_receiver.is_some();
+                        if saving {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Saving changes…")
+                                    .size(12.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_enabled_ui(!saving, |ui| {
+                                if ui
+                                    .add(style::btn_primary_ctx(
+                                        ui.ctx(),
+                                        if saving { "💾  Saving…" } else { "💾  Save Changes" },
+                                    ))
+                                    .clicked()
+                                {
+                                    save_profile(tabular);
+                                }
+                            });
+                        });
                     });
-                });
+                }
             });
     } else {
         let login_w = 400.0f32.min(screen_rect.width() - 32.0);
@@ -442,9 +477,10 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     });
             });
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            tabular.show_account_dialog = false;
-        }
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        tabular.show_account_dialog = false;
     }
 
     if !open_flag {
@@ -560,6 +596,7 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     // Left: Avatar with quick photo actions
                     ui.vertical(|ui| {
@@ -708,6 +745,9 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let field_w = (ui.available_width() - 130.0).max(280.0);
+
                 ui.label(egui::RichText::new("Personal Information").strong().size(14.0));
                 ui.add_space(2.0);
                 ui.label(
@@ -725,7 +765,7 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.add(
                             egui::TextEdit::singleline(&mut tabular.profile_display_name_input)
                                 .hint_text("e.g. John Doe")
-                                .desired_width(340.0),
+                                .desired_width(field_w),
                         );
                         ui.end_row();
 
@@ -734,7 +774,7 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             ui.add(
                                 egui::TextEdit::singleline(&mut tabular.profile_username_input)
                                     .hint_text("e.g. johndoe")
-                                    .desired_width(340.0),
+                                    .desired_width(field_w),
                             );
                             ui.label(
                                 egui::RichText::new("Used for team invites and mentions")
@@ -748,7 +788,7 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.add(
                             egui::TextEdit::singleline(&mut tabular.profile_phone_input)
                                 .hint_text("e.g. +62 812 3456 7890")
-                                .desired_width(340.0),
+                                .desired_width(field_w),
                         );
                         ui.end_row();
 
@@ -798,6 +838,7 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Active Session").strong().size(14.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -838,6 +879,7 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let count_text = if tabular.blocked_users.is_empty() {
                         "🚫 Blocked Users".to_string()
@@ -906,6 +948,7 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.label(
                     egui::RichText::new("⚠️ Danger Zone")
                         .strong()
