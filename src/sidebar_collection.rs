@@ -120,15 +120,22 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
 
                     let is_hovered = label_response.hovered() || row_interact.hovered();
-                    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+                    let is_active = label_response.is_pointer_button_down_on()
+                        || row_interact.is_pointer_button_down_on();
                     if is_hovered || is_active {
                         let is_dark = ui.visuals().dark_mode;
                         let bg = if is_active {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                            }
                         } else {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                            }
                         };
                         let bar_rect = egui::Rect::from_min_size(
                             egui::pos2(row_rect.left(), row_rect.top() + 2.0),
@@ -863,8 +870,7 @@ fn render_folder_node(
 ) {
     let folder_matches =
         parent_matched || (!filter.is_empty() && folder.name.to_lowercase().contains(filter));
-    let is_expanded =
-        expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
+    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
     let is_being_dragged = active_dnd_source.is_some_and(
         |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
     );
@@ -933,11 +939,17 @@ fn render_folder_node(
         let is_dark = ui.visuals().dark_mode;
         let is_active = label_resp.is_pointer_button_down_on();
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(folder_row_rect.left(), folder_row_rect.top() + 2.0),
@@ -1147,15 +1159,22 @@ fn render_request_row(
     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click_and_drag());
 
     let is_hovered = label_response.hovered() || row_interact.hovered();
-    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+    let is_active =
+        label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
     if is_hovered || is_active {
         let is_dark = ui.visuals().dark_mode;
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(row_rect.left(), row_rect.top() + 2.0),

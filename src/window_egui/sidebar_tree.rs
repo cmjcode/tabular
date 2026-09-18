@@ -686,14 +686,17 @@ impl super::Tabular {
                     // Kolom, metadata, dan FK diisi di loop refresh di bawah.
                     columns: Vec::new(),
                     foreign_keys: Vec::new(),
+                    group_ids: Vec::new(),
                     group_id: None,
                     column_meta: Vec::new(),
                     detached: false,
                 };
                 // Assign group
                 let prefix = get_prefix(&table);
-                if existing_group_ids.contains(&format!("group_{}", prefix)) {
-                    node.group_id = Some(format!("group_{}", prefix));
+                let target_group = format!("group_{}", prefix);
+                if existing_group_ids.contains(&target_group) {
+                    node.group_ids.push(target_group.clone());
+                    node.group_id = Some(target_group);
                 }
                 state.nodes.push(node);
             }
@@ -3979,9 +3982,7 @@ impl super::Tabular {
                         models::enums::NodeType::Database => {
                             egui_icons::icons::MDI_DATABASE.codepoint
                         }
-                        models::enums::NodeType::Table => {
-                            egui_icons::icons::MDI_TABLE.codepoint
-                        }
+                        models::enums::NodeType::Table => egui_icons::icons::MDI_TABLE.codepoint,
                         models::enums::NodeType::Column => {
                             egui_icons::icons::ICON_VIEW_COLUMN.codepoint
                         }

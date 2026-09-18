@@ -51,17 +51,67 @@ pub fn apply_to_state(state: &mut HttpClientState, raw: &str) -> Result<Vec<Stri
     let mut force_head = false;
 
     const BOOL_FLAGS: &[&str] = &[
-        "-k", "--insecure", "-s", "--silent", "-S", "--show-error", "-v", "--verbose",
-        "-L", "--location", "--compressed", "-i", "--include", "-f", "--fail",
-        "-N", "--no-buffer", "-0", "--http1.0", "--http1.1", "--http2",
-        "--http2-prior-knowledge", "-1", "--tlsv1", "-4", "--ipv4", "-6", "--ipv6",
-        "-#", "--progress-bar", "-g", "--globoff", "-n", "--netrc", "--ssl", "--ssl-reqd",
+        "-k",
+        "--insecure",
+        "-s",
+        "--silent",
+        "-S",
+        "--show-error",
+        "-v",
+        "--verbose",
+        "-L",
+        "--location",
+        "--compressed",
+        "-i",
+        "--include",
+        "-f",
+        "--fail",
+        "-N",
+        "--no-buffer",
+        "-0",
+        "--http1.0",
+        "--http1.1",
+        "--http2",
+        "--http2-prior-knowledge",
+        "-1",
+        "--tlsv1",
+        "-4",
+        "--ipv4",
+        "-6",
+        "--ipv6",
+        "-#",
+        "--progress-bar",
+        "-g",
+        "--globoff",
+        "-n",
+        "--netrc",
+        "--ssl",
+        "--ssl-reqd",
     ];
     const IGNORED_VALUE_FLAGS: &[&str] = &[
-        "-o", "--output", "-D", "--dump-header", "-c", "--cookie-jar", "-T",
-        "--upload-file", "-x", "--proxy", "-w", "--write-out", "--connect-timeout",
-        "-m", "--max-time", "--retry", "--limit-rate", "--cacert", "--cert", "--key",
-        "-E", "--interface", "--resolve",
+        "-o",
+        "--output",
+        "-D",
+        "--dump-header",
+        "-c",
+        "--cookie-jar",
+        "-T",
+        "--upload-file",
+        "-x",
+        "--proxy",
+        "-w",
+        "--write-out",
+        "--connect-timeout",
+        "-m",
+        "--max-time",
+        "--retry",
+        "--limit-rate",
+        "--cacert",
+        "--cert",
+        "--key",
+        "-E",
+        "--interface",
+        "--resolve",
     ];
 
     while let Some(tok) = it.next() {
@@ -209,7 +259,10 @@ pub fn apply_to_state(state: &mut HttpClientState, raw: &str) -> Result<Vec<Stri
     state.headers = if headers.is_empty() {
         vec![("Accept".to_string(), "*/*".to_string(), true)]
     } else {
-        headers.iter().map(|(k, v)| (k.clone(), v.clone(), true)).collect()
+        headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone(), true))
+            .collect()
     };
 
     if !form_parts.is_empty() {
@@ -244,11 +297,9 @@ pub fn apply_to_state(state: &mut HttpClientState, raw: &str) -> Result<Vec<Stri
         state.auth_type = HttpAuthType::BasicAuth;
         state.basic_user = user;
         state.basic_pass = pass;
-    } else if let Some(idx) = state
-        .headers
-        .iter()
-        .position(|(k, v, _)| k.eq_ignore_ascii_case("authorization") && v.to_lowercase().starts_with("bearer "))
-    {
+    } else if let Some(idx) = state.headers.iter().position(|(k, v, _)| {
+        k.eq_ignore_ascii_case("authorization") && v.to_lowercase().starts_with("bearer ")
+    }) {
         let (_, v, _) = state.headers.remove(idx);
         state.auth_type = HttpAuthType::BearerToken;
         state.bearer_token = v[7..].trim().to_string();
@@ -376,12 +427,16 @@ fn tokenize(input: &str) -> Result<Vec<String>, String> {
                     match chars.next() {
                         Some('"') => break,
                         Some('\\') => match chars.next() {
-                            Some(next) if matches!(next, '"' | '\\' | '$' | '`') => current.push(next),
+                            Some(next) if matches!(next, '"' | '\\' | '$' | '`') => {
+                                current.push(next)
+                            }
                             Some(next) => {
                                 current.push('\\');
                                 current.push(next);
                             }
-                            None => return Err("Unterminated double quote in curl command".to_string()),
+                            None => {
+                                return Err("Unterminated double quote in curl command".to_string());
+                            }
                         },
                         Some(ch) => current.push(ch),
                         None => return Err("Unterminated double quote in curl command".to_string()),
@@ -453,8 +508,18 @@ mod tests {
         assert_eq!(state.url, "https://api.example.com/users");
         assert_eq!(state.body_type, HttpBodyType::Json);
         assert_eq!(state.body_text, r#"{"name":"Jayuda"}"#);
-        assert!(state.headers.iter().any(|(k, v, _)| k == "Content-Type" && v == "application/json"));
-        assert!(state.headers.iter().any(|(k, v, _)| k == "Accept" && v == "application/json"));
+        assert!(
+            state
+                .headers
+                .iter()
+                .any(|(k, v, _)| k == "Content-Type" && v == "application/json")
+        );
+        assert!(
+            state
+                .headers
+                .iter()
+                .any(|(k, v, _)| k == "Accept" && v == "application/json")
+        );
     }
 
     #[test]
@@ -467,7 +532,11 @@ mod tests {
     #[test]
     fn parses_query_params_from_url() {
         let mut state = fresh();
-        apply_to_state(&mut state, "curl 'https://api.example.com/search?q=rust&page=2'").unwrap();
+        apply_to_state(
+            &mut state,
+            "curl 'https://api.example.com/search?q=rust&page=2'",
+        )
+        .unwrap();
         assert_eq!(state.url, "https://api.example.com/search");
         assert!(state.params.iter().any(|(k, v, _)| k == "q" && v == "rust"));
         assert!(state.params.iter().any(|(k, v, _)| k == "page" && v == "2"));
@@ -494,8 +563,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.body_type, HttpBodyType::MultiPart);
-        assert!(state.form_data.iter().any(|(k, v, _)| k == "name" && v == "Jayuda"));
-        assert!(state.form_data.iter().any(|(k, v, _)| k == "file" && v == "@photo.png"));
+        assert!(
+            state
+                .form_data
+                .iter()
+                .any(|(k, v, _)| k == "name" && v == "Jayuda")
+        );
+        assert!(
+            state
+                .form_data
+                .iter()
+                .any(|(k, v, _)| k == "file" && v == "@photo.png")
+        );
     }
 
     #[test]
@@ -517,7 +596,12 @@ mod tests {
         .unwrap();
         assert_eq!(state.auth_type, HttpAuthType::BearerToken);
         assert_eq!(state.bearer_token, "abc123");
-        assert!(!state.headers.iter().any(|(k, _, _)| k.eq_ignore_ascii_case("authorization")));
+        assert!(
+            !state
+                .headers
+                .iter()
+                .any(|(k, _, _)| k.eq_ignore_ascii_case("authorization"))
+        );
     }
 
     #[test]
@@ -549,7 +633,11 @@ mod tests {
     #[test]
     fn unsupported_flag_is_silently_dropped_not_fatal() {
         let mut state = fresh();
-        let warnings = apply_to_state(&mut state, "curl --some-unknown-flag https://api.example.com/x").unwrap();
+        let warnings = apply_to_state(
+            &mut state,
+            "curl --some-unknown-flag https://api.example.com/x",
+        )
+        .unwrap();
         assert!(warnings.is_empty());
         assert_eq!(state.url, "https://api.example.com/x");
     }
@@ -565,8 +653,18 @@ mod tests {
         let warnings = apply_to_state(&mut state, pasted).unwrap();
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(state.url, "https://api.example.com/x");
-        assert!(state.headers.iter().any(|(k, v, _)| k == "accept" && v == "*/*"));
-        assert!(state.headers.iter().any(|(k, v, _)| k == "content-type" && v == "application/json"));
+        assert!(
+            state
+                .headers
+                .iter()
+                .any(|(k, v, _)| k == "accept" && v == "*/*")
+        );
+        assert!(
+            state
+                .headers
+                .iter()
+                .any(|(k, v, _)| k == "content-type" && v == "application/json")
+        );
         assert_eq!(state.body_text, "{\"a\":1}");
     }
 }

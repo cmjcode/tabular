@@ -66,7 +66,8 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Create & Refresh Team row ─────────────────────────────────────────
     ui.horizontal(|ui| {
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let metrics =
+            crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
         let row_h = if metrics.is_touch { 38.0 } else { 28.0 };
         let btn_w = if metrics.is_touch { 38.0 } else { 28.0 };
         let refresh_w = if metrics.is_touch { 38.0 } else { 28.0 };
@@ -88,7 +89,9 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         let can_create = !tabular.new_team_name.trim().is_empty();
         let create_btn = egui::Button::new(
-            egui::RichText::new("+").size(if metrics.is_touch { 18.0 } else { 14.0 }).strong()
+            egui::RichText::new("+")
+                .size(if metrics.is_touch { 18.0 } else { 14.0 })
+                .strong(),
         )
         .min_size(egui::vec2(btn_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -104,16 +107,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_team(tabular);
         }
 
-        let refresh_btn = egui::Button::new(
-            egui::RichText::new("🔄").size(if metrics.is_touch { 16.0 } else { 13.0 })
-        )
+        let refresh_btn = egui::Button::new(egui::RichText::new("🔄").size(if metrics.is_touch {
+            16.0
+        } else {
+            13.0
+        }))
         .min_size(egui::vec2(refresh_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
 
-        if ui.add(refresh_btn)
-            .on_hover_text("Refresh Teams")
-            .clicked()
-        {
+        if ui.add(refresh_btn).on_hover_text("Refresh Teams").clicked() {
             refresh_teams(tabular);
         }
     });
@@ -146,12 +148,27 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             );
             let is_open_before = team_state.is_open();
 
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-            let sub_btn_size = if metrics.is_touch { egui::vec2(32.0, 32.0) } else { egui::vec2(18.0, 18.0) };
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+                ui.ctx(),
+                tabular.ui_mode,
+            );
+            let sub_btn_size = if metrics.is_touch {
+                egui::vec2(32.0, 32.0)
+            } else {
+                egui::vec2(18.0, 18.0)
+            };
             let sub_btn_font = if metrics.is_touch { 18.0 } else { 12.0 };
-            let team_del_size = if metrics.is_touch { egui::vec2(34.0, 34.0) } else { egui::vec2(22.0, 22.0) };
+            let team_del_size = if metrics.is_touch {
+                egui::vec2(34.0, 34.0)
+            } else {
+                egui::vec2(22.0, 22.0)
+            };
             let team_del_font = if metrics.is_touch { 18.0 } else { 14.0 };
-            let item_del_size = if metrics.is_touch { egui::vec2(30.0, 30.0) } else { egui::vec2(18.0, 18.0) };
+            let item_del_size = if metrics.is_touch {
+                egui::vec2(30.0, 30.0)
+            } else {
+                egui::vec2(18.0, 18.0)
+            };
 
             let team_res = team_state.show_header(ui, |ui| {
                 ui.spacing_mut().interact_size = team_del_size;
@@ -1408,7 +1425,6 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
-
 // ─── Moderation UI (App Store Review Guideline 1.2) ──────────────────────────
 
 /// Reason keys accepted by `POST /api/v1/moderation/reports`, with their labels.
@@ -1483,7 +1499,11 @@ pub fn render_report_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(!in_flight, |ui| {
-                        let label = if in_flight { "Sending…" } else { "Submit Report" };
+                        let label = if in_flight {
+                            "Sending…"
+                        } else {
+                            "Submit Report"
+                        };
                         if ui.button(label).clicked() {
                             submit_report(tabular, &user_id);
                         }
@@ -1583,7 +1603,11 @@ fn submit_report(tabular: &mut Tabular, user_id: &str) {
                 Some(&target),
                 Some(&target),
                 &reason,
-                if details.is_empty() { None } else { Some(&details) },
+                if details.is_empty() {
+                    None
+                } else {
+                    Some(&details)
+                },
             )
             .await
             .map_err(|e| e.to_string());

@@ -40,7 +40,8 @@ pub fn suggest_relations(state: &DiagramState) -> Vec<RelationSuggestion> {
             let lower = column.to_lowercase();
             let mut best: Option<RelationSuggestion> = None;
             for parent in tables.iter().filter(|t| t.node.id != child.node.id) {
-                let Some((target, score, reason)) = match_parent(&lower, column, child, parent) else {
+                let Some((target, score, reason)) = match_parent(&lower, column, child, parent)
+                else {
                     continue;
                 };
                 if !types_compatible(child.type_of(column), parent.type_of(&target)) {
@@ -161,7 +162,9 @@ fn match_parent(
         let target = if parent.pks.len() == 1 {
             Some(parent.pks[0].clone())
         } else {
-            parent.has_column(column).or_else(|| parent.has_column("id"))
+            parent
+                .has_column(column)
+                .or_else(|| parent.has_column("id"))
         };
         if let Some(target) = target {
             return Some((
@@ -205,12 +208,35 @@ fn type_family(raw: &str) -> String {
         .unwrap_or("")
         .to_string();
     const INTS: &[&str] = &[
-        "int", "integer", "bigint", "smallint", "tinyint", "mediumint", "serial", "bigserial",
-        "smallserial", "int2", "int4", "int8", "number", "numeric", "decimal",
+        "int",
+        "integer",
+        "bigint",
+        "smallint",
+        "tinyint",
+        "mediumint",
+        "serial",
+        "bigserial",
+        "smallserial",
+        "int2",
+        "int4",
+        "int8",
+        "number",
+        "numeric",
+        "decimal",
     ];
     const TEXTS: &[&str] = &[
-        "char", "varchar", "character", "text", "string", "nvarchar", "nchar", "bpchar",
-        "tinytext", "mediumtext", "longtext", "citext",
+        "char",
+        "varchar",
+        "character",
+        "text",
+        "string",
+        "nvarchar",
+        "nchar",
+        "bpchar",
+        "tinytext",
+        "mediumtext",
+        "longtext",
+        "citext",
     ];
     if INTS.contains(&base.as_str()) {
         "int".to_string()
@@ -265,6 +291,7 @@ mod tests {
             size: eframe::egui::Vec2::ZERO,
             columns: cols.iter().map(|c| c.0.to_string()).collect(),
             foreign_keys: Vec::new(),
+            group_ids: Vec::new(),
             group_id: None,
             column_meta: cols
                 .iter()
@@ -290,7 +317,10 @@ mod tests {
         s.iter()
             .map(|s| {
                 let r = &s.relation;
-                format!("{}.{}->{}.{}", r.child, r.child_column, r.parent, r.parent_column)
+                format!(
+                    "{}.{}->{}.{}",
+                    r.child, r.child_column, r.parent, r.parent_column
+                )
             })
             .collect()
     }
@@ -298,10 +328,19 @@ mod tests {
     #[test]
     fn suggests_from_table_name_plus_id() {
         let st = state(vec![
-            node("customers", &[("id", "int", true), ("name", "varchar(50)", false)]),
-            node("orders", &[("id", "int", true), ("customer_id", "int", false)]),
+            node(
+                "customers",
+                &[("id", "int", true), ("name", "varchar(50)", false)],
+            ),
+            node(
+                "orders",
+                &[("id", "int", true), ("customer_id", "int", false)],
+            ),
             node("categories", &[("id", "int", true)]),
-            node("products", &[("id", "int", true), ("categoryId", "int", false)]),
+            node(
+                "products",
+                &[("id", "int", true), ("categoryId", "int", false)],
+            ),
         ]);
         let got = pairs(&suggest_relations(&st));
         assert!(got.contains(&"orders.customer_id->customers.id".to_string()));
@@ -313,15 +352,33 @@ mod tests {
     #[test]
     fn suggests_indonesian_style_and_shared_primary_key() {
         let st = state(vec![
-            node("tbl_user", &[("id_user", "bigint", true), ("nama", "varchar(50)", false)]),
-            node("kandang", &[("id_kandang", "int", true), ("id_user", "bigint", false)]),
+            node(
+                "tbl_user",
+                &[("id_user", "bigint", true), ("nama", "varchar(50)", false)],
+            ),
+            node(
+                "kandang",
+                &[("id_kandang", "int", true), ("id_user", "bigint", false)],
+            ),
             node("devices", &[("imei", "char(30)", true)]),
-            node("user_data", &[("imei", "char(30)", true), ("user_id", "bigint", true)]),
+            node(
+                "user_data",
+                &[("imei", "char(30)", true), ("user_id", "bigint", true)],
+            ),
         ]);
         let got = pairs(&suggest_relations(&st));
-        assert!(got.contains(&"kandang.id_user->tbl_user.id_user".to_string()), "{got:?}");
-        assert!(got.contains(&"user_data.imei->devices.imei".to_string()), "{got:?}");
-        assert!(got.contains(&"user_data.user_id->tbl_user.id_user".to_string()), "{got:?}");
+        assert!(
+            got.contains(&"kandang.id_user->tbl_user.id_user".to_string()),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&"user_data.imei->devices.imei".to_string()),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&"user_data.user_id->tbl_user.id_user".to_string()),
+            "{got:?}"
+        );
     }
 
     #[test]
@@ -344,13 +401,15 @@ mod tests {
     #[test]
     fn skips_columns_that_already_have_a_database_fk() {
         let mut orders = node("orders", &[("customer_id", "int", false)]);
-        orders.foreign_keys.push(crate::models::structs::ForeignKey {
-            constraint_name: "fk".into(),
-            table_name: "orders".into(),
-            column_name: "customer_id".into(),
-            referenced_table_name: "customers".into(),
-            referenced_column_name: "id".into(),
-        });
+        orders
+            .foreign_keys
+            .push(crate::models::structs::ForeignKey {
+                constraint_name: "fk".into(),
+                table_name: "orders".into(),
+                column_name: "customer_id".into(),
+                referenced_table_name: "customers".into(),
+                referenced_column_name: "id".into(),
+            });
         let st = state(vec![node("customers", &[("id", "int", true)]), orders]);
         assert!(suggest_relations(&st).is_empty());
     }

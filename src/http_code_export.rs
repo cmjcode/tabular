@@ -51,9 +51,7 @@ impl BodyExport {
     /// generators sets the multipart boundary header itself.
     fn content_type(&self) -> Option<&str> {
         match self {
-            BodyExport::Raw { content_type, .. } if !content_type.is_empty() => {
-                Some(content_type)
-            }
+            BodyExport::Raw { content_type, .. } if !content_type.is_empty() => Some(content_type),
             BodyExport::Form(_) => Some("application/x-www-form-urlencoded"),
             _ => None,
         }
@@ -75,7 +73,10 @@ fn build_export(state: &HttpClientState) -> ReqExport {
 
     match &state.auth_type {
         HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
-            headers.push(("Authorization".to_string(), format!("Bearer {}", state.bearer_token)));
+            headers.push((
+                "Authorization".to_string(),
+                format!("Bearer {}", state.bearer_token),
+            ));
         }
         HttpAuthType::BasicAuth => {
             basic_auth = Some((state.basic_user.clone(), state.basic_pass.clone()));
@@ -147,7 +148,9 @@ fn build_export(state: &HttpClientState) -> ReqExport {
 fn effective_headers(export: &ReqExport) -> Vec<(String, String)> {
     let mut headers = export.headers.clone();
     if let Some(ct) = export.body.content_type()
-        && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        && !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
     {
         headers.push(("Content-Type".to_string(), ct.to_string()));
     }
@@ -163,7 +166,9 @@ fn header_entries(headers: &[(String, String)]) -> Vec<String> {
 
 fn auth_comment(export: &ReqExport, comment_prefix: &str) -> Option<String> {
     export.unsupported_auth_note.map(|kind| {
-        format!("{comment_prefix} NOTE: {kind} authentication is not yet supported by this generator")
+        format!(
+            "{comment_prefix} NOTE: {kind} authentication is not yet supported by this generator"
+        )
     })
 }
 
@@ -218,7 +223,10 @@ fn to_curl(export: &ReqExport) -> String {
     }
 
     if let Some((user, pass)) = &export.basic_auth {
-        out.push_str(&format!(" \\\n  -u {}", sh_quoted(&format!("{user}:{pass}"))));
+        out.push_str(&format!(
+            " \\\n  -u {}",
+            sh_quoted(&format!("{user}:{pass}"))
+        ));
     }
 
     match &export.body {
@@ -343,7 +351,9 @@ fn to_javascript(export: &ReqExport) -> String {
                 .map(|(k, v)| format!("{}: {}", quoted(k), quoted(v)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            body_line = Some(format!("  body: new URLSearchParams({{ {obj} }}).toString(),"));
+            body_line = Some(format!(
+                "  body: new URLSearchParams({{ {obj} }}).toString(),"
+            ));
         }
         BodyExport::Multipart(pairs) => {
             preamble.push_str("const formData = new FormData();\n");
@@ -369,7 +379,9 @@ fn to_javascript(export: &ReqExport) -> String {
     if let Some(b) = &body_line {
         out.push_str(&format!("{b}\n"));
     }
-    out.push_str("})\n  .then((res) => res.text())\n  .then(console.log)\n  .catch(console.error);\n");
+    out.push_str(
+        "})\n  .then((res) => res.text())\n  .then(console.log)\n  .catch(console.error);\n",
+    );
 
     if let Some(note) = auth_comment(export, "//") {
         out.push_str(&note);
@@ -398,7 +410,9 @@ fn to_nodejs(export: &ReqExport) -> String {
                 .map(|(k, v)| format!("{}: {}", quoted(k), quoted(v)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            preamble.push_str(&format!("const payload = new URLSearchParams({{ {obj} }}).toString();\n\n"));
+            preamble.push_str(&format!(
+                "const payload = new URLSearchParams({{ {obj} }}).toString();\n\n"
+            ));
             data_line = Some("  data: payload,".to_string());
         }
         BodyExport::Multipart(pairs) => {
@@ -417,7 +431,10 @@ fn to_nodejs(export: &ReqExport) -> String {
     let mut out = String::from("const axios = require(\"axios\");\n\n");
     out.push_str(&preamble);
     out.push_str("axios({\n");
-    out.push_str(&format!("  method: {},\n", quoted(&export.method.to_lowercase())));
+    out.push_str(&format!(
+        "  method: {},\n",
+        quoted(&export.method.to_lowercase())
+    ));
     out.push_str(&format!("  url: {},\n", quoted(&export.url)));
     if !header_lines.is_empty() {
         out.push_str("  headers: {\n");
@@ -454,16 +471,17 @@ fn to_go(export: &ReqExport) -> String {
     let is_multipart = matches!(export.body, BodyExport::Multipart(_));
 
     let body_expr = match &export.body {
-        BodyExport::None => {
-            "nil".to_string()
-        }
+        BodyExport::None => "nil".to_string(),
         BodyExport::Unsupported(msg) => {
             preamble.push_str(&format!("\t// NOTE: {msg}\n"));
             "nil".to_string()
         }
         BodyExport::Raw { text, .. } => {
             imports.push("\"strings\"");
-            preamble.push_str(&format!("\tpayload := strings.NewReader({})\n", go_string_literal(text)));
+            preamble.push_str(&format!(
+                "\tpayload := strings.NewReader({})\n",
+                go_string_literal(text)
+            ));
             "payload".to_string()
         }
         BodyExport::Form(pairs) => {
@@ -555,7 +573,10 @@ fn to_go(export: &ReqExport) -> String {
 
 fn to_php(export: &ReqExport) -> String {
     let mut out = String::from("<?php\n\n$curl = curl_init();\n\ncurl_setopt_array($curl, [\n");
-    out.push_str(&format!("    CURLOPT_URL => {},\n", php_quoted(&export.url)));
+    out.push_str(&format!(
+        "    CURLOPT_URL => {},\n",
+        php_quoted(&export.url)
+    ));
     out.push_str("    CURLOPT_RETURNTRANSFER => true,\n");
     out.push_str(&format!(
         "    CURLOPT_CUSTOMREQUEST => {},\n",
@@ -568,7 +589,10 @@ fn to_php(export: &ReqExport) -> String {
             out.push_str(&format!("    // NOTE: {msg}\n"));
         }
         BodyExport::Raw { text, .. } => {
-            out.push_str(&format!("    CURLOPT_POSTFIELDS => {},\n", php_quoted(text)));
+            out.push_str(&format!(
+                "    CURLOPT_POSTFIELDS => {},\n",
+                php_quoted(text)
+            ));
         }
         BodyExport::Form(pairs) => {
             let joined = pairs
@@ -576,12 +600,19 @@ fn to_php(export: &ReqExport) -> String {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            out.push_str(&format!("    CURLOPT_POSTFIELDS => {},\n", php_quoted(&joined)));
+            out.push_str(&format!(
+                "    CURLOPT_POSTFIELDS => {},\n",
+                php_quoted(&joined)
+            ));
         }
         BodyExport::Multipart(pairs) => {
             out.push_str("    CURLOPT_POSTFIELDS => [\n");
             for (k, v) in pairs {
-                out.push_str(&format!("        {} => {},\n", php_quoted(k), php_quoted(v)));
+                out.push_str(&format!(
+                    "        {} => {},\n",
+                    php_quoted(k),
+                    php_quoted(v)
+                ));
             }
             out.push_str("    ],\n");
         }
@@ -628,7 +659,10 @@ fn to_rust(export: &ReqExport) -> String {
         "DELETE" => format!("client.delete({})", quoted(&export.url)),
         "PATCH" => format!("client.patch({})", quoted(&export.url)),
         "HEAD" => format!("client.head({})", quoted(&export.url)),
-        other => format!("client.request(reqwest::Method::{other}, {})", quoted(&export.url)),
+        other => format!(
+            "client.request(reqwest::Method::{other}, {})",
+            quoted(&export.url)
+        ),
     };
 
     let mut out = String::from(
@@ -651,7 +685,11 @@ fn to_rust(export: &ReqExport) -> String {
     out.push_str(&format!("    let response = {method_call}\n"));
 
     for (k, v) in effective_headers(export) {
-        out.push_str(&format!("        .header({}, {})\n", quoted(&k), quoted(&v)));
+        out.push_str(&format!(
+            "        .header({}, {})\n",
+            quoted(&k),
+            quoted(&v)
+        ));
     }
     if let Some((user, pass)) = &export.basic_auth {
         out.push_str(&format!(
@@ -721,7 +759,8 @@ mod tests {
         s.method = HttpMethod::POST;
         s.body_type = HttpBodyType::Json;
         s.body_text = r#"{"name":"Jayuda"}"#.to_string();
-        s.headers.push(("X-Trace".to_string(), "abc".to_string(), true));
+        s.headers
+            .push(("X-Trace".to_string(), "abc".to_string(), true));
         let code = generate(&CodeLang::Curl, &s);
         assert!(code.contains("-X POST"));
         assert!(code.contains("Content-Type: application/json"));
@@ -796,7 +835,8 @@ mod tests {
         let mut s = fresh();
         s.url = "https://api.example.com/x".to_string();
         s.method = HttpMethod::GET;
-        s.headers.push(("Accept".to_string(), "application/json".to_string(), true));
+        s.headers
+            .push(("Accept".to_string(), "application/json".to_string(), true));
         let code = generate(&CodeLang::Php, &s);
         assert!(code.contains("curl_init()"));
         assert!(code.contains("'Accept: application/json'"));
@@ -831,12 +871,17 @@ mod tests {
     fn disabled_rows_are_excluded_from_every_language() {
         let mut s = fresh();
         s.url = "https://api.example.com/x".to_string();
-        s.headers.push(("X-Off".to_string(), "nope".to_string(), false));
-        s.params.push(("off".to_string(), "nope".to_string(), false));
+        s.headers
+            .push(("X-Off".to_string(), "nope".to_string(), false));
+        s.params
+            .push(("off".to_string(), "nope".to_string(), false));
         for lang in CodeLang::all() {
             let code = generate(&lang, &s);
             assert!(!code.contains("X-Off"), "{lang:?} leaked a disabled header");
-            assert!(!code.contains("nope"), "{lang:?} leaked a disabled param/value");
+            assert!(
+                !code.contains("nope"),
+                "{lang:?} leaked a disabled param/value"
+            );
         }
     }
 
@@ -848,7 +893,10 @@ mod tests {
         s.body_type = HttpBodyType::BinaryFile;
         for lang in CodeLang::all() {
             let code = generate(&lang, &s);
-            assert!(code.contains("not yet supported"), "{lang:?} missing unsupported-body note");
+            assert!(
+                code.contains("not yet supported"),
+                "{lang:?} missing unsupported-body note"
+            );
         }
     }
 

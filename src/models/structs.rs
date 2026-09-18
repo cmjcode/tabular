@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, mpsc};
-use serde::{Deserialize, Serialize};
 
 use crate::models::{self, enums::NodeType};
 
@@ -32,8 +32,7 @@ impl HttpMethod {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpBodyType {
     // Form Data
     UrlEncoded,
@@ -49,9 +48,7 @@ pub enum HttpBodyType {
     NoBody,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpAuthType {
     ApiKey,
     AwsSignature,
@@ -66,9 +63,7 @@ pub enum HttpAuthType {
     NoAuth,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpRequestTab {
     #[default]
     Body,
@@ -77,9 +72,7 @@ pub enum HttpRequestTab {
     Auth,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpResponseTab {
     #[default]
     Body,
@@ -124,7 +117,6 @@ impl CodeLang {
         ]
     }
 }
-
 
 /// Sent from the background thread back to the UI thread.
 pub struct HttpClientResponse {
@@ -224,9 +216,7 @@ impl Default for HttpClientState {
             body_text: String::new(),
             form_data: vec![("".to_string(), "".to_string(), true)],
             params: vec![("".to_string(), "".to_string(), true)],
-            headers: vec![
-                ("Accept".to_string(), "*/*".to_string(), true),
-            ],
+            headers: vec![("Accept".to_string(), "*/*".to_string(), true)],
             auth_type: HttpAuthType::NoAuth,
             bearer_token: String::new(),
             basic_user: String::new(),
@@ -292,15 +282,20 @@ impl RedisBrowserTypeFilter {
             RedisBrowserTypeFilter::List => key_type.eq_ignore_ascii_case("list"),
             RedisBrowserTypeFilter::Set => key_type.eq_ignore_ascii_case("set"),
             RedisBrowserTypeFilter::SortedSet => {
-                key_type.eq_ignore_ascii_case("zset")
-                    || key_type.eq_ignore_ascii_case("sorted_set")
+                key_type.eq_ignore_ascii_case("zset") || key_type.eq_ignore_ascii_case("sorted_set")
             }
             RedisBrowserTypeFilter::Stream => key_type.eq_ignore_ascii_case("stream"),
-            RedisBrowserTypeFilter::Other => {
-                !["string", "hash", "list", "set", "zset", "sorted_set", "stream"]
-                    .iter()
-                    .any(|candidate| key_type.eq_ignore_ascii_case(candidate))
-            }
+            RedisBrowserTypeFilter::Other => ![
+                "string",
+                "hash",
+                "list",
+                "set",
+                "zset",
+                "sorted_set",
+                "stream",
+            ]
+            .iter()
+            .any(|candidate| key_type.eq_ignore_ascii_case(candidate)),
         }
     }
 }
@@ -449,8 +444,7 @@ impl ForeignKeyRelation {
 }
 
 /// Zero-copy & memory-efficient cell representation for large payloads (JSON, BLOB, Text)
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum CellValue {
     #[default]
     Null,
@@ -464,7 +458,6 @@ pub enum CellValue {
 
 /// Type alias for SQL values and query parameters
 pub type SqlValue = CellValue;
-
 
 impl std::fmt::Display for CellValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -593,7 +586,7 @@ pub struct DiagramGroup {
     #[serde(default)]
     #[serde(with = "serde_option_pos2")]
     pub manual_pos: Option<eframe::egui::Pos2>, // For empty groups or manual overriding
-    // nodes are linked by group_id in DiagramNode
+                                                // nodes are linked by group_id in DiagramNode
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -606,6 +599,9 @@ pub struct DiagramNode {
     pub size: eframe::egui::Vec2,
     pub columns: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>, // FKs originating from this table
+    #[serde(default)]
+    pub group_ids: Vec<String>,
+    #[serde(default)]
     pub group_id: Option<String>,
     /// Tipe/PK/nullable per kolom. Kosong untuk file diagram lama atau engine
     /// yang belum mendukung; `columns` tetap sumber urutan nama kolom.
@@ -628,6 +624,38 @@ impl DiagramNode {
         self.foreign_keys
             .iter()
             .any(|fk| fk.column_name == name && fk.table_name == self.id)
+    }
+
+    /// Cek apakah tabel ini tergabung dalam group dengan ID tertentu.
+    pub fn is_in_group(&self, group_id: &str) -> bool {
+        self.group_ids.iter().any(|g| g == group_id) || self.group_id.as_deref() == Some(group_id)
+    }
+
+    /// Tambahkan tabel ke suatu group bila belum ada.
+    pub fn add_to_group(&mut self, group_id: String) {
+        self.ensure_groups_migrated();
+        if !self.group_ids.contains(&group_id) {
+            self.group_ids.push(group_id);
+        }
+        self.group_id = self.group_ids.first().cloned();
+    }
+
+    /// Hapus tabel dari suatu group.
+    pub fn remove_from_group(&mut self, group_id: &str) {
+        self.ensure_groups_migrated();
+        self.group_ids.retain(|g| g != group_id);
+        self.group_id = self.group_ids.first().cloned();
+    }
+
+    /// Migrasikan `group_id` tunggal lama ke `group_ids` bila perlu.
+    pub fn ensure_groups_migrated(&mut self) {
+        if self.group_ids.is_empty() {
+            if let Some(gid) = &self.group_id {
+                self.group_ids.push(gid.clone());
+            }
+        } else if self.group_id.is_none() {
+            self.group_id = self.group_ids.first().cloned();
+        }
     }
 }
 
@@ -792,12 +820,12 @@ pub struct QueryTab {
     pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
     pub result_table_name: String,     // caption/status e.g. Table: ... or Query Results
     pub result_column_metadata: Option<Vec<ColumnMetadata>>, // Metadata for result columns
-    
+
     // MULTI-RESULT SUPPORT
     pub results: Vec<QueryResult>,
     pub active_result_index: usize,
 
-    pub is_table_browse_mode: bool,    // was this produced by table browse
+    pub is_table_browse_mode: bool, // was this produced by table browse
     pub current_page: usize,
     pub page_size: usize,
     pub total_rows: usize,
@@ -807,7 +835,7 @@ pub struct QueryTab {
     pub object_ddl: Option<String>, // Optional DDL (e.g., ALTER VIEW) for browsed objects
     pub explain_plan_json: Option<String>, // Parsed/raw EXPLAIN plan output JSON
     // Query execution message (similar to TablePlus message tab)
-    pub query_message: String,      // Message text (success/error)
+    pub query_message: String,        // Message text (success/error)
     pub query_message_is_error: bool, // Whether the message is an error or success
 
     // Diagram state for "Diagrams" tab
@@ -1510,11 +1538,13 @@ impl SchemaDiffState {
         db_name: String,
         connections: &[crate::models::structs::ConnectionConfig],
     ) -> Self {
-        let right_conn_id = connections.iter()
+        let right_conn_id = connections
+            .iter()
             .find(|c| c.id != Some(conn_id))
             .and_then(|c| c.id)
             .unwrap_or(conn_id);
-        let right_db = connections.iter()
+        let right_db = connections
+            .iter()
             .find(|c| c.id == Some(right_conn_id))
             .map(|c| c.database.clone())
             .unwrap_or_default();
@@ -1532,8 +1562,8 @@ impl SchemaDiffState {
 }
 
 mod serde_color {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Color32;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(color: &Color32, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1554,13 +1584,15 @@ mod serde_color {
         D: Deserializer<'de>,
     {
         let opt: [u8; 4] = Deserialize::deserialize(deserializer)?;
-        Ok(Color32::from_rgba_premultiplied(opt[0], opt[1], opt[2], opt[3]))
+        Ok(Color32::from_rgba_premultiplied(
+            opt[0], opt[1], opt[2], opt[3],
+        ))
     }
 }
 
 mod serde_pos2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Pos2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(pos: &Pos2, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1583,8 +1615,8 @@ mod serde_pos2 {
 }
 
 mod serde_vec2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Vec2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(vec: &Vec2, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1607,8 +1639,8 @@ mod serde_vec2 {
 }
 
 mod serde_option_pos2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Pos2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(pos: &Option<Pos2>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1740,7 +1772,11 @@ pub struct FilterCondition {
 }
 
 impl FilterCondition {
-    pub fn new(column: impl Into<String>, operator: FilterOperator, value: impl Into<String>) -> Self {
+    pub fn new(
+        column: impl Into<String>,
+        operator: FilterOperator,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             column: column.into(),
             operator,
@@ -1749,7 +1785,11 @@ impl FilterCondition {
         }
     }
 
-    pub fn between(column: impl Into<String>, val1: impl Into<String>, val2: impl Into<String>) -> Self {
+    pub fn between(
+        column: impl Into<String>,
+        val1: impl Into<String>,
+        val2: impl Into<String>,
+    ) -> Self {
         Self {
             column: column.into(),
             operator: FilterOperator::Between,

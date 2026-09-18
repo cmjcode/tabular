@@ -1010,23 +1010,23 @@ pub fn sidebar_node_colors(
     if is_dark {
         match node_type {
             NodeType::DatabasesFolder | NodeType::Database => (
-                egui::Color32::from_rgb(251, 191, 36), // Amber-400
+                egui::Color32::from_rgb(251, 191, 36),  // Amber-400
                 egui::Color32::from_rgb(253, 230, 138), // Amber-200
             ),
             NodeType::TablesFolder | NodeType::Table => (
-                egui::Color32::from_rgb(56, 189, 248), // Sky-400
+                egui::Color32::from_rgb(56, 189, 248),  // Sky-400
                 egui::Color32::from_rgb(186, 230, 253), // Sky-200
             ),
             NodeType::ColumnsFolder | NodeType::Column => (
-                egui::Color32::from_rgb(45, 212, 191), // Teal-400
+                egui::Color32::from_rgb(45, 212, 191),  // Teal-400
                 egui::Color32::from_rgb(153, 246, 228), // Teal-200
             ),
             NodeType::PrimaryKeysFolder => (
-                egui::Color32::from_rgb(252, 211, 77), // Gold-300
+                egui::Color32::from_rgb(252, 211, 77),  // Gold-300
                 egui::Color32::from_rgb(254, 240, 138), // Gold-200
             ),
             NodeType::IndexesFolder | NodeType::Index => (
-                egui::Color32::from_rgb(251, 146, 60), // Orange-400
+                egui::Color32::from_rgb(251, 146, 60),  // Orange-400
                 egui::Color32::from_rgb(254, 215, 170), // Orange-200
             ),
             NodeType::PartitionsFolder => (
@@ -1034,7 +1034,7 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(221, 214, 254), // Purple-200
             ),
             NodeType::ViewsFolder | NodeType::View | NodeType::CustomView => (
-                egui::Color32::from_rgb(52, 211, 153), // Emerald-400
+                egui::Color32::from_rgb(52, 211, 153),  // Emerald-400
                 egui::Color32::from_rgb(167, 243, 208), // Emerald-200
             ),
             NodeType::StoredProceduresFolder | NodeType::StoredProcedure => (
@@ -1057,15 +1057,15 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(254, 205, 211), // Rose-200
             ),
             NodeType::UsersFolder => (
-                egui::Color32::from_rgb(96, 165, 250), // Blue-400
+                egui::Color32::from_rgb(96, 165, 250),  // Blue-400
                 egui::Color32::from_rgb(191, 219, 254), // Blue-200
             ),
             NodeType::PrivilegesFolder => (
-                egui::Color32::from_rgb(251, 191, 36), // Amber-400
+                egui::Color32::from_rgb(251, 191, 36),  // Amber-400
                 egui::Color32::from_rgb(253, 230, 138), // Amber-200
             ),
             NodeType::ProcessesFolder => (
-                egui::Color32::from_rgb(74, 222, 128), // Green-400
+                egui::Color32::from_rgb(74, 222, 128),  // Green-400
                 egui::Color32::from_rgb(187, 247, 208), // Green-200
             ),
             NodeType::StatusFolder => (
@@ -1077,7 +1077,7 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(254, 202, 202), // Red-200
             ),
             NodeType::ReplicationStatusFolder | NodeType::MasterStatusFolder => (
-                egui::Color32::from_rgb(45, 212, 191), // Teal-400
+                egui::Color32::from_rgb(45, 212, 191),  // Teal-400
                 egui::Color32::from_rgb(153, 246, 228), // Teal-200
             ),
             NodeType::MetricsUserActiveFolder => (
@@ -1101,7 +1101,7 @@ pub fn sidebar_node_colors(
         // Light mode
         match node_type {
             NodeType::DatabasesFolder | NodeType::Database => (
-                egui::Color32::from_rgb(180, 83, 9), // Amber-700
+                egui::Color32::from_rgb(180, 83, 9),  // Amber-700
                 egui::Color32::from_rgb(120, 53, 15), // Amber-900
             ),
             NodeType::TablesFolder | NodeType::Table => (
@@ -1110,7 +1110,7 @@ pub fn sidebar_node_colors(
             ),
             NodeType::ColumnsFolder | NodeType::Column => (
                 egui::Color32::from_rgb(13, 148, 136), // Teal-600
-                egui::Color32::from_rgb(19, 78, 74), // Teal-900
+                egui::Color32::from_rgb(19, 78, 74),   // Teal-900
             ),
             NodeType::PrimaryKeysFolder => (
                 egui::Color32::from_rgb(202, 138, 4), // Gold-600
@@ -1122,19 +1122,19 @@ pub fn sidebar_node_colors(
             ),
             NodeType::PartitionsFolder => (
                 egui::Color32::from_rgb(124, 58, 237), // Purple-600
-                egui::Color32::from_rgb(76, 29, 149), // Purple-900
+                egui::Color32::from_rgb(76, 29, 149),  // Purple-900
             ),
             NodeType::ViewsFolder | NodeType::View | NodeType::CustomView => (
                 egui::Color32::from_rgb(5, 150, 105), // Emerald-600
-                egui::Color32::from_rgb(6, 78, 59), // Emerald-900
+                egui::Color32::from_rgb(6, 78, 59),   // Emerald-900
             ),
             NodeType::StoredProceduresFolder | NodeType::StoredProcedure => (
                 egui::Color32::from_rgb(147, 51, 234), // Purple-600
-                egui::Color32::from_rgb(88, 28, 135), // Purple-900
+                egui::Color32::from_rgb(88, 28, 135),  // Purple-900
             ),
             NodeType::UserFunctionsFolder | NodeType::UserFunction => (
                 egui::Color32::from_rgb(124, 58, 237), // Violet-600
-                egui::Color32::from_rgb(76, 29, 149), // Violet-900
+                egui::Color32::from_rgb(76, 29, 149),  // Violet-900
             ),
             NodeType::TriggersFolder
             | NodeType::Trigger
@@ -1152,16 +1152,16 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(30, 58, 138), // Blue-900
             ),
             NodeType::PrivilegesFolder => (
-                egui::Color32::from_rgb(180, 83, 9), // Amber-700
+                egui::Color32::from_rgb(180, 83, 9),  // Amber-700
                 egui::Color32::from_rgb(120, 53, 15), // Amber-900
             ),
             NodeType::ProcessesFolder => (
                 egui::Color32::from_rgb(22, 163, 74), // Green-600
-                egui::Color32::from_rgb(20, 83, 45), // Green-900
+                egui::Color32::from_rgb(20, 83, 45),  // Green-900
             ),
             NodeType::StatusFolder => (
                 egui::Color32::from_rgb(124, 58, 237), // Purple-600
-                egui::Color32::from_rgb(76, 29, 149), // Purple-900
+                egui::Color32::from_rgb(76, 29, 149),  // Purple-900
             ),
             NodeType::BlockedQueriesFolder => (
                 egui::Color32::from_rgb(220, 38, 38), // Red-600
@@ -1169,7 +1169,7 @@ pub fn sidebar_node_colors(
             ),
             NodeType::ReplicationStatusFolder | NodeType::MasterStatusFolder => (
                 egui::Color32::from_rgb(13, 148, 136), // Teal-600
-                egui::Color32::from_rgb(19, 78, 74), // Teal-900
+                egui::Color32::from_rgb(19, 78, 74),   // Teal-900
             ),
             NodeType::MetricsUserActiveFolder => (
                 egui::Color32::from_rgb(67, 56, 202), // Indigo-700
@@ -1181,7 +1181,7 @@ pub fn sidebar_node_colors(
             ),
             NodeType::QueryFolder | NodeType::Query => (
                 egui::Color32::from_rgb(100, 116, 139), // Slate-500
-                egui::Color32::from_rgb(30, 41, 59), // Slate-800
+                egui::Color32::from_rgb(30, 41, 59),    // Slate-800
             ),
             _ => (
                 egui::Color32::from_rgb(71, 85, 105),
@@ -1215,9 +1215,7 @@ pub fn table_cell_style(
         let upper = t.to_uppercase();
         upper.contains("BOOL")
     });
-    if is_bool_type
-        || trimmed.eq_ignore_ascii_case("true")
-        || trimmed.eq_ignore_ascii_case("false")
+    if is_bool_type || trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("false")
     {
         let bool_color = if is_dark {
             egui::Color32::from_rgb(192, 132, 252) // Purple-400
@@ -1253,8 +1251,7 @@ pub fn table_cell_style(
     });
     let is_float_val = trimmed.parse::<f64>().is_ok()
         && (trimmed.contains('.') || trimmed.contains('e') || trimmed.contains('E'));
-    if (is_float_type && (is_float_val || is_int_val))
-        || (col_type_hint.is_none() && is_float_val)
+    if (is_float_type && (is_float_val || is_int_val)) || (col_type_hint.is_none() && is_float_val)
     {
         let float_color = if is_dark {
             egui::Color32::from_rgb(56, 189, 248) // Sky-400
@@ -1373,10 +1370,7 @@ pub fn sql_type_color(data_type_str: &str, is_dark: bool) -> egui::Color32 {
         }
     }
     // 4. Date / Time / Timestamp / Year -> Amber
-    else if base.contains("date")
-        || base.contains("time")
-        || base.contains("year")
-    {
+    else if base.contains("date") || base.contains("time") || base.contains("year") {
         if is_dark {
             egui::Color32::from_rgb(251, 191, 36) // Amber-400
         } else {
@@ -1438,7 +1432,9 @@ pub fn column_name_color(is_dark: bool, is_pk: bool) -> egui::Color32 {
 
 /// Mengembalikan warna untuk nama index di tampilan indeks.
 pub fn index_name_color(name: &str, is_unique: bool, is_dark: bool) -> egui::Color32 {
-    if name.eq_ignore_ascii_case("PRIMARY") || (is_unique && name.to_ascii_lowercase().contains("primary")) {
+    if name.eq_ignore_ascii_case("PRIMARY")
+        || (is_unique && name.to_ascii_lowercase().contains("primary"))
+    {
         if is_dark {
             egui::Color32::from_rgb(252, 211, 77) // Gold-300
         } else {
@@ -1505,7 +1501,8 @@ pub fn table_row_number_color(is_dark: bool) -> egui::Color32 {
 /// Mengembalikan warna untuk kolom "extra" (misal: auto_increment)
 pub fn extra_info_color(extra: &str, is_dark: bool) -> egui::Color32 {
     let lower = extra.to_ascii_lowercase();
-    if lower.contains("auto_increment") || lower.contains("identity") || lower.contains("generated") {
+    if lower.contains("auto_increment") || lower.contains("identity") || lower.contains("generated")
+    {
         if is_dark {
             egui::Color32::from_rgb(252, 211, 77) // Gold-300
         } else {

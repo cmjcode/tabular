@@ -57,7 +57,10 @@ pub fn push_history_to_server(
 
         match client.push_history(&token, push_items).await {
             Ok(inserted) => {
-                info!("✅ [sync_history] Pushed {} new history items to server", inserted);
+                info!(
+                    "✅ [sync_history] Pushed {} new history items to server",
+                    inserted
+                );
                 let _ = result_tx.send(Ok(inserted));
             }
             Err(e) => {
@@ -113,7 +116,7 @@ pub fn pull_history_from_server(
             // the server-side value is ciphertext and never matches directly).
             let exists: bool = sqlx::query_scalar(
                 "SELECT COUNT(*) > 0 FROM query_history
-                 WHERE query_text = ? AND connection_name = ? AND executed_at = ?"
+                 WHERE query_text = ? AND connection_name = ? AND executed_at = ?",
             )
             .bind(&plaintext)
             .bind(&item.connection_name)
@@ -125,7 +128,7 @@ pub fn pull_history_from_server(
             if !exists {
                 let _ = sqlx::query(
                     "INSERT INTO query_history (query_text, connection_id, connection_name)
-                     VALUES (?, 0, ?)"
+                     VALUES (?, 0, ?)",
                 )
                 .bind(&plaintext)
                 .bind(&item.connection_name)
@@ -135,7 +138,10 @@ pub fn pull_history_from_server(
             }
         }
 
-        info!("✅ [sync_history] Pulled {} new remote history items", inserted);
+        info!(
+            "✅ [sync_history] Pulled {} new remote history items",
+            inserted
+        );
         let _ = result_tx.send(Ok(inserted));
     });
 }

@@ -16,13 +16,13 @@
 //! Simple implementation: the client opens the browser to the server's login URL
 //! and shows a "paste token" dialog OR we use a local callback server.
 
+use log::{info, warn};
+use rand::RngExt;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-use log::{info, warn};
-use rand::RngExt;
 
 use super::{TabularAccount, api_client::TokenResponse};
 
@@ -68,7 +68,9 @@ fn url_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+            if let Ok(val) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 decoded.push(val as char);
                 i += 3;
                 continue;
@@ -110,7 +112,10 @@ pub fn start_oauth_flow(
             (Some(l), port)
         }
         Err(e) => {
-            info!("Local loopback listener not available (App Sandbox or restricted network): {}", e);
+            info!(
+                "Local loopback listener not available (App Sandbox or restricted network): {}",
+                e
+            );
             (None, None)
         }
     };
@@ -135,7 +140,10 @@ pub fn start_oauth_flow(
     // 5. Spawn background worker to await authentication via HTTPS polling or loopback callback
     let server_url_owned = server_url.trim_end_matches('/').to_string();
     thread::spawn(move || {
-        info!("🔑 Waiting for OAuth authentication (ticket: {}, loopback port: {:?})", ticket, port_opt);
+        info!(
+            "🔑 Waiting for OAuth authentication (ticket: {}, loopback port: {:?})",
+            ticket, port_opt
+        );
         let start_time = std::time::Instant::now();
         let poll_url = format!("{}/api/v1/auth/ticket/poll", server_url_owned);
 
@@ -156,25 +164,35 @@ pub fn start_oauth_flow(
                         if resp.status().is_success() {
                             if let Ok(json) = resp.json::<serde_json::Value>() {
                                 let data = json.get("data").unwrap_or(&json);
-                                let status = data.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                                let status =
+                                    data.get("status").and_then(|s| s.as_str()).unwrap_or("");
                                 if status == "completed" {
                                     if let Some(token_val) = data.get("token") {
-                                        match serde_json::from_value::<TokenResponse>(token_val.clone()) {
+                                        match serde_json::from_value::<TokenResponse>(
+                                            token_val.clone(),
+                                        ) {
                                             Ok(token_resp) => {
-                                                info!("✅ Received valid token response via ticket polling");
+                                                info!(
+                                                    "✅ Received valid token response via ticket polling"
+                                                );
                                                 let _ = tx.send(Ok(token_resp));
                                                 // Berikan grace period singkat untuk melayani koneksi HTTP yang tersisa dari browser
                                                 if let Some(listener) = listener_opt {
                                                     let drain_start = std::time::Instant::now();
-                                                    while drain_start.elapsed() < Duration::from_secs(3) {
-                                                        if let Ok((mut stream, _)) = listener.accept() {
+                                                    while drain_start.elapsed()
+                                                        < Duration::from_secs(3)
+                                                    {
+                                                        if let Ok((mut stream, _)) =
+                                                            listener.accept()
+                                                        {
                                                             let http_resp = "HTTP/1.1 200 OK\r\n\
                                                                              Content-Type: text/html\r\n\
                                                                              Access-Control-Allow-Origin: *\r\n\
                                                                              Connection: close\r\n\r\n\
                                                                              <!DOCTYPE html><html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#fff;'>\
                                                                              <h2 style='color:#38bdf8;'>Sign in successful!</h2><p>You can close this tab and return to Tabular.</p></body></html>";
-                                                            let _ = stream.write_all(http_resp.as_bytes());
+                                                            let _ = stream
+                                                                .write_all(http_resp.as_bytes());
                                                             let _ = stream.flush();
                                                             break;
                                                         }
@@ -184,8 +202,14 @@ pub fn start_oauth_flow(
                                                 return;
                                             }
                                             Err(e) => {
-                                                warn!("❌ Failed to parse TokenResponse from ticket poll: {}", e);
-                                                let _ = tx.send(Err(format!("Invalid token JSON from poll: {}", e)));
+                                                warn!(
+                                                    "❌ Failed to parse TokenResponse from ticket poll: {}",
+                                                    e
+                                                );
+                                                let _ = tx.send(Err(format!(
+                                                    "Invalid token JSON from poll: {}",
+                                                    e
+                                                )));
                                                 return;
                                             }
                                         }
@@ -225,11 +249,15 @@ pub fn start_oauth_flow(
                                 let _ = stream.flush();
                             } else {
                                 let token_json_opt = if request_str.starts_with("POST") {
-                                    request_str.split("\r\n\r\n").nth(1).map(|s| s.trim().to_string())
+                                    request_str
+                                        .split("\r\n\r\n")
+                                        .nth(1)
+                                        .map(|s| s.trim().to_string())
                                 } else if request_str.starts_with("GET") {
                                     if let Some(pos) = request_str.find("token=") {
                                         let query_part = &request_str[pos + 6..];
-                                        let end_pos = query_part.find(' ').unwrap_or(query_part.len());
+                                        let end_pos =
+                                            query_part.find(' ').unwrap_or(query_part.len());
                                         Some(url_decode(&query_part[..end_pos]))
                                     } else {
                                         None
@@ -250,13 +278,19 @@ pub fn start_oauth_flow(
                                 if let Some(json_str) = token_json_opt {
                                     match serde_json::from_str::<TokenResponse>(&json_str) {
                                         Ok(token_resp) => {
-                                            info!("✅ Received valid token response via loopback HTTP");
+                                            info!(
+                                                "✅ Received valid token response via loopback HTTP"
+                                            );
                                             let _ = tx.send(Ok(token_resp));
                                             return;
                                         }
                                         Err(e) => {
-                                            warn!("❌ Failed to parse TokenResponse from loopback: {}", e);
-                                            let _ = tx.send(Err(format!("Invalid token JSON: {}", e)));
+                                            warn!(
+                                                "❌ Failed to parse TokenResponse from loopback: {}",
+                                                e
+                                            );
+                                            let _ =
+                                                tx.send(Err(format!("Invalid token JSON: {}", e)));
                                             return;
                                         }
                                     }
@@ -380,7 +414,8 @@ mod tests {
         assert_eq!(status, "completed");
 
         let token_val = data.get("token").unwrap();
-        let token_resp: TokenResponse = serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
+        let token_resp: TokenResponse =
+            serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
         assert_eq!(token_resp.access_token, "poll_access");
         assert_eq!(token_resp.user.email, "poll@tabular.id");
     }
@@ -409,13 +444,17 @@ mod tests {
 
         let data = json_data.get("data").unwrap();
         let token_val = data.get("token").unwrap();
-        let token_resp: TokenResponse = serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
+        let token_resp: TokenResponse =
+            serde_json::from_value(token_val.clone()).expect("parse TokenResponse");
         let account = token_to_account(&token_resp);
 
         assert_eq!(account.user_id, "u-100");
         assert_eq!(account.email, "alice@tabular.id");
         assert_eq!(account.display_name.as_deref(), Some("Alice Wonderland"));
-        assert_eq!(account.avatar_url.as_deref(), Some("https://example.com/alice.png"));
+        assert_eq!(
+            account.avatar_url.as_deref(),
+            Some("https://example.com/alice.png")
+        );
         assert_eq!(account.username.as_deref(), Some("alicew"));
         assert_eq!(account.phone.as_deref(), Some("+628123456789"));
     }

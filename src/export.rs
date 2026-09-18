@@ -119,10 +119,7 @@ pub fn export_to_json(
         .set_file_name(format!("{}.json", current_table_name.replace(' ', "_")));
 
     if let Some(path) = file_dialog.save_file() {
-        match std::fs::write(
-            &path,
-            build_json(all_table_data, current_table_headers),
-        ) {
+        match std::fs::write(&path, build_json(all_table_data, current_table_headers)) {
             Ok(_) => debug!(
                 "✓ Successfully exported {} rows to JSON: {:?}",
                 all_table_data.len(),
@@ -185,7 +182,11 @@ pub fn build_markdown(all_table_data: &[Vec<String>], headers: &[String]) -> Str
     let mut out = String::new();
     out.push_str(&format!(
         "| {} |\n",
-        headers.iter().map(|h| escape(h)).collect::<Vec<_>>().join(" | ")
+        headers
+            .iter()
+            .map(|h| escape(h))
+            .collect::<Vec<_>>()
+            .join(" | ")
     ));
     out.push_str(&format!("|{}\n", " --- |".repeat(headers.len())));
     for row in all_table_data {
@@ -465,11 +466,17 @@ pub fn build_sql_dump(
     let mut out = String::new();
     out.push_str("-- --------------------------------------------------------\n");
     out.push_str(&format!("-- Tabular SQL Dump for table: {}\n", table_name));
-    out.push_str(&format!("-- Exported at: {}\n", chrono::Utc::now().to_rfc3339()));
+    out.push_str(&format!(
+        "-- Exported at: {}\n",
+        chrono::Utc::now().to_rfc3339()
+    ));
     out.push_str("-- --------------------------------------------------------\n\n");
 
     // 1. DROP TABLE IF EXISTS
-    out.push_str(&format!("DROP TABLE IF EXISTS {};\n\n", quote_ident(&table_name)));
+    out.push_str(&format!(
+        "DROP TABLE IF EXISTS {};\n\n",
+        quote_ident(&table_name)
+    ));
 
     // 2. CREATE TABLE
     out.push_str(&format!("CREATE TABLE {} (\n", quote_ident(&table_name)));
@@ -477,7 +484,15 @@ pub fn build_sql_dump(
 
     if let Some(struct_cols) = structure_columns.filter(|c| !c.is_empty()) {
         for col in struct_cols {
-            let mut def = format!("  {} {}", quote_ident(&col.name), if col.data_type.is_empty() { "TEXT" } else { &col.data_type });
+            let mut def = format!(
+                "  {} {}",
+                quote_ident(&col.name),
+                if col.data_type.is_empty() {
+                    "TEXT"
+                } else {
+                    &col.data_type
+                }
+            );
             if let Some(nullable) = col.nullable {
                 if !nullable {
                     def.push_str(" NOT NULL");
@@ -497,7 +512,11 @@ pub fn build_sql_dump(
         }
     } else if let Some(meta_cols) = column_metadata.filter(|c| !c.is_empty()) {
         for col in meta_cols {
-            let col_type = if col.type_name.is_empty() { "TEXT" } else { &col.type_name };
+            let col_type = if col.type_name.is_empty() {
+                "TEXT"
+            } else {
+                &col.type_name
+            };
             let mut def = format!("  {} {}", quote_ident(&col.name), col_type);
             if col.is_primary_key {
                 def.push_str(" PRIMARY KEY");
@@ -545,8 +564,16 @@ pub fn build_sql_dump(
 
     // 3. INSERTs
     if !all_table_data.is_empty() {
-        out.push_str(&format!("-- Dumping data for table {}\n", quote_ident(&table_name)));
-        out.push_str(&build_sql_inserts(all_table_data, headers, table_caption, db_type));
+        out.push_str(&format!(
+            "-- Dumping data for table {}\n",
+            quote_ident(&table_name)
+        ));
+        out.push_str(&build_sql_inserts(
+            all_table_data,
+            headers,
+            table_caption,
+            db_type,
+        ));
     }
 
     out
@@ -566,7 +593,10 @@ mod tests {
 
     #[test]
     fn ai_chat_markdown_keeps_order_and_metadata() {
-        let mut answer = chat_msg(AiChatRole::Assistant, "Use an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```");
+        let mut answer = chat_msg(
+            AiChatRole::Assistant,
+            "Use an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```",
+        );
         answer.tool_activity = vec![
             "mcp__tabular__run_query".to_string(),
             "view_file".to_string(),

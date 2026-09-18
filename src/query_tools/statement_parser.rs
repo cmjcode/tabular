@@ -27,7 +27,11 @@ pub fn split_statements(sql: &str) -> Vec<SqlStatementSpan> {
 
     while i < len {
         let (byte_idx, ch) = chars[i];
-        let next_ch = if i + 1 < len { Some(chars[i + 1].1) } else { None };
+        let next_ch = if i + 1 < len {
+            Some(chars[i + 1].1)
+        } else {
+            None
+        };
 
         if in_single_quote {
             if ch == '\'' {

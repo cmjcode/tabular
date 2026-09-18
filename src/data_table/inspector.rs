@@ -163,13 +163,7 @@ impl Default for CellInspectorState {
 
 impl CellInspectorState {
     /// Open the inspector with cell data, auto-detecting initial tab and parsing representations
-    pub fn open(
-        &mut self,
-        value: String,
-        column_name: String,
-        row_idx: usize,
-        col_idx: usize,
-    ) {
+    pub fn open(&mut self, value: String, column_name: String, row_idx: usize, col_idx: usize) {
         self.raw_value = value;
         self.column_name = column_name;
         self.row_idx = Some(row_idx);
@@ -231,11 +225,15 @@ impl CellInspectorState {
 
         let bytes = match self.hex_decode_mode {
             HexDecodeMode::Auto => {
-                if val_trimmed.starts_with("0x") || val_trimmed.starts_with("0X") || val_trimmed.starts_with("\\x") {
+                if val_trimmed.starts_with("0x")
+                    || val_trimmed.starts_with("0X")
+                    || val_trimmed.starts_with("\\x")
+                {
                     try_decode_hex_str(val_trimmed).unwrap_or_else(|| val.as_bytes().to_vec())
                 } else if val_trimmed.starts_with("data:") && val_trimmed.contains(";base64,") {
                     if let Some(pos) = val_trimmed.find(";base64,") {
-                        try_decode_base64(&val_trimmed[pos + 8..]).unwrap_or_else(|| val.as_bytes().to_vec())
+                        try_decode_base64(&val_trimmed[pos + 8..])
+                            .unwrap_or_else(|| val.as_bytes().to_vec())
                     } else {
                         val.as_bytes().to_vec()
                     }
@@ -244,8 +242,12 @@ impl CellInspectorState {
                 }
             }
             HexDecodeMode::RawUtf8Bytes => val.as_bytes().to_vec(),
-            HexDecodeMode::Base64 => try_decode_base64(val_trimmed).unwrap_or_else(|| val.as_bytes().to_vec()),
-            HexDecodeMode::HexString => try_decode_hex_str(val_trimmed).unwrap_or_else(|| val.as_bytes().to_vec()),
+            HexDecodeMode::Base64 => {
+                try_decode_base64(val_trimmed).unwrap_or_else(|| val.as_bytes().to_vec())
+            }
+            HexDecodeMode::HexString => {
+                try_decode_hex_str(val_trimmed).unwrap_or_else(|| val.as_bytes().to_vec())
+            }
         };
 
         self.hex_bytes = bytes;
@@ -256,9 +258,16 @@ impl CellInspectorState {
         let val_trimmed = self.raw_value.trim();
 
         // Check if SVG XML
-        if val_trimmed.starts_with("<svg") || val_trimmed.contains("<svg ") || val_trimmed.contains("xmlns=\"http://www.w3.org/2000/svg\"") {
-            let width = extract_xml_attr(val_trimmed, "width").and_then(|w| w.parse::<u32>().ok()).unwrap_or(300);
-            let height = extract_xml_attr(val_trimmed, "height").and_then(|h| h.parse::<u32>().ok()).unwrap_or(300);
+        if val_trimmed.starts_with("<svg")
+            || val_trimmed.contains("<svg ")
+            || val_trimmed.contains("xmlns=\"http://www.w3.org/2000/svg\"")
+        {
+            let width = extract_xml_attr(val_trimmed, "width")
+                .and_then(|w| w.parse::<u32>().ok())
+                .unwrap_or(300);
+            let height = extract_xml_attr(val_trimmed, "height")
+                .and_then(|h| h.parse::<u32>().ok())
+                .unwrap_or(300);
             self.image_meta = Some(ImageMetadata {
                 format_name: "SVG (Scalable Vector Graphics)".to_string(),
                 width,
@@ -292,7 +301,9 @@ impl CellInspectorState {
                 match image::load_from_memory(&bytes) {
                     Ok(dyn_img) => {
                         let (w, h) = (dyn_img.width(), dyn_img.height());
-                        let format_name = detect_image_format_magic(&bytes).unwrap_or("Raster Image").to_string();
+                        let format_name = detect_image_format_magic(&bytes)
+                            .unwrap_or("Raster Image")
+                            .to_string();
                         self.image_meta = Some(ImageMetadata {
                             format_name,
                             width: w,
@@ -337,7 +348,10 @@ impl CellInspectorState {
         let val_trimmed = self.raw_value.trim();
 
         // 1. Image Check
-        if val_trimmed.starts_with("data:image/") || val_trimmed.starts_with("<svg") || self.image_meta.is_some() {
+        if val_trimmed.starts_with("data:image/")
+            || val_trimmed.starts_with("<svg")
+            || self.image_meta.is_some()
+        {
             return InspectorTab::Image;
         }
 
@@ -347,7 +361,10 @@ impl CellInspectorState {
         }
 
         // 3. Binary / Hex Check (Contains null bytes or non-printable controls)
-        if self.raw_value.bytes().any(|b| b < 9) || val_trimmed.starts_with("0x") || val_trimmed.starts_with("\\x") {
+        if self.raw_value.bytes().any(|b| b < 9)
+            || val_trimmed.starts_with("0x")
+            || val_trimmed.starts_with("\\x")
+        {
             return InspectorTab::Hex;
         }
 
@@ -381,15 +398,14 @@ pub fn try_decode_hex_str(input: &str) -> Option<Vec<u8>> {
         clean = &clean[2..];
     }
 
-    let is_all_hex_chars = clean.chars().all(|c| c.is_ascii_hexdigit() || c.is_whitespace() || c == ':' || c == ',');
+    let is_all_hex_chars = clean
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() || c.is_whitespace() || c == ':' || c == ',');
     if !has_prefix && (!is_all_hex_chars || clean.len() < 2) {
         return None;
     }
 
-    let sanitized: String = clean
-        .chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .collect();
+    let sanitized: String = clean.chars().filter(|c| c.is_ascii_hexdigit()).collect();
 
     if sanitized.len() >= 2 && sanitized.len().is_multiple_of(2) {
         hex::decode(sanitized).ok()
@@ -438,10 +454,21 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
     }
 
     let mut is_open = tabular.cell_inspector.is_open;
-    let title = if let (Some(r), Some(c)) = (tabular.cell_inspector.row_idx, tabular.cell_inspector.col_idx) {
-        format!("🔍 Value Inspector — {} [Row {}, Col {}]", tabular.cell_inspector.column_name, r + 1, c + 1)
+    let title = if let (Some(r), Some(c)) = (
+        tabular.cell_inspector.row_idx,
+        tabular.cell_inspector.col_idx,
+    ) {
+        format!(
+            "🔍 Value Inspector — {} [Row {}, Col {}]",
+            tabular.cell_inspector.column_name,
+            r + 1,
+            c + 1
+        )
     } else {
-        format!("🔍 Value Inspector — {}", tabular.cell_inspector.column_name)
+        format!(
+            "🔍 Value Inspector — {}",
+            tabular.cell_inspector.column_name
+        )
     };
 
     let dark = ctx.global_style().visuals.dark_mode;
@@ -462,9 +489,16 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
         .frame(
             egui::Frame::window(&ctx.global_style())
                 .fill(window_fill)
-                .stroke(egui::Stroke::new(1.0, if dark { egui::Color32::from_rgb(55, 60, 75) } else { egui::Color32::from_rgb(210, 215, 225) }))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if dark {
+                        egui::Color32::from_rgb(55, 60, 75)
+                    } else {
+                        egui::Color32::from_rgb(210, 215, 225)
+                    },
+                ))
                 .corner_radius(10.0)
-                .inner_margin(egui::Margin::symmetric(14, 12))
+                .inner_margin(egui::Margin::symmetric(14, 12)),
         )
         .show(ctx, |ui| {
             // ─── Top Bar: Tabs & Quick Actions ───────────────────────────────
@@ -484,7 +518,11 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
 
                     let btn_resp = if is_active {
                         let accent = crate::window_egui::style::theme_accent(ctx);
-                        ui.add(egui::Button::new(text.color(egui::Color32::WHITE)).fill(accent).corner_radius(6.0))
+                        ui.add(
+                            egui::Button::new(text.color(egui::Color32::WHITE))
+                                .fill(accent)
+                                .corner_radius(6.0),
+                        )
                     } else {
                         ui.add(egui::Button::new(text).corner_radius(6.0))
                     };
@@ -495,15 +533,29 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("📋 Copy Raw").on_hover_text("Copy original cell value to clipboard").clicked() {
+                    if ui
+                        .button("📋 Copy Raw")
+                        .on_hover_text("Copy original cell value to clipboard")
+                        .clicked()
+                    {
                         action_copy_text = Some(tabular.cell_inspector.raw_value.clone());
                     }
 
                     // Format Quick Indicator
                     if tabular.cell_inspector.json_parsed.is_some() {
-                        crate::window_egui::style::render_badge(ui, "JSON VALID", egui::Color32::from_rgb(20, 80, 45), egui::Color32::from_rgb(130, 240, 160));
+                        crate::window_egui::style::render_badge(
+                            ui,
+                            "JSON VALID",
+                            egui::Color32::from_rgb(20, 80, 45),
+                            egui::Color32::from_rgb(130, 240, 160),
+                        );
                     } else if tabular.cell_inspector.image_meta.is_some() {
-                        crate::window_egui::style::render_badge(ui, "IMAGE", egui::Color32::from_rgb(30, 60, 100), egui::Color32::from_rgb(140, 200, 255));
+                        crate::window_egui::style::render_badge(
+                            ui,
+                            "IMAGE",
+                            egui::Color32::from_rgb(30, 60, 100),
+                            egui::Color32::from_rgb(140, 200, 255),
+                        );
                     }
                 });
             });
@@ -514,10 +566,18 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
 
             // ─── Active Tab Content ──────────────────────────────────────────
             match tabular.cell_inspector.active_tab {
-                InspectorTab::Json => render_tab_json(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text),
-                InspectorTab::Hex => render_tab_hex(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text),
-                InspectorTab::Image => render_tab_image(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text),
-                InspectorTab::RawText => render_tab_raw_text(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text),
+                InspectorTab::Json => {
+                    render_tab_json(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                }
+                InspectorTab::Hex => {
+                    render_tab_hex(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                }
+                InspectorTab::Image => {
+                    render_tab_image(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                }
+                InspectorTab::RawText => {
+                    render_tab_raw_text(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                }
             }
 
             // ─── Bottom Status Bar & Toast ───────────────────────────────────
@@ -533,12 +593,21 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
                     tabular.cell_inspector.text_total_words,
                     tabular.cell_inspector.text_lines_cache.len()
                 );
-                ui.label(egui::RichText::new(stats).size(11.0).color(ui.visuals().weak_text_color()));
+                ui.label(
+                    egui::RichText::new(stats)
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
 
                 if let Some((msg, instant)) = &tabular.cell_inspector.toast_message {
                     if instant.elapsed().as_secs_f32() < 2.5 {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(format!("✓ {}", msg)).size(11.5).color(egui::Color32::from_rgb(70, 200, 120)).strong());
+                            ui.label(
+                                egui::RichText::new(format!("✓ {}", msg))
+                                    .size(11.5)
+                                    .color(egui::Color32::from_rgb(70, 200, 120))
+                                    .strong(),
+                            );
                         });
                     }
                 }
@@ -564,9 +633,18 @@ fn render_tab_json(
     if let Some(parse_err) = &state.json_parse_error {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            ui.label(egui::RichText::new("⚠️ Unable to Parse JSON").size(15.0).color(crate::window_egui::style::theme_warning(ctx)).strong());
+            ui.label(
+                egui::RichText::new("⚠️ Unable to Parse JSON")
+                    .size(15.0)
+                    .color(crate::window_egui::style::theme_warning(ctx))
+                    .strong(),
+            );
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(parse_err).size(12.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                egui::RichText::new(parse_err)
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
             ui.add_space(14.0);
             if ui.button("Switch to Raw Virtual Text").clicked() {
                 state.active_tab = InspectorTab::RawText;
@@ -581,9 +659,21 @@ fn render_tab_json(
 
         // View Mode: Tree vs Pretty Formatted vs Minified
         ui.label(egui::RichText::new("Mode:").strong().size(12.0));
-        ui.selectable_value(&mut state.json_view_mode, JsonViewMode::Tree, "🌳 Tree View");
-        ui.selectable_value(&mut state.json_view_mode, JsonViewMode::Formatted, "📝 Formatted");
-        ui.selectable_value(&mut state.json_view_mode, JsonViewMode::Minified, "📦 Minified");
+        ui.selectable_value(
+            &mut state.json_view_mode,
+            JsonViewMode::Tree,
+            "🌳 Tree View",
+        );
+        ui.selectable_value(
+            &mut state.json_view_mode,
+            JsonViewMode::Formatted,
+            "📝 Formatted",
+        );
+        ui.selectable_value(
+            &mut state.json_view_mode,
+            JsonViewMode::Minified,
+            "📦 Minified",
+        );
 
         ui.separator();
 
@@ -625,7 +715,9 @@ fn render_tab_json(
 
     ui.add_space(6.0);
 
-    let Some(json_val) = state.json_parsed.clone() else { return; };
+    let Some(json_val) = state.json_parsed.clone() else {
+        return;
+    };
 
     match state.json_view_mode {
         JsonViewMode::Tree => {
@@ -697,7 +789,9 @@ fn render_json_node(
         false
     } else {
         let q = search_query.to_lowercase();
-        key_name.map(|k| k.to_lowercase().contains(&q)).unwrap_or(false)
+        key_name
+            .map(|k| k.to_lowercase().contains(&q))
+            .unwrap_or(false)
             || value.to_string().to_lowercase().contains(&q)
     };
 
@@ -709,10 +803,7 @@ fn render_json_node(
 
             ui.horizontal(|ui| {
                 ui.add_space(indent);
-                let toggle_resp = ui.selectable_label(
-                    false,
-                    egui::RichText::new(icon).size(12.0),
-                );
+                let toggle_resp = ui.selectable_label(false, egui::RichText::new(icon).size(12.0));
                 if toggle_resp.clicked() {
                     if is_collapsed {
                         collapsed_paths.remove(path);
@@ -723,16 +814,31 @@ fn render_json_node(
 
                 if let Some(k) = key_name {
                     let key_text = egui::RichText::new(format!("\"{}\": ", k))
-                        .color(if matches_search { egui::Color32::from_rgb(255, 215, 0) } else if dark { egui::Color32::from_rgb(130, 185, 255) } else { egui::Color32::from_rgb(0, 80, 190) })
+                        .color(if matches_search {
+                            egui::Color32::from_rgb(255, 215, 0)
+                        } else if dark {
+                            egui::Color32::from_rgb(130, 185, 255)
+                        } else {
+                            egui::Color32::from_rgb(0, 80, 190)
+                        })
                         .strong()
                         .monospace();
                     ui.label(key_text);
                 }
 
-                ui.label(egui::RichText::new(count_label).size(11.0).color(ui.visuals().weak_text_color()).monospace());
+                ui.label(
+                    egui::RichText::new(count_label)
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color())
+                        .monospace(),
+                );
 
                 // Copy sub-tree button on hover
-                if ui.small_button("📋").on_hover_text("Copy sub-tree JSON").clicked() {
+                if ui
+                    .small_button("📋")
+                    .on_hover_text("Copy sub-tree JSON")
+                    .clicked()
+                {
                     if let Ok(s) = serde_json::to_string_pretty(value) {
                         *action_copy_text = Some(s);
                     }
@@ -762,10 +868,7 @@ fn render_json_node(
 
             ui.horizontal(|ui| {
                 ui.add_space(indent);
-                let toggle_resp = ui.selectable_label(
-                    false,
-                    egui::RichText::new(icon).size(12.0),
-                );
+                let toggle_resp = ui.selectable_label(false, egui::RichText::new(icon).size(12.0));
                 if toggle_resp.clicked() {
                     if is_collapsed {
                         collapsed_paths.remove(path);
@@ -776,15 +879,30 @@ fn render_json_node(
 
                 if let Some(k) = key_name {
                     let key_text = egui::RichText::new(format!("\"{}\": ", k))
-                        .color(if matches_search { egui::Color32::from_rgb(255, 215, 0) } else if dark { egui::Color32::from_rgb(130, 185, 255) } else { egui::Color32::from_rgb(0, 80, 190) })
+                        .color(if matches_search {
+                            egui::Color32::from_rgb(255, 215, 0)
+                        } else if dark {
+                            egui::Color32::from_rgb(130, 185, 255)
+                        } else {
+                            egui::Color32::from_rgb(0, 80, 190)
+                        })
                         .strong()
                         .monospace();
                     ui.label(key_text);
                 }
 
-                ui.label(egui::RichText::new(count_label).size(11.0).color(ui.visuals().weak_text_color()).monospace());
+                ui.label(
+                    egui::RichText::new(count_label)
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color())
+                        .monospace(),
+                );
 
-                if ui.small_button("📋").on_hover_text("Copy array JSON").clicked() {
+                if ui
+                    .small_button("📋")
+                    .on_hover_text("Copy array JSON")
+                    .clicked()
+                {
                     if let Ok(s) = serde_json::to_string_pretty(value) {
                         *action_copy_text = Some(s);
                     }
@@ -815,7 +933,13 @@ fn render_json_node(
 
                 if let Some(k) = key_name {
                     let key_text = egui::RichText::new(format!("\"{}\": ", k))
-                        .color(if matches_search { egui::Color32::from_rgb(255, 215, 0) } else if dark { egui::Color32::from_rgb(140, 190, 255) } else { egui::Color32::from_rgb(0, 80, 190) })
+                        .color(if matches_search {
+                            egui::Color32::from_rgb(255, 215, 0)
+                        } else if dark {
+                            egui::Color32::from_rgb(140, 190, 255)
+                        } else {
+                            egui::Color32::from_rgb(0, 80, 190)
+                        })
                         .strong()
                         .monospace();
                     ui.label(key_text);
@@ -823,20 +947,40 @@ fn render_json_node(
 
                 let val_text = match value {
                     JsonValue::String(s) => {
-                        let color = if dark { egui::Color32::from_rgb(150, 225, 150) } else { egui::Color32::from_rgb(30, 130, 40) };
-                        egui::RichText::new(format!("\"{}\"", s)).color(color).monospace()
+                        let color = if dark {
+                            egui::Color32::from_rgb(150, 225, 150)
+                        } else {
+                            egui::Color32::from_rgb(30, 130, 40)
+                        };
+                        egui::RichText::new(format!("\"{}\"", s))
+                            .color(color)
+                            .monospace()
                     }
                     JsonValue::Number(n) => {
-                        let color = if dark { egui::Color32::from_rgb(240, 170, 110) } else { egui::Color32::from_rgb(180, 80, 10) };
+                        let color = if dark {
+                            egui::Color32::from_rgb(240, 170, 110)
+                        } else {
+                            egui::Color32::from_rgb(180, 80, 10)
+                        };
                         egui::RichText::new(n.to_string()).color(color).monospace()
                     }
                     JsonValue::Bool(b) => {
-                        let color = if *b { egui::Color32::from_rgb(100, 200, 255) } else { egui::Color32::from_rgb(255, 120, 120) };
-                        egui::RichText::new(b.to_string()).color(color).monospace().strong()
+                        let color = if *b {
+                            egui::Color32::from_rgb(100, 200, 255)
+                        } else {
+                            egui::Color32::from_rgb(255, 120, 120)
+                        };
+                        egui::RichText::new(b.to_string())
+                            .color(color)
+                            .monospace()
+                            .strong()
                     }
                     JsonValue::Null => {
                         let color = egui::Color32::from_rgb(160, 160, 160);
-                        egui::RichText::new("null").color(color).italics().monospace()
+                        egui::RichText::new("null")
+                            .color(color)
+                            .italics()
+                            .monospace()
                     }
                     _ => unreachable!(),
                 };
@@ -890,10 +1034,26 @@ fn render_tab_hex(
         egui::ComboBox::from_id_salt("hex_decode_mode_combo")
             .selected_text(state.hex_decode_mode.label())
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.hex_decode_mode, HexDecodeMode::Auto, HexDecodeMode::Auto.label());
-                ui.selectable_value(&mut state.hex_decode_mode, HexDecodeMode::RawUtf8Bytes, HexDecodeMode::RawUtf8Bytes.label());
-                ui.selectable_value(&mut state.hex_decode_mode, HexDecodeMode::Base64, HexDecodeMode::Base64.label());
-                ui.selectable_value(&mut state.hex_decode_mode, HexDecodeMode::HexString, HexDecodeMode::HexString.label());
+                ui.selectable_value(
+                    &mut state.hex_decode_mode,
+                    HexDecodeMode::Auto,
+                    HexDecodeMode::Auto.label(),
+                );
+                ui.selectable_value(
+                    &mut state.hex_decode_mode,
+                    HexDecodeMode::RawUtf8Bytes,
+                    HexDecodeMode::RawUtf8Bytes.label(),
+                );
+                ui.selectable_value(
+                    &mut state.hex_decode_mode,
+                    HexDecodeMode::Base64,
+                    HexDecodeMode::Base64.label(),
+                );
+                ui.selectable_value(
+                    &mut state.hex_decode_mode,
+                    HexDecodeMode::HexString,
+                    HexDecodeMode::HexString.label(),
+                );
             });
 
         if prev_mode != state.hex_decode_mode {
@@ -907,7 +1067,11 @@ fn render_tab_hex(
         ui.selectable_value(&mut state.hex_bytes_per_row, 32, "32");
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("📋 Copy Hex String").on_hover_text("Copy as '0x...' hex string").clicked() {
+            if ui
+                .button("📋 Copy Hex String")
+                .on_hover_text("Copy as '0x...' hex string")
+                .clicked()
+            {
                 let hex_str = format!("0x{}", hex::encode(&state.hex_bytes));
                 *action_copy_text = Some(hex_str);
             }
@@ -916,8 +1080,16 @@ fn render_tab_hex(
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&state.hex_bytes);
                 *action_copy_text = Some(b64);
             }
-            if ui.button("📋 Copy C/Rust Array").on_hover_text("Copy as &[0x00, 0x01, ...] byte array").clicked() {
-                let arr: Vec<String> = state.hex_bytes.iter().map(|b| format!("0x{:02X}", b)).collect();
+            if ui
+                .button("📋 Copy C/Rust Array")
+                .on_hover_text("Copy as &[0x00, 0x01, ...] byte array")
+                .clicked()
+            {
+                let arr: Vec<String> = state
+                    .hex_bytes
+                    .iter()
+                    .map(|b| format!("0x{:02X}", b))
+                    .collect();
                 *action_copy_text = Some(format!("&[{}]", arr.join(", ")));
             }
         });
@@ -929,7 +1101,11 @@ fn render_tab_hex(
     if total_bytes == 0 {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            ui.label(egui::RichText::new("Empty byte payload").size(13.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                egui::RichText::new("Empty byte payload")
+                    .size(13.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
         });
         return;
     }
@@ -940,7 +1116,12 @@ fn render_tab_hex(
 
     // Header column labels
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(" Offset   ").monospace().strong().color(ui.visuals().weak_text_color()));
+        ui.label(
+            egui::RichText::new(" Offset   ")
+                .monospace()
+                .strong()
+                .color(ui.visuals().weak_text_color()),
+        );
         ui.add_space(8.0);
 
         let mut header_hex = String::new();
@@ -950,9 +1131,19 @@ fn render_tab_hex(
                 header_hex.push(' ');
             }
         }
-        ui.label(egui::RichText::new(header_hex).monospace().strong().color(ui.visuals().weak_text_color()));
+        ui.label(
+            egui::RichText::new(header_hex)
+                .monospace()
+                .strong()
+                .color(ui.visuals().weak_text_color()),
+        );
         ui.add_space(14.0);
-        ui.label(egui::RichText::new("Decoded ASCII").monospace().strong().color(ui.visuals().weak_text_color()));
+        ui.label(
+            egui::RichText::new("Decoded ASCII")
+                .monospace()
+                .strong()
+                .color(ui.visuals().weak_text_color()),
+        );
     });
     ui.separator();
 
@@ -971,11 +1162,11 @@ fn render_tab_hex(
                 ui.horizontal(|ui| {
                     // 1. Offset Column (e.g. 00000010:)
                     let offset_str = format!("{:08X}: ", start_offset);
-                    ui.label(
-                        egui::RichText::new(offset_str)
-                            .monospace()
-                            .color(if dark { egui::Color32::from_rgb(110, 140, 180) } else { egui::Color32::from_rgb(50, 80, 140) })
-                    );
+                    ui.label(egui::RichText::new(offset_str).monospace().color(if dark {
+                        egui::Color32::from_rgb(110, 140, 180)
+                    } else {
+                        egui::Color32::from_rgb(50, 80, 140)
+                    }));
 
                     ui.add_space(6.0);
 
@@ -992,13 +1183,19 @@ fn render_tab_hex(
                         let missing = bytes_per_row - row_bytes.len();
                         for i in 0..missing {
                             hex_part.push_str("   ");
-                            if (row_bytes.len() + i + 1).is_multiple_of(8) && (row_bytes.len() + i + 1) < bytes_per_row {
+                            if (row_bytes.len() + i + 1).is_multiple_of(8)
+                                && (row_bytes.len() + i + 1) < bytes_per_row
+                            {
                                 hex_part.push(' ');
                             }
                         }
                     }
 
-                    ui.label(egui::RichText::new(hex_part).monospace().color(ui.visuals().text_color()));
+                    ui.label(
+                        egui::RichText::new(hex_part)
+                            .monospace()
+                            .color(ui.visuals().text_color()),
+                    );
 
                     ui.add_space(12.0);
 
@@ -1011,11 +1208,11 @@ fn render_tab_hex(
                             ascii_part.push('·');
                         }
                     }
-                    ui.label(
-                        egui::RichText::new(ascii_part)
-                            .monospace()
-                            .color(if dark { egui::Color32::from_rgb(160, 210, 160) } else { egui::Color32::from_rgb(40, 120, 50) })
-                    );
+                    ui.label(egui::RichText::new(ascii_part).monospace().color(if dark {
+                        egui::Color32::from_rgb(160, 210, 160)
+                    } else {
+                        egui::Color32::from_rgb(40, 120, 50)
+                    }));
                 });
             }
         });
@@ -1032,9 +1229,17 @@ fn render_tab_image(
     if let Some(err) = &state.image_error {
         ui.vertical_centered(|ui| {
             ui.add_space(30.0);
-            ui.label(egui::RichText::new("🖼 No Image Detected").size(15.0).strong());
+            ui.label(
+                egui::RichText::new("🖼 No Image Detected")
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(6.0);
-            ui.label(egui::RichText::new(err).size(12.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                egui::RichText::new(err)
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
             ui.add_space(16.0);
             ui.label("Inspector supports PNG, JPEG, WebP, GIF, BMP, ICO, and SVG vector formats.");
             ui.add_space(10.0);
@@ -1045,17 +1250,34 @@ fn render_tab_image(
         return;
     }
 
-    let Some(meta) = state.image_meta.clone() else { return; };
+    let Some(meta) = state.image_meta.clone() else {
+        return;
+    };
 
     // Image Toolbar
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
-        crate::window_egui::style::render_badge(ui, &meta.format_name, egui::Color32::from_rgb(25, 55, 95), egui::Color32::from_rgb(160, 215, 255));
+        crate::window_egui::style::render_badge(
+            ui,
+            &meta.format_name,
+            egui::Color32::from_rgb(25, 55, 95),
+            egui::Color32::from_rgb(160, 215, 255),
+        );
         let dim_str = format!("{} × {} px", meta.width, meta.height);
-        crate::window_egui::style::render_badge(ui, &dim_str, egui::Color32::from_rgb(40, 45, 55), egui::Color32::from_rgb(220, 225, 235));
+        crate::window_egui::style::render_badge(
+            ui,
+            &dim_str,
+            egui::Color32::from_rgb(40, 45, 55),
+            egui::Color32::from_rgb(220, 225, 235),
+        );
         let size_str = format!("{:.2} KB", (meta.byte_size as f32) / 1024.0);
-        crate::window_egui::style::render_badge(ui, &size_str, egui::Color32::from_rgb(40, 45, 55), egui::Color32::from_rgb(220, 225, 235));
+        crate::window_egui::style::render_badge(
+            ui,
+            &size_str,
+            egui::Color32::from_rgb(40, 45, 55),
+            egui::Color32::from_rgb(220, 225, 235),
+        );
 
         ui.separator();
 
@@ -1150,7 +1372,11 @@ fn render_tab_image(
                     ui.painter().rect_filled(
                         rect,
                         4.0,
-                        if ui.visuals().dark_mode { egui::Color32::from_rgb(30, 32, 40) } else { egui::Color32::from_rgb(240, 242, 246) }
+                        if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(30, 32, 40)
+                        } else {
+                            egui::Color32::from_rgb(240, 242, 246)
+                        },
                     );
 
                     let image_widget = egui::Image::new((texture.id(), target_size));
@@ -1201,7 +1427,11 @@ fn render_tab_raw_text(
     if total_lines == 0 {
         ui.vertical_centered(|ui| {
             ui.add_space(20.0);
-            ui.label(egui::RichText::new("Empty cell text").size(13.0).color(ui.visuals().weak_text_color()));
+            ui.label(
+                egui::RichText::new("Empty cell text")
+                    .size(13.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
         });
         return;
     }
@@ -1221,15 +1451,17 @@ fn render_tab_raw_text(
                     ui.horizontal(|ui| {
                         if show_ln {
                             let gutter = format!("{:>5} ", line_idx + 1);
-                            ui.label(
-                                egui::RichText::new(gutter)
-                                    .monospace()
-                                    .size(12.0)
-                                    .color(if dark { egui::Color32::from_rgb(100, 110, 130) } else { egui::Color32::from_rgb(160, 170, 190) })
-                            );
+                            ui.label(egui::RichText::new(gutter).monospace().size(12.0).color(
+                                if dark {
+                                    egui::Color32::from_rgb(100, 110, 130)
+                                } else {
+                                    egui::Color32::from_rgb(160, 170, 190)
+                                },
+                            ));
                         }
 
-                        let matches = !search_q.is_empty() && line_content.to_lowercase().contains(&search_q);
+                        let matches =
+                            !search_q.is_empty() && line_content.to_lowercase().contains(&search_q);
 
                         let text_style = egui::RichText::new(line_content)
                             .monospace()

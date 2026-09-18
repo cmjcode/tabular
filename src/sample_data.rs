@@ -81,8 +81,9 @@ pub async fn write_sample_database(dir: &std::path::Path) -> Result<String, Stri
         std::fs::remove_file(&file).map_err(|e| e.to_string())?;
     }
 
-    let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{path}?mode=rwc"))
-        .map_err(|e| e.to_string())?;
+    let options =
+        sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{path}?mode=rwc"))
+            .map_err(|e| e.to_string())?;
     let sample = sqlx::SqlitePool::connect_with(options)
         .await
         .map_err(|e| e.to_string())?;
@@ -91,7 +92,12 @@ pub async fn write_sample_database(dir: &std::path::Path) -> Result<String, Stri
         sqlx::query(*statement)
             .execute(&sample)
             .await
-            .map_err(|e| format!("{e} (while running: {})", statement.lines().next().unwrap_or("")))?;
+            .map_err(|e| {
+                format!(
+                    "{e} (while running: {})",
+                    statement.lines().next().unwrap_or("")
+                )
+            })?;
     }
 
     sample.close().await;
@@ -179,7 +185,9 @@ mod tests {
     #[tokio::test]
     async fn schema_executes_and_populates() {
         let dir = temp_dir("schema");
-        let path = write_sample_database(&dir).await.expect("schema should run");
+        let path = write_sample_database(&dir)
+            .await
+            .expect("schema should run");
 
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{path}"))
             .await
@@ -210,7 +218,9 @@ mod tests {
     #[tokio::test]
     async fn foreign_keys_resolve() {
         let dir = temp_dir("joins");
-        let path = write_sample_database(&dir).await.expect("schema should run");
+        let path = write_sample_database(&dir)
+            .await
+            .expect("schema should run");
 
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{path}"))
             .await
@@ -226,7 +236,10 @@ mod tests {
         .await
         .expect("join should run");
 
-        assert_eq!(orphans, 0, "every order should point at a real customer and product");
+        assert_eq!(
+            orphans, 0,
+            "every order should point at a real customer and product"
+        );
 
         pool.close().await;
         let _ = std::fs::remove_dir_all(&dir);

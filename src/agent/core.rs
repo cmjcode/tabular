@@ -152,6 +152,7 @@ impl SchemaDescription {
                         nullable: None,
                     })
                     .collect(),
+                groups: Vec::new(),
                 group: None,
             });
             for fk in &table.foreign_keys {
@@ -617,11 +618,15 @@ impl HeadlessSession {
         max_columns: Option<usize>,
         relations_only: bool,
     ) -> Result<SchemaDiagram, AgentError> {
-        let schema = self.describe_schema(id, database, question, max_tables).await?;
-        let mermaid = schema.to_er_model().to_mermaid(crate::diagram_mermaid::MermaidOptions {
-            max_columns: max_columns.map(|m| m.max(1)),
-            relations_only,
-        });
+        let schema = self
+            .describe_schema(id, database, question, max_tables)
+            .await?;
+        let mermaid = schema
+            .to_er_model()
+            .to_mermaid(crate::diagram_mermaid::MermaidOptions {
+                max_columns: max_columns.map(|m| m.max(1)),
+                relations_only,
+            });
         let mut note = schema.note.clone();
         if schema.total_tables > schema.shown_tables {
             note.get_or_insert_with(String::new).push_str(&format!(
@@ -872,8 +877,13 @@ impl HeadlessSession {
 
     /// Cari kutipan catatan yang relevan. Indeks disinkronkan dulu (inkremental)
     /// supaya catatan yang baru ditulis user langsung ikut.
-    pub async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<NoteSearchResult, AgentError> {
-        self.search_notes_with(&ObsidianSettings::load_headless(), query, limit).await
+    pub async fn search_notes(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<NoteSearchResult, AgentError> {
+        self.search_notes_with(&ObsidianSettings::load_headless(), query, limit)
+            .await
     }
 
     pub(crate) async fn search_notes_with(
@@ -895,9 +905,10 @@ impl HeadlessSession {
         )
         .await?;
         Ok(NoteSearchResult {
-            hint: hits
-                .is_empty()
-                .then(|| "no matching notes; try other keywords (notes may be in another language)".to_string()),
+            hint: hits.is_empty().then(|| {
+                "no matching notes; try other keywords (notes may be in another language)"
+                    .to_string()
+            }),
             results: hits,
         })
     }
@@ -907,7 +918,11 @@ impl HeadlessSession {
         self.read_note_with(&ObsidianSettings::load_headless(), note)
     }
 
-    pub(crate) fn read_note_with(&self, settings: &ObsidianSettings, note: &str) -> Result<NoteContent, AgentError> {
+    pub(crate) fn read_note_with(
+        &self,
+        settings: &ObsidianSettings,
+        note: &str,
+    ) -> Result<NoteContent, AgentError> {
         let root = Self::notes_root(settings)?;
         let rel_path = crate::obsidian::find_note(&root, note).map_err(AgentError::Notes)?;
         let content = crate::obsidian::read_note(&root, &rel_path).map_err(AgentError::Notes)?;
@@ -922,7 +937,12 @@ impl HeadlessSession {
     }
 
     /// Simpan catatan memory baru di `<vault>/Tabular Memory/`.
-    pub async fn save_note(&self, title: &str, content: &str, tags: &[String]) -> Result<SavedNote, AgentError> {
+    pub async fn save_note(
+        &self,
+        title: &str,
+        content: &str,
+        tags: &[String],
+    ) -> Result<SavedNote, AgentError> {
         self.save_note_with(&ObsidianSettings::load_headless(), title, content, tags)
             .await
     }
@@ -942,8 +962,8 @@ impl HeadlessSession {
                     .to_string(),
             ));
         }
-        let path =
-            crate::obsidian::save_memory_note(&root, title, content, tags).map_err(AgentError::Notes)?;
+        let path = crate::obsidian::save_memory_note(&root, title, content, tags)
+            .map_err(AgentError::Notes)?;
         log::info!("[AGENT] saved memory note {path}");
         // Indeks ulang supaya catatan baru langsung bisa dicari; kegagalan di
         // sini tidak membatalkan penyimpanan.
@@ -1077,8 +1097,16 @@ mod tests {
                 name: "orders".into(),
                 kind: "table".into(),
                 columns: vec![
-                    ColumnDescription { name: "id".into(), data_type: "integer".into(), primary_key: true },
-                    ColumnDescription { name: "customer_id".into(), data_type: "integer".into(), primary_key: false },
+                    ColumnDescription {
+                        name: "id".into(),
+                        data_type: "integer".into(),
+                        primary_key: true,
+                    },
+                    ColumnDescription {
+                        name: "customer_id".into(),
+                        data_type: "integer".into(),
+                        primary_key: false,
+                    },
                 ],
                 foreign_keys: vec![ForeignKeyDescription {
                     column: "customer_id".into(),
@@ -1271,7 +1299,10 @@ mod tests {
             .expect("pool in-memory");
         let session = HeadlessSession::new(pool);
         let vault = TempVault::new("agent");
-        vault.write("db/Orders.md", "# Status codes\nStatus 3 means void. See [[Customers]].\n");
+        vault.write(
+            "db/Orders.md",
+            "# Status codes\nStatus 3 means void. See [[Customers]].\n",
+        );
         vault.write("db/Customers.md", "Customer master data.\n");
 
         let mut settings = ObsidianSettings {
@@ -1280,11 +1311,17 @@ mod tests {
             allow_write: false,
         };
         // Memory mati: semua tool menolak dengan pesan yang bisa ditindaklanjuti.
-        let err = session.search_notes_with(&settings, "void", None).await.unwrap_err();
+        let err = session
+            .search_notes_with(&settings, "void", None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("no Obsidian vault is enabled"));
 
         settings.enabled = true;
-        let found = session.search_notes_with(&settings, "order status void", None).await.unwrap();
+        let found = session
+            .search_notes_with(&settings, "order status void", None)
+            .await
+            .unwrap();
         assert_eq!(found.results[0].rel_path, "db/Orders.md");
 
         let note = session.read_note_with(&settings, "[[Orders]]").unwrap();
@@ -1293,13 +1330,22 @@ mod tests {
         assert!(session.read_note_with(&settings, "../secret").is_err());
 
         // Menulis butuh izin terpisah.
-        let err = session.save_note_with(&settings, "Refunds", "Status 9 = refunded", &[]).await.unwrap_err();
+        let err = session
+            .save_note_with(&settings, "Refunds", "Status 9 = refunded", &[])
+            .await
+            .unwrap_err();
         assert!(matches!(err, AgentError::Refused(_)));
         settings.allow_write = true;
-        let saved = session.save_note_with(&settings, "Refunds", "Status 9 = refunded", &[]).await.unwrap();
+        let saved = session
+            .save_note_with(&settings, "Refunds", "Status 9 = refunded", &[])
+            .await
+            .unwrap();
         assert_eq!(saved.path, "Tabular Memory/Refunds.md");
         // Catatan baru langsung bisa dicari.
-        let found = session.search_notes_with(&settings, "refunded", None).await.unwrap();
+        let found = session
+            .search_notes_with(&settings, "refunded", None)
+            .await
+            .unwrap();
         assert_eq!(found.results[0].rel_path, "Tabular Memory/Refunds.md");
     }
 }

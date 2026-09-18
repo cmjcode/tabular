@@ -456,7 +456,10 @@ pub(crate) async fn fetch_mysql_data(
         None
     }
 
-    debug!("[DRIVER-MYSQL] conn={} starting fetch_mysql_data...", connection_id);
+    debug!(
+        "[DRIVER-MYSQL] conn={} starting fetch_mysql_data...",
+        connection_id
+    );
     let mut staging = MetadataStaging::new(connection_id);
 
     // Fetch databases via INFORMATION_SCHEMA and skip system schemas (robust to VARBINARY)
@@ -467,12 +470,19 @@ pub(crate) async fn fetch_mysql_data(
     let db_rows = match db_rows_res {
         Ok(r) => r,
         Err(e) => {
-            error!("[DRIVER-MYSQL] conn={} failed to list INFORMATION_SCHEMA.SCHEMATA: {}", connection_id, e);
+            error!(
+                "[DRIVER-MYSQL] conn={} failed to list INFORMATION_SCHEMA.SCHEMATA: {}",
+                connection_id, e
+            );
             return false;
         }
     };
 
-    debug!("[DRIVER-MYSQL] conn={} found {} raw schemas", connection_id, db_rows.len());
+    debug!(
+        "[DRIVER-MYSQL] conn={} found {} raw schemas",
+        connection_id,
+        db_rows.len()
+    );
 
     for row in db_rows.into_iter() {
         let db_name = match decode_cell(&row, 0) {
@@ -484,7 +494,10 @@ pub(crate) async fn fetch_mysql_data(
             continue;
         }
 
-        debug!("[DRIVER-MYSQL] conn={} processing schema: '{}'", connection_id, db_name);
+        debug!(
+            "[DRIVER-MYSQL] conn={} processing schema: '{}'",
+            connection_id, db_name
+        );
         let staged_db = staging.add_database(&db_name);
 
         // Fetch base tables and views using INFORMATION_SCHEMA
@@ -506,20 +519,29 @@ pub(crate) async fn fetch_mysql_data(
             }
         };
 
-        debug!("[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views", connection_id, db_name, table_rows.len());
+        debug!(
+            "[DRIVER-MYSQL] conn={} schema '{}' has {} tables/views",
+            connection_id,
+            db_name,
+            table_rows.len()
+        );
 
         // Batch pre-fetch all columns for this schema
         let mut columns_by_table: std::collections::HashMap<String, Vec<ColumnMetaStaging>> =
             std::collections::HashMap::new();
         let cols_query = "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, ORDINAL_POSITION";
         if let Ok(cols) = sqlx::query(cols_query).bind(&db_name).fetch_all(pool).await {
-            let mut seen_cols: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            let mut seen_cols: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             for row_c in cols {
                 let tbl_name = decode_cell(&row_c, 0).unwrap_or_default();
                 let col_name = decode_cell(&row_c, 1).unwrap_or_default();
                 let col_type = decode_cell(&row_c, 2).unwrap_or_default();
                 let ord: i64 = row_c.try_get(3).unwrap_or(0);
-                if !tbl_name.is_empty() && !col_name.is_empty() && seen_cols.insert((tbl_name.clone(), col_name.clone())) {
+                if !tbl_name.is_empty()
+                    && !col_name.is_empty()
+                    && seen_cols.insert((tbl_name.clone(), col_name.clone()))
+                {
                     columns_by_table
                         .entry(tbl_name)
                         .or_default()
@@ -543,8 +565,13 @@ pub(crate) async fn fetch_mysql_data(
              WHERE TABLE_SCHEMA = ? \
              GROUP BY TABLE_NAME, INDEX_NAME \
              ORDER BY TABLE_NAME, INDEX_NAME";
-        if let Ok(index_rows) = sqlx::query(index_query).bind(&db_name).fetch_all(pool).await {
-            let mut seen_indexes: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        if let Ok(index_rows) = sqlx::query(index_query)
+            .bind(&db_name)
+            .fetch_all(pool)
+            .await
+        {
+            let mut seen_indexes: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             for idx_row in index_rows {
                 let tbl_name = decode_cell(&idx_row, 0).unwrap_or_default();
                 let index_name = decode_cell(&idx_row, 1).unwrap_or_default();
@@ -562,7 +589,10 @@ pub(crate) async fn fetch_mysql_data(
                 let columns_json =
                     serde_json::to_string(&columns).unwrap_or_else(|_| "[]".to_string());
 
-                if !tbl_name.is_empty() && !index_name.is_empty() && seen_indexes.insert((tbl_name.clone(), index_name.clone())) {
+                if !tbl_name.is_empty()
+                    && !index_name.is_empty()
+                    && seen_indexes.insert((tbl_name.clone(), index_name.clone()))
+                {
                     indexes_by_table
                         .entry(tbl_name)
                         .or_default()
@@ -614,11 +644,17 @@ pub(crate) async fn fetch_mysql_data(
 
     match staging.commit_to_sqlite(cache_pool).await {
         Ok(_) => {
-            debug!("[DRIVER-MYSQL] conn={} commit_to_sqlite SUCCESS", connection_id);
+            debug!(
+                "[DRIVER-MYSQL] conn={} commit_to_sqlite SUCCESS",
+                connection_id
+            );
             true
         }
         Err(e) => {
-            error!("[DRIVER-MYSQL] conn={} commit_to_sqlite FAILED: {}", connection_id, e);
+            error!(
+                "[DRIVER-MYSQL] conn={} commit_to_sqlite FAILED: {}",
+                connection_id, e
+            );
             false
         }
     }
@@ -716,7 +752,9 @@ pub(crate) fn load_mysql_structure(
 
     let mut dba_children = Vec::new();
 
-    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MySQL) {
+    for (name, node_type, query) in
+        crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MySQL)
+    {
         let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
         dba_node.connection_id = Some(connection_id);
         dba_node.is_loaded = false;
@@ -738,17 +776,17 @@ pub(crate) fn load_mysql_structure(
         let mut replication_folder = models::structs::TreeNode::new(
             "Replication".to_string(),
             models::enums::NodeType::ReplicationStatusFolder, // Reusing existing enum or I should use a new one?
-            // User requested "Replication" folder. reusing ReplicationStatusFolder seems appropriate as it was previously inside DBA views.
-            // But if I want specific context menu for "Start/Stop", I might want to distinguish.
-            // Existing ReplicationStatusFolder was likely just for "SHOW REPLICA STATUS" view.
-            // If I reuse it, I need to ensure the existing behavior (showing status) is preserved or I adapt it.
-            // The user wants "Replication" folder. Inside it, maybe "Status"?
-            // User: "tambahkan folder 'Replication' pada connection tree... pada context menu (klik kanan) pada folder replication ini ada menu: Start, Stop, Restart"
-            // So the folder itself is the control point.
+                                                              // User requested "Replication" folder. reusing ReplicationStatusFolder seems appropriate as it was previously inside DBA views.
+                                                              // But if I want specific context menu for "Start/Stop", I might want to distinguish.
+                                                              // Existing ReplicationStatusFolder was likely just for "SHOW REPLICA STATUS" view.
+                                                              // If I reuse it, I need to ensure the existing behavior (showing status) is preserved or I adapt it.
+                                                              // The user wants "Replication" folder. Inside it, maybe "Status"?
+                                                              // User: "tambahkan folder 'Replication' pada connection tree... pada context menu (klik kanan) pada folder replication ini ada menu: Start, Stop, Restart"
+                                                              // So the folder itself is the control point.
         );
         replication_folder.connection_id = Some(connection_id);
         replication_folder.is_loaded = true; // No children yet, or maybe "Status" view as child?
-        
+
         // Add "Status" child node to view details
         let mut status_node = models::structs::TreeNode::new(
             "Status".to_string(),
@@ -756,7 +794,7 @@ pub(crate) fn load_mysql_structure(
         );
         status_node.connection_id = Some(connection_id);
         status_node.is_loaded = false;
-        
+
         // Actually, if the top folder is "Replication", what is its NodeType?
         // If I reuse ReplicationStatusFolder for the top folder, it might trigger the view logic when clicked.
         // User wants context menu on the FOLDER.
@@ -768,7 +806,7 @@ pub(crate) fn load_mysql_structure(
         // I'll use ReplicationStatusFolder for the top level, and it can show the status when clicked (like a view).
         // The user said "show folder... inside context menu...".
         // If the folder *is* the status view, that's fine.
-        
+
         main_children.push(replication_folder);
     }
 
@@ -800,19 +838,30 @@ pub(crate) async fn fetch_mysql_foreign_keys(
         .fetch_all(pool)
         .await?;
 
-    log::debug!("MySQL FK Fetch: Got {} rows from information_schema", rows.len());
+    log::debug!(
+        "MySQL FK Fetch: Got {} rows from information_schema",
+        rows.len()
+    );
 
     let mut keys = Vec::new();
     for row in rows {
         // Safe decoder for columns that might unexpectedly return binary (Vec<u8>)
         fn decode(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
-            if let Ok(s) = row.try_get::<String, _>(idx) { return s; }
-            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return s; }
-            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
-            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            if let Ok(s) = row.try_get::<String, _>(idx) {
+                return s;
+            }
+            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+                return s;
+            }
+            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
+                return String::from_utf8_lossy(&bytes).to_string();
+            }
+            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+                return String::from_utf8_lossy(&bytes).to_string();
+            }
             String::new()
         }
-        
+
         let constraint_name = decode(&row, 0);
         let table_name = decode(&row, 1);
         let column_name = decode(&row, 2);
@@ -861,10 +910,18 @@ pub(crate) async fn fetch_mysql_columns(
     for row in rows {
         // Safe decoder for columns that might unexpectedly return binary (Vec<u8>)
         fn decode(row: &sqlx::mysql::MySqlRow, idx: usize) -> String {
-            if let Ok(s) = row.try_get::<String, _>(idx) { return s; }
-            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) { return s; }
-            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
-            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) { return String::from_utf8_lossy(&bytes).to_string(); }
+            if let Ok(s) = row.try_get::<String, _>(idx) {
+                return s;
+            }
+            if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+                return s;
+            }
+            if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
+                return String::from_utf8_lossy(&bytes).to_string();
+            }
+            if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+                return String::from_utf8_lossy(&bytes).to_string();
+            }
             String::new()
         }
 
@@ -889,9 +946,7 @@ pub(crate) async fn fetch_mysql_columns(
 
 // Check if the connection is a replica (slave)
 #[allow(dead_code)]
-pub(crate) async fn check_replication_status(
-    pool: &sqlx::MySqlPool,
-) -> bool {
+pub(crate) async fn check_replication_status(pool: &sqlx::MySqlPool) -> bool {
     // Check if SHOW REPLICA STATUS returns any rows
     let result = sqlx::query("SHOW REPLICA STATUS")
         .fetch_optional(pool)
@@ -900,24 +955,23 @@ pub(crate) async fn check_replication_status(
     match result {
         Ok(Some(_)) => true,
         Ok(None) => {
-             // Fallback to SHOW SLAVE STATUS for older versions
-            let result_slave = sqlx::query("SHOW SLAVE STATUS")
-                .fetch_optional(pool)
-                .await;
+            // Fallback to SHOW SLAVE STATUS for older versions
+            let result_slave = sqlx::query("SHOW SLAVE STATUS").fetch_optional(pool).await;
             matches!(result_slave, Ok(Some(_)))
-        },
+        }
         Err(_) => false,
     }
 }
-
-
 
 // Helper to execute query with fallback for legacy syntax (REPLICA vs SLAVE)
 async fn execute_replication_query(pool: &MySqlPool, query: &str) -> Result<(), sqlx::Error> {
     let res = sqlx::query(sqlx::AssertSqlSafe(query)).execute(pool).await;
     if res.is_err() && query.contains("REPLICA") {
         let legacy_query = query.replace("REPLICA", "SLAVE");
-        return sqlx::query(sqlx::AssertSqlSafe(legacy_query.as_str())).execute(pool).await.map(|_| ());
+        return sqlx::query(sqlx::AssertSqlSafe(legacy_query.as_str()))
+            .execute(pool)
+            .await
+            .map(|_| ());
     }
     res.map(|_| ())
 }
@@ -941,28 +995,59 @@ pub async fn setup_replication(
     log::debug!("[REPLICATION] SHOW MASTER STATUS columns: {:?}", columns);
 
     // Try new column names first (MySQL 8.0.22+), then old names, then index as last resort
-    let file: String = row.try_get("Source_Log_File")
+    let file: String = row
+        .try_get("Source_Log_File")
         .or_else(|_| row.try_get("File"))
         .or_else(|_| row.try_get(0)) // Fallback to index 0
-        .map_err(|e| format!("Failed to get log file name. Columns available: {:?}. Error: {}", columns, e))?;
-    
-    let position: u64 = row.try_get("Source_Log_Pos")
+        .map_err(|e| {
+            format!(
+                "Failed to get log file name. Columns available: {:?}. Error: {}",
+                columns, e
+            )
+        })?;
+
+    let position: u64 = row
+        .try_get("Source_Log_Pos")
         .or_else(|_| row.try_get("Position"))
         .or_else(|_| row.try_get(1)) // Fallback to index 1
-        .map_err(|e| format!("Failed to get log position. Columns available: {:?}. Error: {}", columns, e))?;
-
+        .map_err(|e| {
+            format!(
+                "Failed to get log position. Columns available: {:?}. Error: {}",
+                columns, e
+            )
+        })?;
 
     // 2. Configure Replica
-    let host = if source_config.host.is_empty() { "localhost" } else { &source_config.host };
-    let port = if source_config.port.is_empty() { "3306" } else { &source_config.port };
-    
-    // Use manual credentials if provided, otherwise fallback to connection credentials
-    let user = if !replication_user.is_empty() { &replication_user } else { &source_config.username };
-    let password = if !replication_user.is_empty() { &replication_password } else { &source_config.password }; 
+    let host = if source_config.host.is_empty() {
+        "localhost"
+    } else {
+        &source_config.host
+    };
+    let port = if source_config.port.is_empty() {
+        "3306"
+    } else {
+        &source_config.port
+    };
 
-    execute_replication_query(target_pool, "STOP REPLICA").await.map_err(|e| format!("Failed to stop replica: {}", e))?;
-    execute_replication_query(target_pool, "RESET REPLICA").await.map_err(|e| format!("Failed to reset replica: {}", e))?;
-    
+    // Use manual credentials if provided, otherwise fallback to connection credentials
+    let user = if !replication_user.is_empty() {
+        &replication_user
+    } else {
+        &source_config.username
+    };
+    let password = if !replication_user.is_empty() {
+        &replication_password
+    } else {
+        &source_config.password
+    };
+
+    execute_replication_query(target_pool, "STOP REPLICA")
+        .await
+        .map_err(|e| format!("Failed to stop replica: {}", e))?;
+    execute_replication_query(target_pool, "RESET REPLICA")
+        .await
+        .map_err(|e| format!("Failed to reset replica: {}", e))?;
+
     let change_query = format!(
         "CHANGE MASTER TO MASTER_HOST='{}', MASTER_PORT={}, MASTER_USER='{}', MASTER_PASSWORD='{}', MASTER_LOG_FILE='{}', MASTER_LOG_POS={}",
         host, port, user, password, file, position
@@ -970,11 +1055,19 @@ pub async fn setup_replication(
     // CHANGE MASTER TO is supported widely, usually no need for fallback unless very new MySQL deprecates it entirely for CHANGE REPLICATION SOURCE
     // But sqlx might not support the new syntax if parsing is involved? No, it just passes query.
     // CHANGE MASTER TO is deprecated in 8.0.23+ but still works.
-    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str())).execute(target_pool).await.map_err(|e| format!("Failed to configure master: {}", e))?;
-    
-    execute_replication_query(target_pool, "START REPLICA").await.map_err(|e| format!("Failed to start replica: {}", e))?;
-    
-    Ok(format!("Replication started! Connected to {}:{} at log {} pos {}", host, port, file, position))
+    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str()))
+        .execute(target_pool)
+        .await
+        .map_err(|e| format!("Failed to configure master: {}", e))?;
+
+    execute_replication_query(target_pool, "START REPLICA")
+        .await
+        .map_err(|e| format!("Failed to start replica: {}", e))?;
+
+    Ok(format!(
+        "Replication started! Connected to {}:{} at log {} pos {}",
+        host, port, file, position
+    ))
 }
 
 // Restart replication: Get new master coordinates and update replica (without changing connection details)
@@ -988,31 +1081,49 @@ pub async fn restart_replication(
         .await
         .map_err(|e| format!("Failed to fetch master status: {}", e))?;
 
-    let file: String = row.try_get("File").map_err(|e| format!("Failed to get File: {}", e))?;
-    let position: u64 = row.try_get("Position").map_err(|e| format!("Failed to get Position: {}", e))?;
+    let file: String = row
+        .try_get("File")
+        .map_err(|e| format!("Failed to get File: {}", e))?;
+    let position: u64 = row
+        .try_get("Position")
+        .map_err(|e| format!("Failed to get Position: {}", e))?;
 
     // 2. Restart Replica with new coordinates
-    execute_replication_query(replica_pool, "STOP REPLICA").await.map_err(|e| format!("Failed to stop replica: {}", e))?;
-    
+    execute_replication_query(replica_pool, "STOP REPLICA")
+        .await
+        .map_err(|e| format!("Failed to stop replica: {}", e))?;
+
     // We do NOT reset replica here, as we want to keep the host/user/password settings.
     // Just update log file and pos.
     let change_query = format!(
         "CHANGE MASTER TO MASTER_LOG_FILE='{}', MASTER_LOG_POS={}",
         file, position
     );
-    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str())).execute(replica_pool).await.map_err(|e| format!("Failed to update master coordinates: {}", e))?;
-    
-    execute_replication_query(replica_pool, "START REPLICA").await.map_err(|e| format!("Failed to start replica: {}", e))?;
-    
-    Ok(format!("Replication restarted at log {} pos {}", file, position))
+    sqlx::query(sqlx::AssertSqlSafe(change_query.as_str()))
+        .execute(replica_pool)
+        .await
+        .map_err(|e| format!("Failed to update master coordinates: {}", e))?;
+
+    execute_replication_query(replica_pool, "START REPLICA")
+        .await
+        .map_err(|e| format!("Failed to start replica: {}", e))?;
+
+    Ok(format!(
+        "Replication restarted at log {} pos {}",
+        file, position
+    ))
 }
 
 pub async fn stop_replication(pool: &MySqlPool) -> Result<String, String> {
-    execute_replication_query(pool, "STOP REPLICA").await.map_err(|e| format!("Failed to stop replica: {}", e))?;
+    execute_replication_query(pool, "STOP REPLICA")
+        .await
+        .map_err(|e| format!("Failed to stop replica: {}", e))?;
     Ok("Replication stopped.".to_string())
 }
 
 pub async fn start_replication(pool: &MySqlPool) -> Result<String, String> {
-    execute_replication_query(pool, "START REPLICA").await.map_err(|e| format!("Failed to start replica: {}", e))?;
+    execute_replication_query(pool, "START REPLICA")
+        .await
+        .map_err(|e| format!("Failed to start replica: {}", e))?;
     Ok("Replication started.".to_string())
 }

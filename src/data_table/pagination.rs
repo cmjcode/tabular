@@ -1,7 +1,7 @@
+use super::clear_table_selection;
+use crate::window_egui;
 use eframe::egui;
 use log::debug;
-use crate::window_egui;
-use super::clear_table_selection;
 
 pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     // Execution time of the currently displayed result (read before the mutable
@@ -259,7 +259,11 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             // Show Details (Lint Issue) Button
             if has_lint {
                 let count = tabular.lint_messages.len();
-                let lint_text_label = format!("{} Details ({})", egui_icons::icons::ICON_WARNING.codepoint, count);
+                let lint_text_label = format!(
+                    "{} Details ({})",
+                    egui_icons::icons::ICON_WARNING.codepoint,
+                    count
+                );
                 let is_lint_open = tabular.show_lint_panel;
 
                 let lint_bg = if is_lint_open {
@@ -312,10 +316,13 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let msg_btn = egui::Button::new(
-                    egui::RichText::new(format!("{} Messages", egui_icons::icons::ICON_CHAT.codepoint))
-                        .small()
-                        .strong()
-                        .color(messages_text_color),
+                    egui::RichText::new(format!(
+                        "{} Messages",
+                        egui_icons::icons::ICON_CHAT.codepoint
+                    ))
+                    .small()
+                    .strong()
+                    .color(messages_text_color),
                 )
                 .fill(messages_bg)
                 .corner_radius(egui::CornerRadius::same(4u8))
@@ -328,7 +335,8 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             }
 
             // Data Button
-            let is_data = tabular.table_bottom_view == crate::models::structs::TableBottomView::Data
+            let is_data = tabular.table_bottom_view
+                == crate::models::structs::TableBottomView::Data
                 && !tabular.show_message_panel
                 && !tabular.show_lint_panel;
             let data_bg = if is_data {
@@ -367,7 +375,8 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 .and_then(|t| t.explain_plan_json.as_ref())
                 .is_some();
             if has_explain {
-                let is_explain = tabular.table_bottom_view == crate::models::structs::TableBottomView::Explain
+                let is_explain = tabular.table_bottom_view
+                    == crate::models::structs::TableBottomView::Explain
                     && !tabular.show_message_panel
                     && !tabular.show_lint_panel;
                 let explain_bg = if is_explain {
@@ -384,10 +393,13 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let explain_btn = egui::Button::new(
-                    egui::RichText::new(format!("{} Explain", egui_icons::icons::ICON_INSIGHTS.codepoint))
-                        .small()
-                        .strong()
-                        .color(explain_text_color),
+                    egui::RichText::new(format!(
+                        "{} Explain",
+                        egui_icons::icons::ICON_INSIGHTS.codepoint
+                    ))
+                    .small()
+                    .strong()
+                    .color(explain_text_color),
                 )
                 .fill(explain_bg)
                 .corner_radius(egui::CornerRadius::same(4u8))
@@ -588,4 +600,3 @@ pub(crate) fn get_total_pages(tabular: &window_egui::Tabular) -> usize {
         tabular.total_rows.div_ceil(tabular.page_size)
     }
 }
-

@@ -12,9 +12,9 @@
 use eframe::egui;
 use std::collections::HashMap;
 
-use crate::window_egui::{Tabular, style};
 use super::api_client::{ApiClient, PutVaultKeysReq};
 use super::vault_crypto::{self, VaultKeyBundle};
+use crate::window_egui::{Tabular, style};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum VaultStage {
@@ -158,7 +158,10 @@ fn submit_recovery_unlock(tabular: &mut Tabular) {
         Some(b) => b.clone(),
         None => return,
     };
-    match vault_crypto::unlock_with_recovery_code(&bundle.into(), &tabular.vault_recovery_code_input) {
+    match vault_crypto::unlock_with_recovery_code(
+        &bundle.into(),
+        &tabular.vault_recovery_code_input,
+    ) {
         Ok(unlocked) => {
             tabular.vault_recovery_code_input.clear();
             tabular.vault_error = None;
@@ -168,7 +171,10 @@ fn submit_recovery_unlock(tabular: &mut Tabular) {
             if !tabular.vault_passphrase_input.is_empty()
                 && tabular.vault_passphrase_input == tabular.vault_passphrase_confirm_input
             {
-                match vault_crypto::rewrap_with_new_passphrase(&unlocked, &tabular.vault_passphrase_input) {
+                match vault_crypto::rewrap_with_new_passphrase(
+                    &unlocked,
+                    &tabular.vault_passphrase_input,
+                ) {
                     Ok(new_bundle) => {
                         tabular.vault = Some(unlocked);
                         tabular.vault_team_keys = HashMap::new();
@@ -198,7 +204,10 @@ pub fn render_vault_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     // Judul section digambar oleh pemanggil (Preferences → Cloud Sync).
-    crate::window_egui::preferences::hint(ui, "A Sync Passphrase, separate from your login, encrypts connections and HTTP client secrets before they leave this device. tabular-server only ever stores ciphertext it cannot read.");
+    crate::window_egui::preferences::hint(
+        ui,
+        "A Sync Passphrase, separate from your login, encrypts connections and HTTP client secrets before they leave this device. tabular-server only ever stores ciphertext it cannot read.",
+    );
     ui.add_space(4.0);
 
     match tabular.vault_stage.clone() {
@@ -216,13 +225,21 @@ pub fn render_vault_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
         VaultStage::Locked => render_unlock_form(tabular, ui),
         VaultStage::UseRecovery => render_recovery_unlock_form(tabular, ui),
         VaultStage::Unlocked => {
-            crate::window_egui::preferences::status(ui, crate::window_egui::preferences::Tone::Success, "✓ Vault unlocked. Sync is end-to-end encrypted.");
+            crate::window_egui::preferences::status(
+                ui,
+                crate::window_egui::preferences::Tone::Success,
+                "✓ Vault unlocked. Sync is end-to-end encrypted.",
+            );
         }
     }
 
     if let Some(err) = tabular.vault_error.clone() {
         ui.add_space(4.0);
-        crate::window_egui::preferences::status(ui, crate::window_egui::preferences::Tone::Danger, format!("✗ {}", err));
+        crate::window_egui::preferences::status(
+            ui,
+            crate::window_egui::preferences::Tone::Danger,
+            format!("✗ {}", err),
+        );
     }
 }
 
@@ -247,14 +264,23 @@ fn render_create_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.small("⚠ We cannot recover this for you. You'll get a one-time recovery code after this step — save it somewhere safe.");
     ui.add_space(6.0);
-    if ui.add(style::btn_primary_ctx(ui.ctx(), "🔐  Create Vault")).clicked() {
+    if ui
+        .add(style::btn_primary_ctx(ui.ctx(), "🔐  Create Vault"))
+        .clicked()
+    {
         submit_create(tabular);
     }
 }
 
 fn render_recovery_code_screen(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    let code = tabular.vault_recovery_code_display.clone().unwrap_or_default();
-    ui.colored_label(egui::Color32::from_rgb(255, 193, 7), "⚠ Save this recovery code now — it will not be shown again:");
+    let code = tabular
+        .vault_recovery_code_display
+        .clone()
+        .unwrap_or_default();
+    ui.colored_label(
+        egui::Color32::from_rgb(255, 193, 7),
+        "⚠ Save this recovery code now — it will not be shown again:",
+    );
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.monospace(&code);
@@ -263,10 +289,16 @@ fn render_recovery_code_screen(tabular: &mut Tabular, ui: &mut egui::Ui) {
         }
     });
     ui.add_space(6.0);
-    ui.checkbox(&mut tabular.vault_recovery_code_saved_confirmed, "I have saved this recovery code somewhere safe");
+    ui.checkbox(
+        &mut tabular.vault_recovery_code_saved_confirmed,
+        "I have saved this recovery code somewhere safe",
+    );
     ui.add_space(4.0);
     ui.add_enabled_ui(tabular.vault_recovery_code_saved_confirmed, |ui| {
-        if ui.add(style::btn_primary_ctx(ui.ctx(), "Continue")).clicked() {
+        if ui
+            .add(style::btn_primary_ctx(ui.ctx(), "Continue"))
+            .clicked()
+        {
             tabular.vault_recovery_code_display = None;
             tabular.vault_recovery_code_saved_confirmed = false;
             tabular.vault_stage = VaultStage::Unlocked;
@@ -287,7 +319,11 @@ fn render_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.add(style::btn_primary_ctx(ui.ctx(), "🔓  Unlock")).clicked() || submit {
+        if ui
+            .add(style::btn_primary_ctx(ui.ctx(), "🔓  Unlock"))
+            .clicked()
+            || submit
+        {
             submit_unlock(tabular);
         }
         if ui.add(style::btn_secondary("Forgot passphrase?")).clicked() {
@@ -325,7 +361,10 @@ fn render_recovery_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     );
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.add(style::btn_primary_ctx(ui.ctx(), "Recover & Reset")).clicked() {
+        if ui
+            .add(style::btn_primary_ctx(ui.ctx(), "Recover & Reset"))
+            .clicked()
+        {
             submit_recovery_unlock(tabular);
         }
         if ui.add(style::btn_secondary("Back")).clicked() {

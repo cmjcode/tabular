@@ -1,5 +1,5 @@
-use sqlx::SqlitePool;
 use log::{debug, error, warn};
+use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ColumnMetaStaging {
@@ -57,7 +57,10 @@ impl MetadataStaging {
         }
     }
 
-    pub(crate) async fn commit_to_sqlite(&self, cache_pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    pub(crate) async fn commit_to_sqlite(
+        &self,
+        cache_pool: &SqlitePool,
+    ) -> Result<(), sqlx::Error> {
         match self.commit_to_sqlite_inner(cache_pool).await {
             Ok(()) => Ok(()),
             Err(e) if is_corrupt_error(&e) => {
@@ -65,7 +68,9 @@ impl MetadataStaging {
                     "[METADATA-STAGING] conn={} detected SQLite malformed/corruption error: {}. Attempting self-healing checkpoint & reindex...",
                     self.connection_id, e
                 );
-                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(cache_pool).await;
+                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(cache_pool)
+                    .await;
                 let _ = sqlx::query("REINDEX").execute(cache_pool).await;
                 // Retry once after healing
                 self.commit_to_sqlite_inner(cache_pool).await

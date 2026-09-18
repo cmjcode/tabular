@@ -98,7 +98,9 @@ fn scan_dir(root: &Path, dir: &Path, depth: usize, out: &mut Vec<VaultFile>) {
     };
     for entry in entries.flatten() {
         if out.len() >= MAX_VAULT_FILES {
-            log::warn!("[OBSIDIAN] vault has more than {MAX_VAULT_FILES} notes; the rest is skipped");
+            log::warn!(
+                "[OBSIDIAN] vault has more than {MAX_VAULT_FILES} notes; the rest is skipped"
+            );
             return;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -154,7 +156,10 @@ fn split_frontmatter(raw: &str) -> (&str, &str) {
     let Some(rest) = raw.strip_prefix("---") else {
         return ("", raw);
     };
-    let Some(rest) = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n")) else {
+    let Some(rest) = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+    else {
         return ("", raw);
     };
     let mut offset = 0;
@@ -421,7 +426,11 @@ pub fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
     for component in rel_path.components() {
         match component {
             Component::Normal(name) if !name.to_string_lossy().starts_with('.') => {}
-            _ => return Err(format!("path `{rel}` is not allowed; use a path relative to the vault")),
+            _ => {
+                return Err(format!(
+                    "path `{rel}` is not allowed; use a path relative to the vault"
+                ));
+            }
         }
     }
     let root = root
@@ -473,7 +482,9 @@ pub fn find_note(root: &Path, name_or_path: &str) -> Result<String, String> {
                 .is_some_and(|name| name.to_lowercase() == file_name)
         })
         .map(|f| f.rel_path)
-        .ok_or_else(|| format!("note `{wanted}` not found in the vault; use search_notes to find it"))
+        .ok_or_else(|| {
+            format!("note `{wanted}` not found in the vault; use search_notes to find it")
+        })
 }
 
 /// Baca isi mentah satu catatan (dibatasi [`MAX_NOTE_BYTES`]).
@@ -657,10 +668,8 @@ pub(crate) mod tests {
         pub(crate) fn new(label: &str) -> Self {
             static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!(
-                "tabular-vault-{label}-{}-{n}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("tabular-vault-{label}-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("create temp vault");
             Self(dir)
@@ -742,7 +751,10 @@ pub(crate) mod tests {
         let raw = "intro\n# Orders\ntop\n## Status codes\n3 = void\n```sql\n# not a heading [[x]]\nSELECT 1;\n```\n# Customers\ncust";
         let note = parse_note("n.md", raw);
         let headings: Vec<&str> = note.chunks.iter().map(|c| c.heading.as_str()).collect();
-        assert_eq!(headings, vec!["", "Orders", "Orders > Status codes", "Customers"]);
+        assert_eq!(
+            headings,
+            vec!["", "Orders", "Orders > Status codes", "Customers"]
+        );
         assert!(note.chunks[2].text.contains("# not a heading [[x]]"));
         assert!(note.links.is_empty());
     }
@@ -801,9 +813,18 @@ pub(crate) mod tests {
     fn find_note_accepts_path_name_and_wikilink() {
         let vault = TempVault::new("find");
         vault.write("db/Orders.md", "x");
-        assert_eq!(find_note(&vault.0, "db/Orders.md").expect("path"), "db/Orders.md");
-        assert_eq!(find_note(&vault.0, "db/Orders").expect("no ext"), "db/Orders.md");
-        assert_eq!(find_note(&vault.0, "orders").expect("by name"), "db/Orders.md");
+        assert_eq!(
+            find_note(&vault.0, "db/Orders.md").expect("path"),
+            "db/Orders.md"
+        );
+        assert_eq!(
+            find_note(&vault.0, "db/Orders").expect("no ext"),
+            "db/Orders.md"
+        );
+        assert_eq!(
+            find_note(&vault.0, "orders").expect("by name"),
+            "db/Orders.md"
+        );
         assert_eq!(
             find_note(&vault.0, "[[Orders#Status|alias]]").expect("wikilink"),
             "db/Orders.md"

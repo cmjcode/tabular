@@ -299,9 +299,7 @@ pub(crate) fn rename_query_folder(
         return Err(format!("Folder '{}' does not exist", relative_path));
     }
 
-    let parent_path = source_path
-        .parent()
-        .unwrap_or(&query_dir);
+    let parent_path = source_path.parent().unwrap_or(&query_dir);
     let target_path = parent_path.join(trimmed);
 
     if target_path == source_path {
@@ -340,7 +338,9 @@ pub(crate) fn rename_query_folder(
 
     // Refresh query tree
     load_queries_from_directory(tabular);
-    tabular.toasts.success(format!("Renamed folder to '{}'", trimmed));
+    tabular
+        .toasts
+        .success(format!("Renamed folder to '{}'", trimmed));
     Ok(())
 }
 
@@ -765,7 +765,10 @@ mod tests {
         assert_eq!(root.children.len(), 1);
         let nested = &root.children[0];
         assert_eq!(nested.name, "2026 Reports");
-        assert!(nested.is_expanded, "Nested subfolder must be recursively auto-expanded!");
+        assert!(
+            nested.is_expanded,
+            "Nested subfolder must be recursively auto-expanded!"
+        );
         assert_eq!(nested.children.len(), 1);
         assert_eq!(nested.children[0].name, "Monthly Report.sql");
     }

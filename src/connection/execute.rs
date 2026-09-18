@@ -1,18 +1,15 @@
-use crate::{
-    driver_mssql, driver_mysql, driver_sqlite, models, modules,
-    window_egui::Tabular,
-};
+use crate::{driver_mssql, driver_mysql, driver_sqlite, models, modules, window_egui::Tabular};
 use log::debug;
-use sqlx::{Column, Row, TypeInfo};
 use sqlx::Connection as SqlxConnection;
 use sqlx::mysql::MySqlConnection;
+use sqlx::{Column, Row, TypeInfo};
 use std::time::Instant;
 
 use super::pool::resolve_connection_target_async;
 use super::sql::{
     infer_column_origins, infer_select_headers, is_comment_only_statement,
-    is_simple_select_statement, query_contains_pagination,
-    split_sql_statements, statement_returns_rows, strip_leading_sql_comments,
+    is_simple_select_statement, query_contains_pagination, split_sql_statements,
+    statement_returns_rows, strip_leading_sql_comments,
 };
 use super::types::{
     BackendPidGuard, QueryExecutionError, QueryExecutionOptions, QueryJob, QueryJobOutput,
@@ -175,7 +172,10 @@ pub(crate) fn prepare_query_job(
         backend_pids: tabular.jobs.backend_pids.clone(),
     };
 
-    let tab_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
+    let tab_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
 
     Ok(QueryJob {
         job_id,
@@ -346,7 +346,10 @@ fn describe_execution_error(
 }
 
 /// Posisi error dari PostgreSQL (field `position`, dalam karakter, 1-based).
-fn postgres_error_location(err: &sqlx::Error, statement: &str) -> Option<super::types::ErrorLocation> {
+fn postgres_error_location(
+    err: &sqlx::Error,
+    statement: &str,
+) -> Option<super::types::ErrorLocation> {
     let sqlx::Error::Database(db_err) = err else {
         return None;
     };
@@ -517,7 +520,9 @@ async fn execute_mysql_query_job(
             .fetch_one(&mut conn)
             .await
             .ok()
-            .map(|pid| BackendPidGuard::register(&options.backend_pids, options.job_id, pid as i64));
+            .map(|pid| {
+                BackendPidGuard::register(&options.backend_pids, options.job_id, pid as i64)
+            });
 
         let mut final_headers: Vec<String> = Vec::new();
         let mut final_data: Vec<Vec<String>> = Vec::new();
@@ -557,7 +562,11 @@ async fn execute_mysql_query_job(
                     .trim();
 
                 let use_stmt = format!("USE `{}`", db_name);
-                if sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str())).execute(&mut conn).await.is_err() {
+                if sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str()))
+                    .execute(&mut conn)
+                    .await
+                    .is_err()
+                {
                     let new_dsn = format!(
                         "mysql://{}:{}@{}:{}/{}",
                         encoded_username, encoded_password, target_host, target_port, db_name
@@ -639,11 +648,14 @@ async fn execute_mysql_query_job(
 
                             let mut meta_vec = Vec::new();
                             let mut inferred_table_name = None;
-                            if let Ok(ast) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, trimmed)
-                                && let Some(sqlparser::ast::Statement::Query(q)) = ast.first()
+                            if let Ok(ast) = sqlparser::parser::Parser::parse_sql(
+                                &sqlparser::dialect::MySqlDialect {},
+                                trimmed,
+                            ) && let Some(sqlparser::ast::Statement::Query(q)) = ast.first()
                                 && let sqlparser::ast::SetExpr::Select(select) = &*q.body
                                 && let Some(table_with_joins) = select.from.first()
-                                && let sqlparser::ast::TableFactor::Table { name, .. } = &table_with_joins.relation
+                                && let sqlparser::ast::TableFactor::Table { name, .. } =
+                                    &table_with_joins.relation
                             {
                                 inferred_table_name = Some(name.to_string());
                                 log::debug!("🔥 Inferred table name: {}", name);
@@ -662,11 +674,15 @@ async fn execute_mysql_query_job(
                                 unique_tables.insert(t.clone());
                             }
 
-                            let mut table_pks: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+                            let mut table_pks: std::collections::HashMap<
+                                String,
+                                std::collections::HashSet<String>,
+                            > = std::collections::HashMap::new();
 
                             let data_dir = crate::directory::get_data_dir();
                             let db_path = data_dir.join("connections.db");
-                            let cache_conn_str = format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
+                            let cache_conn_str =
+                                format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
 
                             match sqlx::sqlite::SqlitePool::connect(&cache_conn_str).await {
                                 Ok(cache_pool) => {
@@ -684,35 +700,55 @@ async fn execute_mysql_query_job(
                                              AND table_name LIKE ? \
                                              AND index_name = 'PRIMARY'";
 
-                                        let result: Result<Option<(String,)>, _> = sqlx::query_as(query)
-                                            .bind(options.connection.id.unwrap_or(0))
-                                            .bind(target_db)
-                                            .bind(target_table)
-                                            .fetch_optional(&cache_pool)
-                                            .await;
+                                        let result: Result<Option<(String,)>, _> =
+                                            sqlx::query_as(query)
+                                                .bind(options.connection.id.unwrap_or(0))
+                                                .bind(target_db)
+                                                .bind(target_table)
+                                                .fetch_optional(&cache_pool)
+                                                .await;
 
                                         match result {
                                             Ok(Some((json_str,))) => {
-                                                if let Ok(cols) = serde_json::from_str::<Vec<String>>(&json_str)
+                                                if let Ok(cols) =
+                                                    serde_json::from_str::<Vec<String>>(&json_str)
                                                     && !cols.is_empty()
                                                 {
                                                     let pks: std::collections::HashSet<String> =
-                                                        cols.into_iter().map(|s| s.to_lowercase()).collect();
-                                                    debug!("Found cached PKs for '{}': {:?}", table_full_name, pks);
-                                                    table_pks.insert(table_full_name.to_lowercase(), pks);
+                                                        cols.into_iter()
+                                                            .map(|s| s.to_lowercase())
+                                                            .collect();
+                                                    debug!(
+                                                        "Found cached PKs for '{}': {:?}",
+                                                        table_full_name, pks
+                                                    );
+                                                    table_pks.insert(
+                                                        table_full_name.to_lowercase(),
+                                                        pks,
+                                                    );
                                                 }
                                             }
                                             Ok(None) => {
-                                                debug!("No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
+                                                debug!(
+                                                    "No cached PK found for '{}' (db={}, tbl={})",
+                                                    table_full_name, target_db, target_table
+                                                );
                                             }
                                             Err(e) => {
-                                                debug!("Error fetching PK from cache for '{}': {}", table_full_name, e);
+                                                debug!(
+                                                    "Error fetching PK from cache for '{}': {}",
+                                                    table_full_name, e
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    debug!("Failed to connect to local cache at {}: {}", db_path.display(), e);
+                                    debug!(
+                                        "Failed to connect to local cache at {}: {}",
+                                        db_path.display(),
+                                        e
+                                    );
                                 }
                             }
 
@@ -728,18 +764,21 @@ async fn execute_mysql_query_job(
                             };
 
                             if !exact_match_possible && !involved_tables.is_empty() {
-                                log::debug!("🔥 Fetching ordered schema for involved tables: {:?}", involved_tables);
+                                log::debug!(
+                                    "🔥 Fetching ordered schema for involved tables: {:?}",
+                                    involved_tables
+                                );
                                 for table in &involved_tables {
                                     let col_query = format!("SHOW COLUMNS FROM {}", table);
                                     if let Ok(col_rows) =
-                                        sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(&mut conn).await
+                                        sqlx::query(sqlx::AssertSqlSafe(col_query.as_str()))
+                                            .fetch_all(&mut conn)
+                                            .await
                                     {
                                         for row in col_rows {
-                                            if let Ok(col_name) =
-                                                row.try_get::<String, _>("Field")
+                                            if let Ok(col_name) = row.try_get::<String, _>("Field")
                                             {
-                                                expanded_schema
-                                                    .push((col_name, table.clone()));
+                                                expanded_schema.push((col_name, table.clone()));
                                             }
                                         }
                                     }
@@ -760,8 +799,14 @@ async fn execute_mysql_query_job(
                                 let type_info = col.type_info();
                                 let t_name = String::new();
 
-                                log::debug!("🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
-                                    col.name(), t_name, use_fine_grained, involved_tables, expanded_schema.len());
+                                log::debug!(
+                                    "🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
+                                    col.name(),
+                                    t_name,
+                                    use_fine_grained,
+                                    involved_tables,
+                                    expanded_schema.len()
+                                );
 
                                 let table_name = if !t_name.is_empty() {
                                     Some(t_name.clone())
@@ -793,9 +838,10 @@ async fn execute_mysql_query_job(
                                         && let Some(pks) = table_pks.get(simple_name)
                                     {
                                         pks.contains(&col.name().to_lowercase())
-                                    } else if let Some((_k, pks)) = table_pks.iter().find(|(k, _)| {
-                                        k.ends_with(&format!(".{}", key))
-                                    }) {
+                                    } else if let Some((_k, pks)) = table_pks
+                                        .iter()
+                                        .find(|(k, _)| k.ends_with(&format!(".{}", key)))
+                                    {
                                         pks.contains(&col.name().to_lowercase())
                                     } else {
                                         false
@@ -827,20 +873,15 @@ async fn execute_mysql_query_job(
                                     .fetch_one(&mut conn)
                                     .await
                                 {
-                                    Ok(vrow) => {
-                                        vrow.try_get::<String, _>("v").unwrap_or_default()
-                                    }
+                                    Ok(vrow) => vrow.try_get::<String, _>("v").unwrap_or_default(),
                                     Err(_) => String::new(),
                                 };
-                                let is_mariadb =
-                                    version_str.to_lowercase().contains("mariadb");
+                                let is_mariadb = version_str.to_lowercase().contains("mariadb");
 
                                 if replication_status_mode
                                     && final_data.is_empty()
                                     && let Ok(fallback_rows) =
-                                        sqlx::query("SHOW SLAVE STATUS")
-                                            .fetch_all(&mut conn)
-                                            .await
+                                        sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
                                     && !fallback_rows.is_empty()
                                 {
                                     final_headers = fallback_rows[0]
@@ -848,10 +889,9 @@ async fn execute_mysql_query_job(
                                         .iter()
                                         .map(|c| c.name().to_string())
                                         .collect();
-                                    final_data =
-                                        driver_mysql::convert_mysql_rows_to_table_data(
-                                            fallback_rows,
-                                        );
+                                    final_data = driver_mysql::convert_mysql_rows_to_table_data(
+                                        fallback_rows,
+                                    );
                                 }
 
                                 if !final_headers.is_empty() && !final_data.is_empty() {
@@ -864,25 +904,18 @@ async fn execute_mysql_query_job(
                                     let mut summary: Vec<(String, String)> = Vec::new();
 
                                     if replication_status_mode {
-                                        if let Some(idx) =
-                                            header_index("Replica_IO_Running")
-                                                .or_else(|| header_index("Slave_IO_Running"))
+                                        if let Some(idx) = header_index("Replica_IO_Running")
+                                            .or_else(|| header_index("Slave_IO_Running"))
                                         {
                                             summary.push(("IO Thread".into(), first[idx].clone()));
                                         }
-                                        if let Some(idx) =
-                                            header_index("Replica_SQL_Running")
-                                                .or_else(|| header_index("Slave_SQL_Running"))
+                                        if let Some(idx) = header_index("Replica_SQL_Running")
+                                            .or_else(|| header_index("Slave_SQL_Running"))
                                         {
-                                            summary.push((
-                                                "SQL Thread".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary.push(("SQL Thread".into(), first[idx].clone()));
                                         }
-                                        if let Some(idx) =
-                                            header_index("Seconds_Behind_Source").or_else(|| {
-                                                header_index("Seconds_Behind_Master")
-                                            })
+                                        if let Some(idx) = header_index("Seconds_Behind_Source")
+                                            .or_else(|| header_index("Seconds_Behind_Master"))
                                         {
                                             summary.push((
                                                 "Seconds Behind".into(),
@@ -899,10 +932,8 @@ async fn execute_mysql_query_job(
                                             ));
                                         }
                                         if let Some(idx) = header_index("Executed_Gtid_Set") {
-                                            summary.push((
-                                                "Executed GTID".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary
+                                                .push(("Executed GTID".into(), first[idx].clone()));
                                         }
                                     }
 
@@ -914,14 +945,11 @@ async fn execute_mysql_query_job(
                                             ));
                                         }
                                         if let Some(idx) = header_index("Position") {
-                                            summary
-                                                .push(("Position".into(), first[idx].clone()));
+                                            summary.push(("Position".into(), first[idx].clone()));
                                         }
                                         if let Some(idx) = header_index("Binlog_Do_DB") {
-                                            summary.push((
-                                                "Binlog Do DB".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary
+                                                .push(("Binlog Do DB".into(), first[idx].clone()));
                                         }
                                         if let Some(idx) = header_index("Binlog_Ignore_DB") {
                                             summary.push((
@@ -983,11 +1011,12 @@ async fn execute_mysql_query_job(
                         && (err_str.contains("1295")
                             || err_str.contains("prepared statement protocol"))
                     {
-                        debug!("Admin command executed successfully (error 1295 expected for prepared statements)");
+                        debug!(
+                            "Admin command executed successfully (error 1295 expected for prepared statements)"
+                        );
                         if idx == statements_ref.len() - 1 {
                             final_headers = vec!["Status".to_string()];
-                            final_data =
-                                vec![vec!["Command executed successfully".to_string()]];
+                            final_data = vec![vec!["Command executed successfully".to_string()]];
                         }
                     } else {
                         if failing_stmt_preview.is_none() {
@@ -1004,7 +1033,9 @@ async fn execute_mysql_query_job(
                             || err_str.to_lowercase().contains("doesn't exist")
                         {
                             let mut hint = String::new();
-                            hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
+                            hint.push_str(
+                                "Hint: Check the database/schema qualifier in your SQL. ",
+                            );
                             hint.push_str(&format!(
                                 "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
                                 default_db, default_db
@@ -1150,9 +1181,10 @@ async fn execute_postgres_query_job(
     // Semua statement dalam job memakai satu koneksi yang sama, sehingga SET /
     // search_path dan statement berikutnya konsisten, dan backend pid-nya
     // diketahui untuk keperluan cancel.
-    let mut conn = pg_pool.acquire().await.map_err(|e| {
-        QueryExecutionError::Message(format!("PostgreSQL connection error: {}", e))
-    })?;
+    let mut conn = pg_pool
+        .acquire()
+        .await
+        .map_err(|e| QueryExecutionError::Message(format!("PostgreSQL connection error: {}", e)))?;
     let _pid_guard = sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
         .fetch_one(&mut *conn)
         .await
@@ -1218,7 +1250,8 @@ async fn execute_postgres_query_job(
                             .iter()
                             .map(|c| c.name().to_string())
                             .collect();
-                        final_data = crate::driver_postgres::convert_postgres_rows_to_table_data(rows);
+                        final_data =
+                            crate::driver_postgres::convert_postgres_rows_to_table_data(rows);
                     } else {
                         #[cfg(feature = "query_ast")]
                         if final_headers.is_empty()
@@ -1536,8 +1569,7 @@ async fn execute_redis_query_job(
             .await
             {
                 Ok(Ok(keys)) => {
-                    let table_data: Vec<Vec<String>> =
-                        keys.into_iter().map(|k| vec![k]).collect();
+                    let table_data: Vec<Vec<String>> = keys.into_iter().map(|k| vec![k]).collect();
                     Ok(QueryJobOutput {
                         headers: vec!["Key".to_string()],
                         rows: table_data,
@@ -1635,8 +1667,7 @@ async fn execute_redis_query_job(
                                 .await
                             && !sample_keys.is_empty()
                         {
-                            table_data
-                                .push(vec!["Sample Keys Found".to_string(), "".to_string()]);
+                            table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
                             for (i, key) in sample_keys.iter().take(5).enumerate() {
                                 table_data.push(vec![format!("Sample {}", i + 1), key.clone()]);
                             }

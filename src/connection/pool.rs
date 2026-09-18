@@ -1,11 +1,9 @@
 use crate::{models, modules, ssh_tunnel, window_egui::Tabular};
 use log::debug;
 use mongodb::Client as MongoClient;
-use redis::{Client, aio::ConnectionManager};
-use sqlx::{
-    mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions,
-};
 use once_cell::sync::Lazy;
+use redis::{Client, aio::ConnectionManager};
+use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -365,7 +363,10 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
         //
         // The start time is recorded lazily rather than at every insertion site,
         // so an id added through any path — now or in future code — is covered.
-        let started = *tabular.pending_started_at.entry(connection_id).or_insert(now);
+        let started = *tabular
+            .pending_started_at
+            .entry(connection_id)
+            .or_insert(now);
 
         if now.duration_since(started) > PENDING_POOL_MAX_AGE {
             debug!(
@@ -868,7 +869,7 @@ pub(crate) async fn load_connection_by_id(
                 COALESCE(ssl_client_key, '') AS ssl_client_key, \
                 COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
                 COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
-         FROM connections WHERE id = ?"
+         FROM connections WHERE id = ?",
     )
     .bind(connection_id)
     .fetch_optional(cache_pool)
@@ -888,10 +889,13 @@ pub(crate) async fn load_connection_by_id(
     let ssh_host: String = row.try_get("ssh_host").unwrap_or_default();
     let ssh_port: String = row.try_get("ssh_port").unwrap_or_else(|_| "22".to_string());
     let ssh_username: String = row.try_get("ssh_username").unwrap_or_default();
-    let ssh_auth_method: String = row.try_get("ssh_auth_method").unwrap_or_else(|_| "key".to_string());
+    let ssh_auth_method: String = row
+        .try_get("ssh_auth_method")
+        .unwrap_or_else(|_| "key".to_string());
     let ssh_private_key: String = row.try_get("ssh_private_key").unwrap_or_default();
     let ssh_password: String = row.try_get("ssh_password").unwrap_or_default();
-    let ssh_accept_unknown_host_keys: i64 = row.try_get("ssh_accept_unknown_host_keys").unwrap_or(0);
+    let ssh_accept_unknown_host_keys: i64 =
+        row.try_get("ssh_accept_unknown_host_keys").unwrap_or(0);
     let ssh_jump_host: String = row.try_get("ssh_jump_host").unwrap_or_default();
     let ssl_enabled: i64 = row.try_get("ssl_enabled").unwrap_or(0);
     let ssl_ca_cert: String = row.try_get("ssl_ca_cert").unwrap_or_default();
@@ -995,7 +999,7 @@ pub(crate) async fn create_connection_pool_by_id(
                 COALESCE(ssl_client_key, '') AS ssl_client_key, \
                 COALESCE(ssl_key_passphrase, '') AS ssl_key_passphrase, \
                 COALESCE(ssl_verify_server, 1) AS ssl_verify_server \
-         FROM connections WHERE id = ?"
+         FROM connections WHERE id = ?",
     )
     .bind(connection_id)
     .fetch_optional(cache_pool)
@@ -1004,7 +1008,12 @@ pub(crate) async fn create_connection_pool_by_id(
 
     let row = match row_opt {
         Some(r) => r,
-        None => return Err(format!("Connection ID {} not found in local store", connection_id)),
+        None => {
+            return Err(format!(
+                "Connection ID {} not found in local store",
+                connection_id
+            ));
+        }
     };
 
     let id = row.try_get::<i64, _>("id").unwrap_or(connection_id);
@@ -1038,12 +1047,20 @@ pub(crate) async fn create_connection_pool_by_id(
     let ssh_accept_unknown_host_keys = row
         .try_get::<i64, _>("ssh_accept_unknown_host_keys")
         .unwrap_or(0);
-    let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+    let ssh_jump_host = row
+        .try_get::<String, _>("ssh_jump_host")
+        .unwrap_or_default();
     let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
     let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
-    let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
-    let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
-    let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+    let ssl_client_cert = row
+        .try_get::<String, _>("ssl_client_cert")
+        .unwrap_or_default();
+    let ssl_client_key = row
+        .try_get::<String, _>("ssl_client_key")
+        .unwrap_or_default();
+    let ssl_key_passphrase = row
+        .try_get::<String, _>("ssl_key_passphrase")
+        .unwrap_or_default();
     let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
 
     let password = crate::secrets::resolve_readonly(
@@ -1321,7 +1338,6 @@ pub(crate) async fn pool_if_connected_or_start(
     None
 }
 
-
 /// Retry-based pool retrieval. Waits between retries if pool is being created.
 #[allow(dead_code)]
 pub(crate) async fn get_or_create_connection_pool_with_retry(
@@ -1348,10 +1364,7 @@ pub(crate) async fn get_or_create_connection_pool_with_retry(
                 attempt + 1,
                 max_retries + 1
             );
-            tokio::time::sleep(std::time::Duration::from_millis(
-                500 + attempt as u64 * 200,
-            ))
-            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(500 + attempt as u64 * 200)).await;
         } else {
             debug!(
                 "⏰ Max retries reached for connection pool {}",
@@ -1393,7 +1406,10 @@ pub(crate) fn cancel_connection_attempt(tabular: &mut Tabular, connection_id: i6
         return false;
     }
 
-    debug!("🚫 Cancelling connect attempt for connection {}", connection_id);
+    debug!(
+        "🚫 Cancelling connect attempt for connection {}",
+        connection_id
+    );
 
     signal_connect_cancel(connection_id);
     clear_pending_state(tabular, connection_id);

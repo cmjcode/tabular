@@ -58,9 +58,12 @@ async fn retry_on_moved_i64_command(
         Ok(value) => Ok(value),
         Err(error) => {
             if let Some((host, port)) = parse_moved_target(&error.to_string()) {
-                let mut redirected =
-                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
-                        .await?;
+                let mut redirected = create_redis_manager_for_target(
+                    connection,
+                    database_name,
+                    Some((&host, &port)),
+                )
+                .await?;
                 let mut redirected_cmd = redis::cmd(command);
                 redirected_cmd.arg(key_name);
                 for arg in extra_args {
@@ -100,9 +103,12 @@ async fn retry_on_moved_optional_usize_command(
         Ok(value) => Ok(value),
         Err(error) => {
             if let Some((host, port)) = parse_moved_target(&error.to_string()) {
-                let mut redirected =
-                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
-                        .await?;
+                let mut redirected = create_redis_manager_for_target(
+                    connection,
+                    database_name,
+                    Some((&host, &port)),
+                )
+                .await?;
                 let mut redirected_cmd = redis::cmd(command);
                 for arg in extra_args {
                     redirected_cmd.arg(arg);
@@ -149,17 +155,20 @@ async fn create_redis_manager_for_target(
         None => crate::connection::pool::resolve_connection_target_async(connection).await?,
     };
 
-    let connection_string = build_redis_connection_string(
-        &host,
-        &port,
-        &connection.username,
-        &connection.password,
-    );
-    let client = Client::open(connection_string)
-        .map_err(|error| format!("Failed to open Redis client for {}:{}: {}", host, port, error))?;
-    let mut conn = ConnectionManager::new(client)
-        .await
-        .map_err(|error| format!("Failed to create Redis connection manager for {}:{}: {}", host, port, error))?;
+    let connection_string =
+        build_redis_connection_string(&host, &port, &connection.username, &connection.password);
+    let client = Client::open(connection_string).map_err(|error| {
+        format!(
+            "Failed to open Redis client for {}:{}: {}",
+            host, port, error
+        )
+    })?;
+    let mut conn = ConnectionManager::new(client).await.map_err(|error| {
+        format!(
+            "Failed to create Redis connection manager for {}:{}: {}",
+            host, port, error
+        )
+    })?;
 
     if database_name.starts_with("db") {
         let db_num = database_name
@@ -170,7 +179,12 @@ async fn create_redis_manager_for_target(
             .arg(db_num)
             .query_async::<()>(&mut conn)
             .await
-            .map_err(|error| format!("Failed to SELECT {} on {}:{}: {}", db_num, host, port, error))?;
+            .map_err(|error| {
+                format!(
+                    "Failed to SELECT {} on {}:{}: {}",
+                    db_num, host, port, error
+                )
+            })?;
     }
 
     Ok(conn)
@@ -194,9 +208,12 @@ async fn retry_on_moved_string_command(
         Ok(value) => Ok(value),
         Err(error) => {
             if let Some((host, port)) = parse_moved_target(&error.to_string()) {
-                let mut redirected =
-                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
-                        .await?;
+                let mut redirected = create_redis_manager_for_target(
+                    connection,
+                    database_name,
+                    Some((&host, &port)),
+                )
+                .await?;
                 let mut redirected_cmd = redis::cmd(command);
                 redirected_cmd.arg(key_name);
                 for arg in extra_args {
@@ -236,9 +253,12 @@ async fn retry_on_moved_required_string_command(
         Ok(value) => Ok(value),
         Err(error) => {
             if let Some((host, port)) = parse_moved_target(&error.to_string()) {
-                let mut redirected =
-                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
-                        .await?;
+                let mut redirected = create_redis_manager_for_target(
+                    connection,
+                    database_name,
+                    Some((&host, &port)),
+                )
+                .await?;
                 let mut redirected_cmd = redis::cmd(command);
                 redirected_cmd.arg(key_name);
                 for arg in extra_args {
@@ -278,9 +298,12 @@ async fn retry_on_moved_vec_command(
         Ok(value) => Ok(value),
         Err(error) => {
             if let Some((host, port)) = parse_moved_target(&error.to_string()) {
-                let mut redirected =
-                    create_redis_manager_for_target(connection, database_name, Some((&host, &port)))
-                        .await?;
+                let mut redirected = create_redis_manager_for_target(
+                    connection,
+                    database_name,
+                    Some((&host, &port)),
+                )
+                .await?;
                 let mut redirected_cmd = redis::cmd(command);
                 redirected_cmd.arg(key_name);
                 for arg in extra_args {
@@ -343,15 +366,27 @@ pub(crate) fn fetch_redis_browser_preview(
         .cloned()
         .ok_or_else(|| format!("Redis connection {} not found", connection_id))?;
 
-    let resolved_key_type = if key_type.trim().is_empty() || key_type.eq_ignore_ascii_case("unknown") {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|error| format!("Failed to create runtime for Redis key type lookup: {}", error))?;
-        runtime.block_on(async {
-            retry_on_moved_required_string_command(&connection, database_name, key_name, "TYPE", &[]).await
-        })?
-    } else {
-        key_type.to_string()
-    };
+    let resolved_key_type =
+        if key_type.trim().is_empty() || key_type.eq_ignore_ascii_case("unknown") {
+            let runtime = tokio::runtime::Runtime::new().map_err(|error| {
+                format!(
+                    "Failed to create runtime for Redis key type lookup: {}",
+                    error
+                )
+            })?;
+            runtime.block_on(async {
+                retry_on_moved_required_string_command(
+                    &connection,
+                    database_name,
+                    key_name,
+                    "TYPE",
+                    &[],
+                )
+                .await
+            })?
+        } else {
+            key_type.to_string()
+        };
 
     let json_text = fetch_redis_key_pretty_json(
         tabular,
@@ -361,8 +396,12 @@ pub(crate) fn fetch_redis_browser_preview(
         &resolved_key_type,
     )?;
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| format!("Failed to create runtime for Redis preview metadata: {}", error))?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| {
+        format!(
+            "Failed to create runtime for Redis preview metadata: {}",
+            error
+        )
+    })?;
 
     let resolved_key_type_for_length = resolved_key_type.clone();
     let (ttl_label, size_label, length_label) = runtime.block_on(async move {
@@ -380,9 +419,11 @@ pub(crate) fn fetch_redis_browser_preview(
         .ok()
         .flatten();
         let length = match resolved_key_type_for_length.to_ascii_lowercase().as_str() {
-            "string" => retry_on_moved_i64_command(&connection, database_name, key_name, "STRLEN", &[])
-                .await
-                .ok(),
+            "string" => {
+                retry_on_moved_i64_command(&connection, database_name, key_name, "STRLEN", &[])
+                    .await
+                    .ok()
+            }
             "hash" => retry_on_moved_i64_command(&connection, database_name, key_name, "HLEN", &[])
                 .await
                 .ok(),
@@ -392,18 +433,24 @@ pub(crate) fn fetch_redis_browser_preview(
             "set" => retry_on_moved_i64_command(&connection, database_name, key_name, "SCARD", &[])
                 .await
                 .ok(),
-            "zset" | "sorted_set" => retry_on_moved_i64_command(&connection, database_name, key_name, "ZCARD", &[])
-                .await
-                .ok(),
-            "stream" => retry_on_moved_i64_command(&connection, database_name, key_name, "XLEN", &[])
-                .await
-                .ok(),
+            "zset" | "sorted_set" => {
+                retry_on_moved_i64_command(&connection, database_name, key_name, "ZCARD", &[])
+                    .await
+                    .ok()
+            }
+            "stream" => {
+                retry_on_moved_i64_command(&connection, database_name, key_name, "XLEN", &[])
+                    .await
+                    .ok()
+            }
             _ => None,
         };
         (
             format_ttl_label(ttl),
             format_size_label(size),
-            length.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string()),
+            length
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
         )
     });
 
@@ -438,7 +485,7 @@ pub(crate) fn load_redis_browser_state(
             return models::structs::RedisBrowserState {
                 last_error: Some(format!("Redis connection {} not found", connection_id)),
                 ..Default::default()
-            }
+            };
         }
     };
 
@@ -446,9 +493,12 @@ pub(crate) fn load_redis_browser_state(
         Ok(runtime) => runtime,
         Err(error) => {
             return models::structs::RedisBrowserState {
-                last_error: Some(format!("Failed to create runtime for Redis browser: {}", error)),
+                last_error: Some(format!(
+                    "Failed to create runtime for Redis browser: {}",
+                    error
+                )),
                 ..Default::default()
-            }
+            };
         }
     };
 
@@ -473,19 +523,24 @@ pub(crate) fn load_redis_browser_state(
                 keyspace_label: keyspace_label.clone(),
                 keys: key_pairs
                     .into_iter()
-                    .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
-                        key_name,
-                        key_type,
-                        ttl_label: if is_cluster {
-                            "Cluster".to_string()
-                        } else {
-                            keyspace_label.clone()
+                    .map(
+                        |(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                            key_name,
+                            key_type,
+                            ttl_label: if is_cluster {
+                                "Cluster".to_string()
+                            } else {
+                                keyspace_label.clone()
+                            },
+                            size_label: "-".to_string(),
                         },
-                        size_label: "-".to_string(),
-                    })
+                    )
                     .collect(),
                 status_text: if is_cluster {
-                    format!("Redis Cluster keyspace · {} keys loaded · metadata loads on selection", key_count)
+                    format!(
+                        "Redis Cluster keyspace · {} keys loaded · metadata loads on selection",
+                        key_count
+                    )
                 } else {
                     format!("{} · {} keys loaded", keyspace_label, key_count)
                 },
@@ -565,7 +620,9 @@ pub(crate) async fn load_redis_browser_state_for_keyspace(
             }
             _ => 16,
         };
-        (0..max_databases).map(|db_num| format!("db{}", db_num)).collect()
+        (0..max_databases)
+            .map(|db_num| format!("db{}", db_num))
+            .collect()
     };
 
     let detected_keyspace = if is_cluster {
@@ -577,7 +634,10 @@ pub(crate) async fn load_redis_browser_state_for_keyspace(
     let keyspace_label = if is_cluster {
         REDIS_CLUSTER_KEYSPACE.to_string()
     } else if let Some(requested_keyspace) = requested_keyspace {
-        if available_keyspaces.iter().any(|candidate| candidate == requested_keyspace) {
+        if available_keyspaces
+            .iter()
+            .any(|candidate| candidate == requested_keyspace)
+        {
             requested_keyspace.to_string()
         } else {
             detected_keyspace
@@ -616,14 +676,19 @@ pub(crate) fn load_cached_redis_browser_state(
         .find(|candidate| candidate.id == Some(connection_id))?
         .clone();
 
-    let cached_databases = cache_data::get_databases_from_cache(tabular, connection_id).unwrap_or_default();
-    let keyspace_label = if cached_databases.iter().any(|name| name == REDIS_CLUSTER_KEYSPACE) {
+    let cached_databases =
+        cache_data::get_databases_from_cache(tabular, connection_id).unwrap_or_default();
+    let keyspace_label = if cached_databases
+        .iter()
+        .any(|name| name == REDIS_CLUSTER_KEYSPACE)
+    {
         REDIS_CLUSTER_KEYSPACE.to_string()
     } else {
         default_redis_keyspace(&connection)
     };
 
-    let key_pairs = cache_data::get_redis_browser_keys_from_cache(tabular, connection_id, &keyspace_label)?;
+    let key_pairs =
+        cache_data::get_redis_browser_keys_from_cache(tabular, connection_id, &keyspace_label)?;
     let key_count = key_pairs.len();
     let is_cluster = keyspace_label == REDIS_CLUSTER_KEYSPACE;
 
@@ -632,16 +697,18 @@ pub(crate) fn load_cached_redis_browser_state(
         keyspace_label: keyspace_label.clone(),
         keys: key_pairs
             .into_iter()
-            .map(|(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
-                key_name,
-                key_type,
-                ttl_label: if is_cluster {
-                    "Cluster".to_string()
-                } else {
-                    keyspace_label.clone()
+            .map(
+                |(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
+                    key_name,
+                    key_type,
+                    ttl_label: if is_cluster {
+                        "Cluster".to_string()
+                    } else {
+                        keyspace_label.clone()
+                    },
+                    size_label: "-".to_string(),
                 },
-                size_label: "-".to_string(),
-            })
+            )
             .collect(),
         status_text: format!("Cached Redis browser · {} keys", key_count),
         ..Default::default()
@@ -820,7 +887,11 @@ async fn scan_keys_and_types_on_node(
                         break;
                     }
 
-                    let key_type = match redis::cmd("TYPE").arg(&key).query_async::<String>(conn).await {
+                    let key_type = match redis::cmd("TYPE")
+                        .arg(&key)
+                        .query_async::<String>(conn)
+                        .await
+                    {
                         Ok(key_type) => key_type,
                         Err(error) => {
                             warn!("[redis_cluster] TYPE failed for key {}: {}", key, error);
@@ -909,7 +980,11 @@ async fn search_keys_and_types_on_node(
                         continue;
                     }
 
-                    let key_type = match redis::cmd("TYPE").arg(&key).query_async::<String>(conn).await {
+                    let key_type = match redis::cmd("TYPE")
+                        .arg(&key)
+                        .query_async::<String>(conn)
+                        .await
+                    {
                         Ok(key_type) => key_type,
                         Err(error) => {
                             warn!("[redis_search] TYPE failed for key {}: {}", key, error);
@@ -945,9 +1020,7 @@ pub(crate) async fn fetch_standalone_keys_with_types(
         Err(error) => {
             warn!(
                 "[redis_standalone] failed creating dedicated manager for connection {:?} keyspace {}: {}",
-                connection.id,
-                database_name,
-                error
+                connection.id, database_name, error
             );
             return Vec::new();
         }
@@ -967,9 +1040,7 @@ pub(crate) async fn search_standalone_keys_with_types(
         Err(error) => {
             warn!(
                 "[redis_standalone] failed creating dedicated search manager for connection {:?} keyspace {}: {}",
-                connection.id,
-                database_name,
-                error
+                connection.id, database_name, error
             );
             return Vec::new();
         }
@@ -1020,7 +1091,9 @@ pub(crate) async fn load_redis_connection_config(
             &crate::secrets::connection_secret_name(id, "password"),
             &row.try_get::<String, _>("password").unwrap_or_default(),
         ),
-        database: row.try_get::<String, _>("database_name").unwrap_or_default(),
+        database: row
+            .try_get::<String, _>("database_name")
+            .unwrap_or_default(),
         connection_type: models::enums::DatabaseType::Redis,
         folder: row.try_get::<Option<String>, _>("folder").unwrap_or(None),
         ssh_enabled: row.try_get::<i64, _>("ssh_enabled").unwrap_or(0) != 0,
@@ -1035,19 +1108,31 @@ pub(crate) async fn load_redis_connection_config(
         ),
         ssh_private_key: crate::secrets::resolve_readonly(
             &crate::secrets::connection_secret_name(id, "ssh_private_key"),
-            &row.try_get::<String, _>("ssh_private_key").unwrap_or_default(),
+            &row.try_get::<String, _>("ssh_private_key")
+                .unwrap_or_default(),
         ),
         ssh_password: crate::secrets::resolve_readonly(
             &crate::secrets::connection_secret_name(id, "ssh_password"),
             &row.try_get::<String, _>("ssh_password").unwrap_or_default(),
         ),
-        ssh_accept_unknown_host_keys: row.try_get::<i64, _>("ssh_accept_unknown_host_keys").unwrap_or(0) != 0,
-        ssh_jump_host: row.try_get::<String, _>("ssh_jump_host").unwrap_or_default(),
+        ssh_accept_unknown_host_keys: row
+            .try_get::<i64, _>("ssh_accept_unknown_host_keys")
+            .unwrap_or(0)
+            != 0,
+        ssh_jump_host: row
+            .try_get::<String, _>("ssh_jump_host")
+            .unwrap_or_default(),
         ssl_enabled: row.try_get::<i64, _>("ssl_enabled").unwrap_or(0) != 0,
         ssl_ca_cert: row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default(),
-        ssl_client_cert: row.try_get::<String, _>("ssl_client_cert").unwrap_or_default(),
-        ssl_client_key: row.try_get::<String, _>("ssl_client_key").unwrap_or_default(),
-        ssl_key_passphrase: row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default(),
+        ssl_client_cert: row
+            .try_get::<String, _>("ssl_client_cert")
+            .unwrap_or_default(),
+        ssl_client_key: row
+            .try_get::<String, _>("ssl_client_key")
+            .unwrap_or_default(),
+        ssl_key_passphrase: row
+            .try_get::<String, _>("ssl_key_passphrase")
+            .unwrap_or_default(),
         ssl_verify_server: row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1) != 0,
         custom_views: Vec::new(),
         replication_master_id: None,
@@ -1069,8 +1154,7 @@ pub(crate) async fn fetch_cluster_keys_with_types(
         Err(error) => {
             warn!(
                 "[redis_cluster] CLUSTER NODES failed for connection {:?}: {}",
-                connection.id,
-                error
+                connection.id, error
             );
             return Vec::new();
         }
@@ -1091,18 +1175,17 @@ pub(crate) async fn fetch_cluster_keys_with_types(
             break;
         }
 
-        let connection_string = build_redis_connection_string(
-            &host,
-            &port,
-            &connection.username,
-            &connection.password,
-        );
+        let connection_string =
+            build_redis_connection_string(&host, &port, &connection.username, &connection.password);
         debug!("[redis_cluster] scanning master node {}:{}", host, port);
 
         let client = match Client::open(connection_string) {
             Ok(client) => client,
             Err(error) => {
-                warn!("[redis_cluster] failed creating client for {}:{}: {}", host, port, error);
+                warn!(
+                    "[redis_cluster] failed creating client for {}:{}: {}",
+                    host, port, error
+                );
                 continue;
             }
         };
@@ -1110,12 +1193,17 @@ pub(crate) async fn fetch_cluster_keys_with_types(
         let mut node_conn = match ConnectionManager::new(client).await {
             Ok(conn) => conn,
             Err(error) => {
-                warn!("[redis_cluster] failed creating connection manager for {}:{}: {}", host, port, error);
+                warn!(
+                    "[redis_cluster] failed creating connection manager for {}:{}: {}",
+                    host, port, error
+                );
                 continue;
             }
         };
 
-        for (key, key_type) in scan_keys_and_types_on_node(&mut node_conn, max_keys - all_keys.len()).await {
+        for (key, key_type) in
+            scan_keys_and_types_on_node(&mut node_conn, max_keys - all_keys.len()).await
+        {
             if seen_keys.insert(key.clone()) {
                 all_keys.push((key, key_type));
             }
@@ -1148,8 +1236,7 @@ pub(crate) async fn fetch_cluster_key_names(
         Err(error) => {
             warn!(
                 "[redis_cluster] CLUSTER NODES failed for lightweight browser load on connection {:?}: {}",
-                connection.id,
-                error
+                connection.id, error
             );
             return Vec::new();
         }
@@ -1164,17 +1251,16 @@ pub(crate) async fn fetch_cluster_key_names(
             break;
         }
 
-        let connection_string = build_redis_connection_string(
-            &host,
-            &port,
-            &connection.username,
-            &connection.password,
-        );
+        let connection_string =
+            build_redis_connection_string(&host, &port, &connection.username, &connection.password);
 
         let client = match Client::open(connection_string) {
             Ok(client) => client,
             Err(error) => {
-                warn!("[redis_cluster] failed creating client for {}:{}: {}", host, port, error);
+                warn!(
+                    "[redis_cluster] failed creating client for {}:{}: {}",
+                    host, port, error
+                );
                 continue;
             }
         };
@@ -1182,7 +1268,10 @@ pub(crate) async fn fetch_cluster_key_names(
         let mut node_conn = match ConnectionManager::new(client).await {
             Ok(conn) => conn,
             Err(error) => {
-                warn!("[redis_cluster] failed creating connection manager for {}:{}: {}", host, port, error);
+                warn!(
+                    "[redis_cluster] failed creating connection manager for {}:{}: {}",
+                    host, port, error
+                );
                 continue;
             }
         };
@@ -1218,7 +1307,8 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
     }
 
     let mut detect_conn = redis_manager.clone();
-    let is_cluster = database_name == REDIS_CLUSTER_KEYSPACE || detect_cluster_mode(&mut detect_conn).await;
+    let is_cluster =
+        database_name == REDIS_CLUSTER_KEYSPACE || detect_cluster_mode(&mut detect_conn).await;
 
     if is_cluster {
         let mut seed_conn = redis_manager.clone();
@@ -1231,8 +1321,7 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
             Err(error) => {
                 warn!(
                     "[redis_search] CLUSTER NODES failed for connection {:?}: {}",
-                    connection.id,
-                    error
+                    connection.id, error
                 );
                 return Vec::new();
             }
@@ -1256,7 +1345,10 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
             let client = match Client::open(connection_string) {
                 Ok(client) => client,
                 Err(error) => {
-                    warn!("[redis_search] failed creating client for {}:{}: {}", host, port, error);
+                    warn!(
+                        "[redis_search] failed creating client for {}:{}: {}",
+                        host, port, error
+                    );
                     continue;
                 }
             };
@@ -1264,7 +1356,10 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
             let mut node_conn = match ConnectionManager::new(client).await {
                 Ok(conn) => conn,
                 Err(error) => {
-                    warn!("[redis_search] failed creating connection manager for {}:{}: {}", host, port, error);
+                    warn!(
+                        "[redis_search] failed creating connection manager for {}:{}: {}",
+                        host, port, error
+                    );
                     continue;
                 }
             };
@@ -1502,11 +1597,15 @@ pub(crate) fn fetch_tables_from_redis_connection(
                                 .iter()
                                 .find(|candidate| candidate.id == Some(connection_id))
                                 .cloned()?;
-                            let keys = fetch_cluster_keys_with_types(&connection, redis_manager.as_ref(), 100)
-                                .await
-                                .into_iter()
-                                .map(|(key, _)| key)
-                                .collect();
+                            let keys = fetch_cluster_keys_with_types(
+                                &connection,
+                                redis_manager.as_ref(),
+                                100,
+                            )
+                            .await
+                            .into_iter()
+                            .map(|(key, _)| key)
+                            .collect();
                             return Some(keys);
                         }
 

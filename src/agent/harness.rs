@@ -74,7 +74,10 @@ pub enum AgentEvent {
     ToolUse(String),
     /// Giliran selesai. `text` berisi jawaban lengkap (sama dengan gabungan
     /// delta bila ada), `usage` ringkasan token/biaya bila CLI melaporkannya.
-    Done { text: String, usage: Option<String> },
+    Done {
+        text: String,
+        usage: Option<String>,
+    },
     Error(String),
 }
 
@@ -147,7 +150,11 @@ fn combined_prompt(req: &AgentRequest) -> String {
     if req.system_prompt.trim().is_empty() {
         req.user_prompt.clone()
     } else {
-        format!("{}\n\n---\n\n{}", req.system_prompt.trim_end(), req.user_prompt)
+        format!(
+            "{}\n\n---\n\n{}",
+            req.system_prompt.trim_end(),
+            req.user_prompt
+        )
     }
 }
 
@@ -496,7 +503,8 @@ impl StreamParser {
                         .unwrap_or_else(|| "claude returned an error".to_string());
                     out.push(self.error(msg));
                 } else {
-                    let mut usage = format_usage(&v["usage"], v["duration_ms"].as_f64().map(|ms| ms / 1000.0));
+                    let mut usage =
+                        format_usage(&v["usage"], v["duration_ms"].as_f64().map(|ms| ms / 1000.0));
                     if let Some(cost) = v["total_cost_usd"].as_f64() {
                         let cost_txt = format!("${cost:.4}");
                         usage = Some(match usage {
@@ -789,7 +797,10 @@ pub fn detect_login_problem(kind: CliAgentKind, output: &str) -> Option<String> 
         CliAgentKind::GeminiCli => format!(
             "Gemini CLI is not authenticated. Open a terminal, run `{bin}` once and sign in, then try again."
         ),
-        CliAgentKind::Custom => "The CLI reported an authentication problem. Sign in from a terminal and try again.".to_string(),
+        CliAgentKind::Custom => {
+            "The CLI reported an authentication problem. Sign in from a terminal and try again."
+                .to_string()
+        }
     })
 }
 
@@ -799,7 +810,11 @@ fn tail(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         let start = s.len() - max;
-        let start = s.char_indices().map(|(i, _)| i).find(|&i| i >= start).unwrap_or(0);
+        let start = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .find(|&i| i >= start)
+            .unwrap_or(0);
         format!("…{}", &s[start..])
     }
 }
@@ -823,7 +838,10 @@ pub fn spawn_stream(
         )
     })?;
     if let Err(e) = std::fs::create_dir_all(&req.cwd) {
-        return Err(format!("cannot create agent workspace {}: {e}", req.cwd.display()));
+        return Err(format!(
+            "cannot create agent workspace {}: {e}",
+            req.cwd.display()
+        ));
     }
 
     let args = build_args(cfg, &req);
@@ -900,7 +918,10 @@ pub fn spawn_stream(
 
         let status = {
             let mut guard = reader_handle.child.lock().ok();
-            guard.as_mut().and_then(|g| g.take()).and_then(|mut c| c.wait().ok())
+            guard
+                .as_mut()
+                .and_then(|g| g.take())
+                .and_then(|mut c| c.wait().ok())
         };
         if parser.is_finished() {
             return;
@@ -1012,7 +1033,11 @@ pub fn register_mcp(cfg: &CliAgentConfig) -> Result<String, String> {
         }
     };
     let out = run_capture(&bin, &args, std::time::Duration::from_secs(20))?;
-    log::info!("[AGENT] registered MCP server via {}: {}", bin.display(), tail(&out, 300));
+    log::info!(
+        "[AGENT] registered MCP server via {}: {}",
+        bin.display(),
+        tail(&out, 300)
+    );
     Ok(out.trim().to_string())
 }
 
@@ -1042,7 +1067,10 @@ pub fn test_connection(cfg: &CliAgentConfig) -> Result<String, String> {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             handle.cancel();
-            return Err(format!("{} · {version}\nTest prompt timed out after 120s.", bin.display()));
+            return Err(format!(
+                "{} · {version}\nTest prompt timed out after 120s.",
+                bin.display()
+            ));
         }
         match rx.recv_timeout(remaining) {
             Ok(AgentEvent::TextDelta(d)) => text.push_str(&d),
@@ -1059,7 +1087,10 @@ pub fn test_connection(cfg: &CliAgentConfig) -> Result<String, String> {
             Ok(_) => {}
             Err(_) => {
                 handle.cancel();
-                return Err(format!("{} · {version}\nCLI stopped without a reply.", bin.display()));
+                return Err(format!(
+                    "{} · {version}\nCLI stopped without a reply.",
+                    bin.display()
+                ));
             }
         }
     }
@@ -1083,7 +1114,10 @@ mod tests {
     fn split_args_handles_quotes_and_escapes() {
         assert_eq!(split_args(""), Vec::<String>::new());
         assert_eq!(split_args("  a  b "), vec!["a", "b"]);
-        assert_eq!(split_args(r#"--x "hello world" 'it''s'"#), vec!["--x", "hello world", "its"]);
+        assert_eq!(
+            split_args(r#"--x "hello world" 'it''s'"#),
+            vec!["--x", "hello world", "its"]
+        );
         assert_eq!(split_args(r"a\ b"), vec!["a b"]);
         assert_eq!(split_args(r#""""#), vec![""]);
     }
@@ -1100,8 +1134,14 @@ mod tests {
         let args = build_args(&cfg, &req());
         assert_eq!(args[0], "--print");
         assert!(args[1].starts_with("SYS\n\n---\n\nUSER"));
-        assert!(args.windows(2).any(|w| w == ["--output-format", "stream-json"]));
-        assert!(args.windows(2).any(|w| w == ["--model", "claude-sonnet-4-6"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--output-format", "stream-json"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--model", "claude-sonnet-4-6"])
+        );
         assert!(args.windows(2).any(|w| w == ["--effort", "low"]));
         assert!(args.windows(2).any(|w| w == ["--conversation", "abc"]));
         assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
@@ -1143,11 +1183,20 @@ mod tests {
         };
         let args = build_args(&cfg, &req());
         assert_eq!(&args[..2], ["-p", "USER"]);
-        assert!(args.windows(2).any(|w| w == ["--append-system-prompt", "SYS"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--append-system-prompt", "SYS"])
+        );
         assert!(args.windows(2).any(|w| w == ["--resume", "abc"]));
-        assert!(args.windows(2).any(|w| w == ["--mcp-config", "/tmp/mcp.json"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--mcp-config", "/tmp/mcp.json"])
+        );
         assert!(args.contains(&"--strict-mcp-config".to_string()));
-        assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__tabular"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--allowedTools", "mcp__tabular"])
+        );
         assert!(args.contains(&"--include-partial-messages".to_string()));
     }
 
@@ -1195,7 +1244,10 @@ mod tests {
         let d1 = r#"{"event":"step_update","step_update":{"conversation_id":"1e16","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"OK"}}"#;
         assert_eq!(p.feed_line(d1), vec![AgentEvent::TextDelta("OK".into())]);
         let tool = r#"{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool_call","tool_name":"call_mcp_tool"}}"#;
-        assert_eq!(p.feed_line(tool), vec![AgentEvent::ToolUse("call_mcp_tool".into())]);
+        assert_eq!(
+            p.feed_line(tool),
+            vec![AgentEvent::ToolUse("call_mcp_tool".into())]
+        );
         let d2 = r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":1,"output_tokens":1}}}"#;
         assert_eq!(p.feed_line(d2), vec![AgentEvent::TextDelta("\n".into())]);
         let res = r#"{"event":"result","result":{"conversation_id":"1e16","status":"SUCCESS","response":"OK\n","duration_seconds":2.3,"usage":{"input_tokens":13564,"output_tokens":1}}}"#;
@@ -1218,7 +1270,9 @@ mod tests {
         let res = r#"{"event":"result","result":{"status":"ERROR","error":"quota exceeded"}}"#;
         assert_eq!(
             p.feed_line(res),
-            vec![AgentEvent::Error("agy finished with status ERROR: quota exceeded".into())]
+            vec![AgentEvent::Error(
+                "agy finished with status ERROR: quota exceeded".into()
+            )]
         );
     }
 
@@ -1228,9 +1282,15 @@ mod tests {
         let init = r#"{"type":"system","subtype":"init","session_id":"s-1"}"#;
         assert_eq!(p.feed_line(init), vec![AgentEvent::Session("s-1".into())]);
         let start = r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp__tabular__run_query"}}}"#;
-        assert_eq!(p.feed_line(start), vec![AgentEvent::ToolUse("mcp__tabular__run_query".into())]);
+        assert_eq!(
+            p.feed_line(start),
+            vec![AgentEvent::ToolUse("mcp__tabular__run_query".into())]
+        );
         let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#;
-        assert_eq!(p.feed_line(delta), vec![AgentEvent::TextDelta("Hel".into())]);
+        assert_eq!(
+            p.feed_line(delta),
+            vec![AgentEvent::TextDelta("Hel".into())]
+        );
         let delta2 = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}"#;
         p.feed_line(delta2);
         // Pesan assistant lengkap tidak boleh menggandakan teks.
@@ -1241,7 +1301,10 @@ mod tests {
         match &evs[0] {
             AgentEvent::Done { text, usage } => {
                 assert_eq!(text, "Hello");
-                assert_eq!(usage.as_deref(), Some("10 in / 2 out tokens · 1.5s · $0.0100"));
+                assert_eq!(
+                    usage.as_deref(),
+                    Some("10 in / 2 out tokens · 1.5s · $0.0100")
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1253,7 +1316,10 @@ mod tests {
         let asst = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"},{"type":"tool_use","name":"Read"}]}}"#;
         assert_eq!(
             p.feed_line(asst),
-            vec![AgentEvent::TextDelta("Hi".into()), AgentEvent::ToolUse("Read".into())]
+            vec![
+                AgentEvent::TextDelta("Hi".into()),
+                AgentEvent::ToolUse("Read".into())
+            ]
         );
         let err = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}"#;
         assert_eq!(p.feed_line(err), vec![AgentEvent::Error("boom".into())]);
@@ -1271,20 +1337,30 @@ mod tests {
             p.feed_line(r#"{"type":"tool_use","tool_name":"run_query"}"#),
             vec![AgentEvent::ToolUse("run_query".into())]
         );
-        let evs = p.feed_line(r#"{"type":"result","status":"success","stats":{"total_tokens":42}}"#);
+        let evs =
+            p.feed_line(r#"{"type":"result","status":"success","stats":{"total_tokens":42}}"#);
         assert_eq!(
             evs,
-            vec![AgentEvent::Done { text: "Hi".into(), usage: Some("42 tokens".into()) }]
+            vec![AgentEvent::Done {
+                text: "Hi".into(),
+                usage: Some("42 tokens".into())
+            }]
         );
     }
 
     #[test]
     fn custom_parser_streams_plain_lines() {
         let mut p = StreamParser::new(CliAgentKind::Custom);
-        assert_eq!(p.feed_line("line one"), vec![AgentEvent::TextDelta("line one\n".into())]);
+        assert_eq!(
+            p.feed_line("line one"),
+            vec![AgentEvent::TextDelta("line one\n".into())]
+        );
         assert_eq!(
             p.finish(),
-            Some(AgentEvent::Done { text: "line one\n".into(), usage: None })
+            Some(AgentEvent::Done {
+                text: "line one\n".into(),
+                usage: None
+            })
         );
     }
 
@@ -1294,20 +1370,31 @@ mod tests {
         assert!(p.feed_line("Some plain error text").is_empty());
         assert_eq!(
             p.finish(),
-            Some(AgentEvent::Done { text: "Some plain error text".into(), usage: None })
+            Some(AgentEvent::Done {
+                text: "Some plain error text".into(),
+                usage: None
+            })
         );
     }
 
     #[test]
     fn login_problem_detection() {
-        assert!(detect_login_problem(CliAgentKind::Antigravity, "AUTHENTICATION_REQUIRED: expired").is_some());
+        assert!(
+            detect_login_problem(
+                CliAgentKind::Antigravity,
+                "AUTHENTICATION_REQUIRED: expired"
+            )
+            .is_some()
+        );
         assert!(detect_login_problem(CliAgentKind::ClaudeCode, "Please run /login").is_some());
         assert!(detect_login_problem(CliAgentKind::ClaudeCode, "all good").is_none());
     }
 
     #[test]
     fn mcp_list_detection() {
-        assert!(mcp_list_mentions_tabular("tabular: /Applications/Tabular.app/Contents/MacOS/tabular mcp"));
+        assert!(mcp_list_mentions_tabular(
+            "tabular: /Applications/Tabular.app/Contents/MacOS/tabular mcp"
+        ));
         assert!(mcp_list_mentions_tabular("  tabular  stdio  enabled"));
         assert!(!mcp_list_mentions_tabular("No MCP servers configured."));
         assert!(!mcp_list_mentions_tabular("other: npx something"));

@@ -51,11 +51,17 @@ pub fn push_connection_to_server(
 
         match client.create_connection(&token, &req).await {
             Ok(remote) => {
-                info!("✅ [sync_connections] Pushed connection '{}' → server id {}", conn.name, remote.id);
+                info!(
+                    "✅ [sync_connections] Pushed connection '{}' → server id {}",
+                    conn.name, remote.id
+                );
                 let _ = result_tx.send(Ok(remote.id));
             }
             Err(e) => {
-                warn!("❌ [sync_connections] Push failed for '{}': {}", conn.name, e);
+                warn!(
+                    "❌ [sync_connections] Push failed for '{}': {}",
+                    conn.name, e
+                );
                 let _ = result_tx.send(Err(e.to_string()));
             }
         }
@@ -84,7 +90,10 @@ pub fn reencrypt_folder_to_server(
         let remote = match client.list_connections(&token).await {
             Ok(r) => r,
             Err(e) => {
-                warn!("❌ [sync_connections] re-encrypt: failed to list remote connections: {}", e);
+                warn!(
+                    "❌ [sync_connections] re-encrypt: failed to list remote connections: {}",
+                    e
+                );
                 return;
             }
         };
@@ -94,16 +103,25 @@ pub fn reencrypt_folder_to_server(
             let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
                 Ok(e) => e,
                 Err(e) => {
-                    warn!("❌ [sync_connections] re-encrypt: failed to encrypt '{}': {}", conn.name, e);
+                    warn!(
+                        "❌ [sync_connections] re-encrypt: failed to encrypt '{}': {}",
+                        conn.name, e
+                    );
                     continue;
                 }
             };
 
-            let existing = remote.iter().find(|r| r.name == conn.name && r.folder_path == folder_path);
+            let existing = remote
+                .iter()
+                .find(|r| r.name == conn.name && r.folder_path == folder_path);
             let result = match existing {
                 Some(r) => {
-                    let body = serde_json::json!({ "encrypted_config": encrypted, "crypto_version": 1 });
-                    client.update_connection(&token, &r.id, &body).await.map(|_| ())
+                    let body =
+                        serde_json::json!({ "encrypted_config": encrypted, "crypto_version": 1 });
+                    client
+                        .update_connection(&token, &r.id, &body)
+                        .await
+                        .map(|_| ())
                 }
                 None => {
                     let req = CreateConnectionReq {
@@ -119,10 +137,16 @@ pub fn reencrypt_folder_to_server(
             };
             match result {
                 Ok(()) => migrated += 1,
-                Err(e) => warn!("❌ [sync_connections] re-encrypt: failed to upsert '{}': {}", conn.name, e),
+                Err(e) => warn!(
+                    "❌ [sync_connections] re-encrypt: failed to upsert '{}': {}",
+                    conn.name, e
+                ),
             }
         }
-        info!("✅ [sync_connections] Re-encrypted {} connection(s) in '{}' under the Team key", migrated, folder_path);
+        info!(
+            "✅ [sync_connections] Re-encrypted {} connection(s) in '{}' under the Team key",
+            migrated, folder_path
+        );
     });
 }
 
@@ -143,14 +167,23 @@ pub fn migrate_legacy_connection(
         let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
             Ok(e) => e,
             Err(e) => {
-                warn!("❌ [migrate] Failed to encrypt legacy connection '{}': {}", conn.name, e);
+                warn!(
+                    "❌ [migrate] Failed to encrypt legacy connection '{}': {}",
+                    conn.name, e
+                );
                 return;
             }
         };
         let body = serde_json::json!({ "encrypted_config": encrypted, "crypto_version": 1 });
         match client.update_connection(&token, &remote_id, &body).await {
-            Ok(_) => info!("✅ [migrate] Migrated legacy connection '{}' to end-to-end encryption", conn.name),
-            Err(e) => warn!("❌ [migrate] Failed to migrate connection '{}': {}", conn.name, e),
+            Ok(_) => info!(
+                "✅ [migrate] Migrated legacy connection '{}' to end-to-end encryption",
+                conn.name
+            ),
+            Err(e) => warn!(
+                "❌ [migrate] Failed to migrate connection '{}': {}",
+                conn.name, e
+            ),
         }
     });
 }
@@ -169,7 +202,10 @@ pub fn pull_connections_from_server(
 
         match client.list_connections(&token).await {
             Ok(remote_conns) => {
-                info!("✅ [sync_connections] Pulled {} connections from server", remote_conns.len());
+                info!(
+                    "✅ [sync_connections] Pulled {} connections from server",
+                    remote_conns.len()
+                );
                 let _ = result_tx.send(Ok(remote_conns));
             }
             Err(e) => {

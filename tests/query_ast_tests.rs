@@ -200,7 +200,8 @@ mod query_ast_tests {
     }
     #[test]
     fn set_op_union_does_not_panic() {
-        let sql = "select id, name from users union all select id, name from archived_users limit 10";
+        let sql =
+            "select id, name from users union all select id, name from archived_users limit 10";
         let result = compile_single_select(sql, &DatabaseType::PostgreSQL, None, true);
         assert!(result.is_ok());
     }

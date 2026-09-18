@@ -5,8 +5,7 @@ use std::time::Instant;
 /// setiap job query yang sedang berjalan, dengan key job id. Dipakai supaya
 /// permintaan cancel benar-benar menghentikan statement di server, bukan hanya
 /// meninggalkannya di sisi klien.
-pub type BackendPidRegistry =
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, i64>>>;
+pub type BackendPidRegistry = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, i64>>>;
 
 /// Menghapus backend pid sebuah job dari registry saat job selesai atau
 /// task-nya di-abort.

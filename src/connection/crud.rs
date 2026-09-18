@@ -164,148 +164,148 @@ pub(crate) fn test_database_connection(
         // The per-driver `acquire_timeout`s cover neither DNS nor the SSH
         // tunnel, so bound the whole test the way a real connect is bounded.
         let probe = async {
-        match connection.connection_type {
-            models::enums::DatabaseType::MySQL => {
-                let (target_host, target_port) = match resolve_connection_target(connection) {
-                    Ok(tuple) => tuple,
-                    Err(err) => return (false, err),
-                };
-                let encoded_username = modules::url_encode(&connection.username);
-                let encoded_password = modules::url_encode(&connection.password);
-                let connection_string = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    encoded_username,
-                    encoded_password,
-                    target_host,
-                    target_port,
-                    connection.database
-                );
+            match connection.connection_type {
+                models::enums::DatabaseType::MySQL => {
+                    let (target_host, target_port) = match resolve_connection_target(connection) {
+                        Ok(tuple) => tuple,
+                        Err(err) => return (false, err),
+                    };
+                    let encoded_username = modules::url_encode(&connection.username);
+                    let encoded_password = modules::url_encode(&connection.password);
+                    let connection_string = format!(
+                        "mysql://{}:{}@{}:{}/{}",
+                        encoded_username,
+                        encoded_password,
+                        target_host,
+                        target_port,
+                        connection.database
+                    );
 
-                match MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(5))
-                    .connect(&connection_string)
-                    .await
-                {
-                    Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
-                        Ok(_) => (true, "MySQL connection successful!".to_string()),
-                        Err(e) => (false, format!("MySQL query failed: {}", e)),
-                    },
-                    Err(e) => (false, format!("MySQL connection failed: {}", e)),
-                }
-            }
-            models::enums::DatabaseType::PostgreSQL => {
-                let (target_host, target_port) = match resolve_connection_target(connection) {
-                    Ok(tuple) => tuple,
-                    Err(err) => return (false, err),
-                };
-                let connection_string = format!(
-                    "postgresql://{}:{}@{}:{}/{}",
-                    connection.username,
-                    connection.password,
-                    target_host,
-                    target_port,
-                    connection.database
-                );
-
-                match PgPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(5))
-                    .connect(&connection_string)
-                    .await
-                {
-                    Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
-                        Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
-                        Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
-                    },
-                    Err(e) => (false, format!("PostgreSQL connection failed: {}", e)),
-                }
-            }
-            models::enums::DatabaseType::SQLite => {
-                let raw = if connection.database.starts_with("sqlite:") {
-                    connection.database.clone()
-                } else if !connection.host.is_empty() && connection.host.starts_with("sqlite:") {
-                    connection.host.clone()
-                } else if !connection.host.is_empty() {
-                    format!("sqlite:{}", connection.host)
-                } else {
-                    format!("sqlite:{}", connection.database)
-                };
-
-                if let Some(path_str) = raw.strip_prefix("sqlite:") {
-                    let path = std::path::PathBuf::from(path_str);
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    if !path.exists()
-                        && let Ok(_file) = std::fs::File::create(&path)
+                    match MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .acquire_timeout(std::time::Duration::from_secs(5))
+                        .connect(&connection_string)
+                        .await
                     {
-                        // file created successfully
+                        Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "MySQL connection successful!".to_string()),
+                            Err(e) => (false, format!("MySQL query failed: {}", e)),
+                        },
+                        Err(e) => (false, format!("MySQL connection failed: {}", e)),
                     }
                 }
+                models::enums::DatabaseType::PostgreSQL => {
+                    let (target_host, target_port) = match resolve_connection_target(connection) {
+                        Ok(tuple) => tuple,
+                        Err(err) => return (false, err),
+                    };
+                    let connection_string = format!(
+                        "postgresql://{}:{}@{}:{}/{}",
+                        connection.username,
+                        connection.password,
+                        target_host,
+                        target_port,
+                        connection.database
+                    );
 
-                match SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(5))
-                    .connect(&raw)
-                    .await
-                {
-                    Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
-                        Ok(_) => (true, "SQLite connection successful!".to_string()),
-                        Err(e) => (false, format!("SQLite query failed: {}", e)),
-                    },
-                    Err(e) => (false, format!("SQLite connection failed: {}", e)),
+                    match PgPoolOptions::new()
+                        .max_connections(1)
+                        .acquire_timeout(std::time::Duration::from_secs(5))
+                        .connect(&connection_string)
+                        .await
+                    {
+                        Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
+                            Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
+                        },
+                        Err(e) => (false, format!("PostgreSQL connection failed: {}", e)),
+                    }
                 }
-            }
-            models::enums::DatabaseType::MongoDB => {
-                let (target_host, target_port) = match resolve_connection_target(connection) {
-                    Ok(tuple) => tuple,
-                    Err(err) => return (false, err),
-                };
-                let uri = if connection.username.is_empty() {
-                    format!("mongodb://{}:{}", target_host, target_port)
-                } else if connection.password.is_empty() {
-                    format!(
-                        "mongodb://{}@{}:{}",
-                        connection.username, target_host, target_port
-                    )
-                } else {
-                    let enc_user = modules::url_encode(&connection.username);
-                    let enc_pass = modules::url_encode(&connection.password);
-                    format!(
-                        "mongodb://{}:{}@{}:{}",
-                        enc_user, enc_pass, target_host, target_port
-                    )
-                };
-                match MongoClient::with_uri_str(uri).await {
-                    Ok(client) => {
-                        let admin = client.database("admin");
-                        match admin.run_command(mongodb::bson::doc!("ping": 1)).await {
-                            Ok(_) => (true, "MongoDB connection successful!".to_string()),
-                            Err(e) => (false, format!("MongoDB ping failed: {}", e)),
+                models::enums::DatabaseType::SQLite => {
+                    let raw = if connection.database.starts_with("sqlite:") {
+                        connection.database.clone()
+                    } else if !connection.host.is_empty() && connection.host.starts_with("sqlite:")
+                    {
+                        connection.host.clone()
+                    } else if !connection.host.is_empty() {
+                        format!("sqlite:{}", connection.host)
+                    } else {
+                        format!("sqlite:{}", connection.database)
+                    };
+
+                    if let Some(path_str) = raw.strip_prefix("sqlite:") {
+                        let path = std::path::PathBuf::from(path_str);
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if !path.exists()
+                            && let Ok(_file) = std::fs::File::create(&path)
+                        {
+                            // file created successfully
                         }
                     }
-                    Err(e) => (false, format!("MongoDB client error: {}", e)),
-                }
-            }
-            models::enums::DatabaseType::Redis => {
-                let (target_host, target_port) = match resolve_connection_target(connection) {
-                    Ok(tuple) => tuple,
-                    Err(err) => return (false, err),
-                };
-                let connection_string = if connection.password.is_empty() {
-                    format!("redis://{}:{}", target_host, target_port)
-                } else {
-                    format!(
-                        "redis://{}:{}@{}:{}",
-                        connection.username, connection.password, target_host, target_port
-                    )
-                };
 
-                match Client::open(connection_string) {
-                    Ok(client) => match client.get_connection() {
-                        Ok(mut conn) => {
-                            match redis::cmd("PING").query::<String>(&mut conn) {
+                    match SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .acquire_timeout(std::time::Duration::from_secs(5))
+                        .connect(&raw)
+                        .await
+                    {
+                        Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
+                            Ok(_) => (true, "SQLite connection successful!".to_string()),
+                            Err(e) => (false, format!("SQLite query failed: {}", e)),
+                        },
+                        Err(e) => (false, format!("SQLite connection failed: {}", e)),
+                    }
+                }
+                models::enums::DatabaseType::MongoDB => {
+                    let (target_host, target_port) = match resolve_connection_target(connection) {
+                        Ok(tuple) => tuple,
+                        Err(err) => return (false, err),
+                    };
+                    let uri = if connection.username.is_empty() {
+                        format!("mongodb://{}:{}", target_host, target_port)
+                    } else if connection.password.is_empty() {
+                        format!(
+                            "mongodb://{}@{}:{}",
+                            connection.username, target_host, target_port
+                        )
+                    } else {
+                        let enc_user = modules::url_encode(&connection.username);
+                        let enc_pass = modules::url_encode(&connection.password);
+                        format!(
+                            "mongodb://{}:{}@{}:{}",
+                            enc_user, enc_pass, target_host, target_port
+                        )
+                    };
+                    match MongoClient::with_uri_str(uri).await {
+                        Ok(client) => {
+                            let admin = client.database("admin");
+                            match admin.run_command(mongodb::bson::doc!("ping": 1)).await {
+                                Ok(_) => (true, "MongoDB connection successful!".to_string()),
+                                Err(e) => (false, format!("MongoDB ping failed: {}", e)),
+                            }
+                        }
+                        Err(e) => (false, format!("MongoDB client error: {}", e)),
+                    }
+                }
+                models::enums::DatabaseType::Redis => {
+                    let (target_host, target_port) = match resolve_connection_target(connection) {
+                        Ok(tuple) => tuple,
+                        Err(err) => return (false, err),
+                    };
+                    let connection_string = if connection.password.is_empty() {
+                        format!("redis://{}:{}", target_host, target_port)
+                    } else {
+                        format!(
+                            "redis://{}:{}@{}:{}",
+                            connection.username, connection.password, target_host, target_port
+                        )
+                    };
+
+                    match Client::open(connection_string) {
+                        Ok(client) => match client.get_connection() {
+                            Ok(mut conn) => match redis::cmd("PING").query::<String>(&mut conn) {
                                 Ok(response) => {
                                     if response == "PONG" {
                                         (true, "Redis connection successful!".to_string())
@@ -317,44 +317,48 @@ pub(crate) fn test_database_connection(
                                     }
                                 }
                                 Err(e) => (false, format!("Redis PING failed: {}", e)),
-                            }
-                        }
-                        Err(e) => (false, format!("Redis connection failed: {}", e)),
-                    },
-                    Err(e) => (false, format!("Redis client creation failed: {}", e)),
+                            },
+                            Err(e) => (false, format!("Redis connection failed: {}", e)),
+                        },
+                        Err(e) => (false, format!("Redis client creation failed: {}", e)),
+                    }
                 }
+                models::enums::DatabaseType::MsSQL => {
+                    let (target_host, target_port) = match resolve_connection_target(connection) {
+                        Ok(tuple) => tuple,
+                        Err(err) => return (false, err),
+                    };
+                    let host = target_host.clone();
+                    let port: u16 = target_port.parse().unwrap_or(1433);
+                    let db = connection.database.clone();
+                    let user = connection.username.clone();
+                    let pass = connection.password.clone();
+                    let res = async {
+                        let mut client = crate::driver_mssql::connect_mssql(
+                            &host,
+                            port,
+                            &user,
+                            &pass,
+                            Some(&db),
+                        )
+                        .await?;
+                        client
+                            .simple_query("SELECT 1")
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok::<_, String>(())
+                    }
+                    .await;
+                    match res {
+                        Ok(_) => (true, "MsSQL connection successful!".to_string()),
+                        Err(e) => (false, format!("MsSQL connection failed: {}", e)),
+                    }
+                }
+                models::enums::DatabaseType::ApiHttp => (
+                    false,
+                    "API-HTTP connections do not support database testing".to_string(),
+                ),
             }
-            models::enums::DatabaseType::MsSQL => {
-                let (target_host, target_port) = match resolve_connection_target(connection) {
-                    Ok(tuple) => tuple,
-                    Err(err) => return (false, err),
-                };
-                let host = target_host.clone();
-                let port: u16 = target_port.parse().unwrap_or(1433);
-                let db = connection.database.clone();
-                let user = connection.username.clone();
-                let pass = connection.password.clone();
-                let res = async {
-                    let mut client =
-                        crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db))
-                            .await?;
-                    client
-                        .simple_query("SELECT 1")
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok::<_, String>(())
-                }
-                .await;
-                match res {
-                    Ok(_) => (true, "MsSQL connection successful!".to_string()),
-                    Err(e) => (false, format!("MsSQL connection failed: {}", e)),
-                }
-            }
-            models::enums::DatabaseType::ApiHttp => (
-                false,
-                "API-HTTP connections do not support database testing".to_string(),
-            ),
-        }
         };
 
         match tokio::time::timeout(super::pool::CONNECT_TIMEOUT, probe).await {
@@ -499,7 +503,9 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
     if all_ok {
         debug!("[cache_recovery] Cache tables successfully recreated");
     } else {
-        warn!("[cache_recovery] Some cache tables could not be recreated; cache may be unavailable until app restart");
+        warn!(
+            "[cache_recovery] Some cache tables could not be recreated; cache may be unavailable until app restart"
+        );
     }
     all_ok
 }
@@ -508,7 +514,9 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
 pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,
-    shared_pools: &std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
+    shared_pools: &std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>,
+    >,
 ) -> (bool, Vec<String>) {
     debug!(
         "[refresh_connection] starting background refresh for connection {}",
@@ -572,12 +580,20 @@ pub(crate) async fn refresh_connection_background_async(
             let ssh_accept_unknown_host_keys = row
                 .try_get::<i64, _>("ssh_accept_unknown_host_keys")
                 .unwrap_or(0);
-            let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+            let ssh_jump_host = row
+                .try_get::<String, _>("ssh_jump_host")
+                .unwrap_or_default();
             let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
             let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
-            let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
-            let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
-            let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+            let ssl_client_cert = row
+                .try_get::<String, _>("ssl_client_cert")
+                .unwrap_or_default();
+            let ssl_client_key = row
+                .try_get::<String, _>("ssl_client_key")
+                .unwrap_or_default();
+            let ssl_key_passphrase = row
+                .try_get::<String, _>("ssl_key_passphrase")
+                .unwrap_or_default();
             let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
 
             // Hydrate credentials from the secret store (read-only; the main
@@ -662,8 +678,7 @@ pub(crate) async fn refresh_connection_background_async(
                         Err(error) => {
                             warn!(
                                 "[refresh_connection] timed out creating pool for connection {}: {} — keeping existing cache intact",
-                                connection_id,
-                                error
+                                connection_id, error
                             );
                             return (false, vec![]);
                         }
@@ -673,8 +688,7 @@ pub(crate) async fn refresh_connection_background_async(
 
             debug!(
                 "[refresh_connection] executing metadata fetch for connection {} ({:?})",
-                connection_id,
-                connection.connection_type
+                connection_id, connection.connection_type
             );
 
             let fetch_ok = fetch_and_cache_all_data(
@@ -686,8 +700,7 @@ pub(crate) async fn refresh_connection_background_async(
             .await;
             debug!(
                 "[refresh_connection] cache reload finished for connection {} => {}",
-                connection_id,
-                fetch_ok
+                connection_id, fetch_ok
             );
 
             // After a successful write to SQLite, read back the database list inline
@@ -709,7 +722,10 @@ pub(crate) async fn refresh_connection_background_async(
             } else {
                 vec![]
             };
-            debug!("[refresh_connection] inline databases read-back: {} dbs", databases.len());
+            debug!(
+                "[refresh_connection] inline databases read-back: {} dbs",
+                databases.len()
+            );
             (fetch_ok, databases)
         } else {
             warn!(

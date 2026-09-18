@@ -4,7 +4,7 @@
 #![allow(
     clippy::collapsible_if,
     clippy::too_many_arguments,
-    clippy::type_complexity,
+    clippy::type_complexity
 )]
 
 use eframe::egui;
@@ -13,6 +13,7 @@ pub mod agent;
 pub mod ai_assistant;
 pub mod app_logging;
 pub mod auto_updater;
+pub mod autocomplete;
 pub mod backup_restore;
 pub mod cache_data;
 pub mod config;
@@ -33,7 +34,6 @@ pub mod driver_mysql;
 pub mod driver_postgres;
 pub mod driver_redis;
 pub mod driver_sqlite;
-pub mod autocomplete;
 pub mod editor;
 pub mod editor_autocomplete;
 pub mod editor_autocomplete_new; // temporary clean implementation backing the shim
@@ -55,12 +55,11 @@ pub mod query_tools;
 pub mod quick_open;
 pub mod redis_browser;
 pub mod safety_guard;
+pub mod sample_data;
 pub mod search_match;
 pub mod secrets;
-pub mod sample_data;
 pub mod self_update;
 pub mod session_restore;
-pub mod url_opener;
 pub mod sidebar_collection;
 pub mod sidebar_database;
 pub mod sidebar_history;
@@ -68,6 +67,7 @@ pub mod sidebar_query;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
+pub mod url_opener;
 pub mod user_manager;
 pub mod vector_index;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
@@ -219,7 +219,8 @@ pub fn run() -> Result<(), eframe::Error> {
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
             egui_icons::initialize(&cc.egui_ctx);
-            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
             Ok(Box::new(app))
@@ -239,13 +240,11 @@ pub extern "C" fn tabular_version() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tabular_run() -> i32 {
-    let result = std::panic::catch_unwind(|| {
-        match run() {
-            Ok(_) => 0,
-            Err(e) => {
-                log::error!("eframe run error: {:?}", e);
-                1
-            }
+    let result = std::panic::catch_unwind(|| match run() {
+        Ok(_) => 0,
+        Err(e) => {
+            log::error!("eframe run error: {:?}", e);
+            1
         }
     });
     match result {

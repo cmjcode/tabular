@@ -4918,7 +4918,10 @@ fn ai_memory_note_from_chat(
     let content = if question.is_empty() {
         answer.to_string()
     } else {
-        format!("> [!question] Asked in Tabular\n> {}\n\n{answer}", question.replace('\n', "\n> "))
+        format!(
+            "> [!question] Asked in Tabular\n> {}\n\n{answer}",
+            question.replace('\n', "\n> ")
+        )
     };
     Some((title, content))
 }
@@ -5580,8 +5583,16 @@ fn ai_parse_heading(line: &str) -> Option<(u8, String)> {
 fn ai_is_sql_lang(lang: &str, code: &str) -> bool {
     matches!(
         lang,
-        "sql" | "mysql" | "mariadb" | "postgres" | "postgresql" | "pgsql" | "plsql" | "tsql"
-            | "sqlite" | "mssql"
+        "sql"
+            | "mysql"
+            | "mariadb"
+            | "postgres"
+            | "postgresql"
+            | "pgsql"
+            | "plsql"
+            | "tsql"
+            | "sqlite"
+            | "mssql"
     ) || (lang.is_empty() && ai_starts_with_sql_keyword(code))
 }
 
@@ -5682,8 +5693,12 @@ fn ai_render_code_block(
                         ui.label(egui::RichText::new(label).size(10.5).strong().color(badge));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
-                            if style::ai_icon_button(ui, icons::ICON_CONTENT_COPY.codepoint, "Copy code")
-                                .clicked()
+                            if style::ai_icon_button(
+                                ui,
+                                icons::ICON_CONTENT_COPY.codepoint,
+                                "Copy code",
+                            )
+                            .clicked()
                             {
                                 actions.push(AiPanelAction::Copy(code.to_string()));
                             }
@@ -5731,7 +5746,8 @@ fn ai_render_heading(ui: &mut egui::Ui, level: u8, text: &str, first: bool) {
         // Garis bawah tipis sewarna judul untuk memisahkan bagian.
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, color.gamma_multiply(0.35));
+        ui.painter()
+            .rect_filled(rect, 0.0, color.gamma_multiply(0.35));
     }
     ui.add_space(4.0);
 }
@@ -5777,7 +5793,9 @@ fn ai_render_markdown(
                 });
             }
             AiMdBlock::Heading { level, text } => ai_render_heading(ui, *level, text, bi == 0),
-            AiMdBlock::Code { lang, code } => ai_render_code_block(ui, (mi, bi), lang, code, actions),
+            AiMdBlock::Code { lang, code } => {
+                ai_render_code_block(ui, (mi, bi), lang, code, actions)
+            }
         }
     }
 }
@@ -6075,7 +6093,11 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
             format!(
                 "Backend: CLI agent ({}). Live edit: {}",
                 tabular.ai_cli_kind.display_name(),
-                if tabular.ai_cli_auto_apply_edits { "on" } else { "off" }
+                if tabular.ai_cli_auto_apply_edits {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         ),
     };
@@ -6248,7 +6270,10 @@ fn ai_render_edit_card(
             ui.set_width(ui.available_width());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let apply = !rec.applied || rec.reverted;
-                if ui.small_button(if apply { "Apply" } else { "Revert" }).clicked() {
+                if ui
+                    .small_button(if apply { "Apply" } else { "Revert" })
+                    .clicked()
+                {
                     actions.push(if apply {
                         AiPanelAction::ApplyEdit(mi, ei)
                     } else {
@@ -6271,7 +6296,11 @@ fn ai_render_edit_card(
                         egui::Label::new(egui::RichText::new(&rec.tab_title).size(12.0).strong())
                             .truncate(),
                     )
-                    .on_hover_text(format!("{} · {}", rec.tab_title, rec.mode.label()));
+                    .on_hover_text(format!(
+                        "{} · {}",
+                        rec.tab_title,
+                        rec.mode.label()
+                    ));
                 });
             });
             if let Some(note) = &rec.note {
@@ -6330,7 +6359,12 @@ fn ai_render_assistant_message(
             .last()
             .map(|t| format!("Running {}…", t.trim_start_matches("mcp__tabular__")))
             .unwrap_or_else(|| "Thinking…".to_string());
-        ui.label(egui::RichText::new(status).size(11.5).italics().color(muted));
+        ui.label(
+            egui::RichText::new(status)
+                .size(11.5)
+                .italics()
+                .color(muted),
+        );
     }
 
     if let Some(err) = &msg.error {
@@ -6865,9 +6899,15 @@ mod ai_panel_tests {
         assert_eq!(
             ai_split_markdown_blocks(text),
             vec![
-                AiMdBlock::Heading { level: 2, text: "1. Indexes".to_string() },
+                AiMdBlock::Heading {
+                    level: 2,
+                    text: "1. Indexes".to_string()
+                },
                 AiMdBlock::Prose("Some *text*.".to_string()),
-                AiMdBlock::Code { lang: "sql".to_string(), code: "SELECT 1;\nSELECT 2;".to_string() },
+                AiMdBlock::Code {
+                    lang: "sql".to_string(),
+                    code: "SELECT 1;\nSELECT 2;".to_string()
+                },
                 AiMdBlock::Prose("After.".to_string()),
             ]
         );
@@ -6880,7 +6920,10 @@ mod ai_panel_tests {
             ai_split_markdown_blocks("Intro\n```json\n{\"a\": 1"),
             vec![
                 AiMdBlock::Prose("Intro".to_string()),
-                AiMdBlock::Code { lang: "json".to_string(), code: "{\"a\": 1".to_string() },
+                AiMdBlock::Code {
+                    lang: "json".to_string(),
+                    code: "{\"a\": 1".to_string()
+                },
             ]
         );
         // Fence di dalam blockquote/indentasi tetap bagian dari prosa.
@@ -6893,8 +6936,14 @@ mod ai_panel_tests {
 
     #[test]
     fn parses_only_real_atx_headings() {
-        assert_eq!(ai_parse_heading("# Title #"), Some((1, "Title".to_string())));
-        assert_eq!(ai_parse_heading("### `idx` fix"), Some((3, "idx fix".to_string())));
+        assert_eq!(
+            ai_parse_heading("# Title #"),
+            Some((1, "Title".to_string()))
+        );
+        assert_eq!(
+            ai_parse_heading("### `idx` fix"),
+            Some((3, "idx fix".to_string()))
+        );
         assert_eq!(ai_parse_heading("#hashtag"), None);
         assert_eq!(ai_parse_heading("####### seven"), None);
         assert_eq!(ai_parse_heading("plain"), None);
@@ -6914,7 +6963,10 @@ mod ai_panel_tests {
         let text = "1. Missing index:\n   - Fix:\n     ```sql\n     CREATE INDEX a ON t (x);\n     ```\n2. Next item";
         let out = ai_normalize_markdown(text);
         assert!(out.starts_with("1. Missing index:\n   - Fix:\n"));
-        assert!(out.contains("\n\n```sql\nCREATE INDEX a ON t (x);\n```\n\n"), "{out}");
+        assert!(
+            out.contains("\n\n```sql\nCREATE INDEX a ON t (x);\n```\n\n"),
+            "{out}"
+        );
         assert!(out.contains("\n2. Next item\n"));
     }
 
@@ -6945,7 +6997,8 @@ mod ai_panel_tests {
         );
 
         // Potongan pendek dan inline non-SQL tetap apa adanya.
-        let short = "Query `SELECT id FROM products WHERE type = ? AND deleted_at IS NULL` is slow.\n";
+        let short =
+            "Query `SELECT id FROM products WHERE type = ? AND deleted_at IS NULL` is slow.\n";
         assert_eq!(ai_normalize_markdown(short), short);
         let prose = format!("Use `{}` here.\n", "x".repeat(120));
         assert_eq!(ai_normalize_markdown(&prose), prose);
@@ -6953,7 +7006,8 @@ mod ai_panel_tests {
 
     #[test]
     fn normalize_drops_trailing_punctuation_after_promoted_sql() {
-        let long = "ALTER TABLE stock_opnames DROP FOREIGN KEY stock_opnames_ibfk_5, ADD INDEX idx_x (x);";
+        let long =
+            "ALTER TABLE stock_opnames DROP FOREIGN KEY stock_opnames_ibfk_5, ADD INDEX idx_x (x);";
         let out = ai_normalize_markdown(&format!("Run `{long}`."));
         assert_eq!(out, format!("Run\n\n```sql\n{long}\n```\n"));
     }

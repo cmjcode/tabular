@@ -652,7 +652,10 @@ pub fn strip_leading_sql_comments(sql: &str) -> &str {
 
 /// True jika statement hanya berisi komentar dan spasi.
 pub fn is_comment_only_statement(sql: &str) -> bool {
-    strip_leading_sql_comments(sql).trim_end_matches(';').trim().is_empty()
+    strip_leading_sql_comments(sql)
+        .trim_end_matches(';')
+        .trim()
+        .is_empty()
 }
 
 /// Menentukan apakah statement diharapkan menghasilkan result set.
@@ -662,8 +665,8 @@ pub fn is_comment_only_statement(sql: &str) -> bool {
 /// statement yang tidak bisa diklasifikasi) diambil sebagai baris, yang selalu aman.
 pub fn statement_returns_rows(sql: &str) -> bool {
     const MODIFYING: &[&str] = &[
-        "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "UPSERT", "TRUNCATE", "CREATE",
-        "ALTER", "DROP", "GRANT", "REVOKE", "RENAME", "COMMENT",
+        "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "UPSERT", "TRUNCATE", "CREATE", "ALTER",
+        "DROP", "GRANT", "REVOKE", "RENAME", "COMMENT",
     ];
     let body = strip_leading_sql_comments(sql);
     let first = body
@@ -693,10 +696,7 @@ pub fn mysql_error_line(message: &str) -> Option<usize> {
 /// Ubah lokasi error menjadi offset byte di dalam teks editor. Statement dicari
 /// apa adanya di teks editor; mengembalikan None jika statement tidak ditemukan
 /// (misalnya teks sudah diubah setelah query dijalankan).
-pub fn locate_error_in_text(
-    text: &str,
-    location: &super::types::ErrorLocation,
-) -> Option<usize> {
+pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) -> Option<usize> {
     let statement = location.statement.as_str();
     if statement.is_empty() {
         return None;
@@ -732,7 +732,9 @@ mod tests {
     #[test]
     fn parses_mysql_error_line() {
         assert_eq!(
-            mysql_error_line("You have an error in your SQL syntax; check the manual ... near 'FORM t' at line 3"),
+            mysql_error_line(
+                "You have an error in your SQL syntax; check the manual ... near 'FORM t' at line 3"
+            ),
             Some(3)
         );
         assert_eq!(mysql_error_line("Table 'x.y' doesn't exist"), None);
@@ -770,8 +772,14 @@ mod tests {
     #[test]
     fn leading_comments_are_stripped() {
         assert_eq!(strip_leading_sql_comments("-- note\nSELECT 1"), "SELECT 1");
-        assert_eq!(strip_leading_sql_comments("/* a */ /* b */\n  UPDATE t"), "UPDATE t");
-        assert_eq!(strip_leading_sql_comments("# mysql\nDELETE FROM t"), "DELETE FROM t");
+        assert_eq!(
+            strip_leading_sql_comments("/* a */ /* b */\n  UPDATE t"),
+            "UPDATE t"
+        );
+        assert_eq!(
+            strip_leading_sql_comments("# mysql\nDELETE FROM t"),
+            "DELETE FROM t"
+        );
         assert!(is_comment_only_statement("-- just a note"));
         assert!(is_comment_only_statement("/* unterminated"));
         assert!(!is_comment_only_statement("-- note\nSELECT 1"));
@@ -780,15 +788,23 @@ mod tests {
     #[test]
     fn classifies_row_returning_statements() {
         assert!(statement_returns_rows("SELECT * FROM t"));
-        assert!(statement_returns_rows("-- c\nWITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(statement_returns_rows(
+            "-- c\nWITH x AS (SELECT 1) SELECT * FROM x"
+        ));
         assert!(statement_returns_rows("SHOW TABLES"));
         assert!(statement_returns_rows("EXPLAIN UPDATE t SET a = 1"));
         assert!(!statement_returns_rows("update t set a = 1 where id = 2"));
-        assert!(!statement_returns_rows("/* bulk */ INSERT INTO t VALUES (1)"));
+        assert!(!statement_returns_rows(
+            "/* bulk */ INSERT INTO t VALUES (1)"
+        ));
         assert!(!statement_returns_rows("CREATE TABLE t (id int)"));
-        assert!(statement_returns_rows("INSERT INTO t VALUES (1) RETURNING id"));
+        assert!(statement_returns_rows(
+            "INSERT INTO t VALUES (1) RETURNING id"
+        ));
         assert!(statement_returns_rows("DELETE FROM t OUTPUT deleted.id"));
-        assert!(!statement_returns_rows("UPDATE t SET returning_customer = 1"));
+        assert!(!statement_returns_rows(
+            "UPDATE t SET returning_customer = 1"
+        ));
     }
 
     #[test]

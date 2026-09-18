@@ -462,12 +462,14 @@ impl super::Tabular {
             new_column_type: String::new(),
             new_column_nullable: true,
             new_column_default: String::new(),
+            new_column_comment: String::new(),
             editing_column: false,
             edit_column_original_name: String::new(),
             edit_column_name: String::new(),
             edit_column_type: String::new(),
             edit_column_nullable: true,
             edit_column_default: String::new(),
+            edit_column_comment: String::new(),
             adding_index: false,
             new_index_name: String::new(),
             new_index_method: String::new(),
@@ -1465,16 +1467,22 @@ impl super::Tabular {
                                         (col_fut.await, idx_fut.await, part_fut.await)
                                     });
 
-                                    let cols: Option<Vec<(String, String)>> = if !cols_detail.is_empty() {
-                                        Some(cols_detail.iter().map(|c| (c.name.clone(), c.data_type.clone())).collect())
-                                    } else {
-                                        crate::connection::fetch_columns_from_database(
-                                            connection_id,
-                                            &database_name,
-                                            &table_name,
-                                            &conn,
-                                        )
-                                    };
+                                    let cols: Option<Vec<(String, String)>> =
+                                        if !cols_detail.is_empty() {
+                                            Some(
+                                                cols_detail
+                                                    .iter()
+                                                    .map(|c| (c.name.clone(), c.data_type.clone()))
+                                                    .collect(),
+                                            )
+                                        } else {
+                                            crate::connection::fetch_columns_from_database(
+                                                connection_id,
+                                                &database_name,
+                                                &table_name,
+                                                &conn,
+                                            )
+                                        };
 
                                     debug!(
                                         "[WORKER] FetchTableStructure finished: {} cols ({} detailed), {} idxs for {}/{}",
@@ -1491,7 +1499,11 @@ impl super::Tabular {
                                             database_name,
                                             table_name,
                                             columns: cols,
-                                            columns_detail: if !cols_detail.is_empty() { Some(cols_detail) } else { None },
+                                            columns_detail: if !cols_detail.is_empty() {
+                                                Some(cols_detail)
+                                            } else {
+                                                None
+                                            },
                                             indexes: Some(idxs),
                                             partitions: Some(parts),
                                         },
@@ -1573,8 +1585,8 @@ impl super::Tabular {
 
 #[cfg(test)]
 mod tests {
-    use crate::window_egui::Tabular;
     use crate::config::{AiBackend, AiProvider, AppPreferences, CliAgentKind};
+    use crate::window_egui::Tabular;
 
     /// Regresi: pengaturan AI yang tersimpan harus termuat ke state saat
     /// startup, bukan tertinggal di nilai default konstruktor.

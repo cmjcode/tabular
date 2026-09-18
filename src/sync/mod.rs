@@ -30,18 +30,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SyncStatus {
     #[default]
-    Offline,           // Server not configured or not reachable
-    Syncing,           // Currently syncing
-    Synced,            // Last sync successful
-    Error(String),     // Last sync failed
+    Offline, // Server not configured or not reachable
+    Syncing,       // Currently syncing
+    Synced,        // Last sync successful
+    Error(String), // Last sync failed
 }
 
 impl SyncStatus {
     pub fn label(&self) -> &str {
         match self {
-            SyncStatus::Offline  => "Offline",
-            SyncStatus::Syncing  => "Syncing…",
-            SyncStatus::Synced   => "Synced",
+            SyncStatus::Offline => "Offline",
+            SyncStatus::Syncing => "Syncing…",
+            SyncStatus::Synced => "Synced",
             SyncStatus::Error(_) => "Sync Error",
         }
     }

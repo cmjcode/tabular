@@ -193,7 +193,8 @@ impl super::Tabular {
         match result {
             Ok(path) => {
                 log::info!("[OBSIDIAN] saved schema note: {path}");
-                self.toasts.success(format!("Schema saved to vault: {path}"));
+                self.toasts
+                    .success(format!("Schema saved to vault: {path}"));
                 if self.ai_obsidian_index_receiver.is_none() {
                     self.start_obsidian_index();
                 }

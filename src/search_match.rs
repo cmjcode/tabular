@@ -134,7 +134,11 @@ mod tests {
         ];
         for (q, t, want) in pairs {
             let sq = SearchQuery::new(q);
-            println!("{:>6.3} want={} {q:?} vs {t:?}", sq.similarity(t).unwrap_or(-9.0), want);
+            println!(
+                "{:>6.3} want={} {q:?} vs {t:?}",
+                sq.similarity(t).unwrap_or(-9.0),
+                want
+            );
         }
     }
 

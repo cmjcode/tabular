@@ -1,17 +1,15 @@
-use eframe::egui;
+use super::utils::parse_enum_values;
+use super::{
+    apply_sql_filter, copy_selected_as_markdown, copy_selected_as_sql_inserts,
+    copy_selected_block_as_csv, copy_selected_columns_as_csv, copy_selected_rows_as_csv,
+    export_selected_to_markdown, export_selected_to_sql_inserts, get_column_width,
+    handle_column_click, handle_row_click, infer_current_table_name, initialize_column_widths,
+    refresh_current_table_data, render_pagination_bar, render_visual_filter_panel,
+    set_column_width, sort_table_data,
+};
 use crate::{export, spreadsheet::SpreadsheetOperations, window_egui};
 use chrono::Timelike;
-use super::{
-    initialize_column_widths, get_column_width, set_column_width,
-    refresh_current_table_data, infer_current_table_name,
-    handle_row_click, handle_column_click,
-    copy_selected_block_as_csv, copy_selected_rows_as_csv, copy_selected_columns_as_csv,
-    copy_selected_as_sql_inserts, copy_selected_as_markdown,
-    export_selected_to_sql_inserts, export_selected_to_markdown,
-    apply_sql_filter, sort_table_data,
-    render_pagination_bar, render_visual_filter_panel,
-};
-use super::utils::parse_enum_values;
+use eframe::egui;
 
 pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     if !tabular.current_table_headers.is_empty() || !tabular.current_table_name.is_empty() {
@@ -19,7 +17,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
         // Show grid whenever we have headers (even if 0 rows) so user sees column structure
         if !tabular.current_table_headers.is_empty() {
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+                ui.ctx(),
+                tabular.ui_mode,
+            );
 
             // Toolbar: filter + spreadsheet actions (only in table browse mode)
             if tabular.is_table_browse_mode {
@@ -40,7 +41,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         };
                         let is_filter_open = tabular.visual_filter.is_open;
                         if ui
-                            .selectable_label(is_filter_open, egui::RichText::new(filter_btn_text).strong())
+                            .selectable_label(
+                                is_filter_open,
+                                egui::RichText::new(filter_btn_text).strong(),
+                            )
                             .on_hover_text("Open Visual Filter Builder")
                             .clicked()
                         {
@@ -51,13 +55,19 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         let has_sel_cell = tabular.selected_cell.is_some();
                         if ui
                             .add_enabled(has_sel_cell, egui::Button::new("🔍 Inspect"))
-                            .on_hover_text("Inspect selected cell (JSON, Hex, Image, Raw Text) — Shortcut: ⌘I")
+                            .on_hover_text(
+                                "Inspect selected cell (JSON, Hex, Image, Raw Text) — Shortcut: ⌘I",
+                            )
                             .clicked()
                         {
                             if let Some((r, c)) = tabular.selected_cell {
                                 if let Some(row_data) = tabular.current_table_data.get(r) {
                                     if let Some(val) = row_data.get(c) {
-                                        let col_name = tabular.current_table_headers.get(c).cloned().unwrap_or_else(|| format!("Col {}", c + 1));
+                                        let col_name = tabular
+                                            .current_table_headers
+                                            .get(c)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("Col {}", c + 1));
                                         tabular.cell_inspector.open(val.clone(), col_name, r, c);
                                     }
                                 }
@@ -71,7 +81,9 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 .strong()
                                 .size(if metrics.is_touch { 14.5 } else { 13.0 }),
                         );
-                        let filter_width = (ui.available_width() - if metrics.is_touch { 270.0 } else { 220.0 }).max(140.0);
+                        let filter_width = (ui.available_width()
+                            - if metrics.is_touch { 270.0 } else { 220.0 })
+                        .max(140.0);
                         let input_height = if metrics.is_touch { 34.0 } else { 26.0 };
                         let filter_response = ui.add_sized(
                             [filter_width, input_height],
@@ -105,9 +117,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         {
                             apply_sql_filter(tabular);
                         }
-                        let clear_btn_size = egui::vec2(if metrics.is_touch { 34.0 } else { 26.0 }, input_height);
+                        let clear_btn_size =
+                            egui::vec2(if metrics.is_touch { 34.0 } else { 26.0 }, input_height);
                         if ui
-                            .add_sized(clear_btn_size, crate::window_egui::style::btn_secondary("✖"))
+                            .add_sized(
+                                clear_btn_size,
+                                crate::window_egui::style::btn_secondary("✖"),
+                            )
                             .on_hover_text("Clear filter")
                             .clicked()
                         {
@@ -172,10 +188,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let curr_table = infer_current_table_name(tabular);
             let clean_table = curr_table.trim_matches(|c| c == '`' || c == '"' || c == '\'');
 
-            let mut fk_by_col_idx: std::collections::HashMap<usize, crate::models::structs::ForeignKey> =
-                std::collections::HashMap::new();
+            let mut fk_by_col_idx: std::collections::HashMap<
+                usize,
+                crate::models::structs::ForeignKey,
+            > = std::collections::HashMap::new();
             if let Some(cid) = conn_id {
-                if let Some(fks) = crate::cache_data::get_foreign_keys_from_cache(tabular, cid, &db_name) {
+                if let Some(fks) =
+                    crate::cache_data::get_foreign_keys_from_cache(tabular, cid, &db_name)
+                {
                     for (i, h) in headers.iter().enumerate() {
                         let table_hint = if let Some(meta) = &tabular.current_column_metadata
                             && let Some(col_meta) = meta.get(i)
@@ -187,7 +207,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             clean_table
                         };
                         if let Some(fk) = fks.iter().find(|fk| {
-                            (fk.table_name.eq_ignore_ascii_case(table_hint) || table_hint.is_empty())
+                            (fk.table_name.eq_ignore_ascii_case(table_hint)
+                                || table_hint.is_empty())
                                 && fk.column_name.eq_ignore_ascii_case(h)
                         }) {
                             fk_by_col_idx.insert(i, fk.clone());
@@ -230,19 +251,20 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // ── Sticky header row ──────────────────────────────────────────────────
             let header_w = ui.available_width();
-            let (header_alloc_rect, _) = ui.allocate_exact_size(
-                egui::vec2(header_w, header_h),
-                egui::Sense::hover(),
-            );
+            let (header_alloc_rect, _) =
+                ui.allocate_exact_size(egui::vec2(header_w, header_h), egui::Sense::hover());
             {
                 let total_content_w: f32 = 60.0
-                    + display_col_indices.iter().map(|&i| {
-                        if Some(i) == error_column_index {
-                            get_column_width(tabular, i).max(100.0)
-                        } else {
-                            get_column_width(tabular, i).max(30.0)
-                        }
-                    }).sum::<f32>();
+                    + display_col_indices
+                        .iter()
+                        .map(|&i| {
+                            if Some(i) == error_column_index {
+                                get_column_width(tabular, i).max(100.0)
+                            } else {
+                                get_column_width(tabular, i).max(30.0)
+                            }
+                        })
+                        .sum::<f32>();
                 let content_rect = egui::Rect::from_min_size(
                     egui::pos2(
                         header_alloc_rect.min.x - tabular.data_scroll_x,
@@ -276,13 +298,19 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             egui::Color32::from_gray(200)
                         };
                         let thin_stroke = egui::Stroke::new(0.5, border_color);
-                        let (hdr_fill, _) =
-                            crate::window_egui::style::table_header_colors(ui.visuals().dark_mode, false);
+                        let (hdr_fill, _) = crate::window_egui::style::table_header_colors(
+                            ui.visuals().dark_mode,
+                            false,
+                        );
                         ui.painter().rect_filled(rect, 0.0, hdr_fill);
-                        ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
-                        ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
-                        ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
-                        ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
+                        ui.painter()
+                            .line_segment([rect.left_top(), rect.right_top()], thin_stroke);
+                        ui.painter()
+                            .line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
+                        ui.painter()
+                            .line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
+                        ui.painter()
+                            .line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
                         let text_color = if ui.visuals().dark_mode {
                             egui::Color32::from_rgb(148, 163, 184)
                         } else {
@@ -334,18 +362,33 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             };
                             let thin_stroke = egui::Stroke::new(0.5, border_color);
                             let (hdr_fill, header_text_color) =
-                                crate::window_egui::style::table_header_colors(ui.visuals().dark_mode, is_pinned);
+                                crate::window_egui::style::table_header_colors(
+                                    ui.visuals().dark_mode,
+                                    is_pinned,
+                                );
                             ui.painter().rect_filled(rect, 0.0, hdr_fill);
-                            ui.painter().line_segment([rect.left_top(), rect.right_top()], thin_stroke);
-                            ui.painter().line_segment([rect.right_bottom(), rect.left_bottom()], thin_stroke);
-                            ui.painter().line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
+                            ui.painter()
+                                .line_segment([rect.left_top(), rect.right_top()], thin_stroke);
+                            ui.painter().line_segment(
+                                [rect.right_bottom(), rect.left_bottom()],
+                                thin_stroke,
+                            );
+                            ui.painter()
+                                .line_segment([rect.left_bottom(), rect.left_top()], thin_stroke);
 
                             // Right border: freeze divider if last pinned column
                             if is_last_pinned {
-                                let freeze_color = crate::window_egui::style::theme_accent(ui.ctx());
-                                ui.painter().line_segment([rect.right_top(), rect.right_bottom()], egui::Stroke::new(2.5, freeze_color));
+                                let freeze_color =
+                                    crate::window_egui::style::theme_accent(ui.ctx());
+                                ui.painter().line_segment(
+                                    [rect.right_top(), rect.right_bottom()],
+                                    egui::Stroke::new(2.5, freeze_color),
+                                );
                             } else {
-                                ui.painter().line_segment([rect.right_top(), rect.right_bottom()], thin_stroke);
+                                ui.painter().line_segment(
+                                    [rect.right_top(), rect.right_bottom()],
+                                    thin_stroke,
+                                );
                             }
 
                             let sort_button_width = if metrics.is_touch { 34.0 } else { 26.0 };
@@ -354,21 +397,36 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                             let label_rect = egui::Rect::from_min_max(
                                 rect.min,
-                                egui::pos2((rect.max.x - total_buttons_w).max(rect.min.x), rect.max.y),
+                                egui::pos2(
+                                    (rect.max.x - total_buttons_w).max(rect.min.x),
+                                    rect.max.y,
+                                ),
                             );
 
                             let text_color = header_text_color;
                             let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
                             let mut header_display_title = header.clone();
                             if fk_info.is_some() {
-                                header_display_title = format!("{} {}", egui_icons::icons::ICON_LINK.codepoint, header_display_title);
+                                header_display_title = format!(
+                                    "{} {}",
+                                    egui_icons::icons::ICON_LINK.codepoint,
+                                    header_display_title
+                                );
                             }
-                            let max_header_chars = ((label_rect.width() / 8.0).floor() as usize).max(3);
-                            let display_header = if header_display_title.chars().count() > max_header_chars {
-                                format!("{}...", header_display_title.chars().take(max_header_chars.saturating_sub(3)).collect::<String>())
-                            } else {
-                                header_display_title
-                            };
+                            let max_header_chars =
+                                ((label_rect.width() / 8.0).floor() as usize).max(3);
+                            let display_header =
+                                if header_display_title.chars().count() > max_header_chars {
+                                    format!(
+                                        "{}...",
+                                        header_display_title
+                                            .chars()
+                                            .take(max_header_chars.saturating_sub(3))
+                                            .collect::<String>()
+                                    )
+                                } else {
+                                    header_display_title
+                                };
                             ui.painter().text(
                                 label_rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -379,8 +437,14 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                             // Pin column button
                             let pin_rect = egui::Rect::from_min_max(
-                                egui::pos2((rect.max.x - total_buttons_w).max(rect.min.x), rect.min.y),
-                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.max.y),
+                                egui::pos2(
+                                    (rect.max.x - total_buttons_w).max(rect.min.x),
+                                    rect.min.y,
+                                ),
+                                egui::pos2(
+                                    (rect.max.x - sort_button_width).max(rect.min.x),
+                                    rect.max.y,
+                                ),
                             );
                             let pin_response = ui.interact(
                                 pin_rect,
@@ -431,7 +495,10 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     (false, false)
                                 };
                             let sort_rect = egui::Rect::from_min_max(
-                                egui::pos2((rect.max.x - sort_button_width).max(rect.min.x), rect.min.y),
+                                egui::pos2(
+                                    (rect.max.x - sort_button_width).max(rect.min.x),
+                                    rect.min.y,
+                                ),
                                 rect.max,
                             );
                             let sort_response = ui.interact(
@@ -504,7 +571,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 egui::Sense::click(),
                             );
                             if let Some(fk) = fk_info {
-                                header_click_resp.clone().on_hover_text(format!("{} Foreign Key -> {}.{}", egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name));
+                                header_click_resp.clone().on_hover_text(format!(
+                                    "{} Foreign Key -> {}.{}",
+                                    egui_icons::icons::ICON_LINK.codepoint,
+                                    fk.referenced_table_name,
+                                    fk.referenced_column_name
+                                ));
                             }
                             if header_click_resp.clicked() {
                                 let modifiers = ui.input(|i| i.modifiers);
@@ -524,23 +596,44 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         pin_toggle_requests.push((header.clone(), !is_pinned));
                                         ui.close();
                                     }
-                                    if !tabular.pinned_columns.is_empty() && ui.button("📌 Unpin All Columns").clicked() {
+                                    if !tabular.pinned_columns.is_empty()
+                                        && ui.button("📌 Unpin All Columns").clicked()
+                                    {
                                         clear_all_pins_request = true;
                                         ui.close();
                                     }
                                     ui.separator();
-                                    if ui.button(if current_sort_column == Some(col_index) && current_sort_ascending { "🔽 Sort Descending" } else { "🔼 Sort Ascending" }).clicked() {
-                                        let new_ascending = if current_sort_column == Some(col_index) {
-                                            !current_sort_ascending
-                                        } else {
-                                            true
-                                        };
+                                    if ui
+                                        .button(
+                                            if current_sort_column == Some(col_index)
+                                                && current_sort_ascending
+                                            {
+                                                "🔽 Sort Descending"
+                                            } else {
+                                                "🔼 Sort Ascending"
+                                            },
+                                        )
+                                        .clicked()
+                                    {
+                                        let new_ascending =
+                                            if current_sort_column == Some(col_index) {
+                                                !current_sort_ascending
+                                            } else {
+                                                true
+                                            };
                                         sort_requests.push((col_index, new_ascending));
                                         ui.close();
                                     }
                                     if let Some(fk) = fk_info {
                                         ui.separator();
-                                        ui.label(egui::RichText::new(format!("🔗 FK -> {}.{}", fk.referenced_table_name, fk.referenced_column_name)).italics().weak());
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "🔗 FK -> {}.{}",
+                                                fk.referenced_table_name, fk.referenced_column_name
+                                            ))
+                                            .italics()
+                                            .weak(),
+                                        );
                                     }
                                 });
                             });
@@ -555,12 +648,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             let resize_response =
                                 ui.allocate_rect(resize_handle_rect, egui::Sense::drag());
                             if resize_response.hovered() || resize_response.dragged() {
-                                let indicator_color = crate::window_egui::style::theme_accent(ui.ctx());
+                                let indicator_color =
+                                    crate::window_egui::style::theme_accent(ui.ctx());
                                 let dot_size = 1.5;
                                 let dot_spacing = 2.0_f32;
                                 let start_y = handle_y + 2.0;
                                 let end_y = handle_y + header_h - 2.0;
-                                for y in (start_y as i32..end_y as i32).step_by(dot_spacing as usize) {
+                                for y in
+                                    (start_y as i32..end_y as i32).step_by(dot_spacing as usize)
+                                {
                                     ui.painter().circle_filled(
                                         egui::pos2(handle_x, y as f32),
                                         dot_size,
@@ -601,11 +697,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let total_rows = tabular.current_table_data.len();
             let prev_scroll_y = tabular.data_scroll_y;
             let first_row = ((prev_scroll_y / row_height) as usize).saturating_sub(3);
-            let last_row = (((prev_scroll_y + data_h) / row_height).ceil() as usize + 4).min(total_rows);
+            let last_row =
+                (((prev_scroll_y + data_h) / row_height).ceil() as usize + 4).min(total_rows);
 
             // Pre-compute total content width (matches sticky header formula)
             let total_content_w: f32 = 60.0
-                + display_col_indices.iter()
+                + display_col_indices
+                    .iter()
                     .map(|&i| {
                         if Some(i) == error_column_index {
                             get_column_width(tabular, i).max(100.0)
@@ -1766,7 +1864,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 if let Some((r, c)) = tabular.selected_cell {
                     if let Some(row_data) = tabular.current_table_data.get(r) {
                         if let Some(val) = row_data.get(c) {
-                            let col_name = tabular.current_table_headers.get(c).cloned().unwrap_or_else(|| format!("Col {}", c + 1));
+                            let col_name = tabular
+                                .current_table_headers
+                                .get(c)
+                                .cloned()
+                                .unwrap_or_else(|| format!("Col {}", c + 1));
                             tabular.cell_inspector.open(val.clone(), col_name, r, c);
                         }
                     }
@@ -1775,34 +1877,59 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
             // Handle Foreign Key Navigation request
             if let Some((cid, dbn, target_table, target_col, filter_val)) = fk_nav_request {
-                let conn = tabular.connections.iter().find(|c| c.id == Some(cid)).cloned();
+                let conn = tabular
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(cid))
+                    .cloned();
                 let db_type = conn.as_ref().map(|c| &c.connection_type);
                 let val_escaped = filter_val.replace('\'', "''");
 
                 let query_sql = match db_type {
                     Some(crate::models::enums::DatabaseType::PostgreSQL) => {
                         if !dbn.is_empty() && dbn != "public" {
-                            format!("SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = '{}' LIMIT 100;", dbn, target_table, target_col, val_escaped)
+                            format!(
+                                "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" = '{}' LIMIT 100;",
+                                dbn, target_table, target_col, val_escaped
+                            )
                         } else {
-                            format!("SELECT * FROM \"{}\" WHERE \"{}\" = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                            format!(
+                                "SELECT * FROM \"{}\" WHERE \"{}\" = '{}' LIMIT 100;",
+                                target_table, target_col, val_escaped
+                            )
                         }
                     }
                     Some(crate::models::enums::DatabaseType::MySQL) => {
                         if !dbn.is_empty() {
-                            format!("USE `{}`;\nSELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", dbn, target_table, target_col, val_escaped)
+                            format!(
+                                "USE `{}`;\nSELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;",
+                                dbn, target_table, target_col, val_escaped
+                            )
                         } else {
-                            format!("SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                            format!(
+                                "SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;",
+                                target_table, target_col, val_escaped
+                            )
                         }
                     }
                     Some(crate::models::enums::DatabaseType::MsSQL) => {
                         if !dbn.is_empty() {
-                            format!("USE [{}];\nSELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';", dbn, target_table, target_col, val_escaped)
+                            format!(
+                                "USE [{}];\nSELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';",
+                                dbn, target_table, target_col, val_escaped
+                            )
                         } else {
-                            format!("SELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';", target_table, target_col, val_escaped)
+                            format!(
+                                "SELECT TOP 100 * FROM [{}] WHERE [{}] = '{}';",
+                                target_table, target_col, val_escaped
+                            )
                         }
                     }
                     _ => {
-                        format!("SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;", target_table, target_col, val_escaped)
+                        format!(
+                            "SELECT * FROM `{}` WHERE `{}` = '{}' LIMIT 100;",
+                            target_table, target_col, val_escaped
+                        )
                     }
                 };
 
@@ -1812,15 +1939,25 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     tab_title.clone(),
                     query_sql.clone(),
                     Some(cid),
-                    if dbn.is_empty() { None } else { Some(dbn.clone()) },
+                    if dbn.is_empty() {
+                        None
+                    } else {
+                        Some(dbn.clone())
+                    },
                 );
                 tabular.current_connection_id = Some(cid);
                 tabular.reset_spreadsheet_state();
-                tabular.current_table_name = format!("Table: {} (FK: {} = {})", target_table, target_col, filter_val);
+                tabular.current_table_name = format!(
+                    "Table: {} (FK: {} = {})",
+                    target_table, target_col, filter_val
+                );
 
                 tabular.is_table_browse_mode = false;
                 tabular.run_query_for_active_tab(cid, query_sql.clone());
-                tabular.toasts.info(format!("Navigated to FK: {}.{} = {}", target_table, target_col, filter_val));
+                tabular.toasts.info(format!(
+                    "Navigated to FK: {}.{} = {}",
+                    target_table, target_col, filter_val
+                ));
             }
 
             if let Some((r, c)) = start_edit_request.take() {
@@ -1834,53 +1971,73 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.selected_row = Some(r);
                 tabular.selected_cell = Some((r, c));
                 tabular.table_recently_clicked = true;
-                
+
                 tabular.spreadsheet_start_cell_edit(r, c);
 
                 // Fetch ENUM options if applicable
                 tabular.spreadsheet_state.enum_options = None;
                 if let Some(conn_id) = tabular.current_connection_id {
-                     // Check if we have precise metadata for this column (from query result)
-                     // This allows ENUM lookup even for complex queries or when table name isn't in the tab title
-                     let mut type_might_be_enum = false;
-                     let table_name = if let Some(meta) = &tabular.current_column_metadata
+                    // Check if we have precise metadata for this column (from query result)
+                    // This allows ENUM lookup even for complex queries or when table name isn't in the tab title
+                    let mut type_might_be_enum = false;
+                    let table_name = if let Some(meta) = &tabular.current_column_metadata
                         && let Some(col_meta) = meta.get(c)
-                     {
-                         if let Some(t_name) = &col_meta.table_name && !t_name.is_empty() {
-                             // Check type name if available
-                             let t_type = col_meta.type_name.to_lowercase();
-                             if t_type.contains("enum") || t_type.contains("set") {
-                                 type_might_be_enum = true;
-                             }
-                             t_name.clone()
-                         } else {
-                             // fallback
-                             infer_current_table_name(tabular)
-                         }
-                     } else {
-                         infer_current_table_name(tabular)
-                     };
-                     
-                     if !table_name.is_empty() && type_might_be_enum {
-                         let clean_table = table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
-                         let db_name = tabular.query_tabs.get(tabular.active_tab_index)
-                                         .and_then(|t| t.database_name.clone())
-                                         .unwrap_or_default();
-                         if let (Some(cols), Some(col_name)) = (crate::cache_data::get_columns_from_cache(tabular, conn_id, &db_name, clean_table), tabular.current_table_headers.get(c)) {
-                                 if cols.is_empty() {
-                                     tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
-                                 } else {
-                                     if let Some((_, type_str)) = cols.iter().find(|(name, _)| name == col_name) {
-                                         let lower_type = type_str.to_lowercase();
-                                         if lower_type.starts_with("enum") || lower_type.starts_with("set") {
-                                              tabular.spreadsheet_state.enum_options = parse_enum_values(type_str);
-                                         }
-                                     }
-                                 }
-                         } else {
-                             tabular.cache_miss_request = Some((conn_id, db_name.clone(), clean_table.to_string()));
-                         }
-                     }
+                    {
+                        if let Some(t_name) = &col_meta.table_name
+                            && !t_name.is_empty()
+                        {
+                            // Check type name if available
+                            let t_type = col_meta.type_name.to_lowercase();
+                            if t_type.contains("enum") || t_type.contains("set") {
+                                type_might_be_enum = true;
+                            }
+                            t_name.clone()
+                        } else {
+                            // fallback
+                            infer_current_table_name(tabular)
+                        }
+                    } else {
+                        infer_current_table_name(tabular)
+                    };
+
+                    if !table_name.is_empty() && type_might_be_enum {
+                        let clean_table =
+                            table_name.trim_matches(|c| c == '`' || c == '"' || c == '\'');
+                        let db_name = tabular
+                            .query_tabs
+                            .get(tabular.active_tab_index)
+                            .and_then(|t| t.database_name.clone())
+                            .unwrap_or_default();
+                        if let (Some(cols), Some(col_name)) = (
+                            crate::cache_data::get_columns_from_cache(
+                                tabular,
+                                conn_id,
+                                &db_name,
+                                clean_table,
+                            ),
+                            tabular.current_table_headers.get(c),
+                        ) {
+                            if cols.is_empty() {
+                                tabular.cache_miss_request =
+                                    Some((conn_id, db_name.clone(), clean_table.to_string()));
+                            } else {
+                                if let Some((_, type_str)) =
+                                    cols.iter().find(|(name, _)| name == col_name)
+                                {
+                                    let lower_type = type_str.to_lowercase();
+                                    if lower_type.starts_with("enum")
+                                        || lower_type.starts_with("set")
+                                    {
+                                        tabular.spreadsheet_state.enum_options =
+                                            parse_enum_values(type_str);
+                                    }
+                                }
+                            }
+                        } else {
+                            tabular.cache_miss_request =
+                                Some((conn_id, db_name.clone(), clean_table.to_string()));
+                        }
+                    }
                 }
             }
             // (Cell edit text updates already applied above before changing edit target)
@@ -1888,57 +2045,67 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             // Open CSV import dialog for the current table
             if open_csv_import
                 && let Some(conn_id) = tabular.current_connection_id
-                && let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id)) {
-                    let db_type = conn.connection_type.clone();
-                    // Extract bare table name (strip "Table: " prefix if present)
-                    let raw = tabular.current_table_name.trim();
-                    let table_name = raw.strip_prefix("Table:").map(str::trim).unwrap_or(raw).to_string();
-                    // Use current database from cache_miss_request context or best-effort
-                    // Walk items_tree recursively to find the database_name for this table
-                    fn find_db_name(
-                        nodes: &[crate::models::structs::TreeNode],
-                        conn_id: i64,
-                        table: &str,
-                    ) -> Option<String> {
-                        for n in nodes {
-                            if n.connection_id == Some(conn_id)
-                                && n.table_name.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(table))
-                                && n.database_name.is_some()
-                            {
-                                return n.database_name.clone();
-                            }
-                            if let Some(found) = find_db_name(&n.children, conn_id, table) {
-                                return Some(found);
-                            }
+                && let Some(conn) = tabular.connections.iter().find(|c| c.id == Some(conn_id))
+            {
+                let db_type = conn.connection_type.clone();
+                // Extract bare table name (strip "Table: " prefix if present)
+                let raw = tabular.current_table_name.trim();
+                let table_name = raw
+                    .strip_prefix("Table:")
+                    .map(str::trim)
+                    .unwrap_or(raw)
+                    .to_string();
+                // Use current database from cache_miss_request context or best-effort
+                // Walk items_tree recursively to find the database_name for this table
+                fn find_db_name(
+                    nodes: &[crate::models::structs::TreeNode],
+                    conn_id: i64,
+                    table: &str,
+                ) -> Option<String> {
+                    for n in nodes {
+                        if n.connection_id == Some(conn_id)
+                            && n.table_name
+                                .as_deref()
+                                .is_some_and(|t| t.eq_ignore_ascii_case(table))
+                            && n.database_name.is_some()
+                        {
+                            return n.database_name.clone();
                         }
-                        None
+                        if let Some(found) = find_db_name(&n.children, conn_id, table) {
+                            return Some(found);
+                        }
                     }
-                    let database_name: Option<String> =
-                        find_db_name(&tabular.items_tree, conn_id, &table_name);
-                    let table_cols: Vec<String> = database_name.as_deref()
-                        .and_then(|db| crate::cache_data::get_columns_from_cache(tabular, conn_id, db, &table_name))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(name, _)| name)
-                        .collect();
-                    tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
-                        connection_id: conn_id,
-                        database_name,
-                        table_name,
-                        db_type,
-                        file_path: None,
-                        delimiter: ',',
-                        has_header_row: true,
-                        null_value: String::new(),
-                        preview_headers: vec![],
-                        preview_rows: vec![],
-                        table_columns: table_cols,
-                        column_mappings: vec![],
-                        status: crate::models::structs::CsvImportStatus::Idle,
-                        progress_message: String::new(),
-                    });
-                    tabular.show_csv_import_dialog = true;
+                    None
                 }
+                let database_name: Option<String> =
+                    find_db_name(&tabular.items_tree, conn_id, &table_name);
+                let table_cols: Vec<String> = database_name
+                    .as_deref()
+                    .and_then(|db| {
+                        crate::cache_data::get_columns_from_cache(tabular, conn_id, db, &table_name)
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+                tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    connection_id: conn_id,
+                    database_name,
+                    table_name,
+                    db_type,
+                    file_path: None,
+                    delimiter: ',',
+                    has_header_row: true,
+                    null_value: String::new(),
+                    preview_headers: vec![],
+                    preview_rows: vec![],
+                    table_columns: table_cols,
+                    column_mappings: vec![],
+                    status: crate::models::structs::CsvImportStatus::Idle,
+                    progress_message: String::new(),
+                });
+                tabular.show_csv_import_dialog = true;
+            }
 
             // Perform deferred delete after UI borrows are released
             if let Some(ri) = delete_row_index_request.take() {

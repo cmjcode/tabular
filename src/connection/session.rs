@@ -86,7 +86,10 @@ pub fn spawn_session(
         return None;
     };
 
-    let tab_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
+    let tab_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
     let runtime = tabular.runtime.clone()?;
     let result_sender = tabular.query_result_sender.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

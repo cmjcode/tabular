@@ -33,14 +33,35 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.group(|ui| {
             if session_expired {
-                ui.label(egui::RichText::new("⚠️ Sesi Telah Berakhir (401)").small().strong().color(egui::Color32::from_rgb(255, 170, 0)));
-                ui.label(egui::RichText::new("Your session has expired. Sign in again to continue collaborating.").small().weak());
+                ui.label(
+                    egui::RichText::new("⚠️ Sesi Telah Berakhir (401)")
+                        .small()
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 170, 0)),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Your session has expired. Sign in again to continue collaborating.",
+                    )
+                    .small()
+                    .weak(),
+                );
             } else {
                 ui.label(egui::RichText::new("🔒 Belum Login").small().strong());
-                ui.label(egui::RichText::new("Sign in to your Tabular account to use collaboration.").small().weak());
+                ui.label(
+                    egui::RichText::new("Sign in to your Tabular account to use collaboration.")
+                        .small()
+                        .weak(),
+                );
             }
             ui.add_space(6.0);
-            if ui.add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "🔑 Login Kembali")).clicked() {
+            if ui
+                .add(crate::window_egui::style::btn_primary_ctx(
+                    ui.ctx(),
+                    "🔑 Login Kembali",
+                ))
+                .clicked()
+            {
                 tabular.sync_login_pending = true;
                 tabular.sync_login_error = None;
                 tabular.sync_auth_receiver = Some(crate::sync::auth::start_oauth_flow(
@@ -105,7 +126,8 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Create & Refresh room row ───────────────────────────────────────
     ui.horizontal(|ui| {
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let metrics =
+            crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
         let row_h = if metrics.is_touch { 38.0 } else { 28.0 };
         let btn_w = if metrics.is_touch { 38.0 } else { 28.0 };
         let refresh_w = if metrics.is_touch { 38.0 } else { 28.0 };
@@ -127,7 +149,9 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
         let can_create = !tabular.new_collab_room_name.trim().is_empty();
         let create_btn = egui::Button::new(
-            egui::RichText::new("+").size(if metrics.is_touch { 18.0 } else { 14.0 }).strong()
+            egui::RichText::new("+")
+                .size(if metrics.is_touch { 18.0 } else { 14.0 })
+                .strong(),
         )
         .min_size(egui::vec2(btn_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -142,13 +166,16 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_room(tabular);
         }
 
-        let refresh_btn = egui::Button::new(
-            egui::RichText::new("🔄").size(if metrics.is_touch { 16.0 } else { 13.0 })
-        )
+        let refresh_btn = egui::Button::new(egui::RichText::new("🔄").size(if metrics.is_touch {
+            16.0
+        } else {
+            13.0
+        }))
         .min_size(egui::vec2(refresh_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
 
-        if ui.add(refresh_btn)
+        if ui
+            .add(refresh_btn)
             .on_hover_text("Refresh room list")
             .clicked()
         {
@@ -170,8 +197,15 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let rooms = tabular.collab_rooms.clone();
         for room in &rooms {
             ui.group(|ui| {
-                let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-                let del_size = if metrics.is_touch { egui::vec2(26.0, 26.0) } else { egui::vec2(18.0, 18.0) };
+                let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+                    ui.ctx(),
+                    tabular.ui_mode,
+                );
+                let del_size = if metrics.is_touch {
+                    egui::vec2(26.0, 26.0)
+                } else {
+                    egui::vec2(18.0, 18.0)
+                };
                 let join_h = if metrics.is_touch { 28.0 } else { 20.0 };
 
                 ui.horizontal(|ui| {
@@ -193,12 +227,32 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                 .color(egui::Color32::from_rgb(72, 199, 116))
                                 .small(),
                         );
-                    } else if ui.add_sized([44.0, join_h], egui::Button::new(egui::RichText::new("Join").size(if metrics.is_touch { 13.0 } else { 11.0 }))).clicked() {
+                    } else if ui
+                        .add_sized(
+                            [44.0, join_h],
+                            egui::Button::new(
+                                egui::RichText::new("Join").size(if metrics.is_touch {
+                                    13.0
+                                } else {
+                                    11.0
+                                }),
+                            ),
+                        )
+                        .clicked()
+                    {
                         join_room(tabular, room);
                     }
 
                     if ui
-                        .add_sized(del_size, egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch { 14.0 } else { 11.0 })).frame(false))
+                        .add_sized(
+                            del_size,
+                            egui::Button::new(egui::RichText::new("🗑").size(if metrics.is_touch {
+                                14.0
+                            } else {
+                                11.0
+                            }))
+                            .frame(false),
+                        )
                         .on_hover_text("Delete room")
                         .clicked()
                     {

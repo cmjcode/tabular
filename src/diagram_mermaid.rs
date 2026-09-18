@@ -31,6 +31,7 @@ pub struct ErColumn {
 pub struct ErEntity {
     pub name: String,
     pub columns: Vec<ErColumn>,
+    pub groups: Vec<String>,
     pub group: Option<String>,
 }
 
@@ -107,16 +108,33 @@ impl ErModel {
                     }
                 })
                 .collect();
+            let groups: Vec<String> = node
+                .group_ids
+                .iter()
+                .filter_map(|gid| group_titles.get(gid.as_str()).map(|t| t.to_string()))
+                .collect();
+            let legacy_group = groups.first().cloned().or_else(|| {
+                node.group_id
+                    .as_deref()
+                    .and_then(|gid| group_titles.get(gid))
+                    .map(|t| t.to_string())
+            });
+            let all_groups = if groups.is_empty() && legacy_group.is_some() {
+                legacy_group.clone().into_iter().collect()
+            } else {
+                groups
+            };
             entities.push(ErEntity {
                 name: node.id.clone(),
                 columns,
-                group: node
-                    .group_id
-                    .as_deref()
-                    .and_then(|gid| group_titles.get(gid))
-                    .map(|t| t.to_string()),
+                group: legacy_group,
+                groups: all_groups,
             });
-            for fk in node.foreign_keys.iter().filter(|fk| fk.table_name == node.id) {
+            for fk in node
+                .foreign_keys
+                .iter()
+                .filter(|fk| fk.table_name == node.id)
+            {
                 let rel = ErRelation {
                     child: fk.table_name.clone(),
                     child_column: fk.column_name.clone(),
@@ -146,7 +164,10 @@ impl ErModel {
                 });
             }
         }
-        Self { entities, relations }
+        Self {
+            entities,
+            relations,
+        }
     }
 
     fn entity(&self, name: &str) -> Option<&ErEntity> {
@@ -168,10 +189,21 @@ impl ErModel {
         // Group ditulis sebagai komentar supaya bisa dipulihkan saat impor.
         let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
         for entity in &self.entities {
-            if let Some(g) = entity.group.as_deref() {
+            let entity_groups: Vec<&str> = if !entity.groups.is_empty() {
+                entity.groups.iter().map(|s| s.as_str()).collect()
+            } else if let Some(g) = entity.group.as_deref() {
+                vec![g]
+            } else {
+                Vec::new()
+            };
+            for g in entity_groups {
                 let id = ids.get(&entity.name);
                 match groups.iter_mut().find(|(t, _)| *t == g) {
-                    Some((_, members)) => members.push(id),
+                    Some((_, members)) => {
+                        if !members.contains(&id) {
+                            members.push(id);
+                        }
+                    }
                     None => groups.push((g, vec![id])),
                 }
             }
@@ -353,7 +385,13 @@ fn sanitize_word(raw: &str, fallback: &str) -> String {
 fn sanitize_entity(raw: &str) -> String {
     let mut out: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if out.is_empty() || !out.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
         out.insert(0, '_');
@@ -490,7 +528,10 @@ pub fn parse_mermaid_er(text: &str) -> Result<ParsedEr, String> {
         warnings.push(format!("line {line_no}: skipped `{line}`"));
     }
     if let Some(entity) = current {
-        warnings.push(format!("entity `{}` is missing its closing `}}`", entity.name));
+        warnings.push(format!(
+            "entity `{}` is missing its closing `}}`",
+            entity.name
+        ));
         entities.push(entity);
     }
 
@@ -502,7 +543,10 @@ pub fn parse_mermaid_er(text: &str) -> Result<ParsedEr, String> {
         for member in members {
             let name = resolve(member);
             if let Some(e) = entities.iter_mut().find(|e| e.name == name) {
-                e.group = Some(title.clone());
+                if !e.groups.contains(title) {
+                    e.groups.push(title.clone());
+                }
+                e.group = e.groups.first().cloned();
             }
         }
     }
@@ -554,8 +598,13 @@ pub fn parse_mermaid_er(text: &str) -> Result<ParsedEr, String> {
                         existing.columns.push(col);
                     }
                 }
+                for g in entity.groups {
+                    if !existing.groups.contains(&g) {
+                        existing.groups.push(g);
+                    }
+                }
                 if existing.group.is_none() {
-                    existing.group = entity.group;
+                    existing.group = entity.group.or_else(|| existing.groups.first().cloned());
                 }
             }
             None => merged.push(entity),
@@ -617,7 +666,11 @@ fn extract_er_block(text: &str) -> Option<String> {
 fn parse_entity_token(token: &str) -> (String, Option<String>) {
     let token = token.trim().trim_matches('"');
     if let Some((id, rest)) = token.split_once('[') {
-        let label = rest.trim_end_matches(']').trim().trim_matches('"').to_string();
+        let label = rest
+            .trim_end_matches(']')
+            .trim()
+            .trim_matches('"')
+            .to_string();
         return (id.trim().to_string(), (!label.is_empty()).then_some(label));
     }
     (token.to_string(), None)
@@ -664,9 +717,7 @@ fn parse_relation(line: &str) -> Option<(String, String, String, String)> {
         return None;
     }
     let card = tokens[1];
-    let (left, right) = card
-        .split_once("--")
-        .or_else(|| card.split_once(".."))?;
+    let (left, right) = card.split_once("--").or_else(|| card.split_once(".."))?;
     let is_valid = |s: &str| !s.is_empty() && s.chars().all(|c| matches!(c, '|' | 'o' | '{' | '}'));
     if !is_valid(left) || !is_valid(right) {
         return None;
@@ -675,7 +726,11 @@ fn parse_relation(line: &str) -> Option<(String, String, String, String)> {
     let (b, _) = parse_entity_token(tokens[2]);
     let left_many = left.contains('}');
     let right_many = right.contains('{');
-    let (parent, child) = if left_many && !right_many { (b, a) } else { (a, b) };
+    let (parent, child) = if left_many && !right_many {
+        (b, a)
+    } else {
+        (a, b)
+    };
     Some((parent, child, label, card.to_string()))
 }
 
@@ -700,7 +755,16 @@ pub fn merge_into_state(state: &mut DiagramState, model: &ErModel) -> MergeStats
     let mut new_index = 0usize;
 
     for entity in &model.entities {
-        let group_id = entity.group.as_deref().map(|title| ensure_group(state, title));
+        let group_titles: Vec<String> = if !entity.groups.is_empty() {
+            entity.groups.clone()
+        } else {
+            entity.group.clone().into_iter().collect()
+        };
+        let group_ids: Vec<String> = group_titles
+            .iter()
+            .map(|title| ensure_group(state, title))
+            .collect();
+        let primary_group_id = group_ids.first().cloned();
         let columns: Vec<String> = entity.columns.iter().map(|c| c.name.clone()).collect();
         let meta: Vec<DiagramColumn> = entity
             .columns
@@ -719,8 +783,13 @@ pub fn merge_into_state(state: &mut DiagramState, model: &ErModel) -> MergeStats
                     node.columns = columns;
                     node.column_meta = meta;
                 }
-                if group_id.is_some() {
-                    node.group_id = group_id;
+                if !group_ids.is_empty() {
+                    for gid in &group_ids {
+                        if !node.group_ids.contains(gid) {
+                            node.group_ids.push(gid.clone());
+                        }
+                    }
+                    node.group_id = primary_group_id.or(node.group_id.clone());
                 }
                 stats.updated_tables += 1;
             }
@@ -735,7 +804,8 @@ pub fn merge_into_state(state: &mut DiagramState, model: &ErModel) -> MergeStats
                     size: eframe::egui::vec2(180.0, 100.0),
                     columns,
                     foreign_keys: Vec::new(),
-                    group_id,
+                    group_ids: group_ids.clone(),
+                    group_id: primary_group_id,
                     column_meta: meta,
                     detached: true,
                 });
@@ -825,6 +895,7 @@ mod tests {
                         col("name", "varchar(255)", false, false, Some(true)),
                     ],
                     group: Some("Sales".into()),
+                    groups: vec!["Sales".into()],
                 },
                 ErEntity {
                     name: "orders".into(),
@@ -834,6 +905,7 @@ mod tests {
                         col("total", "decimal(10,2)", false, false, Some(false)),
                     ],
                     group: Some("Sales".into()),
+                    groups: vec!["Sales".into()],
                 },
             ],
             relations: vec![ErRelation {
@@ -864,7 +936,12 @@ mod tests {
         let model = sample();
         let parsed = parse_mermaid_er(&model.to_mermaid(MermaidOptions::default())).unwrap();
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
-        let names: Vec<&str> = parsed.model.entities.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = parsed
+            .model
+            .entities
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["customers", "orders"]);
         assert_eq!(parsed.model.relations, model.relations);
         let orders = &parsed.model.entities[1];
@@ -880,6 +957,7 @@ mod tests {
                 name: "order items".into(),
                 columns: vec![col("unit price", "numeric", false, false, None)],
                 group: None,
+                groups: vec![],
             }],
             relations: vec![],
         };
@@ -895,8 +973,14 @@ mod tests {
     fn colliding_ids_get_suffix() {
         let model = ErModel {
             entities: vec![
-                ErEntity { name: "a-b".into(), ..Default::default() },
-                ErEntity { name: "a b".into(), ..Default::default() },
+                ErEntity {
+                    name: "a-b".into(),
+                    ..Default::default()
+                },
+                ErEntity {
+                    name: "a b".into(),
+                    ..Default::default()
+                },
             ],
             relations: vec![],
         };
@@ -920,7 +1004,10 @@ mod tests {
     #[test]
     fn relations_only_skips_attributes_but_keeps_isolated_tables() {
         let mut model = sample();
-        model.entities.push(ErEntity { name: "audit_log".into(), ..Default::default() });
+        model.entities.push(ErEntity {
+            name: "audit_log".into(),
+            ..Default::default()
+        });
         let text = model.to_mermaid(MermaidOptions {
             max_columns: None,
             relations_only: true,
@@ -940,7 +1027,12 @@ mod tests {
         assert_eq!(rel.parent, "CUSTOMER");
         assert_eq!(rel.child, "ORDER");
         assert!(rel.child_column.is_empty());
-        let customer = parsed.model.entities.iter().find(|e| e.name == "CUSTOMER").unwrap();
+        let customer = parsed
+            .model
+            .entities
+            .iter()
+            .find(|e| e.name == "CUSTOMER")
+            .unwrap();
         assert_eq!(customer.columns.len(), 2);
         assert!(customer.columns[1].is_pk);
         assert!(parsed.model.entities.iter().any(|e| e.name == "LINE-ITEM"));
@@ -954,7 +1046,8 @@ mod tests {
 
     #[test]
     fn reports_unknown_lines_as_warnings() {
-        let parsed = parse_mermaid_er("erDiagram\n  A ||--o{ B : x\n  style A fill:#f9f\n").unwrap();
+        let parsed =
+            parse_mermaid_er("erDiagram\n  A ||--o{ B : x\n  style A fill:#f9f\n").unwrap();
         assert_eq!(parsed.model.relations.len(), 1);
         assert_eq!(parsed.warnings.len(), 1);
     }
@@ -976,7 +1069,12 @@ mod tests {
         assert_eq!(back.relations, sample().relations);
         let orders = back.entities.iter().find(|e| e.name == "orders").unwrap();
         assert_eq!(orders.group.as_deref(), Some("Sales"));
-        assert!(orders.columns.iter().any(|c| c.name == "customer_id" && c.is_fk));
+        assert!(
+            orders
+                .columns
+                .iter()
+                .any(|c| c.name == "customer_id" && c.is_fk)
+        );
 
         // Merge kedua tidak menduplikasi relasi / node.
         let again = merge_into_state(&mut state, &sample());
@@ -1008,5 +1106,71 @@ mod tests {
         // Catatan hasil generate bisa diimpor balik.
         let parsed = parse_mermaid_er(&md).unwrap();
         assert_eq!(parsed.model.entities.len(), 2);
+    }
+
+    #[test]
+    fn multi_group_per_table_round_trip() {
+        let mut model = sample();
+        // Add "orders" to a second group "Finance"
+        let orders = model
+            .entities
+            .iter_mut()
+            .find(|e| e.name == "orders")
+            .unwrap();
+        orders.groups = vec!["Sales".into(), "Finance".into()];
+
+        let text = model.to_mermaid(MermaidOptions::default());
+        assert!(text.contains("%% group Sales:"));
+        assert!(text.contains("%% group Finance:"));
+
+        let parsed = parse_mermaid_er(&text).unwrap();
+        let parsed_orders = parsed
+            .model
+            .entities
+            .iter()
+            .find(|e| e.name == "orders")
+            .unwrap();
+        assert!(parsed_orders.groups.contains(&"Sales".to_string()));
+        assert!(parsed_orders.groups.contains(&"Finance".to_string()));
+
+        let mut state = DiagramState::default();
+        merge_into_state(&mut state, &parsed.model);
+        let node = state.nodes.iter().find(|n| n.id == "orders").unwrap();
+        assert_eq!(node.group_ids.len(), 2);
+        assert!(node.is_in_group(&node.group_ids[0]));
+        assert!(node.is_in_group(&node.group_ids[1]));
+    }
+
+    #[test]
+    fn diagram_node_multi_group_helpers() {
+        let mut node = DiagramNode {
+            id: "users".into(),
+            title: "users".into(),
+            pos: eframe::egui::Pos2::ZERO,
+            size: eframe::egui::Vec2::ZERO,
+            columns: vec![],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: Some("group_auth".into()), // legacy field
+            column_meta: vec![],
+            detached: false,
+        };
+
+        // ensure_groups_migrated migrates legacy group_id
+        node.ensure_groups_migrated();
+        assert_eq!(node.group_ids, vec!["group_auth"]);
+        assert!(node.is_in_group("group_auth"));
+
+        // add a second group
+        node.add_to_group("group_admin".into());
+        assert_eq!(node.group_ids.len(), 2);
+        assert!(node.is_in_group("group_auth"));
+        assert!(node.is_in_group("group_admin"));
+
+        // remove the first group
+        node.remove_from_group("group_auth");
+        assert!(!node.is_in_group("group_auth"));
+        assert!(node.is_in_group("group_admin"));
+        assert_eq!(node.group_id.as_deref(), Some("group_admin"));
     }
 }
