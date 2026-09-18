@@ -228,17 +228,21 @@ pub fn render_vault_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
 fn render_create_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.label("Create a Sync Passphrase to protect your synced data:");
-    ui.add(
+    style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_passphrase_input)
             .password(true)
-            .hint_text("At least 8 characters")
-            .desired_width(280.0),
+            .hint_text("At least 8 characters"),
+        280.0,
+        None,
     );
-    ui.add(
+    style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_passphrase_confirm_input)
             .password(true)
-            .hint_text("Confirm passphrase")
-            .desired_width(280.0),
+            .hint_text("Confirm passphrase"),
+        280.0,
+        None,
     );
     ui.add_space(4.0);
     ui.small("⚠ We cannot recover this for you. You'll get a one-time recovery code after this step — save it somewhere safe.");
@@ -272,11 +276,13 @@ fn render_recovery_code_screen(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
 fn render_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.label("Enter your Sync Passphrase to unlock end-to-end encrypted sync on this device:");
-    let resp = ui.add(
+    let resp = style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_passphrase_input)
             .password(true)
-            .hint_text("Sync Passphrase")
-            .desired_width(280.0),
+            .hint_text("Sync Passphrase"),
+        280.0,
+        None,
     );
     let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     ui.add_space(6.0);
@@ -293,23 +299,29 @@ fn render_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
 fn render_recovery_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.label("Enter your recovery code, then set a new Sync Passphrase:");
-    ui.add(
+    style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_recovery_code_input)
-            .hint_text("Recovery code")
-            .desired_width(340.0),
+            .hint_text("Recovery code"),
+        340.0,
+        None,
     );
     ui.add_space(4.0);
-    ui.add(
+    style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_passphrase_input)
             .password(true)
-            .hint_text("New Sync Passphrase")
-            .desired_width(280.0),
+            .hint_text("New Sync Passphrase"),
+        280.0,
+        None,
     );
-    ui.add(
+    style::render_text_field(
+        ui,
         egui::TextEdit::singleline(&mut tabular.vault_passphrase_confirm_input)
             .password(true)
-            .hint_text("Confirm new passphrase")
-            .desired_width(280.0),
+            .hint_text("Confirm new passphrase"),
+        280.0,
+        None,
     );
     ui.add_space(6.0);
     ui.horizontal(|ui| {

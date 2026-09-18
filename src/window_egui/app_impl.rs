@@ -927,51 +927,12 @@ impl Tabular {
     /// Shared search box used by the Connections/Queries/History tabs. Text is stored
     /// in one field (`database_search_text`) so switching tabs doesn't reset the query.
     fn render_sidebar_search_box(&mut self, ui: &mut egui::Ui, hint: &str) {
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            let search_bg = if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(30, 32, 42)
-            } else {
-                egui::Color32::from_rgb(235, 238, 243)
-            };
-            let available_width = (ui.available_width() - 8.0).max(40.0);
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
-                ui.ctx(),
-                self.ui_mode,
-            );
-            let search_height = if metrics.is_touch { 40.0 } else { 28.0 };
+        let search_response =
+            style::render_search_field(ui, &mut self.database_search_text, hint, f32::INFINITY);
 
-            let search_response = ui.add_sized(
-                [available_width, search_height],
-                egui::TextEdit::singleline(&mut self.database_search_text)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(hint)
-                    .font(egui::FontId::proportional(if metrics.is_touch {
-                        15.5
-                    } else {
-                        13.0
-                    }))
-                    .background_color(search_bg),
-            );
-
-            if search_response.has_focus() {
-                let focus_color = if ui.visuals().dark_mode {
-                    egui::Color32::from_rgb(80, 90, 120)
-                } else {
-                    egui::Color32::from_rgb(150, 165, 200)
-                };
-                ui.painter().rect_stroke(
-                    search_response.rect,
-                    3.0,
-                    egui::Stroke::new(1.0, focus_color),
-                    egui::StrokeKind::Outside,
-                );
-            }
-
-            if search_response.changed() {
-                self.update_all_database_search_results();
-            }
-        });
+        if search_response.changed() {
+            self.update_all_database_search_results();
+        }
     }
 
     fn render_left_sidebar(&mut self, root_ui: &mut egui::Ui) {
@@ -1002,24 +963,12 @@ impl Tabular {
                             egui::vec2(available_width, top_bar_height),
                             egui::Sense::hover(),
                         );
-                        let bar_bg = if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(25, 25, 25)
-                        } else {
-                            egui::Color32::from_rgb(245, 245, 245)
-                        };
-                        ui.painter().rect_filled(bar_rect, 0.0, bar_bg);
-                        let bottom_y = bar_rect.bottom();
+                        // Bar menyatu dengan permukaan sidebar; cukup satu garis pemisah
+                        // tipis di bawah tempat underline tab aktif "duduk".
                         ui.painter().hline(
                             bar_rect.x_range(),
-                            bottom_y - 0.5,
-                            egui::Stroke::new(
-                                1.0,
-                                if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(55, 55, 55)
-                                } else {
-                                    egui::Color32::from_rgb(200, 200, 200)
-                                },
-                            ),
+                            bar_rect.bottom() - 0.5,
+                            egui::Stroke::new(1.0, style::nav_border(ctx)),
                         );
 
                         let mut top_bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
@@ -1027,9 +976,9 @@ impl Tabular {
                             bar_rect.size(),
                             egui::Layout::left_to_right(egui::Align::TOP),
                             |ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
+                                ui.spacing_mut().item_spacing.x = 0.0;
                                 let btn_avail_width = ui.available_width();
-                                let button_width = ((btn_avail_width - 4.0) / 3.0).clamp(40.0, 140.0);
+                                let button_width = (btn_avail_width / 3.0).max(40.0);
                                 let button_height = top_bar_height;
 
                                 let is_db_active = self.selected_menu == "Database";
@@ -1058,33 +1007,25 @@ impl Tabular {
                                     // area. They're now compact icon sub-tabs nested right
                                     // under "Database" (like VS Code's view-container
                                     // sub-views) so each gets full space + a contextual "+".
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        let sub_avail_width = ui.available_width();
-                                        let sub_button_width = (sub_avail_width - 6.0) / 3.0;
-                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
-                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
-
-                                        let sub_tabs: [(&str, &str); 3] = [
-                                            ("Connections", "🔌"),
-                                            ("Queries", "📝"),
-                                            ("History", "🕒"),
-                                        ];
-
-                                        for (key, icon) in sub_tabs {
-                                            let is_active = self.selected_database_sub_menu == key;
-                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
-                                                .on_hover_text(key);
-                                            if resp.clicked() {
-                                                self.selected_database_sub_menu = key.to_string();
-                                            }
-                                        }
-                                    });
-                                    ui.add_space(3.0);
+                                    let segments = [
+                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: "Connections" },
+                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: "Queries" },
+                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: "History" },
+                                    ];
+                                    let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                                    if let Some(key) = style::render_segmented_nav(
+                                        ui,
+                                        "db_sub_nav",
+                                        &segments,
+                                        &self.selected_database_sub_menu,
+                                        seg_height,
+                                    ) {
+                                        self.selected_database_sub_menu = key.to_string();
+                                    }
 
                                     match self.selected_database_sub_menu.as_str() {
                                 "Connections" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search connections...");
+                                    self.render_sidebar_search_box(ui, "Search connections…");
                                     ui.add_space(4.0);
 
                                     let db_area_response = ui.interact(
@@ -1114,7 +1055,7 @@ impl Tabular {
                                     ui.add_space(4.0);
                                 }
                                 "Queries" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search queries...");
+                                    self.render_sidebar_search_box(ui, "Search queries…");
                                     ui.add_space(4.0);
 
                                     let is_searching_queries = !self.database_search_text.trim().is_empty();
@@ -1170,7 +1111,7 @@ impl Tabular {
                                     }
                                 }
                                 "History" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search history...");
+                                    self.render_sidebar_search_box(ui, "Search history…");
                                     ui.add_space(4.0);
 
                                     if self.auto_refresh_active {
@@ -1283,36 +1224,28 @@ impl Tabular {
                                 }
                                 "Collaborations" => {
                                     // ── Sub-tabs: Teams / Collaboration ──────────
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        let sub_avail_width = (ui.available_width() - 8.0).max(40.0);
-                                        let sub_button_width = (sub_avail_width - 4.0) / 2.0;
-                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
-                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
-
-                                        let sub_tabs: [(&str, &str); 2] = [
-                                            ("Teams", "👥"),
-                                            ("Collaboration", "☁"),
-                                        ];
-
-                                        for (key, icon) in sub_tabs {
-                                            let is_active = self.selected_collab_sub_menu == key;
-                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
-                                                .on_hover_text(key);
-                                            if resp.clicked() {
-                                                let was_active = self.selected_collab_sub_menu == key;
-                                                self.selected_collab_sub_menu = key.to_string();
-                                                if !was_active {
-                                                    if key == "Teams" {
-                                                        crate::sync::ui_teams::refresh_teams(self);
-                                                    } else if key == "Collaboration" {
-                                                        crate::sync::ui_collab::refresh_rooms(self);
-                                                    }
-                                                }
+                                    let segments = [
+                                        style::NavSegment { key: "Teams", icon: egui_icons::icons::ICON_GROUPS.codepoint, label: "Teams" },
+                                        style::NavSegment { key: "Collaboration", icon: egui_icons::icons::ICON_CLOUD.codepoint, label: "Collaboration" },
+                                    ];
+                                    let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                                    if let Some(key) = style::render_segmented_nav(
+                                        ui,
+                                        "collab_sub_nav",
+                                        &segments,
+                                        &self.selected_collab_sub_menu,
+                                        seg_height,
+                                    ) {
+                                        let was_active = self.selected_collab_sub_menu == key;
+                                        self.selected_collab_sub_menu = key.to_string();
+                                        if !was_active {
+                                            if key == "Teams" {
+                                                crate::sync::ui_teams::refresh_teams(self);
+                                            } else if key == "Collaboration" {
+                                                crate::sync::ui_collab::refresh_rooms(self);
                                             }
                                         }
-                                    });
-                                    ui.add_space(4.0);
+                                    }
 
                                     match self.selected_collab_sub_menu.as_str() {
                                         "Teams" => {

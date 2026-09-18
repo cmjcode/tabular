@@ -50,10 +50,12 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let r = ui.add(
+                let r = crate::window_egui::style::render_text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut filter_text)
-                        .hint_text("type host / database / connection name...")
-                        .desired_width(f32::INFINITY),
+                        .hint_text("type host / database / connection name..."),
+                    f32::INFINITY,
+                    None,
                 );
                 if r.changed() {
                     ui.ctx()

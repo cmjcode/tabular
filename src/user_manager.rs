@@ -1643,10 +1643,12 @@ fn render_header_bar(
 
                     if state.selected_tab == UserManagerTab::Users || state.selected_tab == UserManagerTab::ObjectGrants {
                         ui.add_space(8.0);
-                        let search_edit = egui::TextEdit::singleline(&mut state.search_text)
-                            .hint_text("🔍 Search users, tables, roles...")
-                            .desired_width(180.0);
-                        ui.add(search_edit);
+                        crate::window_egui::style::render_search_field(
+                            ui,
+                            &mut state.search_text,
+                            "Search users, tables, roles…",
+                            180.0,
+                        );
                     }
                 });
             });
@@ -2057,13 +2059,23 @@ fn render_create_user_tab(
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Username:");
-                    ui.text_edit_singleline(&mut state.new_user_form.username);
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.new_user_form.username),
+                        220.0,
+                        None,
+                    );
                     ui.end_row();
 
                     if active_db_type == DatabaseType::MySQL {
                         ui.label("Host Scope:");
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut state.new_user_form.host);
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut state.new_user_form.host),
+                                160.0,
+                                None,
+                            );
                             ui.label(egui::RichText::new("(e.g. %, localhost, 192.168.%)").size(10.0).weak());
                         });
                         ui.end_row();
@@ -2071,11 +2083,13 @@ fn render_create_user_tab(
 
                     ui.label("Password:");
                     ui.horizontal(|ui| {
-                        if state.new_user_form.show_password {
-                            ui.text_edit_singleline(&mut state.new_user_form.password);
-                        } else {
-                            ui.add(egui::TextEdit::singleline(&mut state.new_user_form.password).password(true));
-                        }
+                        crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.new_user_form.password)
+                            .password(!state.new_user_form.show_password),
+                            220.0,
+                            None,
+                        );
                         if ui.button(if state.new_user_form.show_password { "👁" } else { "🔒" }).clicked() {
                             state.new_user_form.show_password = !state.new_user_form.show_password;
                         }
@@ -2083,7 +2097,13 @@ fn render_create_user_tab(
                     ui.end_row();
 
                     ui.label("Confirm Password:");
-                    ui.add(egui::TextEdit::singleline(&mut state.new_user_form.confirm_password).password(!state.new_user_form.show_password));
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.new_user_form.confirm_password)
+                        .password(!state.new_user_form.show_password),
+                        220.0,
+                        None,
+                    );
                     ui.end_row();
                 });
 
@@ -2502,11 +2522,13 @@ fn render_modals(
                     .show(ui, |ui| {
                         ui.label("New Password:");
                         ui.horizontal(|ui| {
-                            if form.show_password {
-                                ui.text_edit_singleline(&mut form.new_password);
-                            } else {
-                                ui.add(egui::TextEdit::singleline(&mut form.new_password).password(true));
-                            }
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut form.new_password)
+                                .password(!form.show_password),
+                                220.0,
+                                None,
+                            );
                             if ui.button(if form.show_password { "👁" } else { "🔒" }).clicked() {
                                 form.show_password = !form.show_password;
                             }
@@ -2514,7 +2536,13 @@ fn render_modals(
                         ui.end_row();
 
                         ui.label("Confirm Password:");
-                        ui.add(egui::TextEdit::singleline(&mut form.confirm_password).password(!form.show_password));
+                        crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut form.confirm_password)
+                            .password(!form.show_password),
+                            220.0,
+                            None,
+                        );
                         ui.end_row();
                     });
 

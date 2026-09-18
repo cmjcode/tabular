@@ -231,16 +231,17 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         let spacing = ui.spacing().item_spacing.x;
                         let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
 
-                        let text_resp = ui.add_sized(
-                            [text_edit_width, 22.0],
-                            egui::TextEdit::singleline(&mut path_str)
-                                .hint_text("Choose target zip file path..."),
+                        let text_resp = crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut path_str).hint_text("Choose target zip file path..."),
+                            text_edit_width,
+                            None,
                         );
                         if text_resp.changed() {
                             state.target_file = Some(PathBuf::from(path_str));
                         }
 
-                        if ui.add_sized([button_width, 22.0], egui::Button::new("Browse...")).clicked() {
+                        if ui.add_sized([button_width, 30.0], egui::Button::new("Browse...")).clicked() {
                             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
                             let default_name = format!("tabular_backup_{}.zip", timestamp);
 
@@ -489,10 +490,11 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     let spacing = ui.spacing().item_spacing.x;
                     let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
 
-                    let text_resp = ui.add_sized(
-                        [text_edit_width, 22.0],
-                        egui::TextEdit::singleline(&mut path_str)
-                            .hint_text("Choose tabular backup .zip file..."),
+                    let text_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut path_str).hint_text("Choose tabular backup .zip file..."),
+                        text_edit_width,
+                        None,
                     );
                     if text_resp.changed() {
                         let path = PathBuf::from(path_str);
@@ -524,7 +526,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         }
                     }
 
-                    if ui.add_sized([button_width, 22.0], egui::Button::new("Browse...")).clicked() {
+                    if ui.add_sized([button_width, 30.0], egui::Button::new("Browse...")).clicked() {
                         let dialog = rfd::FileDialog::new()
                             .add_filter("ZIP Archive (*.zip)", &["zip"]);
 

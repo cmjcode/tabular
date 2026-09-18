@@ -79,13 +79,11 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let spacing_total = ui.spacing().item_spacing.x * 2.0;
         let input_w = (total_avail - btn_w - refresh_w - spacing_total).max(40.0);
 
-        ui.add_sized(
-            [input_w, row_h],
-            egui::TextEdit::singleline(&mut tabular.new_team_name)
-                .hint_text("Team name…")
-                .desired_width(input_w)
-                .margin(egui::Margin::symmetric(6, 4))
-                .vertical_align(egui::Align::Center),
+        crate::window_egui::style::render_text_field(
+            ui,
+            egui::TextEdit::singleline(&mut tabular.new_team_name).hint_text("Team name…"),
+            input_w,
+            None,
         );
 
         let can_create = !tabular.new_team_name.trim().is_empty();
@@ -699,10 +697,12 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     });
 
                 ui.add_space(2.0);
-                ui.add_sized(
-                    [ui.available_width(), 24.0],
+                crate::window_egui::style::render_text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut tabular.share_folder_path_input)
                         .hint_text("Atau ketik folder baru (cth: /Production)"),
+                    f32::INFINITY,
+                    None,
                 );
             }
 
@@ -1080,10 +1080,11 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     .strong(),
             );
 
-            ui.add_sized(
-                [ui.available_width(), 26.0],
-                egui::TextEdit::singleline(&mut tabular.add_member_identifier)
-                    .hint_text("Type at least 5 characters to search…"),
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut tabular.add_member_identifier,
+                "Type at least 5 characters to search…",
+                f32::INFINITY,
             );
 
             let trimmed_input = tabular.add_member_identifier.trim().to_string();

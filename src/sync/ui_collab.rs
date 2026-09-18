@@ -118,13 +118,11 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let spacing_total = ui.spacing().item_spacing.x * 2.0;
         let input_w = (total_avail - btn_w - refresh_w - spacing_total).max(40.0);
 
-        ui.add_sized(
-            [input_w, row_h],
-            egui::TextEdit::singleline(&mut tabular.new_collab_room_name)
-                .hint_text("Room name…")
-                .desired_width(input_w)
-                .margin(egui::Margin::symmetric(6, 4))
-                .vertical_align(egui::Align::Center),
+        crate::window_egui::style::render_text_field(
+            ui,
+            egui::TextEdit::singleline(&mut tabular.new_collab_room_name).hint_text("Room name…"),
+            input_w,
+            None,
         );
 
         let can_create = !tabular.new_collab_room_name.trim().is_empty();

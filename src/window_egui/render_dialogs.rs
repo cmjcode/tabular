@@ -390,11 +390,21 @@ impl super::Tabular {
                         
                     ui.add_space(8.0);
                     ui.label("Replication User (Optional - leave empty to use connection default):");
-                    ui.text_edit_singleline(&mut state.replication_user);
+                    super::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.replication_user),
+                        f32::INFINITY,
+                        None,
+                    );
                     
                     ui.add_space(8.0);
                     ui.label("Replication Password (Optional):");
-                    ui.add(egui::TextEdit::singleline(&mut state.replication_password).password(true));
+                    super::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.replication_password).password(true),
+                        f32::INFINITY,
+                        None,
+                    );
 
                     ui.add_space(8.0);
                     
@@ -704,9 +714,11 @@ impl super::Tabular {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.label("Name:");
-                    let name_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.new_view_name)
-                            .desired_width(f32::INFINITY),
+                    let name_response = super::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut self.new_view_name),
+                        f32::INFINITY,
+                        None,
                     );
 
                     // Request focus on the name field when dialog first opens
@@ -1482,10 +1494,11 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
                                 ui.selectable_value(&mut state.left_conn_id, *id, name);
                             }
                         });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.left_db)
-                            .hint_text("database")
-                            .desired_width(120.0),
+                    super::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.left_db).hint_text("database"),
+                        120.0,
+                        None,
                     );
                     ui.add_space(16.0);
                     ui.label("Right:");
@@ -1502,10 +1515,11 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
                                 ui.selectable_value(&mut state.right_conn_id, *id, name);
                             }
                         });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.right_db)
-                            .hint_text("database")
-                            .desired_width(120.0),
+                    super::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.right_db).hint_text("database"),
+                        120.0,
+                        None,
                     );
                 });
 
@@ -1535,11 +1549,7 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
                     }
                     ui.checkbox(&mut state.show_same, "Show identical tables");
                     ui.add_space(10.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.filter_text)
-                            .hint_text("Filter tables…")
-                            .desired_width(160.0),
-                    );
+                    crate::window_egui::style::render_search_field(ui, &mut state.filter_text, "Filter tables…", 160.0);
                 });
 
                 ui.separator();
@@ -2011,10 +2021,11 @@ impl super::Tabular {
                         ui.add_space(8.0);
                         ui.label("Request Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut edit_name)
-                                .hint_text("Enter new request name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new request name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
@@ -2105,10 +2116,11 @@ impl super::Tabular {
                         ui.add_space(6.0);
                         ui.label("Folder Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut folder_name)
-                                .hint_text("Enter folder name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut folder_name).hint_text("Enter folder name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_create = true;
@@ -2178,10 +2190,11 @@ impl super::Tabular {
                         ui.add_space(8.0);
                         ui.label("Folder Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut edit_name)
-                                .hint_text("Enter new folder name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new folder name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
@@ -2247,10 +2260,11 @@ impl super::Tabular {
                         ui.add_space(8.0);
                         ui.label("Workspace Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut edit_name)
-                                .hint_text("Enter new workspace name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new workspace name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
@@ -2315,10 +2329,11 @@ impl super::Tabular {
                         ui.add_space(8.0);
                         ui.label("Collection Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut ws_name)
-                                .hint_text("Enter collection name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut ws_name).hint_text("Enter collection name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_create = true;

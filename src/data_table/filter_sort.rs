@@ -859,26 +859,32 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                                     }
                                     models::structs::FilterOperator::Between => {
                                         let v2_ref = cond.value2.get_or_insert_with(String::new);
-                                        let r1 = ui.add(
+                                        let r1 = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text("From (min)")
-                                                .desired_width(100.0),
+                                                .hint_text("From (min)"),
+                                            100.0,
+                                            None,
                                         );
                                         ui.label(eframe::egui::RichText::new("and").color(muted).small());
-                                        let r2 = ui.add(
+                                        let r2 = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(v2_ref)
-                                                .hint_text("To (max)")
-                                                .desired_width(100.0),
+                                                .hint_text("To (max)"),
+                                            100.0,
+                                            None,
                                         );
                                         if (r1.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
                                         }
                                     }
                                     models::structs::FilterOperator::In => {
-                                        let resp = ui.add(
+                                        let resp = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text("val1, val2, val3...")
-                                                .desired_width(180.0),
+                                                .hint_text("val1, val2, val3..."),
+                                            180.0,
+                                            None,
                                         );
                                         if resp.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
@@ -893,10 +899,12 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                                             models::structs::FilterOperator::ILike => "pattern (case-insensitive)",
                                             _ => "value...",
                                         };
-                                        let resp = ui.add(
+                                        let resp = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text(hint)
-                                                .desired_width(160.0),
+                                                .hint_text(hint),
+                                            160.0,
+                                            None,
                                         );
                                         if resp.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
