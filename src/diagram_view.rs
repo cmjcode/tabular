@@ -43,6 +43,10 @@ pub enum DiagramAction {
     SaveToDatabase,
     /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
     LoadFromDatabase,
+    /// Buka dialog untuk menambahkan tabel dari database atau koneksi lain ke kanvas.
+    OpenAddTablesModal,
+    /// Sinkronkan diagram ke Tabular Server (Cloud E2EE).
+    SyncToServer,
     Info(String),
     Error(String),
 }
@@ -732,7 +736,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         node.ensure_groups_migrated();
 
         // Estimate height based on columns
-        let header_height_unscaled = 24.0;
+        let header_height_unscaled = if node.database_name.is_some() {
+            30.0
+        } else {
+            24.0
+        };
         let item_height_unscaled = 16.0;
         let content_height_unscaled = node.columns.len() as f32 * item_height_unscaled;
         let node_height_unscaled = header_height_unscaled + content_height_unscaled + 8.0; // padding
@@ -981,14 +989,38 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             ));
         }
 
-        // Title
-        ui.painter().text(
-            header_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            &node.title,
-            egui::FontId::proportional(14.0 * scale),
-            egui::Color32::WHITE,
-        );
+        // Title & Database badge
+        if let Some(db) = &node.database_name {
+            let title_pos = header_rect.center() + egui::vec2(0.0, -5.0 * scale);
+            let db_pos = header_rect.center() + egui::vec2(0.0, 7.5 * scale);
+            let db_label = if let Some(conn) = &node.connection_name {
+                format!("{}/{}", conn, db)
+            } else {
+                db.clone()
+            };
+            ui.painter().text(
+                title_pos,
+                egui::Align2::CENTER_CENTER,
+                &node.title,
+                egui::FontId::proportional(12.5 * scale),
+                egui::Color32::WHITE,
+            );
+            ui.painter().text(
+                db_pos,
+                egui::Align2::CENTER_CENTER,
+                format!("[{}]", db_label),
+                egui::FontId::proportional(9.0 * scale),
+                egui::Color32::from_white_alpha(190),
+            );
+        } else {
+            ui.painter().text(
+                header_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &node.title,
+                egui::FontId::proportional(14.0 * scale),
+                egui::Color32::WHITE,
+            );
+        }
 
         // Columns
         let item_height = item_height_unscaled * scale;
@@ -1313,8 +1345,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Sync, Save, Import & Export.
     let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
-    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(960.0);
-    let toolbar_width = measured_width.max(960.0);
+    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(1080.0);
+    let toolbar_width = measured_width.max(1080.0);
     let toolbar_height = 36.0;
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
@@ -1510,9 +1542,27 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     },
                 );
 
+                // --- 4. Multi-Database: Add Tables ---
+                if ui
+                    .button(format!("{} Add Tables…", egui_icons::icons::ICON_ADD.codepoint))
+                    .on_hover_text("Add tables from another database or connection to this diagram")
+                    .clicked()
+                {
+                    state.show_add_tables_modal = true;
+                    action = Some(DiagramAction::OpenAddTablesModal);
+                }
+
+                ui.separator();
+
+                // --- 5. Sync Menu ---
                 ui.menu_button(
                     format!("{} Sync", egui_icons::icons::ICON_SYNC.codepoint),
                     |ui| {
+                        if ui.button("☁️ Sync to Tabular Server (E2EE)").clicked() {
+                            ui.close();
+                            action = Some(DiagramAction::SyncToServer);
+                        }
+                        ui.separator();
                         if ui.button("Save to Database (diagram_by_tabular)").clicked() {
                             ui.close();
                             action = Some(DiagramAction::SaveToDatabase);
@@ -1524,7 +1574,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.separator();
                         ui.label(
                             egui::RichText::new(
-                                "Saves custom groups, virtual relations, and node layout\ninto table `diagram_by_tabular` in this database\nfor team & multi-device sync.",
+                                "Multi-DB diagrams can sync to Tabular Cloud with Zero-Knowledge E2EE.\nOr save to target database table `diagram_by_tabular`.",
                             )
                             .weak()
                             .small(),
@@ -2889,6 +2939,9 @@ mod tests {
             group_id: None,
             column_meta: vec![],
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         });
 
         // Bounding box: min (100, 100), max (300, 200), center (200, 150)
@@ -2911,6 +2964,9 @@ mod tests {
             group_id: None,
             column_meta: vec![],
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         };
 
         // Node B bertumpukan langsung dengan Node A
@@ -2949,6 +3005,9 @@ mod tests {
             group_id: None,
             column_meta: vec![],
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         };
 
         let mut node_b = node_a.clone();
@@ -2978,6 +3037,9 @@ mod tests {
             group_id: None,
             column_meta: vec![],
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         };
 
         // Node B di-drop tepat menimpa Node A

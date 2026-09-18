@@ -5033,6 +5033,7 @@ impl App for Tabular {
 
         // Show cache miss dialog (topmost)
         self.render_cache_miss_dialog(ctx);
+        self.render_add_tables_dialog(ctx);
 
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);

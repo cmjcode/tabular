@@ -1230,6 +1230,9 @@ mod tests {
                 })
                 .collect(),
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         }
     }
 

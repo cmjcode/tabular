@@ -808,6 +808,9 @@ pub fn merge_into_state(state: &mut DiagramState, model: &ErModel) -> MergeStats
                     group_id: primary_group_id,
                     column_meta: meta,
                     detached: true,
+                    database_name: None,
+                    connection_id: None,
+                    connection_name: None,
                 });
                 stats.added_tables += 1;
             }
@@ -1154,6 +1157,9 @@ mod tests {
             group_id: Some("group_auth".into()), // legacy field
             column_meta: vec![],
             detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
         };
 
         // ensure_groups_migrated migrates legacy group_id

@@ -611,6 +611,35 @@ pub struct DiagramNode {
     /// dibuang saat diagram disinkronkan ulang dengan skema database.
     #[serde(default)]
     pub detached: bool,
+    /// Nama database asal tabel ini (opsional untuk backward compatibility).
+    #[serde(default)]
+    pub database_name: Option<String>,
+    /// ID koneksi asal tabel ini.
+    #[serde(default)]
+    pub connection_id: Option<i64>,
+    /// Nama label koneksi asal (misal "Production Postgres").
+    #[serde(default)]
+    pub connection_name: Option<String>,
+}
+
+impl Default for DiagramNode {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            pos: eframe::egui::pos2(0.0, 0.0),
+            size: eframe::egui::vec2(150.0, 100.0),
+            columns: Vec::new(),
+            foreign_keys: Vec::new(),
+            group_ids: Vec::new(),
+            group_id: None,
+            column_meta: Vec::new(),
+            detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
+        }
+    }
 }
 
 impl DiagramNode {
@@ -760,6 +789,27 @@ pub struct DiagramState {
     /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
     #[serde(skip)]
     pub hand_tool: bool,
+    /// Modal dialog "Add Tables from Database" yang sedang aktif.
+    #[serde(skip)]
+    pub show_add_tables_modal: bool,
+    /// ID koneksi yang dipilih dalam modal dialog.
+    #[serde(skip)]
+    pub add_tables_selected_conn: Option<i64>,
+    /// Nama database yang dipilih dalam modal dialog.
+    #[serde(skip)]
+    pub add_tables_selected_db: Option<String>,
+    /// Filter pencarian tabel dalam modal dialog.
+    #[serde(skip)]
+    pub add_tables_search: String,
+    /// Daftar tabel yang dicentang untuk ditambahkan: (table_name, is_selected).
+    #[serde(skip)]
+    pub add_tables_selection: Vec<(String, bool)>,
+    /// Judul kustom dokumen diagram (opsional).
+    #[serde(default)]
+    pub diagram_title: Option<String>,
+    /// Remote ID jika diagram ini disinkronkan ke server.
+    #[serde(default)]
+    pub remote_id: Option<String>,
 }
 
 impl Default for DiagramState {
@@ -793,6 +843,13 @@ impl Default for DiagramState {
             relation_suggestions_title: None,
             relation_column_search_query: String::new(),
             hand_tool: false,
+            show_add_tables_modal: false,
+            add_tables_selected_conn: None,
+            add_tables_selected_db: None,
+            add_tables_search: String::new(),
+            add_tables_selection: Vec::new(),
+            diagram_title: None,
+            remote_id: None,
         }
     }
 }
