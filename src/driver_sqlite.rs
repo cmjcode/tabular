@@ -278,10 +278,10 @@ pub(crate) async fn fetch_sqlite_foreign_keys(
     Ok(keys)
 }
 
-/// Fetch all columns for every user table: table_name → [col1, col2, …]
+/// Fetch all columns for every user table: table_name → [kolom + tipe/PK/nullable]
 pub(crate) async fn fetch_sqlite_columns(
     pool: &SqlitePool,
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+) -> Result<std::collections::HashMap<String, Vec<models::structs::DiagramColumn>>, sqlx::Error> {
     let tables: Vec<String> = sqlx::query_as::<_, (String,)>(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )
@@ -291,13 +291,21 @@ pub(crate) async fn fetch_sqlite_columns(
     .map(|(n,)| n)
     .collect();
 
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<models::structs::DiagramColumn>> =
+        std::collections::HashMap::new();
     for table in tables {
         let pragma = format!("PRAGMA table_info('{}')", table.replace('\'', "''"));
         if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(pool).await {
             for row in rows {
-                let col: String = row.try_get("name").unwrap_or_default();
-                map.entry(table.clone()).or_default().push(col);
+                // `pk` bernilai posisi kolom di primary key (0 = bukan PK).
+                let pk: i64 = row.try_get("pk").unwrap_or(0);
+                let notnull: i64 = row.try_get("notnull").unwrap_or(0);
+                map.entry(table.clone()).or_default().push(models::structs::DiagramColumn {
+                    name: row.try_get("name").unwrap_or_default(),
+                    type_name: row.try_get("type").unwrap_or_default(),
+                    is_pk: pk > 0,
+                    nullable: notnull == 0 && pk == 0,
+                });
             }
         }
     }

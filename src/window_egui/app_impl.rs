@@ -2885,6 +2885,7 @@ impl Tabular {
                         let mut rendered_dba_monitor = false;
                         let mut rendered_user_manager = false;
                         let mut diagram_to_save = None;
+                        let mut diagram_action = None;
                         let mut redis_action = None;
                         let mut redis_connection_id = None;
                         let mut dba_action = None;
@@ -3011,7 +3012,9 @@ impl Tabular {
                     
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && let Some(diagram_state) = &mut tab.diagram_state {
-                               crate::diagram_view::render_diagram(ui, diagram_state);
+                               if let Some(action) = crate::diagram_view::render_diagram(ui, diagram_state) {
+                                   diagram_action = Some((action, tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                               }
                                rendered_diagram = true;
                            
                                if diagram_state.save_requested {
@@ -3025,6 +3028,9 @@ impl Tabular {
                                  let db = db_name_opt.unwrap_or_else(|| "default".to_string());
                                  self.save_diagram(cid, &db, &state);
                              }
+                        if let Some((action, conn_id, db_name, state)) = diagram_action {
+                            self.handle_diagram_action(action, conn_id, db_name, &state);
+                        }
 
                         if let Some(conn_id) = redis_connection_id
                             && let Some(action) = redis_action

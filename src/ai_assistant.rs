@@ -652,7 +652,8 @@ pub fn system_prompt_for(cfg: &ChatBackend, schema: &str) -> String {
         s.push_str(
             "\n\n## Database access\n\
              You have an MCP server named `tabular` with tools: list_connections, list_databases, \
-             describe_schema(connection_id, question), run_query(connection_id, sql, database?), \
+             describe_schema(connection_id, question), schema_diagram(connection_id) for the \
+             foreign-key relationships as a Mermaid erDiagram, run_query(connection_id, sql, database?), \
              explain_query, check_sql_safety and format_sql. Queries are read-only and results are \
              truncated, so add LIMIT. Use the `connection_id` values given in the context below; \
              when the answer depends on real data or on schema details that are not in the context, \
@@ -679,7 +680,9 @@ pub fn system_prompt_for(cfg: &ChatBackend, schema: &str) -> String {
                     " When the user asks you to remember something, or you establish a durable fact about \
                      their data that is not in the notes yet (meaning of a code, a join rule, a naming \
                      convention), store it with save_note(title, content): short, factual Markdown, one \
-                     topic per note. Do not save secrets, query results or one-off details.",
+                     topic per note. When the fact is a relationship or a flow (join path, status \
+                     transitions, ETL steps), include a ```mermaid block (erDiagram, flowchart or \
+                     stateDiagram-v2); Obsidian renders it. Do not save secrets, query results or one-off details.",
                 );
             }
         }

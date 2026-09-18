@@ -3,7 +3,131 @@ use serde::{Deserialize, Serialize};
 use crate::models::structs::{DiagramState, DiagramNode};
 use crate::rfd;
 
-pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
+/// Palet warna group (tanpa duplikat), dipakai menu warna, grouping otomatis,
+/// dan group hasil impor Mermaid.
+pub const GROUP_COLORS: [egui::Color32; 20] = [
+    egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
+    egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
+    egui::Color32::from_rgb(205, 92, 92),   // Indian Red
+    egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
+    egui::Color32::from_rgb(147, 112, 219), // Medium Purple
+    egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
+    egui::Color32::from_rgb(255, 127, 80),  // Coral
+    egui::Color32::from_rgb(255, 105, 180), // Hot Pink
+    egui::Color32::from_rgb(0, 206, 209),   // Dark Turquoise
+    egui::Color32::from_rgb(123, 104, 238), // Medium Slate Blue
+    egui::Color32::from_rgb(50, 205, 50),   // Lime Green
+    egui::Color32::from_rgb(255, 165, 0),   // Orange
+    egui::Color32::from_rgb(106, 90, 205),  // Slate Blue
+    egui::Color32::from_rgb(255, 99, 71),   // Tomato
+    egui::Color32::from_rgb(64, 224, 208),  // Turquoise
+    egui::Color32::from_rgb(238, 130, 238), // Violet
+    egui::Color32::from_rgb(255, 215, 0),   // Gold
+    egui::Color32::from_rgb(0, 250, 154),   // Medium Spring Green
+    egui::Color32::from_rgb(138, 43, 226),  // Blue Violet
+    egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
+];
+
+/// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagramAction {
+    /// Simpan skema sebagai catatan Mermaid di vault Obsidian.
+    SaveToVault,
+    Info(String),
+    Error(String),
+}
+
+/// Tulis file secara atomik: tulis ke `.tmp` lalu rename, supaya crash di
+/// tengah penulisan tidak meninggalkan file setengah jadi.
+pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("")
+    ));
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+fn export_json(state: &DiagramState) -> Option<DiagramAction> {
+    let path = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file()?;
+    Some(
+        match serde_json::to_vec_pretty(state)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| write_atomic(&path, &bytes).map_err(|e| e.to_string()))
+        {
+            Ok(()) => DiagramAction::Info(format!("Diagram exported to {}", path.display())),
+            Err(e) => DiagramAction::Error(format!("Export failed: {e}")),
+        },
+    )
+}
+
+fn export_mermaid(state: &DiagramState) -> Option<DiagramAction> {
+    let path = rfd::FileDialog::new()
+        .add_filter("Mermaid", &["mmd", "mermaid"])
+        .add_filter("Markdown", &["md"])
+        .save_file()?;
+    let model = crate::diagram_mermaid::ErModel::from_diagram(state);
+    let is_md = path.extension().and_then(|e| e.to_str()) == Some("md");
+    let text = if is_md {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Schema");
+        crate::diagram_mermaid::schema_note_markdown(stem, &model)
+    } else {
+        model.to_mermaid(Default::default())
+    };
+    Some(match write_atomic(&path, text.as_bytes()) {
+        Ok(()) => DiagramAction::Info(format!("Mermaid exported to {}", path.display())),
+        Err(e) => DiagramAction::Error(format!("Export failed: {e}")),
+    })
+}
+
+fn import_json(state: &mut DiagramState) -> Option<DiagramAction> {
+    let path = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()?;
+    let result = std::fs::read(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| serde_json::from_slice::<DiagramState>(&bytes).map_err(|e| e.to_string()));
+    Some(match result {
+        Ok(new_state) => {
+            *state = new_state;
+            state.dragging_node = None;
+            state.last_mouse_pos = None;
+            state.save_requested = true;
+            DiagramAction::Info("Diagram imported".to_string())
+        }
+        Err(e) => DiagramAction::Error(format!("Import failed: {e}")),
+    })
+}
+
+fn import_mermaid(state: &mut DiagramState) -> Option<DiagramAction> {
+    let path = rfd::FileDialog::new()
+        .add_filter("Mermaid / Markdown", &["mmd", "mermaid", "md", "txt"])
+        .pick_file()?;
+    let parsed = std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|text| crate::diagram_mermaid::parse_mermaid_er(&text));
+    Some(match parsed {
+        Ok(parsed) => {
+            for w in &parsed.warnings {
+                log::warn!("Mermaid import {}: {w}", path.display());
+            }
+            let stats = crate::diagram_mermaid::merge_into_state(state, &parsed.model);
+            state.save_requested = true;
+            let mut msg = format!(
+                "Mermaid imported: {} new, {} updated tables, {} new relations",
+                stats.added_tables, stats.updated_tables, stats.added_relations
+            );
+            if !parsed.warnings.is_empty() {
+                msg.push_str(&format!(" ({} lines skipped, see log)", parsed.warnings.len()));
+            }
+            DiagramAction::Info(msg)
+        }
+        Err(e) => DiagramAction::Error(format!("Mermaid import failed: {e}")),
+    })
+}
+
+pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
+    let mut action: Option<DiagramAction> = None;
     let rect = ui.available_rect_before_wrap();
     
     // Handle Pan and Zoom
@@ -239,28 +363,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
                      ui.label("Color:");
                      egui::ScrollArea::horizontal().max_width(200.0).show(ui, |ui| {
                          ui.horizontal(|ui| {
-                             let colors = [
-                                egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
-                                egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
-                                egui::Color32::from_rgb(255, 0, 0),   // Indian Red
-                                egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
-                                egui::Color32::from_rgb(147, 112, 219), // Medium Purple
-                                egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
-                                egui::Color32::from_rgb(255, 127, 80),  // Coral
-                                egui::Color32::from_rgb(255, 105, 180), // Hot Pink
-                                egui::Color32::from_rgb(0, 206, 209),   // Dark Turquoise
-                                egui::Color32::from_rgb(123, 104, 238), // Medium Slate Blue
-                                egui::Color32::from_rgb(50, 205, 50),   // Lime Green
-                                egui::Color32::from_rgb(255, 165, 0),   // Orange
-                                egui::Color32::from_rgb(106, 90, 205),  // Slate Blue
-                                egui::Color32::from_rgb(255, 0, 0),   // Tomato
-                                egui::Color32::from_rgb(64, 224, 208),  // Turquoise
-                                egui::Color32::from_rgb(238, 130, 238), // Violet
-                                egui::Color32::from_rgb(255, 215, 0),   // Gold
-                                egui::Color32::from_rgb(0, 250, 154),   // Medium Spring Green
-                                egui::Color32::from_rgb(138, 43, 226),  // Blue Violet
-                                egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
-                             ];
+                             let colors = GROUP_COLORS;
                              
                              for &c in &colors {
                                  let (response, painter) = ui.allocate_painter(egui::vec2(20.0, 20.0), egui::Sense::click());
@@ -378,9 +481,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
                 // Hit detection (Check hover first)
                 let mut is_hovered = false;
-                if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
-                   // Sample points to check distance
-                   let num_samples = 30; // Increased samples for smoother detection
+                // Sampling kurva hanya bila pointer di dekat bounding box edge.
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+                    && egui::Rect::from_points(&points).expand(20.0).contains(pos)
+                {
+                   let num_samples = 30;
                    for i in 0..=num_samples {
                        let t = i as f32 / num_samples as f32;
                        let p = bezier.sample(t);
@@ -428,15 +533,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
     let mut column_clicked_request: Option<(String, String)> = None;
 
     // For manual interaction:
-    let _mouse_pos = ui.input(|i| i.pointer.hover_pos());
-    
+    let selected_column = state.selected_column.clone();
+
     for node in &mut state.nodes {
         // Estimate height based on columns
         let header_height_unscaled = 24.0;
         let item_height_unscaled = 16.0;
         let content_height_unscaled = node.columns.len() as f32 * item_height_unscaled;
         let node_height_unscaled = header_height_unscaled + content_height_unscaled + 8.0; // padding
-        node.size = egui::vec2(180.0, node_height_unscaled);
+        let node_width = if node.column_meta.is_empty() { 180.0 } else { 240.0 };
+        node.size = egui::vec2(node_width, node_height_unscaled);
 
         let node_size_scaled = node.size * scale;
         let node_pos_screen = to_screen(node.pos);
@@ -570,44 +676,79 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         let item_height = item_height_unscaled * scale;
         let mut y_offset = header_height + 4.0 * scale;
         
-        for col in &node.columns {
-            let is_fk = node.foreign_keys.iter().any(|fk| fk.column_name == *col && fk.table_name == node.id);
-             
-             // Interaction Rect
-             let col_pos_screen = node_pos_screen + egui::vec2(0.0, y_offset);
-             let col_rect = egui::Rect::from_min_size(
-                 col_pos_screen,
-                 egui::vec2(node_rect.width(), item_height)
-             );
+        for (col_idx, col) in node.columns.iter().enumerate() {
+            // `column_meta` biasanya sejajar dengan `columns`; cari linear hanya bila tidak.
+            let info = node
+                .column_meta
+                .get(col_idx)
+                .filter(|m| m.name == *col)
+                .or_else(|| node.column_info(col));
+            let is_pk = info.is_some_and(|c| c.is_pk);
+            let is_fk = node.is_fk_column(col);
 
-             let col_id = ui.id().with("col").with(&node.id).with(col);
-             let response = ui.interact(col_rect, col_id, egui::Sense::click());
-             
-             if response.clicked() {
-                 column_clicked_request = Some((node.id.clone(), col.clone()));
-             }
-
-             // Highlight if selected
-             // We can't access state.selected_column here due to borrow of state.nodes
-             // But we can check after loop? No, visual feedback needs to be here.
-             // We can pass `selected_column` into the loop if we extract it before?
-             // But we iterate `state.nodes`. 
-             // We need to copy `selected_column` before the loop.
-             // I'll do that in the previous chunk.
-             
-             if response.hovered() {
-                 ui.painter().rect_filled(col_rect, 0.0, egui::Color32::from_white_alpha(10));
-             }
-
-             // Text
-             let text_pos = node_pos_screen + egui::vec2(8.0 * scale, y_offset);
-             ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_TOP,
-                col, 
-                egui::FontId::monospace(12.0 * scale),
-                if is_fk { egui::Color32::from_rgb(200, 200, 100) } else { egui::Color32::LIGHT_GRAY }
+            let col_pos_screen = node_pos_screen + egui::vec2(0.0, y_offset);
+            let col_rect = egui::Rect::from_min_size(
+                col_pos_screen,
+                egui::vec2(node_rect.width(), item_height),
             );
+
+            let col_id = ui.id().with("col").with(&node.id).with(col);
+            let response = ui.interact(col_rect, col_id, egui::Sense::click());
+            if response.clicked() {
+                column_clicked_request = Some((node.id.clone(), col.clone()));
+            }
+
+            let is_selected_col = selected_column
+                .as_ref()
+                .is_some_and(|(t, c)| *t == node.id && c == col);
+            if is_selected_col {
+                ui.painter().rect_filled(
+                    col_rect,
+                    0.0,
+                    egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.25),
+                );
+            } else if response.hovered() {
+                ui.painter().rect_filled(col_rect, 0.0, egui::Color32::from_white_alpha(10));
+            }
+
+            let name_color = if is_pk {
+                egui::Color32::from_rgb(255, 215, 0)
+            } else if is_fk {
+                egui::Color32::from_rgb(200, 200, 100)
+            } else {
+                egui::Color32::LIGHT_GRAY
+            };
+            ui.painter().text(
+                node_pos_screen + egui::vec2(8.0 * scale, y_offset),
+                egui::Align2::LEFT_TOP,
+                col,
+                egui::FontId::monospace(12.0 * scale),
+                name_color,
+            );
+
+            // Badge kunci + tipe di sisi kanan (redup supaya nama tetap dominan).
+            let mut right = String::new();
+            if is_pk {
+                right.push_str("PK ");
+            }
+            if is_fk {
+                right.push_str("FK ");
+            }
+            if let Some(ty) = info.map(|c| c.type_name.as_str()).filter(|t| !t.is_empty()) {
+                right.extend(ty.chars().take(14));
+                if ty.chars().count() > 14 {
+                    right.push('…');
+                }
+            }
+            if !right.is_empty() {
+                ui.painter().text(
+                    egui::pos2(node_rect.right() - 8.0 * scale, col_pos_screen.y),
+                    egui::Align2::RIGHT_TOP,
+                    right.trim_end(),
+                    egui::FontId::monospace(10.0 * scale),
+                    egui::Color32::from_gray(130),
+                );
+            }
             y_offset += item_height;
         }
     }
@@ -633,45 +774,57 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
 
     if let Some(id) = dragging_node_id
         && let Some(node) = state.nodes.iter_mut().find(|n| n.id == id) {
-            node.pos += drag_delta;
+            node.pos += drag_delta / scale;
         }
 
-    // Draw Toolbar (Export/Import)
-    // Move it a bit closer to the right edge if requested, generally right_top aligned is standard.
-    // Making it transparent and red text.
-    let toolbar_width = 100.0;
-    let toolbar_height = 40.0;
-    let padding = -10.0;
-    let toolbar_pos = rect.right_top() + egui::vec2(-toolbar_width, padding);
-    let toolbar_rect = egui::Rect::from_min_size(toolbar_pos, egui::vec2(toolbar_width, toolbar_height));
+    // Toolbar kanan atas: Export / Import (JSON & Mermaid) dan Save to Vault.
+    let toolbar_width = 320.0;
+    let toolbar_rect = egui::Rect::from_min_size(
+        rect.right_top() + egui::vec2(-toolbar_width, -10.0),
+        egui::vec2(toolbar_width, 40.0),
+    );
+    let accent = egui::Color32::from_rgb(255, 100, 100);
+    let label = |text: &str| egui::RichText::new(text).color(accent);
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(20.0);
-            // "Export" first because we are in right_to_left layout
-            if ui.add(egui::Button::new(egui::RichText::new("Export").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked()
-                 && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file()
-                    && let Ok(file) = std::fs::File::create(path) {
-                        let writer = std::io::BufWriter::new(file);
-                        let _ = serde_json::to_writer_pretty(writer, state);
-                    }
-
+            if ui
+                .add(egui::Button::new(label("Save to Vault")).frame(false))
+                .on_hover_text("Save the schema as a Mermaid note in your Obsidian vault (AI memory)")
+                .clicked()
+            {
+                action = Some(DiagramAction::SaveToVault);
+            }
             ui.add_space(10.0);
-
-            // "Import" second
-            if ui.add(egui::Button::new(egui::RichText::new("Import").color(egui::Color32::from_rgb(255, 100, 100))).frame(false)).clicked()
-                && let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file()
-                    && let Ok(file) = std::fs::File::open(path) {
-                        let reader = std::io::BufReader::new(file);
-                        if let Ok(new_state) = serde_json::from_reader::<_, DiagramState>(reader) {
-                            *state = new_state;
-                            state.dragging_node = None;
-                            state.last_mouse_pos = None;
-                            state.save_requested = true;
-                        }
-                    }
+            ui.menu_button(label("Import"), |ui| {
+                if ui.button("Diagram layout (JSON)…").clicked() {
+                    ui.close();
+                    action = import_json(state);
+                }
+                if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
+                    ui.close();
+                    action = import_mermaid(state);
+                }
+            });
             ui.add_space(10.0);
-
+            ui.menu_button(label("Export"), |ui| {
+                if ui.button("Diagram layout (JSON)…").clicked() {
+                    ui.close();
+                    action = export_json(state);
+                }
+                if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
+                    ui.close();
+                    action = export_mermaid(state);
+                }
+                if ui.button("Copy Mermaid to clipboard").clicked() {
+                    ui.close();
+                    let text = crate::diagram_mermaid::ErModel::from_diagram(state)
+                        .to_mermaid(Default::default());
+                    ui.ctx().copy_text(text);
+                    action = Some(DiagramAction::Info("Mermaid copied to clipboard".to_string()));
+                }
+            });
         });
     });
 
@@ -789,6 +942,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
             state.add_group_popup = None;
         }
     }
+
+    action
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {

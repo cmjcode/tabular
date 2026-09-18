@@ -1333,3 +1333,189 @@ pub fn table_header_colors(is_dark: bool, is_pinned: bool) -> (egui::Color32, eg
     }
 }
 
+/// Mengembalikan warna untuk SQL data type string (misal: "varchar(255)", "int", "datetime", dll.)
+pub fn sql_type_color(data_type_str: &str, is_dark: bool) -> egui::Color32 {
+    let lower = data_type_str.trim().to_ascii_lowercase();
+    let base = lower.split('(').next().unwrap_or(&lower).trim();
+
+    // 1. Integer / Serial / Identity -> Cyan
+    if base.contains("int") || base.contains("serial") || base == "rowid" || base == "identity" {
+        if is_dark {
+            egui::Color32::from_rgb(103, 232, 249) // Cyan-300
+        } else {
+            egui::Color32::from_rgb(2, 132, 199) // Sky-600
+        }
+    }
+    // 2. Float / Double / Decimal / Numeric / Real -> Sky Blue
+    else if base.contains("float")
+        || base.contains("double")
+        || base.contains("decimal")
+        || base.contains("numeric")
+        || base.contains("real")
+        || base.contains("money")
+    {
+        if is_dark {
+            egui::Color32::from_rgb(56, 189, 248) // Sky-400
+        } else {
+            egui::Color32::from_rgb(3, 105, 161) // Sky-700
+        }
+    }
+    // 3. String / Text / Char -> Emerald Green
+    else if base.contains("char")
+        || base.contains("text")
+        || base.contains("string")
+        || base.contains("clob")
+    {
+        if is_dark {
+            egui::Color32::from_rgb(110, 231, 183) // Emerald-300
+        } else {
+            egui::Color32::from_rgb(5, 150, 105) // Emerald-600
+        }
+    }
+    // 4. Date / Time / Timestamp / Year -> Amber
+    else if base.contains("date")
+        || base.contains("time")
+        || base.contains("year")
+    {
+        if is_dark {
+            egui::Color32::from_rgb(251, 191, 36) // Amber-400
+        } else {
+            egui::Color32::from_rgb(180, 83, 9) // Amber-700
+        }
+    }
+    // 5. Boolean / Bit -> Purple
+    else if base.contains("bool") || base == "bit" {
+        if is_dark {
+            egui::Color32::from_rgb(192, 132, 252) // Purple-400
+        } else {
+            egui::Color32::from_rgb(126, 34, 206) // Purple-700
+        }
+    }
+    // 6. JSON / Binary / UUID / BLOB -> Pink / Fuchsia
+    else if base.contains("json")
+        || base.contains("blob")
+        || base.contains("bytea")
+        || base.contains("binary")
+        || base.contains("uuid")
+        || base.contains("guid")
+    {
+        if is_dark {
+            egui::Color32::from_rgb(244, 114, 182) // Pink-400
+        } else {
+            egui::Color32::from_rgb(190, 24, 93) // Pink-700
+        }
+    }
+    // 7. Enum / Set -> Indigo
+    else if base.contains("enum") || base.contains("set") {
+        if is_dark {
+            egui::Color32::from_rgb(165, 180, 252) // Indigo-300
+        } else {
+            egui::Color32::from_rgb(79, 70, 229) // Indigo-600
+        }
+    }
+    // 8. Default
+    else if is_dark {
+        egui::Color32::from_rgb(203, 213, 225) // Slate-300
+    } else {
+        egui::Color32::from_rgb(51, 65, 85) // Slate-700
+    }
+}
+
+/// Mengembalikan warna untuk nama kolom di tampilan struktur tabel.
+pub fn column_name_color(is_dark: bool, is_pk: bool) -> egui::Color32 {
+    if is_pk {
+        if is_dark {
+            egui::Color32::from_rgb(252, 211, 77) // Gold-300
+        } else {
+            egui::Color32::from_rgb(180, 83, 9) // Amber-700
+        }
+    } else if is_dark {
+        egui::Color32::from_rgb(45, 212, 191) // Teal-400
+    } else {
+        egui::Color32::from_rgb(15, 118, 110) // Teal-700
+    }
+}
+
+/// Mengembalikan warna untuk nama index di tampilan indeks.
+pub fn index_name_color(name: &str, is_unique: bool, is_dark: bool) -> egui::Color32 {
+    if name.eq_ignore_ascii_case("PRIMARY") || (is_unique && name.to_ascii_lowercase().contains("primary")) {
+        if is_dark {
+            egui::Color32::from_rgb(252, 211, 77) // Gold-300
+        } else {
+            egui::Color32::from_rgb(180, 83, 9) // Amber-700
+        }
+    } else if is_unique {
+        if is_dark {
+            egui::Color32::from_rgb(52, 211, 153) // Emerald-400
+        } else {
+            egui::Color32::from_rgb(5, 150, 105) // Emerald-600
+        }
+    } else if is_dark {
+        egui::Color32::from_rgb(251, 146, 60) // Orange-400
+    } else {
+        egui::Color32::from_rgb(234, 88, 12) // Orange-600
+    }
+}
+
+/// Mengembalikan warna untuk metode/algoritma index (BTREE, HASH, dll.)
+pub fn index_algorithm_color(is_dark: bool) -> egui::Color32 {
+    if is_dark {
+        egui::Color32::from_rgb(165, 180, 252) // Lavender-300
+    } else {
+        egui::Color32::from_rgb(79, 70, 229) // Indigo-600
+    }
+}
+
+/// Mengembalikan warna untuk badge nullable ("YES", "NO", "?")
+pub fn nullable_badge_color(nullable_str: &str, is_dark: bool) -> egui::Color32 {
+    match nullable_str.trim() {
+        "NO" => {
+            if is_dark {
+                egui::Color32::from_rgb(248, 113, 113) // Red-400 (NOT NULL penting terlihat)
+            } else {
+                egui::Color32::from_rgb(220, 38, 38) // Red-600
+            }
+        }
+        "YES" => {
+            if is_dark {
+                egui::Color32::from_rgb(148, 163, 184) // Slate-400 (boleh NULL)
+            } else {
+                egui::Color32::from_rgb(100, 116, 139) // Slate-500
+            }
+        }
+        _ => {
+            if is_dark {
+                egui::Color32::from_rgb(100, 116, 139) // Muted
+            } else {
+                egui::Color32::from_rgb(148, 163, 184)
+            }
+        }
+    }
+}
+
+/// Mengembalikan warna untuk nomor baris (#) di tabel struktur & indeks.
+pub fn table_row_number_color(is_dark: bool) -> egui::Color32 {
+    if is_dark {
+        egui::Color32::from_rgb(148, 163, 184) // Slate-400
+    } else {
+        egui::Color32::from_rgb(100, 116, 139) // Slate-500
+    }
+}
+
+/// Mengembalikan warna untuk kolom "extra" (misal: auto_increment)
+pub fn extra_info_color(extra: &str, is_dark: bool) -> egui::Color32 {
+    let lower = extra.to_ascii_lowercase();
+    if lower.contains("auto_increment") || lower.contains("identity") || lower.contains("generated") {
+        if is_dark {
+            egui::Color32::from_rgb(252, 211, 77) // Gold-300
+        } else {
+            egui::Color32::from_rgb(180, 83, 9) // Amber-700
+        }
+    } else if is_dark {
+        egui::Color32::from_rgb(148, 163, 184)
+    } else {
+        egui::Color32::from_rgb(100, 116, 139)
+    }
+}
+
+

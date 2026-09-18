@@ -236,7 +236,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(format!(
-                "🛠 Structure: {}",
+                "{} Structure: {}",
+                egui_icons::icons::ICON_BUILD.codepoint,
                 if table_name.is_empty() {
                     "-"
                 } else {
@@ -249,14 +250,16 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
         ui.add_space(8.0);
 
         // Subview Tabs (Columns vs Indexes) - Styled identical to Data / Structure tabs
-        if crate::window_egui::style::render_custom_tab(ui, "☰ Columns", is_cols, tab_size).clicked() {
+        let col_tab_title = format!("{} Columns", egui_icons::icons::ICON_VIEW_COLUMN.codepoint);
+        if crate::window_egui::style::render_custom_tab(ui, &col_tab_title, is_cols, tab_size).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
         }
 
-        if crate::window_egui::style::render_custom_tab(ui, "📈 Indexes", is_idx, tab_size).clicked() {
+        let idx_tab_title = format!("{} Indexes", egui_icons::icons::ICON_TAG.codepoint);
+        if crate::window_egui::style::render_custom_tab(ui, &idx_tab_title, is_idx, tab_size).clicked() {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
             if tabular.structure_indexes.is_empty() {
                 load_structure_info_for_current_table(tabular);
@@ -282,7 +285,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 );
             });
         } else if ui
-            .add(crate::window_egui::style::btn_secondary("🔄 Refresh"))
+            .add(crate::window_egui::style::btn_secondary(format!(
+                "{} Refresh",
+                egui_icons::icons::ICON_REFRESH.codepoint
+            )))
             .on_hover_text("Fetch latest structure in background")
             .clicked()
         {
@@ -291,7 +297,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
         if is_cols {
             if ui
-                .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Column"))
+                .add(crate::window_egui::style::btn_primary_ctx(
+                    ui.ctx(),
+                    format!("{} Add Column", egui_icons::icons::ICON_ADD.codepoint),
+                ))
                 .on_hover_text("Add a new column")
                 .clicked()
                 && !tabular.adding_column {
@@ -312,7 +321,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     edit_enabled,
-                    crate::window_egui::style::btn_secondary("✏️ Edit Column"),
+                    crate::window_egui::style::btn_secondary(format!(
+                        "{} Edit Column",
+                        egui_icons::icons::ICON_EDIT.codepoint
+                    )),
                 )
                 .on_hover_text("Edit selected column")
                 .clicked()
@@ -329,7 +341,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     drop_enabled,
-                    crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🗑 Drop Column"),
+                    crate::window_egui::style::btn_danger_ctx(
+                        ui.ctx(),
+                        format!("{} Drop Column", egui_icons::icons::ICON_DELETE.codepoint),
+                    ),
                 )
                 .on_hover_text("Drop selected column")
                 .clicked()
@@ -338,7 +353,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                 }
         } else if is_idx {
             if ui
-                .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "➕ Add Index"))
+                .add(crate::window_egui::style::btn_primary_ctx(
+                    ui.ctx(),
+                    format!("{} Add Index", egui_icons::icons::ICON_ADD.codepoint),
+                ))
                 .on_hover_text("Create new index")
                 .clicked()
                 && !tabular.adding_index {
@@ -353,7 +371,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             if ui
                 .add_enabled(
                     drop_enabled,
-                    crate::window_egui::style::btn_danger_ctx(ui.ctx(), "🗑 Drop Index"),
+                    crate::window_egui::style::btn_danger_ctx(
+                        ui.ctx(),
+                        format!("{} Drop Index", egui_icons::icons::ICON_DELETE.codepoint),
+                    ),
                 )
                 .on_hover_text("Drop selected index")
                 .clicked()
@@ -393,21 +414,11 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                             }
                             let dark = ui.visuals().dark_mode;
                             let border = if dark {
-                                egui::Color32::from_gray(55)
+                                egui::Color32::from_rgb(55, 59, 74)
                             } else {
-                                egui::Color32::from_gray(190)
+                                egui::Color32::from_rgb(203, 213, 225)
                             };
                             let stroke = egui::Stroke::new(0.5, border);
-                            let header_text_col = if dark {
-                                egui::Color32::from_rgb(220, 220, 255)
-                            } else {
-                                egui::Color32::from_rgb(60, 60, 120)
-                            };
-                            let header_bg = if dark {
-                                egui::Color32::from_rgb(30, 30, 30)
-                            } else {
-                                egui::Color32::from_gray(240)
-                            };
                             let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
                             let row_h = metrics.table_row_height;
                             let header_h = metrics.table_row_height + 4.0;
@@ -424,7 +435,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 egui::vec2(w, header_h),
                                                 egui::Sense::click(),
                                             );
-                                            ui.painter().rect_filled(rect, 0.0, header_bg);
+                                            let (h_bg, h_text_col) = crate::window_egui::style::table_header_colors(dark, i == 0);
+                                            ui.painter().rect_filled(rect, 0.0, h_bg);
                                             ui.painter().rect_stroke(
                                                 rect,
                                                 0.0,
@@ -436,7 +448,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 egui::Align2::LEFT_CENTER,
                                                 *h,
                                                 egui::FontId::proportional(13.0),
-                                                header_text_col,
+                                                h_text_col,
                                             );
                                             let handle = egui::Rect::from_min_max(
                                                 egui::pos2(rect.max.x - 4.0, rect.min.y),
@@ -460,13 +472,13 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 );
                                             }
                                             resp.context_menu(|ui| {
-                                                if ui.button("➕ Add Index").clicked() {
+                                                if ui.button(format!("{} Add Index", egui_icons::icons::ICON_ADD.codepoint)).clicked() {
                                                     if !tabular.adding_index {
                                                         start_inline_add_index(tabular);
                                                     }
                                                     ui.close();
                                                 }
-                                                if ui.button("🔄 Refresh").clicked() {
+                                                if ui.button(format!("{} Refresh", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() {
                                                     tabular.request_structure_refresh = true;
                                                     load_structure_info_for_current_table(tabular);
                                                     ui.close();
@@ -480,6 +492,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                     for (idx, ix) in existing_indexes.iter().enumerate() {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 0.0;
+                                            let is_pk = ix.name.eq_ignore_ascii_case("PRIMARY")
+                                                || (ix.unique && ix.name.to_ascii_lowercase().contains("primary"));
                                             let values = [
                                                 (idx + 1).to_string(),
                                                 ix.name.clone(),
@@ -507,9 +521,9 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 // Alternating row bg
                                                 if idx % 2 == 1 {
                                                     let bg = if dark {
-                                                        egui::Color32::from_rgb(40, 40, 40)
+                                                        egui::Color32::from_rgb(26, 29, 38)
                                                     } else {
-                                                        egui::Color32::from_rgb(250, 250, 250)
+                                                        egui::Color32::from_rgb(245, 247, 250)
                                                     };
                                                     ui.painter().rect_filled(rect, 0.0, bg);
                                                 }
@@ -568,18 +582,179 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 if is_cell_selected {
                                                     selected_cell_rect = Some(rect);
                                                 }
-                                                let txt_col = if dark {
-                                                    egui::Color32::LIGHT_GRAY
-                                                } else {
-                                                    egui::Color32::BLACK
-                                                };
-                                                ui.painter().text(
-                                                    rect.left_center() + egui::vec2(6.0, 0.0),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    val,
-                                                    egui::FontId::proportional(13.0),
-                                                    txt_col,
-                                                );
+                                                match i {
+                                                    0 => {
+                                                        // # Row number
+                                                        let row_num_col = crate::window_egui::style::table_row_number_color(dark);
+                                                        ui.painter().text(
+                                                            rect.left_center() + egui::vec2(6.0, 0.0),
+                                                            egui::Align2::LEFT_CENTER,
+                                                            val,
+                                                            egui::FontId::monospace(12.0),
+                                                            row_num_col,
+                                                        );
+                                                    }
+                                                    1 => {
+                                                        // index_name
+                                                        let idx_col = crate::window_egui::style::index_name_color(&ix.name, ix.unique, dark);
+                                                        let icon_cp = if is_pk {
+                                                            egui_icons::icons::ICON_KEY.codepoint
+                                                        } else {
+                                                            egui_icons::icons::ICON_TAG.codepoint
+                                                        };
+                                                        let mut job = egui::text::LayoutJob::default();
+                                                        job.append(
+                                                            &format!("{} ", icon_cp),
+                                                            0.0,
+                                                            egui::TextFormat {
+                                                                color: idx_col,
+                                                                font_id: egui::FontId::proportional(12.0),
+                                                                ..Default::default()
+                                                            },
+                                                        );
+                                                        job.append(
+                                                            &ix.name,
+                                                            0.0,
+                                                            egui::TextFormat {
+                                                                color: idx_col,
+                                                                font_id: egui::FontId::proportional(13.0),
+                                                                ..Default::default()
+                                                            },
+                                                        );
+                                                        let galley = ui.painter().layout_job(job);
+                                                        ui.painter().galley(
+                                                            rect.left_center() + egui::vec2(6.0, -galley.size().y * 0.5),
+                                                            galley,
+                                                            egui::Color32::WHITE,
+                                                        );
+                                                    }
+                                                    2 => {
+                                                        // algorithm
+                                                        let method = ix.method.as_deref().unwrap_or("");
+                                                        if method.is_empty() {
+                                                            let muted = if dark {
+                                                                egui::Color32::from_rgb(100, 116, 139)
+                                                            } else {
+                                                                egui::Color32::from_rgb(148, 163, 184)
+                                                            };
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                "-",
+                                                                egui::FontId::proportional(13.0),
+                                                                muted,
+                                                            );
+                                                        } else {
+                                                            let algo_col = crate::window_egui::style::index_algorithm_color(dark);
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                method,
+                                                                egui::FontId::monospace(12.5),
+                                                                algo_col,
+                                                            );
+                                                        }
+                                                    }
+                                                    3 => {
+                                                        // unique
+                                                        if ix.unique {
+                                                            let yes_col = if dark {
+                                                                egui::Color32::from_rgb(52, 211, 153)
+                                                            } else {
+                                                                egui::Color32::from_rgb(5, 150, 105)
+                                                            };
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                "YES",
+                                                                egui::FontId::proportional(13.0),
+                                                                yes_col,
+                                                            );
+                                                        } else {
+                                                            let no_col = if dark {
+                                                                egui::Color32::from_rgb(148, 163, 184)
+                                                            } else {
+                                                                egui::Color32::from_rgb(100, 116, 139)
+                                                            };
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                "NO",
+                                                                egui::FontId::proportional(13.0),
+                                                                no_col,
+                                                            );
+                                                        }
+                                                    }
+                                                    4 => {
+                                                        // columns
+                                                        if ix.columns.is_empty() {
+                                                            let muted = if dark {
+                                                                egui::Color32::from_rgb(100, 116, 139)
+                                                            } else {
+                                                                egui::Color32::from_rgb(148, 163, 184)
+                                                            };
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                "-",
+                                                                egui::FontId::proportional(13.0),
+                                                                muted,
+                                                            );
+                                                        } else {
+                                                            let mut job = egui::text::LayoutJob::default();
+                                                            let col_color = crate::window_egui::style::column_name_color(dark, false);
+                                                            let comma_color = if dark {
+                                                                egui::Color32::from_rgb(100, 116, 139)
+                                                            } else {
+                                                                egui::Color32::from_rgb(148, 163, 184)
+                                                            };
+                                                            for (c_idx, col_part) in ix.columns.iter().enumerate() {
+                                                                if c_idx > 0 {
+                                                                    job.append(
+                                                                        ", ",
+                                                                        0.0,
+                                                                        egui::TextFormat {
+                                                                            color: comma_color,
+                                                                            font_id: egui::FontId::proportional(13.0),
+                                                                            ..Default::default()
+                                                                        },
+                                                                    );
+                                                                }
+                                                                job.append(
+                                                                    col_part,
+                                                                    0.0,
+                                                                    egui::TextFormat {
+                                                                        color: col_color,
+                                                                        font_id: egui::FontId::proportional(13.0),
+                                                                        ..Default::default()
+                                                                    },
+                                                                );
+                                                            }
+                                                            let galley = ui.painter().layout_job(job);
+                                                            ui.painter().galley(
+                                                                rect.left_center() + egui::vec2(6.0, -galley.size().y * 0.5),
+                                                                galley,
+                                                                egui::Color32::WHITE,
+                                                            );
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        if !val.is_empty() {
+                                                            let txt_col = if dark {
+                                                                egui::Color32::LIGHT_GRAY
+                                                            } else {
+                                                                egui::Color32::BLACK
+                                                            };
+                                                            ui.painter().text(
+                                                                rect.left_center() + egui::vec2(6.0, 0.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                val,
+                                                                egui::FontId::proportional(13.0),
+                                                                txt_col,
+                                                            );
+                                                        }
+                                                    }
+                                                }
                                                 if resp.clicked() {
                                                     let shift = ui.input(|i| i.modifiers.shift);
                                                     tabular.structure_selected_row = Some(idx);
@@ -613,11 +788,11 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 }
                                                 resp.context_menu(|ui| {
                                                     // Copy helpers
-                                                    if ui.button("📋 Copy Cell Value").clicked() {
+                                                    if ui.button(format!("{} Copy Cell Value", egui_icons::icons::ICON_CONTENT_COPY.codepoint)).clicked() {
                                                         ui.ctx().copy_text(val.clone());
                                                         ui.close();
                                                     }
-                                                    if ui.button("📄 Copy Selection as CSV").clicked()
+                                                    if ui.button(format!("{} Copy Selection as CSV", egui_icons::icons::ICON_DESCRIPTION.codepoint)).clicked()
                                                     {
                                                         if let (Some(a), Some(b)) = (
                                                             tabular.structure_sel_anchor,
@@ -682,7 +857,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                         }
                                                         ui.close();
                                                     }
-                                                    if ui.button("📄 Copy Row as CSV").clicked() {
+                                                    if ui.button(format!("{} Copy Row as CSV", egui_icons::icons::ICON_DESCRIPTION.codepoint)).clicked() {
                                                         let csv_row = values
                                                             .iter()
                                                             .map(|v| {
@@ -707,18 +882,18 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                         ui.close();
                                                     }
                                                     ui.separator();
-                                                    if ui.button("➕ Add Index").clicked() {
+                                                    if ui.button(format!("{} Add Index", egui_icons::icons::ICON_ADD.codepoint)).clicked() {
                                                         if !tabular.adding_index {
                                                             start_inline_add_index(tabular);
                                                         }
                                                         ui.close();
                                                     }
-                                                    if ui.button("🔄 Refresh").clicked() {
+                                                    if ui.button(format!("{} Refresh", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() {
                                                         tabular.request_structure_refresh = true;
                                                         load_structure_info_for_current_table(tabular);
                                                         ui.close();
                                                     }
-                                                    if ui.button("❌ Drop Index").clicked() {
+                                                    if ui.button(format!("{} Drop Index", egui_icons::icons::ICON_DELETE.codepoint)).clicked() {
                                                         if let Some(conn_id) =
                                                             tabular.current_connection_id
                                                             && let Some(conn) = tabular
@@ -1012,21 +1187,11 @@ pub(crate) fn render_structure_columns_editor(
     }
     let dark = ui.visuals().dark_mode;
     let border = if dark {
-        egui::Color32::from_gray(55)
+        egui::Color32::from_rgb(55, 59, 74)
     } else {
-        egui::Color32::from_gray(190)
+        egui::Color32::from_rgb(203, 213, 225)
     };
     let stroke = egui::Stroke::new(0.5, border);
-    let header_text_col = if dark {
-        egui::Color32::from_rgb(220, 220, 255)
-    } else {
-        egui::Color32::from_rgb(60, 60, 120)
-    };
-    let header_bg = if dark {
-        egui::Color32::from_rgb(30, 30, 30)
-    } else {
-        egui::Color32::from_gray(240)
-    };
     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
     let row_h = metrics.table_row_height;
     let header_h = metrics.table_row_height + 4.0;
@@ -1039,9 +1204,10 @@ pub(crate) fn render_structure_columns_editor(
                     let w = widths[i];
                     // Make header cells clickable so we can attach context menu (right-click)
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
-                    ui.painter().rect_filled(rect, 0.0, header_bg);
+                    let (h_bg, h_text_col) = crate::window_egui::style::table_header_colors(dark, i == 0);
+                    ui.painter().rect_filled(rect, 0.0, h_bg);
                     ui.painter().rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Outside);
-                    ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), header_text_col);
+                    ui.painter().text(rect.left_center() + egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, *h, egui::FontId::proportional(13.0), h_text_col);
                     // simple resize region
                     let handle = egui::Rect::from_min_max(egui::pos2(rect.max.x - 4.0, rect.min.y), rect.max);
                     let rh = ui.interact(handle, egui::Id::new(("struct_cols_inline","resize",i)), egui::Sense::drag());
@@ -1049,8 +1215,8 @@ pub(crate) fn render_structure_columns_editor(
                     if rh.hovered() { ui.painter().rect_filled(handle, 0.0, egui::Color32::from_gray(80)); }
                     // Context menu on any header cell
                     resp.context_menu(|ui| {
-                        if ui.button("🔄 Refresh").clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
-                        if ui.button("➕ Add Column").clicked() {
+                        if ui.button(format!("{} Refresh", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() { tabular.request_structure_refresh = true; load_structure_info_for_current_table(tabular); ui.close(); }
+                        if ui.button(format!("{} Add Column", egui_icons::icons::ICON_ADD.codepoint)).clicked() {
                             if !tabular.adding_column { // initialize add column row
                                 tabular.adding_column = true;
                                 if tabular.new_column_type.trim().is_empty() { tabular.new_column_type = "varchar(255)".to_string(); }
@@ -1070,6 +1236,10 @@ pub(crate) fn render_structure_columns_editor(
             for (idx,col) in existing_cols.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
+                    let is_pk = tabular.structure_indexes.iter().any(|ix| {
+                        (ix.name.eq_ignore_ascii_case("PRIMARY") || (ix.unique && ix.name.to_ascii_lowercase().contains("primary")))
+                            && ix.columns.iter().any(|c| c.eq_ignore_ascii_case(&col.name))
+                    });
                     let values = [
                         (idx+1).to_string(),
                         col.name.clone(),
@@ -1084,7 +1254,10 @@ pub(crate) fn render_structure_columns_editor(
                         let w = widths[i];
                         // All cells clickable for context menu
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w,row_h), egui::Sense::click_and_drag());
-                        if idx %2 ==1 { let bg = if dark { egui::Color32::from_rgb(40,40,40) } else { egui::Color32::from_rgb(250,250,250) }; ui.painter().rect_filled(rect,0.0,bg);}
+                        if idx %2 ==1 {
+                            let bg = if dark { egui::Color32::from_rgb(26,29,38) } else { egui::Color32::from_rgb(245,247,250) };
+                            ui.painter().rect_filled(rect,0.0,bg);
+                        }
                         // Selection highlight
                         let is_row_selected = tabular.structure_selected_row == Some(idx);
                         let is_cell_selected = tabular.structure_selected_cell == Some((idx, i));
@@ -1106,8 +1279,133 @@ pub(crate) fn render_structure_columns_editor(
                         ui.painter().rect_stroke(rect,0.0,stroke, egui::StrokeKind::Outside);
                         // Defer selected outline to avoid being overdrawn by neighbor cells
                         if is_cell_selected { selected_cell_rect = Some(rect); }
-                        let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
-                        ui.painter().text(rect.left_center()+egui::vec2(6.0,0.0), egui::Align2::LEFT_CENTER, val, egui::FontId::proportional(13.0), txt_col);
+                        match i {
+                            0 => {
+                                // # Row number
+                                let row_num_col = crate::window_egui::style::table_row_number_color(dark);
+                                ui.painter().text(
+                                    rect.left_center() + egui::vec2(6.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    val,
+                                    egui::FontId::monospace(12.0),
+                                    row_num_col,
+                                );
+                            }
+                            1 => {
+                                // column_name
+                                let col_color = crate::window_egui::style::column_name_color(dark, is_pk);
+                                let icon_cp = if is_pk {
+                                    egui_icons::icons::ICON_KEY.codepoint
+                                } else {
+                                    egui_icons::icons::ICON_VIEW_COLUMN.codepoint
+                                };
+                                let mut job = egui::text::LayoutJob::default();
+                                job.append(
+                                    &format!("{} ", icon_cp),
+                                    0.0,
+                                    egui::TextFormat {
+                                        color: col_color,
+                                        font_id: egui::FontId::proportional(12.0),
+                                        ..Default::default()
+                                    },
+                                );
+                                job.append(
+                                    &col.name,
+                                    0.0,
+                                    egui::TextFormat {
+                                        color: col_color,
+                                        font_id: egui::FontId::proportional(13.0),
+                                        ..Default::default()
+                                    },
+                                );
+                                let galley = ui.painter().layout_job(job);
+                                ui.painter().galley(
+                                    rect.left_center() + egui::vec2(6.0, -galley.size().y * 0.5),
+                                    galley,
+                                    egui::Color32::WHITE,
+                                );
+                            }
+                            2 => {
+                                // data_type
+                                let type_color = crate::window_egui::style::sql_type_color(&col.data_type, dark);
+                                ui.painter().text(
+                                    rect.left_center() + egui::vec2(6.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    val,
+                                    egui::FontId::monospace(12.5),
+                                    type_color,
+                                );
+                            }
+                            3 => {
+                                // nullable
+                                let null_col = crate::window_egui::style::nullable_badge_color(val, dark);
+                                let display_val = if val == "?" { "-" } else { val.as_str() };
+                                ui.painter().text(
+                                    rect.left_center() + egui::vec2(6.0, 0.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    display_val,
+                                    egui::FontId::proportional(13.0),
+                                    null_col,
+                                );
+                            }
+                            4 => {
+                                // default_value
+                                if val.is_empty() || val.eq_ignore_ascii_case("NULL") {
+                                    let muted = if dark {
+                                        egui::Color32::from_rgb(100, 116, 139)
+                                    } else {
+                                        egui::Color32::from_rgb(148, 163, 184)
+                                    };
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        "NULL",
+                                        egui::FontId::proportional(12.0),
+                                        muted,
+                                    );
+                                } else {
+                                    let (def_col, _) = crate::window_egui::style::table_cell_style(
+                                        val,
+                                        Some(&col.data_type),
+                                        dark,
+                                    );
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        val,
+                                        egui::FontId::proportional(13.0),
+                                        def_col,
+                                    );
+                                }
+                            }
+                            5 => {
+                                // extra
+                                if val.is_empty() {
+                                    let muted = if dark {
+                                        egui::Color32::from_rgb(100, 116, 139)
+                                    } else {
+                                        egui::Color32::from_rgb(148, 163, 184)
+                                    };
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        "-",
+                                        egui::FontId::proportional(13.0),
+                                        muted,
+                                    );
+                                } else {
+                                    let extra_col = crate::window_egui::style::extra_info_color(val, dark);
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        val,
+                                        egui::FontId::proportional(13.0),
+                                        extra_col,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
                         if resp.clicked() {
                             let shift = ui.input(|i| i.modifiers.shift);
                             tabular.structure_selected_row = Some(idx);
@@ -1139,11 +1437,11 @@ pub(crate) fn render_structure_columns_editor(
                         if tabular.structure_dragging && !ui.input(|inp| inp.pointer.primary_down()) { tabular.structure_dragging = false; }
                         // Context menu on every cell
                         resp.context_menu(|ui| {
-                            if ui.button("📋 Copy Cell Value").clicked() {
+                            if ui.button(format!("{} Copy Cell Value", egui_icons::icons::ICON_CONTENT_COPY.codepoint)).clicked() {
                                 ui.ctx().copy_text(val.clone());
                                 ui.close();
                             }
-                            if ui.button("📄 Copy Selection as CSV").clicked() {
+                            if ui.button(format!("{} Copy Selection as CSV", egui_icons::icons::ICON_DESCRIPTION.codepoint)).clicked() {
                                 if let (Some(a), Some(b)) = (tabular.structure_sel_anchor, tabular.structure_selected_cell) {
                                     let (ar, ac) = a; let (br, bc) = b;
                                     let rmin = ar.min(br); let rmax = ar.max(br);
@@ -1174,7 +1472,7 @@ pub(crate) fn render_structure_columns_editor(
                                 }
                                 ui.close();
                             }
-                            if ui.button("📄 Copy Row as CSV").clicked() {
+                            if ui.button(format!("{} Copy Row as CSV", egui_icons::icons::ICON_DESCRIPTION.codepoint)).clicked() {
                                 let csv_row = values.iter().map(|v| {
                                     if v.contains(',') || v.contains('"') || v.contains('\n') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v.clone() }
                                 }).collect::<Vec<_>>().join(",");
@@ -1182,13 +1480,13 @@ pub(crate) fn render_structure_columns_editor(
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🔄 Refresh").clicked() {
+                            if ui.button(format!("{} Refresh", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() {
                                 tabular.request_structure_refresh = true;
                                 load_structure_info_for_current_table(tabular);
                                 crate::sidebar_database::refresh_connections_tree(tabular);
                                 ui.close();
                             }
-                            if ui.button("➕ Add Column").clicked() {
+                            if ui.button(format!("{} Add Column", egui_icons::icons::ICON_ADD.codepoint)).clicked() {
                                 if !tabular.adding_column {
                                     tabular.adding_column = true;
                                     if tabular.new_column_type.trim().is_empty() { tabular.new_column_type = default_data_type_for_conn(tabular); }
@@ -1198,7 +1496,7 @@ pub(crate) fn render_structure_columns_editor(
                                 }
                                 ui.close();
                             }
-                            if ui.button("☑ Edit Column").clicked() {
+                            if ui.button(format!("{} Edit Column", egui_icons::icons::ICON_EDIT.codepoint)).clicked() {
                                 tabular.editing_column = true;
                                 tabular.edit_column_original_name = col.name.clone();
                                 tabular.edit_column_name = col.name.clone();
@@ -1207,7 +1505,7 @@ pub(crate) fn render_structure_columns_editor(
                                 tabular.edit_column_default = col.default_value.clone().unwrap_or_default();
                                 ui.close();
                             }
-                            if ui.button("🗑 Drop Column").clicked() {
+                            if ui.button(format!("{} Drop Column", egui_icons::icons::ICON_DELETE.codepoint)).clicked() {
                                 trigger_drop_column(tabular, &col.name);
                                 ui.close();
                             }
@@ -1390,7 +1688,7 @@ pub(crate) fn render_structure_columns_editor(
                             0 => {
                                 let txt_col = if dark { egui::Color32::LIGHT_GRAY } else { egui::Color32::BLACK };
                                 child_ui.add_space(6.0);
-                                child_ui.label(egui::RichText::new("✏️").size(12.0).color(txt_col));
+                                child_ui.label(egui::RichText::new(egui_icons::icons::ICON_EDIT.codepoint).size(12.0).color(txt_col));
                             }
                             1 => {
                                 child_ui.add_space(3.0);

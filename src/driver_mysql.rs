@@ -834,12 +834,15 @@ pub(crate) async fn fetch_mysql_foreign_keys(
 pub(crate) async fn fetch_mysql_columns(
     pool: &MySqlPool,
     database_name: &str,
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+) -> Result<std::collections::HashMap<String, Vec<models::structs::DiagramColumn>>, sqlx::Error> {
     let query = r#"
-        SELECT 
-            TABLE_NAME, 
-            COLUMN_NAME
-        FROM 
+        SELECT
+            TABLE_NAME,
+            COLUMN_NAME,
+            COLUMN_TYPE,
+            IS_NULLABLE,
+            COLUMN_KEY
+        FROM
             INFORMATION_SCHEMA.COLUMNS
         WHERE 
             TABLE_SCHEMA = ?
@@ -852,7 +855,8 @@ pub(crate) async fn fetch_mysql_columns(
         .fetch_all(pool)
         .await?;
 
-    let mut columns_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut columns_map: std::collections::HashMap<String, Vec<models::structs::DiagramColumn>> =
+        std::collections::HashMap::new();
 
     for row in rows {
         // Safe decoder for columns that might unexpectedly return binary (Vec<u8>)
@@ -868,7 +872,15 @@ pub(crate) async fn fetch_mysql_columns(
         let column_name: String = decode(&row, 1);
 
         if !table_name.is_empty() {
-             columns_map.entry(table_name).or_default().push(column_name);
+            columns_map
+                .entry(table_name)
+                .or_default()
+                .push(models::structs::DiagramColumn {
+                    name: column_name,
+                    type_name: decode(&row, 2),
+                    nullable: decode(&row, 3).eq_ignore_ascii_case("YES"),
+                    is_pk: decode(&row, 4).eq_ignore_ascii_case("PRI"),
+                });
         }
     }
 
