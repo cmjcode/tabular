@@ -163,6 +163,24 @@ pub fn start_oauth_flow(
                                             Ok(token_resp) => {
                                                 info!("✅ Received valid token response via ticket polling");
                                                 let _ = tx.send(Ok(token_resp));
+                                                // Berikan grace period singkat untuk melayani koneksi HTTP yang tersisa dari browser
+                                                if let Some(listener) = listener_opt {
+                                                    let drain_start = std::time::Instant::now();
+                                                    while drain_start.elapsed() < Duration::from_secs(3) {
+                                                        if let Ok((mut stream, _)) = listener.accept() {
+                                                            let http_resp = "HTTP/1.1 200 OK\r\n\
+                                                                             Content-Type: text/html\r\n\
+                                                                             Access-Control-Allow-Origin: *\r\n\
+                                                                             Connection: close\r\n\r\n\
+                                                                             <!DOCTYPE html><html><body style='font-family:sans-serif;text-align:center;padding:40px;background:#0f172a;color:#fff;'>\
+                                                                             <h2 style='color:#38bdf8;'>Sign in successful!</h2><p>You can close this tab and return to Tabular.</p></body></html>";
+                                                            let _ = stream.write_all(http_resp.as_bytes());
+                                                            let _ = stream.flush();
+                                                            break;
+                                                        }
+                                                        thread::sleep(Duration::from_millis(100));
+                                                    }
+                                                }
                                                 return;
                                             }
                                             Err(e) => {
