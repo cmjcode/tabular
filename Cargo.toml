@@ -134,6 +134,10 @@ keyring = "4"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 rfd = "0.17"
+# Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
+# Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
+# sering mengubah API antar rilis.
+rmcp = { version = "3.4", features = ["transport-io"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }

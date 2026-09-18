@@ -9,6 +9,7 @@
 
 use eframe::egui;
 
+pub mod agent;
 pub mod ai_assistant;
 pub mod app_logging;
 pub mod auto_updater;
@@ -160,6 +161,19 @@ pub fn log_startup_step(step: &str) {
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
+    // Mode CLI (`tabular mcp`, `--help`, `--version`) tidak membuka jendela.
+    // Argumen lain (mis. `-psn_*` dari Finder) tetap jatuh ke GUI.
+    #[cfg(not(target_os = "ios"))]
+    if let Some(result) = agent::cli::try_run_from_args() {
+        return match result {
+            Ok(()) => Ok(()),
+            Err(message) => {
+                eprintln!("tabular: {message}");
+                std::process::exit(1);
+            }
+        };
+    }
+
     log_startup_step("run() entrypoint started");
     // Harus sebelum pool SQLite pertama dibuka agar vec_* tersedia di semua koneksi.
     vector_index::register_sqlite_vec();
