@@ -418,6 +418,7 @@ impl super::Tabular {
             autocomplete_fks_mem: std::collections::HashMap::new(),
             autocomplete_tables_mem: std::collections::HashMap::new(),
             autocomplete_col_types_mem: std::collections::HashMap::new(),
+            autocomplete_usage: std::collections::HashMap::new(),
             autocomplete_warm_receiver: Some(autocomplete_warm_receiver),
             autocomplete_warm_sender,
             selection_force_clear: false,

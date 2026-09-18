@@ -189,7 +189,10 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if let Some(state) = &mut tabular.backup_state {
         // Poll progress if tracker is active
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
+            let snap = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -199,7 +202,10 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     egui::Window::new("💾 Database Backup & Export")
         .open(&mut open)
         .default_size(egui::vec2(580.0, 440.0))
-        .max_size(egui::vec2(660.0, (ctx.content_rect().height() * 0.85).max(360.0)))
+        .max_size(egui::vec2(
+            660.0,
+            (ctx.content_rect().height() * 0.85).max(360.0),
+        ))
         .resizable(true)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -240,14 +246,19 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .show(ui, |ui| {
                             // Section 1: Output Destination
                             ui.group(|ui| {
-                                ui.label(egui::RichText::new("📁 Destination File").strong().small());
+                                ui.label(
+                                    egui::RichText::new("📁 Destination File").strong().small(),
+                                );
                                 ui.horizontal(|ui| {
                                     let mut path_str = state
                                         .target_file
                                         .as_ref()
                                         .map_or(String::new(), |p| p.to_string_lossy().to_string());
 
-                                    let path_w = ui.available_width() - 95.0;
+                                    let browse_w = 80.0;
+                                    let spacing = 8.0;
+                                    let path_w =
+                                        (ui.available_width() - browse_w - spacing).max(120.0);
                                     let resp = crate::window_egui::style::render_text_field(
                                         ui,
                                         egui::TextEdit::singleline(&mut path_str)
@@ -258,8 +269,18 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     if resp.changed() {
                                         state.target_file = Some(PathBuf::from(path_str));
                                     }
+                                    ui.add_space(spacing);
 
-                                    if ui.button("Browse...").clicked() {
+                                    if ui
+                                        .add(
+                                            crate::window_egui::style::btn_field_action(
+                                                ui,
+                                                "Browse...",
+                                            )
+                                            .min_size(egui::vec2(browse_w, 0.0)),
+                                        )
+                                        .clicked()
+                                    {
                                         let default_name = state.target_file.as_ref().map_or_else(
                                             || {
                                                 format!(
@@ -352,7 +373,9 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                             // Section 3: Advanced Options
                             ui.group(|ui| {
-                                ui.label(egui::RichText::new("🛠️ Advanced Options").strong().small());
+                                ui.label(
+                                    egui::RichText::new("🛠️ Advanced Options").strong().small(),
+                                );
                                 ui.horizontal_wrapped(|ui| {
                                     ui.checkbox(
                                         &mut state.single_transaction,
@@ -367,10 +390,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         "DROP TABLE before CREATE",
                                     );
                                     if state.connection_type == DatabaseType::PostgreSQL {
-                                        ui.checkbox(
-                                            &mut state.no_owner,
-                                            "No Owner (--no-owner)",
-                                        );
+                                        ui.checkbox(&mut state.no_owner, "No Owner (--no-owner)");
                                         ui.checkbox(
                                             &mut state.no_privileges,
                                             "No Privileges (--no-privileges)",
@@ -385,56 +405,69 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             if !state.available_tables.is_empty() {
                                 ui.group(|ui| {
                                     let filter_title = if state.selected_tables.is_empty() {
-                                        format!("📋 Table Filter (All {} tables included)", state.available_tables.len())
+                                        format!(
+                                            "📋 Table Filter (All {} tables included)",
+                                            state.available_tables.len()
+                                        )
                                     } else {
-                                        format!("📋 Table Filter ({} of {} selected)", state.selected_tables.len(), state.available_tables.len())
+                                        format!(
+                                            "📋 Table Filter ({} of {} selected)",
+                                            state.selected_tables.len(),
+                                            state.available_tables.len()
+                                        )
                                     };
 
-                                    egui::CollapsingHeader::new(egui::RichText::new(filter_title).strong().small())
-                                        .default_open(false)
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                let field_width = ui.available_width() - 140.0;
-                                                crate::window_egui::style::render_search_field(
-                                                    ui,
-                                                    &mut state.table_search_query,
-                                                    "Filter table list…",
-                                                    field_width,
-                                                );
+                                    egui::CollapsingHeader::new(
+                                        egui::RichText::new(filter_title).strong().small(),
+                                    )
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let field_width = ui.available_width() - 140.0;
+                                            crate::window_egui::style::render_search_field(
+                                                ui,
+                                                &mut state.table_search_query,
+                                                "Filter table list…",
+                                                field_width,
+                                            );
 
-                                                if ui.button("Select All").clicked() {
-                                                    for tbl in &state.available_tables {
-                                                        state.selected_tables.insert(tbl.clone());
-                                                    }
+                                            if ui.button("Select All").clicked() {
+                                                for tbl in &state.available_tables {
+                                                    state.selected_tables.insert(tbl.clone());
                                                 }
-                                                if ui.button("Clear").clicked() {
-                                                    state.selected_tables.clear();
-                                                }
-                                            });
-
-                                            egui::ScrollArea::vertical()
-                                                .max_height(100.0)
-                                                .show(ui, |ui| {
-                                                    let q = state.table_search_query.to_lowercase();
-                                                    for table in &state.available_tables {
-                                                        if !q.is_empty()
-                                                            && !table.to_lowercase().contains(&q)
-                                                        {
-                                                            continue;
-                                                        }
-
-                                                        let mut is_checked =
-                                                            state.selected_tables.contains(table);
-                                                        if ui.checkbox(&mut is_checked, table).changed() {
-                                                            if is_checked {
-                                                                state.selected_tables.insert(table.clone());
-                                                            } else {
-                                                                state.selected_tables.remove(table);
-                                                            }
-                                                        }
-                                                    }
-                                                });
+                                            }
+                                            if ui.button("Clear").clicked() {
+                                                state.selected_tables.clear();
+                                            }
                                         });
+
+                                        egui::ScrollArea::vertical().max_height(100.0).show(
+                                            ui,
+                                            |ui| {
+                                                let q = state.table_search_query.to_lowercase();
+                                                for table in &state.available_tables {
+                                                    if !q.is_empty()
+                                                        && !table.to_lowercase().contains(&q)
+                                                    {
+                                                        continue;
+                                                    }
+
+                                                    let mut is_checked =
+                                                        state.selected_tables.contains(table);
+                                                    if ui.checkbox(&mut is_checked, table).changed()
+                                                    {
+                                                        if is_checked {
+                                                            state
+                                                                .selected_tables
+                                                                .insert(table.clone());
+                                                        } else {
+                                                            state.selected_tables.remove(table);
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
                                 });
                             }
                         });
@@ -559,7 +592,10 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     if let Some(state) = &mut tabular.restore_state {
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
+            let snap = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -614,7 +650,9 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .as_ref()
                                         .map_or(String::new(), |p| p.to_string_lossy().to_string());
 
-                                    let path_w = ui.available_width() - 95.0;
+                                    let browse_w = 80.0;
+                                    let spacing = 8.0;
+                                    let path_w = (ui.available_width() - browse_w - spacing).max(120.0);
                                     let resp = crate::window_egui::style::render_text_field(
                                         ui,
                                         egui::TextEdit::singleline(&mut path_str)
@@ -625,8 +663,12 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     if resp.changed() {
                                         state.source_file = Some(PathBuf::from(path_str));
                                     }
+                                    ui.add_space(spacing);
 
-                                    if ui.button("Browse...").clicked() {
+                                    if ui
+                                        .add(crate::window_egui::style::btn_field_action(ui, "Browse...").min_size(egui::vec2(browse_w, 0.0)))
+                                        .clicked()
+                                    {
                                         if let Some(path) = rfd::FileDialog::new()
                                             .add_filter(
                                                 "Database Backup Files",
@@ -816,7 +858,11 @@ fn render_header_card(
                             .small(),
                     );
                 });
-                ui.label(egui::RichText::new(format!("Target DB: {}", database_name)).weak().small());
+                ui.label(
+                    egui::RichText::new(format!("Target DB: {}", database_name))
+                        .weak()
+                        .small(),
+                );
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

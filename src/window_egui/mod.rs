@@ -373,6 +373,8 @@ pub struct Tabular {
     pub autocomplete_tables_mem: std::collections::HashMap<(i64, String), Vec<String>>,
     // In-memory column types per (connection_id, table_lowercase, column_lowercase).
     pub autocomplete_col_types_mem: std::collections::HashMap<(i64, String, String), String>,
+    /// Frekuensi pemilihan saran per label (sesi ini) untuk ranking autocomplete.
+    pub autocomplete_usage: std::collections::HashMap<String, u32>,
     // Background receiver and sender for non-blocking autocomplete warm tasks
     pub autocomplete_warm_receiver: Option<Receiver<AutocompleteWarmResult>>,
     pub autocomplete_warm_sender: Sender<AutocompleteWarmResult>,
