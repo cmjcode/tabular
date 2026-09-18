@@ -1082,7 +1082,8 @@ impl Tabular {
             stacked(ui, "New location", None, |ui| {
                 ui.horizontal(|ui| {
                     let browse_w = 96.0;
-                    let field_w = ui.available_width() - browse_w - 8.0;
+                    let spacing = 8.0;
+                    let field_w = (ui.available_width() - browse_w - spacing).max(120.0);
                     style::render_text_field(
                         ui,
                         egui::TextEdit::singleline(&mut self.temp_data_directory)
@@ -1090,9 +1091,10 @@ impl Tabular {
                         field_w,
                         None,
                     );
+                    ui.add_space(spacing);
                     let label = format!("{}  Browse", egui_icons::icons::ICON_FOLDER.codepoint);
                     if ui
-                        .add(style::btn_secondary(label).min_size(egui::vec2(browse_w, 0.0)))
+                        .add(style::btn_field_action(ui, label).min_size(egui::vec2(browse_w, 0.0)))
                         .clicked()
                     {
                         self.handle_directory_picker();
@@ -1297,15 +1299,19 @@ impl Tabular {
                 Some("Stored locally and only sent to the chosen provider."),
                 |ui| {
                     let hint_text = self.ai_provider.api_key_hint();
+                    let buttons_w = 70.0;
+                    let spacing = 6.0;
+                    let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
                     let resp = style::render_text_field(
                         ui,
                         egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
                             .password(true)
                             .hint_text(hint_text),
-                        240.0,
+                        field_w,
                         None,
                     );
-                    if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                    ui.add_space(spacing);
+                    if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                         self.ai_api_key = self.ai_settings_api_key_input.clone();
                         self.save_prefs_now();
                         self.set_pref_feedback("API key saved.");
@@ -1330,18 +1336,23 @@ impl Tabular {
 
         section(ui, "Model", |ui| {
             row(ui, "Model", None, |ui| {
+                let buttons_w = 140.0;
+                let spacing = 6.0;
+                let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
                 let resp = style::render_text_field(
                     ui,
                     egui::TextEdit::singleline(&mut self.ai_settings_model_input)
                         .hint_text(self.ai_provider.default_model()),
-                    200.0,
+                    field_w,
                     None,
                 );
-                if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                ui.add_space(spacing);
+                if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                     self.ai_model = self.ai_settings_model_input.clone();
                     self.save_prefs_now();
                 }
-                if ui.add(style::btn_secondary("Default")).clicked() {
+                ui.add_space(spacing);
+                if ui.add(style::btn_field_action(ui, "Default")).clicked() {
                     self.ai_settings_model_input = self.ai_provider.default_model().to_string();
                     self.ai_model = self.ai_settings_model_input.clone();
                     self.save_prefs_now();
@@ -1369,12 +1380,13 @@ impl Tabular {
             stacked(ui, label, None, |ui| {
                 ui.horizontal(|ui| {
                     let buttons_w = if is_custom { 160.0 } else { 140.0 };
+                    let spacing = 6.0;
                     let hint_url = if is_custom {
                         "https://localhost:11434/v1"
                     } else {
                         default_url
                     };
-                    let field_w = ui.available_width() - buttons_w;
+                    let field_w = (ui.available_width() - buttons_w - spacing).max(160.0);
                     let resp = style::render_text_field(
                         ui,
                         egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
@@ -1382,11 +1394,13 @@ impl Tabular {
                         field_w,
                         None,
                     );
-                    if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                    ui.add_space(spacing);
+                    if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                         self.ai_base_url = self.ai_settings_base_url_input.clone();
                         self.save_prefs_now();
                     }
-                    if ui.add(style::btn_secondary("Default")).clicked() {
+                    ui.add_space(spacing);
+                    if ui.add(style::btn_field_action(ui, "Default")).clicked() {
                         self.ai_settings_base_url_input = default_url.to_string();
                         self.ai_base_url = self.ai_settings_base_url_input.clone();
                         self.save_prefs_now();

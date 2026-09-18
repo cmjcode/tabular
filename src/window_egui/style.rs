@@ -227,6 +227,34 @@ pub fn btn_secondary<'a>(text: impl Into<String>) -> egui::Button<'a> {
     egui::Button::new(text.into()).corner_radius(6.0)
 }
 
+/// Tombol aksi pendamping text field (mis. Apply, Detect, Default, Browse).
+/// Tingginya disesuaikan persis dengan `render_text_field` (30.0 desktop, 40.0 touch).
+pub fn btn_field_action<'a>(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'a> {
+    let is_touch = ui.spacing().interact_size.y >= 30.0;
+    let height = if is_touch { 40.0 } else { 30.0 };
+    let font_size = if is_touch { 14.5 } else { 12.5 };
+    egui::Button::new(egui::RichText::new(text.into()).size(font_size))
+        .min_size(egui::vec2(0.0, height))
+        .corner_radius(6.0)
+}
+
+/// Tombol aksi utama pendamping text field dengan warna aksen (primary).
+pub fn btn_field_action_primary<'a>(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'a> {
+    let accent = theme_accent(ui.ctx());
+    let is_touch = ui.spacing().interact_size.y >= 30.0;
+    let height = if is_touch { 40.0 } else { 30.0 };
+    let font_size = if is_touch { 14.5 } else { 12.5 };
+    egui::Button::new(
+        egui::RichText::new(text.into())
+            .color(egui::Color32::WHITE)
+            .strong()
+            .size(font_size),
+    )
+    .fill(accent)
+    .min_size(egui::vec2(0.0, height))
+    .corner_radius(6.0)
+}
+
 pub fn btn_danger_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui::Button<'a> {
     let danger = theme_danger(ctx);
     egui::Button::new(
@@ -370,7 +398,8 @@ pub fn render_text_field(
     let muted = nav_text_muted(ui.ctx());
 
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    ui.painter().rect_filled(rect, radius, visuals.text_edit_bg_color());
+    ui.painter()
+        .rect_filled(rect, radius, visuals.text_edit_bg_color());
 
     let mut text_left = 9.0;
     if let Some(icon) = icon {
@@ -381,7 +410,10 @@ pub fn render_text_field(
         );
         let icon_w = icon_galley.size().x;
         ui.painter().galley(
-            egui::pos2(rect.left() + text_left, rect.center().y - icon_galley.size().y / 2.0),
+            egui::pos2(
+                rect.left() + text_left,
+                rect.center().y - icon_galley.size().y / 2.0,
+            ),
             icon_galley,
             muted,
         );
@@ -392,8 +424,10 @@ pub fn render_text_field(
         egui::pos2(rect.left() + text_left, rect.top()),
         egui::pos2(rect.right() - 8.0, rect.bottom()),
     );
-    let response = ui.put(
-        edit_rect,
+    let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect).layout(
+        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+    ));
+    let response = child_ui.add(
         edit.frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .desired_width(f32::INFINITY)
@@ -401,15 +435,20 @@ pub fn render_text_field(
             .font(egui::FontId::proportional(font_size)),
     );
 
+    let is_hovered = response.hovered() || ui.rect_contains_pointer(rect);
     let border = if response.has_focus() {
         visuals.widgets.active.bg_stroke.color
-    } else if response.hovered() {
+    } else if is_hovered {
         visuals.widgets.hovered.bg_stroke.color
     } else {
         visuals.widgets.inactive.bg_stroke.color
     };
-    ui.painter()
-        .rect_stroke(rect, radius, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
     response
 }
 
@@ -475,7 +514,10 @@ pub fn render_segmented_nav<'a>(
             .size()
             .x
     };
-    let icon_w: Vec<f32> = segments.iter().map(|s| measure(s.icon, &icon_font)).collect();
+    let icon_w: Vec<f32> = segments
+        .iter()
+        .map(|s| measure(s.icon, &icon_font))
+        .collect();
     let full_w: Vec<f32> = segments
         .iter()
         .zip(&icon_w)
@@ -493,12 +535,14 @@ pub fn render_segmented_nav<'a>(
     } else if sum_full <= inner_w {
         let extra = (inner_w - sum_full) / n as f32;
         (full_w.iter().map(|w| w + extra).collect(), vec![true; n])
-    } else if let Some(ai) = active_idx.filter(|&ai| {
-        n > 1 && full_w[ai] + compact_min * (n as f32 - 1.0) <= inner_w
-    }) {
+    } else if let Some(ai) =
+        active_idx.filter(|&ai| n > 1 && full_w[ai] + compact_min * (n as f32 - 1.0) <= inner_w)
+    {
         let rest = (inner_w - full_w[ai]) / (n as f32 - 1.0);
         (
-            (0..n).map(|i| if i == ai { full_w[ai] } else { rest }).collect(),
+            (0..n)
+                .map(|i| if i == ai { full_w[ai] } else { rest })
+                .collect(),
             (0..n).map(|i| i == ai).collect(),
         )
     } else {
@@ -576,7 +620,11 @@ pub fn render_segmented_nav<'a>(
                 color,
             );
         } else {
-            painter.galley(seg_rect.center() - icon_galley.size() / 2.0, icon_galley, color);
+            painter.galley(
+                seg_rect.center() - icon_galley.size() / 2.0,
+                icon_galley,
+                color,
+            );
         }
     }
     clicked
@@ -732,10 +780,10 @@ pub fn ai_chip(ui: &mut egui::Ui, text: egui::RichText, sense: egui::Sense) -> e
 pub fn ai_heading_color(ctx: &egui::Context, level: u8) -> egui::Color32 {
     let dark = ctx.global_style().visuals.dark_mode;
     let (d, l) = match level {
-        1 => ((96, 165, 250), (37, 99, 235)),    // biru
-        2 => ((129, 140, 248), (79, 70, 229)),   // indigo
-        3 => ((192, 132, 252), (147, 51, 234)),  // ungu
-        _ => ((45, 212, 191), (13, 148, 136)),   // teal
+        1 => ((96, 165, 250), (37, 99, 235)),   // biru
+        2 => ((129, 140, 248), (79, 70, 229)),  // indigo
+        3 => ((192, 132, 252), (147, 51, 234)), // ungu
+        _ => ((45, 212, 191), (13, 148, 136)),  // teal
     };
     let (r, g, b) = if dark { d } else { l };
     egui::Color32::from_rgb(r, g, b)

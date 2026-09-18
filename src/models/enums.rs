@@ -303,6 +303,11 @@ pub enum AutocompleteKind {
     Snippet,
     Parameter,
     Function,
+    /// Kondisi join siap pakai (`o.user_id = u.id`).
+    Join,
+    /// Alias tabel / alias SELECT.
+    Alias,
+    Operator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

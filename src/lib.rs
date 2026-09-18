@@ -31,6 +31,7 @@ pub mod driver_mysql;
 pub mod driver_postgres;
 pub mod driver_redis;
 pub mod driver_sqlite;
+pub mod autocomplete;
 pub mod editor;
 pub mod editor_autocomplete;
 pub mod editor_autocomplete_new; // temporary clean implementation backing the shim

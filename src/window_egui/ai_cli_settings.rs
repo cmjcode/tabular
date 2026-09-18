@@ -265,37 +265,45 @@ impl Tabular {
                 } else {
                     format!("{default_bin} (found in PATH)")
                 };
+                let has_detect = !default_bin.is_empty();
+                let buttons_w = if has_detect { 140.0 } else { 70.0 };
+                let spacing = 6.0;
+                let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
                 let resp = style::render_text_field(
                     ui,
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input).hint_text(hint_text),
-                    220.0,
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input)
+                        .hint_text(hint_text),
+                    field_w,
                     None,
                 );
-                if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                ui.add_space(spacing);
+                if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                     self.ai_cli_bin = self.ai_settings_cli_bin_input.trim().to_string();
                     self.ai_cli_mcp_registered = None;
                     self.save_ai_prefs();
                 }
-                if !default_bin.is_empty()
-                && ui
-                    .add(style::btn_secondary("Detect"))
-                    .on_hover_text("Search PATH and common install locations (~/.local/bin, Homebrew, npm, …)")
-                    .clicked()
-            {
-                match harness::resolve_binary(default_bin) {
-                    Some(path) => {
-                        self.ai_settings_cli_bin_input = path.to_string_lossy().to_string();
-                        self.ai_cli_bin = self.ai_settings_cli_bin_input.clone();
-                        self.ai_cli_mcp_registered = None;
-                        self.save_ai_prefs();
-                        self.toasts.success(format!("Found {}", path.display()));
-                    }
-                    None => {
-                        self.toasts
-                            .error(format!("`{default_bin}` not found. Install it or enter its full path."));
+                if has_detect {
+                    ui.add_space(spacing);
+                    if ui
+                        .add(style::btn_field_action(ui, "Detect"))
+                        .on_hover_text("Search PATH and common install locations (~/.local/bin, Homebrew, npm, …)")
+                        .clicked()
+                    {
+                        match harness::resolve_binary(default_bin) {
+                            Some(path) => {
+                                self.ai_settings_cli_bin_input = path.to_string_lossy().to_string();
+                                self.ai_cli_bin = self.ai_settings_cli_bin_input.clone();
+                                self.ai_cli_mcp_registered = None;
+                                self.save_ai_prefs();
+                                self.toasts.success(format!("Found {}", path.display()));
+                            }
+                            None => {
+                                self.toasts
+                                    .error(format!("`{default_bin}` not found. Install it or enter its full path."));
+                            }
+                        }
                     }
                 }
-            }
             },
         );
         divider(ui);
@@ -306,18 +314,24 @@ impl Tabular {
              (…-low/-medium/-high); the effort setting is then ignored.",
         );
         row(ui, "Model", model_hint, |ui| {
+            let buttons_w = 140.0;
+            let spacing = 6.0;
+            let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
             let resp = style::render_text_field(
                 ui,
-                egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input).hint_text("(CLI default)"),
-                220.0,
+                egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input)
+                    .hint_text("(CLI default)"),
+                field_w,
                 None,
             );
-            if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+            ui.add_space(spacing);
+            if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                 self.ai_cli_model = self.ai_settings_cli_model_input.trim().to_string();
                 self.save_ai_prefs();
             }
+            ui.add_space(spacing);
             if ui
-                .add(style::btn_secondary("Default"))
+                .add(style::btn_field_action(ui, "Default"))
                 .on_hover_text("Let the CLI pick its own default model")
                 .clicked()
             {
@@ -377,13 +391,18 @@ impl Tabular {
                     CliAgentKind::GeminiCli => "e.g. --approval-mode yolo",
                     CliAgentKind::Custom => "e.g. chat --model {model} {prompt}",
                 };
+                let buttons_w = 70.0;
+                let spacing = 6.0;
+                let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
                 let resp = style::render_text_field(
                     ui,
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input).hint_text(hint_text),
-                    220.0,
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input)
+                        .hint_text(hint_text),
+                    field_w,
                     None,
                 );
-                if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                ui.add_space(spacing);
+                if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
                     self.ai_cli_extra_args =
                         self.ai_settings_cli_extra_args_input.trim().to_string();
                     self.save_ai_prefs();
@@ -661,7 +680,10 @@ impl Tabular {
                         Some(Ok(stats)) => status(
                             ui,
                             Tone::Success,
-                            format!("✓ {} notes indexed ({} excerpts)", stats.notes, stats.chunks),
+                            format!(
+                                "✓ {} notes indexed ({} excerpts)",
+                                stats.notes, stats.chunks
+                            ),
                         ),
                         Some(Err(e)) => status(ui, Tone::Danger, format!("✗ {e}")),
                         None => hint(ui, "Not indexed yet"),

@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use crate::export_import_all::{
-    import_all_data, inspect_archive, ConflictStrategy, ExportAllManifest,
-    ExportAllOptions, ExportSummary, ImportAllOptions, ImportSummary,
+    ConflictStrategy, ExportAllManifest, ExportAllOptions, ExportSummary, ImportAllOptions,
+    ImportSummary, import_all_data, inspect_archive,
 };
 use crate::rfd;
 use crate::window_egui::Tabular;
@@ -58,8 +58,7 @@ impl Default for ExportAllDialogState {
 
 // ─── Import Dialog State ────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ImportAllDialogState {
     pub archive_path: Option<PathBuf>,
     pub manifest_preview: Option<ExportAllManifest>,
@@ -70,15 +69,11 @@ pub struct ImportAllDialogState {
     pub summary: Option<ImportSummary>,
 }
 
-
 // ─── Render Export Dialog ───────────────────────────────────────────────────
 
 pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut is_open = tabular.show_export_all_dialog;
-    let mut state = tabular
-        .export_all_state
-        .take()
-        .unwrap_or_default();
+    let mut state = tabular.export_all_state.take().unwrap_or_default();
     let mut close_requested = false;
 
     // Check background export thread if running
@@ -91,7 +86,8 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     match result {
                         Ok(summary) => {
                             state.summary = Some(summary);
-                            state.status_message = Some("Export completed successfully!".to_string());
+                            state.status_message =
+                                Some("Export completed successfully!".to_string());
                             state.error_message = None;
                         }
                         Err(err) => {
@@ -228,7 +224,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             .unwrap_or_default();
 
                         let button_width = 75.0;
-                        let spacing = ui.spacing().item_spacing.x;
+                        let spacing = 8.0;
                         let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
 
                         let text_resp = crate::window_egui::style::render_text_field(
@@ -240,8 +236,9 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         if text_resp.changed() {
                             state.target_file = Some(PathBuf::from(path_str));
                         }
+                        ui.add_space(spacing);
 
-                        if ui.add_sized([button_width, 30.0], egui::Button::new("Browse...")).clicked() {
+                        if ui.add(crate::window_egui::style::btn_field_action(ui, "Browse...").min_size(egui::vec2(button_width, 0.0))).clicked() {
                             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
                             let default_name = format!("tabular_backup_{}.zip", timestamp);
 
@@ -382,10 +379,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
 pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut is_open = tabular.show_import_all_dialog;
-    let mut state = tabular
-        .import_all_state
-        .take()
-        .unwrap_or_default();
+    let mut state = tabular.import_all_state.take().unwrap_or_default();
     let mut close_requested = false;
 
     crate::window_egui::style::render_modal_backdrop(ctx, "import_all_dialog", is_open);
@@ -487,7 +481,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .unwrap_or_default();
 
                     let button_width = 75.0;
-                    let spacing = ui.spacing().item_spacing.x;
+                    let spacing = 8.0;
                     let text_edit_width = (ui.available_width() - button_width - spacing).max(100.0);
 
                     let text_resp = crate::window_egui::style::render_text_field(
@@ -525,8 +519,9 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             state.manifest_preview = None;
                         }
                     }
+                    ui.add_space(spacing);
 
-                    if ui.add_sized([button_width, 30.0], egui::Button::new("Browse...")).clicked() {
+                    if ui.add(crate::window_egui::style::btn_field_action(ui, "Browse...").min_size(egui::vec2(button_width, 0.0))).clicked() {
                         let dialog = rfd::FileDialog::new()
                             .add_filter("ZIP Archive (*.zip)", &["zip"]);
 
