@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2024"
 
 [lib]
@@ -57,7 +57,7 @@ dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.99"                                # Pure-Rust xlsx writer (no libclang/C toolchain)
+rust_xlsxwriter = "0.99"                                          # Pure-Rust xlsx writer (no libclang/C toolchain)
 hex = "0.4.3"
 rust_decimal = "1.43.0"
 wasmi = "2.0.0"
@@ -66,11 +66,7 @@ env_logger = "0.11"
 dotenvy = "0.15.7"
 md5 = "0.8"
 # Dikunci ke 0.20.x: API pre-1.0 berubah antar minor (pengganti tiberius + deadpool-tiberius)
-mssql-client = { version = "0.20", features = [
-       "chrono",
-       "decimal",
-       "uuid",
-] }
+mssql-client = { version = "0.20", features = ["chrono", "decimal", "uuid"] }
 mssql-driver-pool = "0.20"
 futures-util = "0.3"
 # Self-update dependencies
@@ -147,7 +143,11 @@ keyring = "4"
 # Pinned to the versions winit already pulls in (see patches/winit/Cargo.toml) so
 # the iOS build does not end up compiling two objc2 trees.
 objc2 = "0.5.2"
-objc2-foundation = { version = "0.2.2", features = ["NSString", "NSURL", "NSDictionary"] }
+objc2-foundation = { version = "0.2.2", features = [
+       "NSString",
+       "NSURL",
+       "NSDictionary",
+] }
 # `block2` gates -[UIApplication openURL:options:completionHandler:]; without it
 # only the deprecated openURL: is generated.
 objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "block2"] }
