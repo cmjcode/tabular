@@ -471,119 +471,116 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
         )
     };
 
-    let dark = ctx.global_style().visuals.dark_mode;
-    let window_fill = if dark {
-        egui::Color32::from_rgb(22, 24, 30)
-    } else {
-        egui::Color32::from_rgb(250, 250, 252)
-    };
-
     let mut action_copy_text: Option<String> = None;
+    let mut close = false;
 
-    egui::Window::new(title)
-        .open(&mut is_open)
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "cell_inspector_backdrop",
+        tabular.cell_inspector.is_open,
+    );
+
+    egui::Window::new(&title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .default_size(egui::vec2(860.0, 580.0))
         .min_size(egui::vec2(550.0, 380.0))
         .resizable(true)
         .collapsible(false)
-        .frame(
-            egui::Frame::window(&ctx.global_style())
-                .fill(window_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    if dark {
-                        egui::Color32::from_rgb(55, 60, 75)
-                    } else {
-                        egui::Color32::from_rgb(210, 215, 225)
-                    },
-                ))
-                .corner_radius(10.0)
-                .inner_margin(egui::Margin::symmetric(14, 12)),
-        )
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(ui, &title, &mut close);
+            ui.add_space(8.0);
+
             // ─── Top Bar: Tabs & Quick Actions ───────────────────────────────
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                let tabs = [
-                    InspectorTab::Json,
-                    InspectorTab::Hex,
-                    InspectorTab::Image,
-                    InspectorTab::RawText,
-                ];
+                    let tabs = [
+                        InspectorTab::Json,
+                        InspectorTab::Hex,
+                        InspectorTab::Image,
+                        InspectorTab::RawText,
+                    ];
 
-                for tab in tabs {
-                    let is_active = tabular.cell_inspector.active_tab == tab;
-                    let text = egui::RichText::new(tab.label()).strong();
+                    for tab in tabs {
+                        let is_active = tabular.cell_inspector.active_tab == tab;
+                        let text = egui::RichText::new(tab.label()).strong();
 
-                    let btn_resp = if is_active {
-                        let accent = crate::window_egui::style::theme_accent(ctx);
-                        ui.add(
-                            egui::Button::new(text.color(egui::Color32::WHITE))
-                                .fill(accent)
-                                .corner_radius(6.0),
-                        )
-                    } else {
-                        ui.add(egui::Button::new(text).corner_radius(6.0))
-                    };
+                        let btn_resp = if is_active {
+                            let accent = crate::window_egui::style::theme_accent(ctx);
+                            ui.add(
+                                egui::Button::new(text.color(egui::Color32::WHITE))
+                                    .fill(accent)
+                                    .corner_radius(6.0),
+                            )
+                        } else {
+                            ui.add(egui::Button::new(text).corner_radius(6.0))
+                        };
 
-                    if btn_resp.clicked() {
-                        tabular.cell_inspector.active_tab = tab;
-                    }
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button("📋 Copy Raw")
-                        .on_hover_text("Copy original cell value to clipboard")
-                        .clicked()
-                    {
-                        action_copy_text = Some(tabular.cell_inspector.raw_value.clone());
+                        if btn_resp.clicked() {
+                            tabular.cell_inspector.active_tab = tab;
+                        }
                     }
 
-                    // Format Quick Indicator
-                    if tabular.cell_inspector.json_parsed.is_some() {
-                        crate::window_egui::style::render_badge(
-                            ui,
-                            "JSON VALID",
-                            egui::Color32::from_rgb(20, 80, 45),
-                            egui::Color32::from_rgb(130, 240, 160),
-                        );
-                    } else if tabular.cell_inspector.image_meta.is_some() {
-                        crate::window_egui::style::render_badge(
-                            ui,
-                            "IMAGE",
-                            egui::Color32::from_rgb(30, 60, 100),
-                            egui::Color32::from_rgb(140, 200, 255),
-                        );
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button("📋 Copy Raw")
+                            .on_hover_text("Copy original cell value to clipboard")
+                            .clicked()
+                        {
+                            action_copy_text = Some(tabular.cell_inspector.raw_value.clone());
+                        }
+
+                        // Format Quick Indicator
+                        if tabular.cell_inspector.json_parsed.is_some() {
+                            crate::window_egui::style::render_badge(
+                                ui,
+                                "JSON VALID",
+                                egui::Color32::from_rgb(20, 80, 45),
+                                egui::Color32::from_rgb(130, 240, 160),
+                            );
+                        } else if tabular.cell_inspector.image_meta.is_some() {
+                            crate::window_egui::style::render_badge(
+                                ui,
+                                "IMAGE",
+                                egui::Color32::from_rgb(30, 60, 100),
+                                egui::Color32::from_rgb(140, 200, 255),
+                            );
+                        }
+                    });
                 });
             });
 
             ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(6.0);
 
             // ─── Active Tab Content ──────────────────────────────────────────
-            match tabular.cell_inspector.active_tab {
-                InspectorTab::Json => {
-                    render_tab_json(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                match tabular.cell_inspector.active_tab {
+                    InspectorTab::Json => {
+                        render_tab_json(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                    }
+                    InspectorTab::Hex => {
+                        render_tab_hex(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
+                    }
+                    InspectorTab::Image => render_tab_image(
+                        &mut tabular.cell_inspector,
+                        ui,
+                        ctx,
+                        &mut action_copy_text,
+                    ),
+                    InspectorTab::RawText => render_tab_raw_text(
+                        &mut tabular.cell_inspector,
+                        ui,
+                        ctx,
+                        &mut action_copy_text,
+                    ),
                 }
-                InspectorTab::Hex => {
-                    render_tab_hex(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
-                }
-                InspectorTab::Image => {
-                    render_tab_image(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
-                }
-                InspectorTab::RawText => {
-                    render_tab_raw_text(&mut tabular.cell_inspector, ui, ctx, &mut action_copy_text)
-                }
-            }
+            });
 
             // ─── Bottom Status Bar & Toast ───────────────────────────────────
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(8.0);
 
             ui.horizontal(|ui| {
                 let stats = format!(
@@ -614,6 +611,9 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
             });
         });
 
+    if close {
+        is_open = false;
+    }
     tabular.cell_inspector.is_open = is_open;
 
     if let Some(text) = action_copy_text {

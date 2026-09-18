@@ -579,19 +579,33 @@ impl Tabular {
         let screen = ctx.content_rect();
         let dialog_w = 1000.0_f32.min(screen.width() - 40.0).max(560.0);
         let dialog_h = 640.0_f32.min(screen.height() - 60.0).max(380.0);
-        let body_h = dialog_h - FOOTER_HEIGHT;
+        let body_h = dialog_h - FOOTER_HEIGHT - 38.0;
 
         let mut open_flag = true;
         let mut close_requested = false;
 
+        crate::window_egui::style::render_modal_backdrop(
+            ctx,
+            "settings_dialog_backdrop",
+            self.show_settings_window,
+        );
+
         egui::Window::new("Preferences")
             .open(&mut open_flag)
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .fixed_pos(screen.center())
             .fixed_size(egui::vec2(dialog_w, dialog_h))
             .show(ctx, |ui| {
+                crate::window_egui::style::render_modal_header(
+                    ui,
+                    "Preferences",
+                    &mut close_requested,
+                );
+
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
@@ -674,12 +688,7 @@ impl Tabular {
         }
     }
 
-    fn render_pref_footer(&mut self, ui: &mut egui::Ui, close_requested: &mut bool) {
-        let divider_col = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        ui.add_space(6.0);
-        let (line, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-        ui.painter().rect_filled(line, 0.0, divider_col);
+    fn render_pref_footer(&mut self, ui: &mut egui::Ui, _close_requested: &mut bool) {
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
@@ -701,12 +710,6 @@ impl Tabular {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(style::btn_secondary("Close").min_size(egui::vec2(80.0, 28.0)))
-                    .clicked()
-                {
-                    *close_requested = true;
-                }
                 if ui
                     .add(style::btn_primary_ctx(ui.ctx(), "Save").min_size(egui::vec2(80.0, 28.0)))
                     .clicked()

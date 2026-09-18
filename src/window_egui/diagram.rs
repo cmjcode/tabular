@@ -1,6 +1,14 @@
 use crate::models;
 use eframe::egui;
 
+/// Pengambilan skema satu database (conn, db) yang sedang berjalan di
+/// background untuk diagram ERD.
+pub struct DiagramSchemaJob {
+    conn_id: i64,
+    db_name: String,
+    rx: std::sync::mpsc::Receiver<Result<crate::diagram_schema::SchemaSnapshot, String>>,
+}
+
 impl super::Tabular {
     pub fn get_diagram_path(&self, conn_id: i64, db_name: &str) -> Option<std::path::PathBuf> {
         let mut path = if !self.data_directory.is_empty() {
@@ -28,34 +36,58 @@ impl super::Tabular {
     }
     pub fn render_cache_miss_dialog(&mut self, ctx: &egui::Context) {
         if let Some((conn_id, db_name, table_name)) = &self.cache_miss_request {
-            let mut open = true;
-            let mut confirmed = false;
+            crate::window_egui::style::render_modal_backdrop(
+                ctx,
+                "cache_miss_backdrop",
+                self.cache_miss_request.is_some(),
+            );
+
             let mut should_close = false;
+            let mut confirmed = false;
 
             egui::Window::new("Metadata Missing")
-                .open(&mut open)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.label(format!(
-                        "Metadata for table '{}' is not in cache.",
-                        table_name
-                    ));
-                    ui.label("Would you like to fetch it now?");
-                    ui.add_space(10.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Metadata Missing",
+                        &mut should_close,
+                    );
+                    ui.add_space(8.0);
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(format!(
+                            "Metadata for table '{}' is not in cache.",
+                            table_name
+                        ));
+                        ui.label("Would you like to fetch it now?");
+                    });
+
+                    ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Fetch Metadata").clicked() {
-                            confirmed = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            should_close = true;
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let fetch_btn = egui::Button::new(
+                                egui::RichText::new("Fetch Metadata")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                            if ui.add(fetch_btn).clicked() {
+                                confirmed = true;
+                            }
+                        });
                     });
                 });
 
-            if should_close {
-                open = false;
+            if should_close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.cache_miss_request = None;
+                return;
             }
 
             if confirmed {
@@ -123,8 +155,6 @@ impl super::Tabular {
                 }
 
                 self.cache_miss_request = None;
-            } else if !open {
-                self.cache_miss_request = None;
             }
         }
     }
@@ -132,8 +162,10 @@ impl super::Tabular {
         let Some(path) = self.get_diagram_path(conn_id, db_name) else {
             return;
         };
+        // Isi kontainer link database tidak disimpan; hanya referensinya.
+        let state = crate::diagram_links::persistable(state);
         // Tulis atomik supaya layout lama tidak rusak bila app crash saat menyimpan.
-        let result = serde_json::to_vec_pretty(state)
+        let result = serde_json::to_vec_pretty(&state)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
                 crate::diagram_view::write_atomic(&path, &bytes).map_err(|e| e.to_string())
@@ -161,12 +193,14 @@ impl super::Tabular {
             DiagramAction::LoadFromDatabase => {
                 self.load_diagram_from_db_and_apply(conn_id, db_name)
             }
-            DiagramAction::OpenAddTablesModal => {
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    if let Some(st) = &mut tab.diagram_state {
-                        st.show_add_tables_modal = true;
-                    }
-                }
+            DiagramAction::OpenLinkDatabaseModal => self.open_link_database_modal(None),
+            DiagramAction::RelinkDatabase(link_id) => self.open_link_database_modal(Some(link_id)),
+            DiagramAction::OpenLinkedDiagram(link_id) => self.open_linked_source_diagram(&link_id),
+            DiagramAction::RefreshLinks(only) => {
+                // Hasil datang dari background; kegagalan dilaporkan oleh
+                // `fail_diagram_links` saat tiba.
+                self.refresh_diagram_links(self.active_tab_index, only.as_deref());
+                self.toasts.info("Refreshing linked databases…");
             }
             DiagramAction::SyncToServer => {
                 self.sync_diagram_to_server(conn_id, db_name, state);
@@ -188,7 +222,7 @@ impl super::Tabular {
         let db = db_name.unwrap_or_else(|| "default".to_string());
 
         // 1. Simpan layout ke cache JSON lokal
-        self.save_diagram(cid, &db, state);
+        self.save_diagram_and_propagate(cid, &db, state);
 
         // 2. Default: simpan juga ke Obsidian vault jika vault aktif
         if self.obsidian_root().is_some() {
@@ -212,7 +246,7 @@ impl super::Tabular {
         let db = db_name.unwrap_or_else(|| "default".to_string());
 
         // Simpan juga ke cache disk lokal segera
-        self.save_diagram(cid, &db, state);
+        self.save_diagram_and_propagate(cid, &db, state);
 
         let pool_opt = self.connection_pools.get(&cid).cloned().or_else(|| {
             self.shared_connection_pools
@@ -232,7 +266,7 @@ impl super::Tabular {
             return;
         };
 
-        let state_clone = state.clone();
+        let state_clone = crate::diagram_links::persistable(state);
         let db_clone = db.clone();
 
         let save_res = rt.block_on(async move {
@@ -310,11 +344,15 @@ impl super::Tabular {
                 if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                     && let Some(current_state) = &mut tab.diagram_state
                 {
+                    crate::diagram_links::strip_linked(current_state);
                     current_state.groups = loaded_state.groups;
                     current_state.virtual_relations = loaded_state.virtual_relations;
+                    current_state.linked_databases = loaded_state.linked_databases;
                     current_state.pan = loaded_state.pan;
                     current_state.zoom = loaded_state.zoom;
                     current_state.show_grid = loaded_state.show_grid;
+                    current_state.prevent_overlap = loaded_state.prevent_overlap;
+                    current_state.show_relations = loaded_state.show_relations;
 
                     for node in &mut current_state.nodes {
                         if let Some(ln) = loaded_state.nodes.iter().find(|n| n.id == node.id) {
@@ -338,6 +376,7 @@ impl super::Tabular {
                 if let Some(st) = state_to_cache {
                     self.save_diagram(cid, &db, &st);
                 }
+                self.refresh_diagram_links(self.active_tab_index, None);
                 self.toasts
                     .success("Diagram loaded from table 'diagram_by_tabular'");
             }
@@ -375,7 +414,9 @@ impl super::Tabular {
             .unwrap_or_else(|| "Connection".to_string());
         let db = db_name.unwrap_or_else(|| "default".to_string());
 
-        let model = crate::diagram_mermaid::ErModel::from_diagram(state);
+        let model = crate::diagram_mermaid::ErModel::from_diagram(
+            &crate::diagram_links::persistable(state),
+        );
         let body = crate::diagram_mermaid::schema_note_markdown(
             &format!("Schema: {db} ({conn_name})"),
             &model,
@@ -429,467 +470,942 @@ impl super::Tabular {
         }
     }
 
-    pub fn get_tables_for_dialog(&mut self, conn_id: i64, db_name: &str) -> Vec<String> {
-        let mut tables = Vec::new();
-
-        // 1. Coba ambil dari local SQLite cache `table_cache` jika ada
-        if let Some(pool) = &self.db_pool {
-            let res: Result<Vec<(String,)>, _> = futures::executor::block_on(async {
-                sqlx::query_as(
-                    "SELECT DISTINCT table_name FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type IN ('table', 'view', 'BASE TABLE') ORDER BY table_name"
-                )
-                .bind(conn_id)
-                .bind(db_name)
-                .fetch_all(pool.as_ref())
-                .await
-            });
-            if let Ok(rows) = res {
-                tables = rows.into_iter().map(|(r,)| r).collect();
-            }
-        }
-
-        // 2. Jika cache kosong, fetch langsung dari driver database
-        if tables.is_empty() {
-            let db_type = self
-                .connections
-                .iter()
-                .find(|c| c.id == Some(conn_id))
-                .map(|c| c.connection_type.clone());
-
-            match db_type {
-                Some(models::enums::DatabaseType::MySQL) => {
-                    if let Some(t) = crate::driver_mysql::fetch_tables_from_mysql_connection(
-                        self, conn_id, db_name, "table",
-                    ) {
-                        tables = t;
-                    }
-                }
-                Some(models::enums::DatabaseType::PostgreSQL) => {
-                    if let Some(t) = crate::driver_postgres::fetch_tables_from_postgres_connection(
-                        self, conn_id, db_name, "BASE TABLE",
-                    ) {
-                        tables = t;
-                    }
-                }
-                Some(models::enums::DatabaseType::SQLite) => {
-                    if let Some(t) = crate::driver_sqlite::fetch_tables_from_sqlite_connection(
-                        self, conn_id, "table",
-                    ) {
-                        tables = t;
-                    }
-                }
-                Some(models::enums::DatabaseType::MsSQL) => {
-                    if let Some(t) = crate::driver_mssql::fetch_tables_from_mssql_connection(
-                        self, conn_id, db_name, "table",
-                    ) {
-                        tables = t;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        tables
+    /// Muat diagram dari cache JSON lokal dan rapikan untuk dipakai.
+    fn load_prepared_diagram(
+        &self,
+        conn_id: i64,
+        db_name: &str,
+    ) -> Option<models::structs::DiagramState> {
+        let mut state = self.load_diagram(conn_id, db_name)?;
+        crate::diagram_schema::prepare_stored_state(&mut state, conn_id, db_name);
+        Some(state)
     }
 
-    pub fn render_add_tables_dialog(&mut self, ctx: &egui::Context) {
-        let is_modal_active = self
-            .query_tabs
-            .get(self.active_tab_index)
-            .and_then(|t| t.diagram_state.as_ref())
-            .map(|s| s.show_add_tables_modal)
-            .unwrap_or(false);
-        if !is_modal_active {
+    /// Mulai ambil skema live (conn, db) di background. Job untuk database
+    /// yang sama tidak diduplikasi; hasilnya diproses di
+    /// [`Self::poll_diagram_schema_jobs`].
+    fn request_diagram_schema(&mut self, conn_id: i64, db_name: &str) {
+        if self
+            .diagram_schema_jobs
+            .iter()
+            .any(|j| j.conn_id == conn_id && j.db_name == db_name)
+        {
             return;
         }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.diagram_schema_jobs.push(DiagramSchemaJob {
+            conn_id,
+            db_name: db_name.to_string(),
+            rx,
+        });
 
-        // 1. Inisialisasi default connection & database bila belum diset
-        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            if let Some(st) = &mut tab.diagram_state {
-                if st.add_tables_selected_conn.is_none() {
-                    if let Some(first_conn) = self.connections.first() {
-                        st.add_tables_selected_conn = first_conn.id;
-                        st.add_tables_selected_db = Some(first_conn.database.clone());
-                    }
-                }
-            }
-        }
-
-        // 2. Ambil parameter terpilih untuk cek apakah tabel perlu dimuat
-        let (selected_conn_id, selected_db, needs_fetch) = {
-            if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-                if let Some(st) = &tab.diagram_state {
-                    (
-                        st.add_tables_selected_conn,
-                        st.add_tables_selected_db.clone().unwrap_or_default(),
-                        st.add_tables_selection.is_empty(),
-                    )
-                } else {
-                    return;
-                }
-            } else {
-                return;
-            }
-        };
-
-        // 3. Muat daftar tabel jika belum ada (self dipinjam &mut secara eksklusif)
-        if needs_fetch {
-            if let Some(cid) = selected_conn_id {
-                let fetched_tables = self.get_tables_for_dialog(cid, &selected_db);
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                    if let Some(st) = &mut tab.diagram_state {
-                        let existing: std::collections::HashSet<String> = st
-                            .nodes
-                            .iter()
-                            .filter(|n| n.database_name.as_deref() == Some(&selected_db))
-                            .map(|n| n.title.clone())
-                            .collect();
-                        st.add_tables_selection = fetched_tables
-                            .into_iter()
-                            .filter(|t| !existing.contains(t))
-                            .map(|t| (t, false))
-                            .collect();
-                    }
-                }
-            }
-        }
-
-        // 4. Salin opsi koneksi agar tidak meminjam self.connections saat render modal
-        let conn_options: Vec<(i64, String, String)> = self
+        let Some(conn) = self
             .connections
             .iter()
-            .filter_map(|c| c.id.map(|id| (id, c.name.clone(), c.database.clone())))
-            .collect();
+            .find(|c| c.id == Some(conn_id))
+            .cloned()
+        else {
+            let _ = tx.send(Err("Connection not found".to_string()));
+            return;
+        };
+        let Some(rt) = self.runtime.clone() else {
+            let _ = tx.send(Err("Tokio runtime unavailable".to_string()));
+            return;
+        };
+        // Tidak pernah dial di UI thread: pool yang belum siap hanya dipicu
+        // pembuatannya, lalu ditunggu oleh task background.
+        let pool = rt.block_on(crate::connection::pool_if_connected_or_start(self, conn_id));
+        if pool.is_none()
+            && let Some(err) = self.connection_errors.get(&conn_id)
+        {
+            let _ = tx.send(Err(err.clone()));
+            return;
+        }
+        let req = crate::diagram_schema::SchemaFetchRequest {
+            conn,
+            db_name: db_name.to_string(),
+            pool,
+            shared_pools: self.shared_connection_pools.clone(),
+            cache_pool: self.db_pool.clone(),
+        };
+        rt.spawn(async move {
+            let _ = tx.send(crate::diagram_schema::fetch_schema_snapshot(req).await);
+        });
+    }
 
-        let mut is_open = true;
-        let mut user_cancelled = false;
-        let mut do_add: Option<(i64, String, Vec<String>)> = None;
-        let mut conn_changed_to: Option<(i64, String)> = None;
-        let mut db_name_changed = false;
+    /// Buka tab diagram untuk satu database. Layout tersimpan tampil
+    /// seketika; skema live disinkronkan di background.
+    pub fn open_database_diagram(&mut self, conn_id: i64, db_name: String) {
+        let started = std::time::Instant::now();
+        let cached = self.load_prepared_diagram(conn_id, &db_name);
+        let from_cache = cached.as_ref().is_some_and(|s| !s.nodes.is_empty());
+        let mut state = cached.unwrap_or_default();
+        self.materialize_links(&mut state, None);
+        state.schema_syncing = true;
+        state.layout_baseline = Some(crate::diagram_schema::layout_fingerprint(&state));
 
-        egui::Window::new("Add Tables from Database")
-            .open(&mut is_open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size(egui::vec2(480.0, 520.0))
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) else {
-                    return;
-                };
-                let Some(diagram_state) = &mut tab.diagram_state else {
-                    return;
-                };
+        let title = format!("Diagram: {}", db_name);
+        crate::editor::create_new_tab_with_connection_and_database(
+            self,
+            title,
+            String::new(), // No query content
+            Some(conn_id),
+            Some(db_name.clone()),
+        );
 
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            tab.diagram_state = Some(state);
+        }
+        self.table_bottom_view = models::structs::TableBottomView::Query;
+        self.request_diagram_schema(conn_id, &db_name);
+        log::info!(
+            "[DIAGRAM_PERF] opened diagram '{db_name}' from {} in {:?}",
+            if from_cache {
+                "local cache"
+            } else {
+                "empty state"
+            },
+            started.elapsed()
+        );
+    }
 
-                ui.label(
-                    egui::RichText::new("Select a connection and database to import tables into the current diagram:")
-                        .weak()
-                        .size(12.0),
-                );
-
-                ui.add_space(4.0);
-
-                // 1. Connection Selector
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Connection:").strong().size(12.5));
-                    let curr_conn_id = diagram_state.add_tables_selected_conn;
-                    let curr_name = curr_conn_id
-                        .and_then(|cid| conn_options.iter().find(|(id, _, _)| *id == cid))
-                        .map(|(_, name, _)| name.clone())
-                        .unwrap_or_else(|| "Select connection".to_string());
-
-                    egui::ComboBox::from_id_salt("add_tables_conn_combo")
-                        .selected_text(curr_name)
-                        .show_ui(ui, |ui| {
-                            for (cid, cname, cdb) in &conn_options {
-                                let is_selected = Some(*cid) == curr_conn_id;
-                                if ui.selectable_label(is_selected, cname).clicked() && !is_selected {
-                                    conn_changed_to = Some((*cid, cdb.clone()));
-                                }
-                            }
-                        });
-                });
-
-                if let Some((cid, cdb)) = conn_changed_to {
-                    diagram_state.add_tables_selected_conn = Some(cid);
-                    diagram_state.add_tables_selected_db = Some(cdb);
-                    diagram_state.add_tables_selection.clear();
+    /// Terima hasil pengambilan skema yang sudah selesai. Dipanggil tiap frame.
+    pub fn poll_diagram_schema_jobs(&mut self, ctx: &egui::Context) {
+        if self.diagram_schema_jobs.is_empty() {
+            return;
+        }
+        let mut done = Vec::new();
+        self.diagram_schema_jobs
+            .retain(|job| match job.rx.try_recv() {
+                Ok(result) => {
+                    done.push((job.conn_id, job.db_name.clone(), result));
+                    false
                 }
-
-                // 2. Database Name Selector / Input
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Database:").strong().size(12.5));
-                    let mut db_val = diagram_state.add_tables_selected_db.clone().unwrap_or_default();
-                    let resp = ui.add(egui::TextEdit::singleline(&mut db_val).hint_text("database name"));
-                    if resp.changed() {
-                        diagram_state.add_tables_selected_db = Some(db_val);
-                        db_name_changed = true;
-                    }
-                });
-
-                if db_name_changed {
-                    diagram_state.add_tables_selection.clear();
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done.push((
+                        job.conn_id,
+                        job.db_name.clone(),
+                        Err("Schema fetch was interrupted".to_string()),
+                    ));
+                    false
                 }
-
-                ui.separator();
-
-                // 3. Search & Batch Selection
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Search Tables:").size(12.0));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut diagram_state.add_tables_search)
-                            .hint_text("Filter tables…")
-                            .desired_width(180.0),
-                    );
-
-                    if ui.button("Select All").clicked() {
-                        let filter = diagram_state.add_tables_search.to_lowercase();
-                        for (tbl, sel) in &mut diagram_state.add_tables_selection {
-                            if filter.is_empty() || tbl.to_lowercase().contains(&filter) {
-                                *sel = true;
-                            }
-                        }
-                    }
-                    if ui.button("Deselect All").clicked() {
-                        for (_, sel) in &mut diagram_state.add_tables_selection {
-                            *sel = false;
-                        }
-                    }
-                });
-
-                let filter = diagram_state.add_tables_search.to_lowercase();
-                let selected_count = diagram_state.add_tables_selection.iter().filter(|(_, s)| *s).count();
-
-                // 4. Scrollable Tables List
-                ui.group(|ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            if diagram_state.add_tables_selection.is_empty() {
-                                ui.vertical_centered(|ui| {
-                                    ui.add_space(20.0);
-                                    ui.label(egui::RichText::new("No tables found or all tables already added.").weak());
-                                    ui.add_space(20.0);
-                                });
-                            } else {
-                                for (tbl, is_checked) in &mut diagram_state.add_tables_selection {
-                                    if !filter.is_empty() && !tbl.to_lowercase().contains(&filter) {
-                                        continue;
-                                    }
-                                    ui.checkbox(is_checked, tbl.as_str());
-                                }
-                            }
-                        });
-                });
-
-                ui.add_space(8.0);
-
-                // 5. Actions Footer
-                ui.horizontal(|ui| {
-                    let can_add = selected_count > 0 && diagram_state.add_tables_selected_conn.is_some();
-                    let btn = egui::Button::new(
-                        egui::RichText::new(format!("Add {} Selected Table(s)", selected_count))
-                            .strong(),
-                    );
-                    if ui.add_enabled(can_add, btn).clicked() {
-                        if let Some(cid) = diagram_state.add_tables_selected_conn {
-                            let chosen: Vec<String> = diagram_state
-                                .add_tables_selection
-                                .iter()
-                                .filter(|(_, s)| *s)
-                                .map(|(t, _)| t.clone())
-                                .collect();
-                            let db = diagram_state.add_tables_selected_db.clone().unwrap_or_default();
-                            do_add = Some((cid, db, chosen));
-                        }
-                    }
-
-                    if ui.button("Cancel").clicked() {
-                        user_cancelled = true;
-                    }
-                });
             });
-
-        if !is_open || user_cancelled {
-            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                if let Some(st) = &mut tab.diagram_state {
-                    st.show_add_tables_modal = false;
-                    st.add_tables_selection.clear();
-                }
+        for (conn_id, db_name, result) in done {
+            match result {
+                Ok(snapshot) => self.apply_diagram_schema(conn_id, &db_name, &snapshot),
+                Err(e) => self.fail_diagram_schema(conn_id, &db_name, e),
             }
         }
-
-        if let Some((cid, db, chosen_tables)) = do_add {
-            self.add_tables_to_active_diagram(cid, db, chosen_tables);
-            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                if let Some(st) = &mut tab.diagram_state {
-                    st.show_add_tables_modal = false;
-                    st.add_tables_selection.clear();
-                }
-            }
+        if !self.diagram_schema_jobs.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
-    pub fn add_tables_to_active_diagram(
+    fn is_diagram_host_tab(tab: &models::structs::QueryTab, conn_id: i64, db_name: &str) -> bool {
+        tab.diagram_state.is_some()
+            && tab.connection_id == Some(conn_id)
+            && tab.database_name.as_deref() == Some(db_name)
+    }
+
+    fn links_to(link: &models::structs::LinkedDatabase, conn_id: i64, db_name: &str) -> bool {
+        link.connection_id == Some(conn_id) && link.database_name == db_name
+    }
+
+    /// Terapkan skema live (conn, db) ke tab diagram database tersebut dan
+    /// ke semua diagram yang me-link database tersebut.
+    fn apply_diagram_schema(
         &mut self,
         conn_id: i64,
-        db_name: String,
-        table_names: Vec<String>,
+        db_name: &str,
+        snapshot: &crate::diagram_schema::SchemaSnapshot,
     ) {
-        if table_names.is_empty() {
-            return;
-        }
+        use crate::diagram_schema::{layout_fingerprint, merge_schema, prepare_stored_state};
 
         let conn_name = self
             .connections
             .iter()
             .find(|c| c.id == Some(conn_id))
             .map(|c| c.name.clone());
+        let host_tabs: Vec<usize> = (0..self.query_tabs.len())
+            .filter(|&i| Self::is_diagram_host_tab(&self.query_tabs[i], conn_id, db_name))
+            .collect();
 
-        let mut fks = Vec::new();
-        let mut columns_map = std::collections::HashMap::new();
-
-        if let Some(rt) = self.runtime.clone() {
-            rt.block_on(async {
-                let _ = crate::connection::pool_if_connected_or_start(self, conn_id).await;
-                fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
-
-                if let Some(pool_enum) = self.connection_pools.get(&conn_id).cloned() {
-                    match pool_enum {
-                        models::enums::DatabasePool::MySQL(p) => {
-                            if let Ok(cols) =
-                                crate::driver_mysql::fetch_mysql_columns(&p, &db_name).await
-                            {
-                                columns_map = cols;
-                            }
-                        }
-                        models::enums::DatabasePool::PostgreSQL(p) => {
-                            if let Ok(cols) =
-                                crate::driver_postgres::fetch_postgres_columns(&p).await
-                            {
-                                columns_map = cols;
-                            }
-                        }
-                        models::enums::DatabasePool::SQLite(p) => {
-                            if let Ok(cols) =
-                                crate::driver_sqlite::fetch_sqlite_columns(&p).await
-                            {
-                                columns_map = cols;
-                            }
-                        }
-                        _ => {}
-                    }
+        let mut shared_applied = false;
+        let mut source: Option<models::structs::DiagramState> = None;
+        for i in host_tabs {
+            let Some(mut state) = self.query_tabs[i].diagram_state.take() else {
+                continue;
+            };
+            // Layout bersama hanya menggantikan cache bila user belum
+            // mengedit apa pun sejak tab dibuka.
+            let untouched = state
+                .layout_baseline
+                .is_some_and(|b| b == layout_fingerprint(&state));
+            let replaced = match snapshot.shared_state.clone() {
+                Some(mut shared) if untouched => {
+                    prepare_stored_state(&mut shared, conn_id, db_name);
+                    state = shared;
+                    true
                 }
-            });
+                Some(_) => {
+                    log::info!(
+                        "[DIAGRAM_DB] shared layout of '{db_name}' skipped: diagram was edited before it arrived"
+                    );
+                    false
+                }
+                None => false,
+            };
+            merge_schema(&mut state, snapshot, conn_id, db_name, conn_name.as_deref());
+            if replaced {
+                // Isi link ikut terbuang saat state diganti.
+                self.materialize_links(&mut state, None);
+                shared_applied = true;
+            }
+            state.schema_syncing = false;
+            state.layout_baseline = None;
+            self.save_diagram(conn_id, db_name, &state);
+            source.get_or_insert_with(|| crate::diagram_links::persistable(&state));
+            self.query_tabs[i].diagram_state = Some(state);
+        }
+        if shared_applied {
+            self.toasts.info(format!(
+                "Diagram loaded from table `diagram_by_tabular` in {db_name}"
+            ));
         }
 
-        let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) else {
+        let linked = self.query_tabs.iter().any(|t| {
+            t.diagram_state.as_ref().is_some_and(|s| {
+                s.linked_databases
+                    .iter()
+                    .any(|l| Self::links_to(l, conn_id, db_name))
+            })
+        });
+        if !linked {
             return;
-        };
-        let Some(diagram_state) = &mut tab.diagram_state else {
-            return;
-        };
-
-        let group_id = format!("group_{}", db_name.replace(' ', "_"));
-        let group_title = format!("DB: {}", db_name);
-        let group_exists = diagram_state
-            .groups
-            .iter()
-            .any(|g| g.id == group_id || g.title == group_title);
-        if !group_exists {
-            let color_idx = diagram_state.groups.len() % crate::diagram_view::GROUP_COLORS.len();
-            diagram_state.groups.push(models::structs::DiagramGroup {
-                id: group_id.clone(),
-                title: group_title,
-                color: crate::diagram_view::GROUP_COLORS[color_idx],
-                manual_pos: None,
-            });
         }
-
-        let max_x = diagram_state
-            .nodes
-            .iter()
-            .map(|n| n.pos.x + n.size.x)
-            .fold(0.0f32, |acc, x| acc.max(x));
-        let start_x = if max_x > 0.0 { max_x + 80.0 } else { 100.0 };
-        let mut curr_y = 100.0f32;
-
-        let mut added_count = 0;
-        for table in table_names {
-            if diagram_state
-                .nodes
+        let source = match source {
+            Some(s) => s,
+            None => {
+                // Tab database sumber tidak terbuka: bangun dari layout
+                // bersama / cache lokal, lalu simpan supaya pembukaan
+                // berikutnya instan.
+                let mut st = match snapshot.shared_state.clone() {
+                    Some(mut shared) => {
+                        prepare_stored_state(&mut shared, conn_id, db_name);
+                        shared
+                    }
+                    None => self
+                        .load_prepared_diagram(conn_id, db_name)
+                        .unwrap_or_default(),
+                };
+                merge_schema(&mut st, snapshot, conn_id, db_name, conn_name.as_deref());
+                if !st.nodes.is_empty() {
+                    self.save_diagram(conn_id, db_name, &st);
+                }
+                st
+            }
+        };
+        if source.nodes.is_empty() {
+            self.fail_diagram_links(
+                conn_id,
+                db_name,
+                format!("No tables found in '{db_name}' (database offline or empty)"),
+            );
+            return;
+        }
+        for tab in &mut self.query_tabs {
+            let Some(st) = tab.diagram_state.as_mut() else {
+                continue;
+            };
+            let ids: Vec<String> = st
+                .linked_databases
                 .iter()
-                .any(|n| n.title == table && n.database_name.as_deref() == Some(&db_name))
+                .filter(|l| Self::links_to(l, conn_id, db_name))
+                .map(|l| l.link_id.clone())
+                .collect();
+            for id in ids {
+                crate::diagram_links::apply_link(st, &id, &source);
+            }
+        }
+    }
+
+    /// Pengambilan skema (conn, db) gagal: tampilan cache dipertahankan.
+    fn fail_diagram_schema(&mut self, conn_id: i64, db_name: &str, error: String) {
+        log::warn!("[DIAGRAM] schema of '{db_name}' not refreshed: {error}");
+        let mut was_syncing = false;
+        for tab in &mut self.query_tabs {
+            if Self::is_diagram_host_tab(tab, conn_id, db_name)
+                && let Some(st) = tab.diagram_state.as_mut()
             {
+                was_syncing |= st.schema_syncing;
+                st.schema_syncing = false;
+                st.layout_baseline = None;
+            }
+        }
+        if was_syncing {
+            self.toasts.warning(format!(
+                "Could not refresh schema of '{db_name}' (showing saved diagram): {error}"
+            ));
+        }
+        self.fail_diagram_links(conn_id, db_name, error);
+    }
+
+    /// Tandai link ke (conn, db) yang belum termuat sebagai gagal.
+    fn fail_diagram_links(&mut self, conn_id: i64, db_name: &str, error: String) {
+        let mut failed = false;
+        for tab in &mut self.query_tabs {
+            let Some(st) = tab.diagram_state.as_mut() else {
+                continue;
+            };
+            let ids: Vec<String> = st
+                .linked_databases
+                .iter()
+                .filter(|l| Self::links_to(l, conn_id, db_name))
+                .filter(|l| l.status != models::structs::LinkStatus::Loaded)
+                .map(|l| l.link_id.clone())
+                .collect();
+            for id in ids {
+                crate::diagram_links::mark_link_failed(st, &id, error.clone());
+                failed = true;
+            }
+        }
+        if failed {
+            self.toasts.warning(format!(
+                "Could not load linked database '{db_name}': {error}"
+            ));
+        }
+    }
+
+    /// Resolusi koneksi sebuah link: id + nama dulu, lalu nama saja. Id
+    /// koneksi lokal tidak portabel antar mesin, jadi id yang cocok tapi
+    /// namanya beda dianggap koneksi lain.
+    fn resolve_link_connection(
+        &self,
+        link: &models::structs::LinkedDatabase,
+    ) -> Option<(i64, String)> {
+        let by_id = self.connections.iter().find(|c| {
+            c.id.is_some()
+                && c.id == link.connection_id
+                && (link.connection_name.is_empty() || c.name == link.connection_name)
+        });
+        let by_name = || {
+            (!link.connection_name.is_empty())
+                .then(|| {
+                    self.connections
+                        .iter()
+                        .find(|c| c.name == link.connection_name)
+                })
+                .flatten()
+        };
+        by_id
+            .or_else(by_name)
+            .and_then(|c| c.id.map(|id| (id, c.name.clone())))
+    }
+
+    /// Materialisasi isi kontainer link database (`only` = satu link saja)
+    /// tanpa memblokir UI. Tab diagram sumber yang sedang terbuka dipakai
+    /// langsung karena paling baru; selain itu cache lokal ditampilkan dulu
+    /// lalu skema live diambil di background. Link yang gagal dimuat tampil
+    /// sebagai placeholder; relasi lintas database ke link tersebut tetap
+    /// disimpan.
+    pub fn materialize_links(
+        &mut self,
+        state: &mut models::structs::DiagramState,
+        only: Option<&str>,
+    ) {
+        let links: Vec<models::structs::LinkedDatabase> = state
+            .linked_databases
+            .iter()
+            .filter(|l| only.is_none_or(|id| l.link_id == id))
+            .cloned()
+            .collect();
+        for link in links {
+            let Some((cid, name)) = self.resolve_link_connection(&link) else {
+                let e = format!(
+                    "Connection '{}' not found on this machine",
+                    link.connection_name
+                );
+                log::warn!(
+                    "[DIAGRAM_LINK] {}/{} not loaded: {e}",
+                    link.connection_name,
+                    link.database_name
+                );
+                crate::diagram_links::mark_link_failed(state, &link.link_id, e);
+                continue;
+            };
+            if let Some(l) = state
+                .linked_databases
+                .iter_mut()
+                .find(|l| l.link_id == link.link_id)
+            {
+                l.connection_id = Some(cid);
+                l.connection_name = name;
+            }
+            let open_source = self.query_tabs.iter().find_map(|t| {
+                Self::is_diagram_host_tab(t, cid, &link.database_name)
+                    .then_some(t.diagram_state.as_ref())
+                    .flatten()
+            });
+            if let Some(open) = open_source {
+                let source = crate::diagram_links::persistable(open);
+                crate::diagram_links::apply_link(state, &link.link_id, &source);
                 continue;
             }
-
-            let unique_id = if diagram_state.nodes.iter().any(|n| n.id == table) {
-                format!("{}::{}", db_name, table)
-            } else {
-                table.clone()
-            };
-
-            let cols = columns_map.get(&table).cloned().unwrap_or_default();
-            let col_names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
-            let table_fks: Vec<models::structs::ForeignKey> = fks
-                .iter()
-                .filter(|fk| fk.table_name == table)
-                .cloned()
-                .collect();
-
-            let mut node = models::structs::DiagramNode {
-                id: unique_id,
-                title: table,
-                pos: eframe::egui::pos2(start_x, curr_y),
-                size: eframe::egui::vec2(220.0, 160.0),
-                columns: col_names,
-                foreign_keys: table_fks,
-                group_ids: vec![group_id.clone()],
-                group_id: Some(group_id.clone()),
-                column_meta: cols,
-                detached: false,
-                database_name: Some(db_name.clone()),
-                connection_id: Some(conn_id),
-                connection_name: conn_name.clone(),
-            };
-            node.ensure_groups_migrated();
-
-            curr_y += 240.0;
-            diagram_state.nodes.push(node);
-            added_count += 1;
+            if let Some(cached) = self
+                .load_prepared_diagram(cid, &link.database_name)
+                .filter(|s| !s.nodes.is_empty())
+            {
+                crate::diagram_links::apply_link(state, &link.link_id, &cached);
+            }
+            self.request_diagram_schema(cid, &link.database_name);
         }
+    }
 
-        for fk in &fks {
-            let has_source = diagram_state.nodes.iter().any(|n| n.title == fk.table_name);
-            let has_target = diagram_state.nodes.iter().any(|n| n.title == fk.referenced_table_name);
-            if has_source && has_target {
-                let already_edge = diagram_state.edges.iter().any(|e| {
-                    (e.source == fk.table_name && e.target == fk.referenced_table_name)
-                        || (e.source.ends_with(&format!("::{}", fk.table_name))
-                            && e.target.ends_with(&format!("::{}", fk.referenced_table_name)))
-                });
-                if !already_edge {
-                    diagram_state.edges.push(models::structs::DiagramEdge {
-                        source: fk.table_name.clone(),
-                        target: fk.referenced_table_name.clone(),
-                        label: format!("{} -> {}", fk.column_name, fk.referenced_column_name),
-                    });
-                }
+    /// Muat ulang link database pada diagram di tab `tab_idx`.
+    pub fn refresh_diagram_links(&mut self, tab_idx: usize, only: Option<&str>) {
+        let Some(mut state) = self
+            .query_tabs
+            .get_mut(tab_idx)
+            .and_then(|t| t.diagram_state.take())
+        else {
+            return;
+        };
+        self.materialize_links(&mut state, only);
+        if let Some(tab) = self.query_tabs.get_mut(tab_idx) {
+            tab.diagram_state = Some(state);
+        }
+    }
+
+    /// Terapkan diagram (conn, db) yang baru disimpan ke semua diagram
+    /// gabungan yang me-link database tersebut.
+    pub fn propagate_diagram_to_links(
+        &mut self,
+        conn_id: i64,
+        db_name: &str,
+        state: &models::structs::DiagramState,
+    ) {
+        let source = crate::diagram_links::persistable(state);
+        for tab in &mut self.query_tabs {
+            let Some(st) = tab.diagram_state.as_mut() else {
+                continue;
+            };
+            let ids: Vec<String> = st
+                .linked_databases
+                .iter()
+                .filter(|l| l.connection_id == Some(conn_id) && l.database_name == db_name)
+                .map(|l| l.link_id.clone())
+                .collect();
+            for id in ids {
+                crate::diagram_links::apply_link(st, &id, &source);
+            }
+        }
+    }
+
+    /// Simpan diagram ke cache lokal lalu perbarui diagram gabungan yang
+    /// me-link database ini.
+    pub fn save_diagram_and_propagate(
+        &mut self,
+        conn_id: i64,
+        db_name: &str,
+        state: &models::structs::DiagramState,
+    ) {
+        self.save_diagram(conn_id, db_name, state);
+        self.propagate_diagram_to_links(conn_id, db_name, state);
+    }
+
+    /// Buka dialog Link Database; `relink` = ganti koneksi link yang ada.
+    fn open_link_database_modal(&mut self, relink: Option<String>) {
+        let preset = relink.as_deref().and_then(|id| {
+            let link = self
+                .query_tabs
+                .get(self.active_tab_index)?
+                .diagram_state
+                .as_ref()?
+                .linked_databases
+                .iter()
+                .find(|l| l.link_id == id)?
+                .clone();
+            let cid = self
+                .resolve_link_connection(&link)
+                .map(|(cid, _)| cid)
+                .or(link.connection_id);
+            Some((cid, link.database_name))
+        });
+        let Some(st) = self
+            .query_tabs
+            .get_mut(self.active_tab_index)
+            .and_then(|t| t.diagram_state.as_mut())
+        else {
+            return;
+        };
+        st.show_link_modal = true;
+        st.link_modal_relink = relink;
+        st.link_modal_db_options.clear();
+        st.link_modal_db_options_for = None;
+        match preset {
+            Some((cid, db)) => {
+                st.link_modal_conn = cid;
+                st.link_modal_db = db;
+            }
+            None => {
+                st.link_modal_conn = None;
+                st.link_modal_db.clear();
+            }
+        }
+    }
+
+    /// Buka (atau pindah ke) tab diagram sumber sebuah link.
+    fn open_linked_source_diagram(&mut self, link_id: &str) {
+        let Some(link) = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .and_then(|t| t.diagram_state.as_ref())
+            .and_then(|st| st.linked_databases.iter().find(|l| l.link_id == link_id))
+            .cloned()
+        else {
+            return;
+        };
+        let Some((cid, _)) = self.resolve_link_connection(&link) else {
+            self.toasts.error(format!(
+                "Connection '{}' not found. Use Relink to choose another connection.",
+                link.connection_name
+            ));
+            return;
+        };
+        let existing = self.query_tabs.iter().position(|t| {
+            t.diagram_state.is_some()
+                && t.connection_id == Some(cid)
+                && t.database_name.as_deref() == Some(link.database_name.as_str())
+        });
+        match existing {
+            Some(idx) => crate::editor::switch_to_tab(self, idx),
+            None => self.open_database_diagram(cid, link.database_name),
+        }
+    }
+
+    /// Daftar database sebuah koneksi untuk dialog Link Database: cache memori,
+    /// lalu cache SQLite lokal, terakhir query langsung (timeout 10 detik).
+    /// `force` melewati cache. Schema sistem disembunyikan.
+    fn databases_for_link_dialog(&mut self, conn_id: i64, force: bool) -> Vec<String> {
+        const SYSTEM_DBS: &[&str] = &[
+            "information_schema",
+            "performance_schema",
+            "mysql",
+            "sys",
+            "master",
+            "tempdb",
+            "model",
+            "msdb",
+        ];
+        let mut dbs = if force {
+            None
+        } else {
+            self.database_cache
+                .get(&conn_id)
+                .filter(|d| !d.is_empty())
+                .cloned()
+                .or_else(|| {
+                    crate::cache_data::get_databases_from_cache(self, conn_id)
+                        .filter(|d| !d.is_empty())
+                })
+        };
+        if dbs.is_none()
+            && let Some(rt) = self.runtime.clone()
+        {
+            let fetched = rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    crate::connection::metadata::fetch_databases_from_connection_async(
+                        self, conn_id,
+                    ),
+                )
+                .await
+            });
+            match fetched {
+                Ok(Some(list)) if !list.is_empty() => dbs = Some(list),
+                Ok(_) => log::warn!("[DIAGRAM_LINK] no databases returned for conn {conn_id}"),
+                Err(_) => self
+                    .toasts
+                    .warning("Loading the database list timed out (10s)"),
+            }
+        }
+        let mut dbs = dbs.unwrap_or_default();
+        if !dbs.is_empty() {
+            self.database_cache.insert(conn_id, dbs.clone());
+        }
+        dbs.retain(|d| !SYSTEM_DBS.contains(&d.to_lowercase().as_str()));
+        // Fallback: database default koneksi (mis. SQLite tanpa daftar database).
+        if dbs.is_empty()
+            && let Some(c) = self.connections.iter().find(|c| c.id == Some(conn_id))
+            && !c.database.is_empty()
+        {
+            dbs.push(c.database.clone());
+        }
+        dbs.sort_by_key(|d| d.to_lowercase());
+        dbs.dedup();
+        dbs
+    }
+
+    pub fn render_link_database_dialog(&mut self, ctx: &egui::Context) {
+        use models::enums::DatabaseType;
+
+        let tab_idx = self.active_tab_index;
+        let Some(tab) = self.query_tabs.get(tab_idx) else {
+            return;
+        };
+        let Some(st) = tab.diagram_state.as_ref() else {
+            return;
+        };
+        if !st.show_link_modal {
+            return;
+        }
+        let host = (tab.connection_id, tab.database_name.clone());
+        let relink = st.link_modal_relink.clone();
+        let existing: Vec<(Option<i64>, String, String)> = st
+            .linked_databases
+            .iter()
+            .map(|l| (l.connection_id, l.database_name.clone(), l.link_id.clone()))
+            .collect();
+        // Hanya koneksi relasional yang punya diagram.
+        let conn_options: Vec<(i64, String, String, String)> = self
+            .connections
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.connection_type,
+                    DatabaseType::MySQL
+                        | DatabaseType::PostgreSQL
+                        | DatabaseType::SQLite
+                        | DatabaseType::MsSQL
+                )
+            })
+            .filter_map(|c| {
+                let host_label = if c.host.is_empty() {
+                    c.database.clone()
+                } else if c.port.is_empty() {
+                    c.host.clone()
+                } else {
+                    format!("{}:{}", c.host, c.port)
+                };
+                c.id.map(|id| {
+                    (
+                        id,
+                        c.name.clone(),
+                        format!("{:?}", c.connection_type),
+                        host_label,
+                    )
+                })
+            })
+            .collect();
+
+        // Database yang tidak bisa dipilih: milik diagram ini atau sudah di-link.
+        let unavailable = |cid: i64, db: &str| -> Option<&'static str> {
+            if host.0 == Some(cid) && host.1.as_deref() == Some(db) {
+                Some("this diagram")
+            } else if existing.iter().any(|(c, d, id)| {
+                *c == Some(cid) && d == db && relink.as_deref() != Some(id.as_str())
+            }) {
+                Some("already linked")
+            } else {
+                None
+            }
+        };
+
+        // 1. Pilihan koneksi awal: koneksi diagram ini, atau koneksi pertama.
+        let (selected_conn, loaded_for, reload) = {
+            let st = tab.diagram_state.as_ref().expect("checked above");
+            (
+                st.link_modal_conn,
+                st.link_modal_db_options_for,
+                st.link_modal_db_reload,
+            )
+        };
+        let selected_conn = selected_conn
+            .filter(|cid| conn_options.iter().any(|(id, ..)| id == cid))
+            .or_else(|| {
+                host.0
+                    .filter(|cid| conn_options.iter().any(|(id, ..)| id == cid))
+                    .or_else(|| conn_options.first().map(|(id, ..)| *id))
+            });
+
+        // 2. Muat daftar database bila koneksi berganti / diminta reload.
+        let fresh_options = match selected_conn {
+            Some(cid) if loaded_for != Some(cid) || reload => {
+                Some(self.databases_for_link_dialog(cid, reload))
+            }
+            _ => None,
+        };
+
+        let Some(st) = self
+            .query_tabs
+            .get_mut(tab_idx)
+            .and_then(|t| t.diagram_state.as_mut())
+        else {
+            return;
+        };
+        st.link_modal_conn = selected_conn;
+        st.link_modal_db_reload = false;
+        if let Some(options) = fresh_options {
+            st.link_modal_db_options = options;
+            st.link_modal_db_options_for = selected_conn;
+            // Pertahankan pilihan yang masih valid, selain itu pilih database
+            // pertama yang tersedia.
+            let keep = selected_conn.is_some_and(|cid| {
+                st.link_modal_db_options.contains(&st.link_modal_db)
+                    && unavailable(cid, &st.link_modal_db).is_none()
+            });
+            if !keep {
+                st.link_modal_db = selected_conn
+                    .and_then(|cid| {
+                        st.link_modal_db_options
+                            .iter()
+                            .find(|d| unavailable(cid, d).is_none())
+                            .cloned()
+                    })
+                    .unwrap_or_default();
             }
         }
 
-        if diagram_state.prevent_overlap {
-            crate::diagram_view::resolve_node_overlaps(&mut diagram_state.nodes, 20.0);
-        }
+        let mut cancelled = false;
+        let mut confirm: Option<(i64, String, String)> = None;
+        let title = if relink.is_some() {
+            "Relink Database"
+        } else {
+            "Link Database"
+        };
+        const FIELD_WIDTH: f32 = 300.0;
 
-        diagram_state.save_requested = true;
-        self.toasts.success(format!(
-            "Added {} table(s) from database '{}' to diagram",
-            added_count, db_name
-        ));
+        crate::window_egui::style::render_modal_backdrop(
+            ctx,
+            "link_database_backdrop",
+            st.show_link_modal,
+        );
+
+        egui::Window::new(title)
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(450.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                crate::window_egui::style::render_modal_header(ui, title, &mut cancelled);
+                ui.add_space(8.0);
+
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+                    ui.label(
+                        egui::RichText::new(if relink.is_some() {
+                            "Point this linked database at another connection. \
+                             Relations to its tables are kept."
+                        } else {
+                            "All tables of the selected database appear in their own container \
+                             and follow that database's diagram."
+                        })
+                        .weak(),
+                    );
+                    ui.add_space(8.0);
+
+                    egui::Grid::new("link_db_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .min_col_width(80.0)
+                        .show(ui, |ui| {
+                            // Connection
+                            ui.label("Connection");
+                            let curr = st.link_modal_conn;
+                            let curr_opt = curr
+                                .and_then(|cid| conn_options.iter().find(|(id, ..)| *id == cid));
+                            let selected_text = match curr_opt {
+                                Some((_, name, kind, _)) => format!("{name}  ·  {kind}"),
+                                None => "Select connection".to_string(),
+                            };
+                            let combo = egui::ComboBox::from_id_salt("link_db_conn_combo")
+                                .width(FIELD_WIDTH)
+                                .selected_text(selected_text)
+                                .show_ui(ui, |ui| {
+                                    if conn_options.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new("No relational connections").weak(),
+                                        );
+                                    }
+                                    for (cid, cname, kind, host_label) in &conn_options {
+                                        let selected = Some(*cid) == curr;
+                                        let text = format!("{cname}  ·  {kind}");
+                                        let resp = ui
+                                            .selectable_label(selected, text)
+                                            .on_hover_text(host_label);
+                                        if resp.clicked() && !selected {
+                                            st.link_modal_conn = Some(*cid);
+                                            st.link_modal_db.clear();
+                                        }
+                                    }
+                                });
+                            if let Some((.., host_label)) = curr_opt {
+                                combo.response.on_hover_text(host_label);
+                            }
+                            ui.end_row();
+
+                            // Database
+                            ui.label("Database");
+                            ui.horizontal(|ui| {
+                                let cid = st.link_modal_conn;
+                                let loading = cid != st.link_modal_db_options_for;
+                                let selected_text = if loading {
+                                    egui::RichText::new("Loading…").weak()
+                                } else if st.link_modal_db.is_empty() {
+                                    egui::RichText::new("Select database").weak()
+                                } else {
+                                    egui::RichText::new(st.link_modal_db.clone())
+                                };
+                                let reload_width = 28.0;
+                                egui::ComboBox::from_id_salt("link_db_db_combo")
+                                    .width(FIELD_WIDTH - reload_width - 8.0)
+                                    .height(320.0)
+                                    .selected_text(selected_text)
+                                    .show_ui(ui, |ui| {
+                                        if st.link_modal_db_options.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("No databases found").weak(),
+                                            );
+                                        }
+                                        let Some(cid) = cid else {
+                                            return;
+                                        };
+                                        for db in &st.link_modal_db_options {
+                                            let selected = *db == st.link_modal_db;
+                                            match unavailable(cid, db) {
+                                                Some(reason) => {
+                                                    ui.add_enabled(
+                                                        false,
+                                                        egui::Button::selectable(
+                                                            false,
+                                                            format!("{db}  —  {reason}"),
+                                                        ),
+                                                    );
+                                                }
+                                                None => {
+                                                    if ui.selectable_label(selected, db).clicked() {
+                                                        st.link_modal_db = db.clone();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                if ui
+                                    .add_sized(
+                                        [reload_width, ui.spacing().interact_size.y],
+                                        egui::Button::new(
+                                            egui_icons::icons::ICON_REFRESH.codepoint,
+                                        ),
+                                    )
+                                    .on_hover_text("Reload database list from the server")
+                                    .clicked()
+                                {
+                                    st.link_modal_db_reload = true;
+                                }
+                            });
+                            ui.end_row();
+                        });
+                });
+
+                let db = st.link_modal_db.trim().to_string();
+                let ready = st
+                    .link_modal_conn
+                    .is_some_and(|cid| !db.is_empty() && unavailable(cid, &db).is_none());
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if relink.is_some() {
+                            "Relink"
+                        } else {
+                            "Link Database"
+                        };
+                        let primary = egui::Button::new(
+                            egui::RichText::new(label)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()))
+                        .min_size(egui::vec2(110.0, 0.0));
+                        if ui.add_enabled(ready, primary).clicked()
+                            && let Some(cid) = st.link_modal_conn
+                        {
+                            let name = conn_options
+                                .iter()
+                                .find(|(id, ..)| *id == cid)
+                                .map(|(_, n, ..)| n.clone())
+                                .unwrap_or_default();
+                            confirm = Some((cid, name, db.clone()));
+                        }
+                    });
+                });
+            });
+
+        if cancelled || confirm.is_some() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            st.show_link_modal = false;
+            st.link_modal_relink = None;
+        }
+        let Some((cid, name, db)) = confirm else {
+            return;
+        };
+
+        let link_id = match relink {
+            Some(id) => {
+                if let Some(l) = st.linked_databases.iter_mut().find(|l| l.link_id == id) {
+                    l.connection_id = Some(cid);
+                    l.connection_name = name;
+                    l.database_name = db.clone();
+                }
+                id
+            }
+            None => {
+                let id = crate::diagram_links::new_link_id(&st.linked_databases);
+                let colors = crate::diagram_view::GROUP_COLORS;
+                st.linked_databases.push(models::structs::LinkedDatabase {
+                    link_id: id.clone(),
+                    connection_id: Some(cid),
+                    connection_name: name,
+                    database_name: db.clone(),
+                    offset: crate::diagram_links::next_link_offset(st),
+                    color: colors[(st.linked_databases.len() * 3 + 5) % colors.len()],
+                    status: models::structs::LinkStatus::Pending,
+                });
+                id
+            }
+        };
+
+        self.refresh_diagram_links(tab_idx, Some(&link_id));
+
+        let Some(st) = self
+            .query_tabs
+            .get_mut(tab_idx)
+            .and_then(|t| t.diagram_state.as_mut())
+        else {
+            return;
+        };
+        // Simpan daftar link (isi kontainernya sendiri tidak ikut disimpan).
+        st.save_requested = true;
+        let status = st
+            .linked_databases
+            .iter()
+            .find(|l| l.link_id == link_id)
+            .map(|l| l.status.clone());
+        let tables = st
+            .nodes
+            .iter()
+            .filter(|n| crate::diagram_links::link_id_of(&n.id) == Some(link_id.as_str()))
+            .count();
+        match status {
+            Some(models::structs::LinkStatus::Failed(e)) => self
+                .toasts
+                .warning(format!("Linked '{db}', but it could not be loaded: {e}")),
+            _ => self
+                .toasts
+                .success(format!("Linked database '{db}' ({tables} tables)")),
+        };
     }
 
     pub fn sync_diagram_to_server(
@@ -938,7 +1454,7 @@ impl super::Tabular {
 
         crate::sync::sync_diagrams::push_single_diagram(
             diag_title.clone(),
-            state.clone(),
+            crate::diagram_links::persistable(state),
             vault.account_key.clone(),
             team_keys,
             shared_folders,

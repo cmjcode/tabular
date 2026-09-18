@@ -294,43 +294,48 @@ pub(crate) fn fetch_tables_from_postgres_connection(
     table_type: &str,
 ) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
-    let db = database_name.to_string();
+    let conn = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
+    rt.block_on(list_postgres_tables(&conn, database_name, table_type))
+}
 
-    rt.block_on(async {
-              let conn = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
-              let conn_str = format!(
-                     "postgresql://{}:{}@{}:{}/{}",
-                     conn.username, conn.password, conn.host, conn.port, db
-              );
+/// Daftar tabel / view skema `public` satu database PostgreSQL. Memakai
+/// koneksi sekali pakai ke database tersebut karena pool koneksi utama terikat
+/// ke database default. Aman dipanggil dari task async.
+pub(crate) async fn list_postgres_tables(
+    conn: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    let sql = match table_type {
+        "table" => "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
+        "view" => "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name",
+        _ => return None,
+    };
+    let conn_str = format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        conn.username, conn.password, conn.host, conn.port, database_name
+    );
 
-        let pool = match PgPoolOptions::new()
-                     .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-                     .connect(&conn_str)
-                     .await
-              {
-                     Ok(p) => p,
-                     Err(_) => return None,
-              };
-
-              let sql = match table_type {
-                     "table" => "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
-                     "view" => "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name",
-                     _ => return None,
-              };
-
-        match tokio::time::timeout(
-              std::time::Duration::from_secs(10),
-              sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
-        )
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&conn_str)
         .await
-        .map_err(|_| sqlx::Error::PoolTimedOut)
-        .and_then(|r| r)
-        {
-                     Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
-                     Err(_) => None,
-              }
-       })
+        .ok()?;
+
+    let rows = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
+    )
+    .await
+    .map_err(|_| sqlx::Error::PoolTimedOut)
+    .and_then(|r| r);
+    pool.close().await;
+    rows.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
 /// Mengubah satu nilai PostgreSQL menjadi teks tampilan.

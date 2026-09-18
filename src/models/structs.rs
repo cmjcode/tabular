@@ -729,6 +729,42 @@ pub struct VirtualRelation {
     pub origin: RelationOrigin,
 }
 
+/// Status materialisasi sebuah link database (runtime saja).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LinkStatus {
+    /// Belum dimuat sejak diagram dibuka.
+    #[default]
+    Pending,
+    /// Isi kontainer sudah dimuat dari diagram sumber.
+    Loaded,
+    /// Gagal dimuat (koneksi tidak ditemukan / offline). Relasi lintas
+    /// database ke link ini dibiarkan dorman, tidak dibuang.
+    Failed(String),
+}
+
+/// Referensi ke diagram database lain yang ditampilkan sebagai kontainer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkedDatabase {
+    /// Namespace stabil untuk id node/group/relasi (`{link_id}::{table}`).
+    /// Tidak bergantung pada `connection_id` supaya relasi lintas database
+    /// tetap valid saat diagram dibuka di mesin lain.
+    pub link_id: String,
+    /// ID koneksi lokal; hanya valid di mesin pembuatnya.
+    #[serde(default)]
+    pub connection_id: Option<i64>,
+    /// Nama koneksi, dipakai sebagai fallback resolusi antar mesin.
+    #[serde(default)]
+    pub connection_name: String,
+    pub database_name: String,
+    /// Posisi pojok kiri atas kontainer di kanvas host.
+    #[serde(with = "serde_pos2")]
+    pub offset: eframe::egui::Pos2,
+    #[serde(with = "serde_color")]
+    pub color: eframe::egui::Color32,
+    #[serde(skip)]
+    pub status: LinkStatus,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagramState {
     pub nodes: Vec<DiagramNode>,
@@ -772,6 +808,9 @@ pub struct DiagramState {
     /// Mencegah tabel tumpang tindih (anti-overlap / collision avoidance).
     #[serde(default = "default_true")]
     pub prevent_overlap: bool,
+    /// Tampilkan garis relasi / link kolom antar tabel.
+    #[serde(default = "default_true")]
+    pub show_relations: bool,
     /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
     #[serde(default)]
     pub virtual_relations: Vec<VirtualRelation>,
@@ -789,27 +828,51 @@ pub struct DiagramState {
     /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
     #[serde(skip)]
     pub hand_tool: bool,
-    /// Modal dialog "Add Tables from Database" yang sedang aktif.
+    /// Database lain yang di-link ke diagram ini. Hanya referensinya yang
+    /// disimpan; isi kontainernya dimaterialisasi ulang dari diagram sumber.
+    #[serde(default)]
+    pub linked_databases: Vec<LinkedDatabase>,
+    /// Relasi virtual bawaan diagram sumber (read-only, tidak disimpan).
+    /// Relasi yang dibuat di diagram gabungan tetap di `virtual_relations`.
     #[serde(skip)]
-    pub show_add_tables_modal: bool,
+    pub linked_relations: Vec<VirtualRelation>,
+    /// Modal dialog "Link Database" yang sedang aktif.
+    #[serde(skip)]
+    pub show_link_modal: bool,
     /// ID koneksi yang dipilih dalam modal dialog.
     #[serde(skip)]
-    pub add_tables_selected_conn: Option<i64>,
+    pub link_modal_conn: Option<i64>,
     /// Nama database yang dipilih dalam modal dialog.
     #[serde(skip)]
-    pub add_tables_selected_db: Option<String>,
-    /// Filter pencarian tabel dalam modal dialog.
+    pub link_modal_db: String,
+    /// Bila `Some`, modal mengganti koneksi link yang sudah ada (relink)
+    /// sehingga id node dan relasi lintas database tetap utuh.
     #[serde(skip)]
-    pub add_tables_search: String,
-    /// Daftar tabel yang dicentang untuk ditambahkan: (table_name, is_selected).
+    pub link_modal_relink: Option<String>,
+    /// Daftar database koneksi terpilih di modal (dimuat sekali per koneksi).
     #[serde(skip)]
-    pub add_tables_selection: Vec<(String, bool)>,
+    pub link_modal_db_options: Vec<String>,
+    /// Koneksi asal `link_modal_db_options`; beda dengan koneksi terpilih
+    /// berarti daftar perlu dimuat ulang.
+    #[serde(skip)]
+    pub link_modal_db_options_for: Option<i64>,
+    /// Paksa muat ulang daftar database langsung dari server.
+    #[serde(skip)]
+    pub link_modal_db_reload: bool,
     /// Judul kustom dokumen diagram (opsional).
     #[serde(default)]
     pub diagram_title: Option<String>,
     /// Remote ID jika diagram ini disinkronkan ke server.
     #[serde(default)]
     pub remote_id: Option<String>,
+    /// Skema live sedang diambil di background; tampilan masih dari cache.
+    #[serde(skip)]
+    pub schema_syncing: bool,
+    /// Sidik layout saat tab dibuka. Beda dengan sidik terkini berarti user
+    /// sudah mengedit, jadi layout bersama dari `diagram_by_tabular` tidak
+    /// boleh menimpanya.
+    #[serde(skip)]
+    pub layout_baseline: Option<u64>,
 }
 
 impl Default for DiagramState {
@@ -837,19 +900,26 @@ impl Default for DiagramState {
             search_groups: true,
             show_grid: true,
             prevent_overlap: true,
+            show_relations: true,
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
             relation_suggestions_title: None,
             relation_column_search_query: String::new(),
             hand_tool: false,
-            show_add_tables_modal: false,
-            add_tables_selected_conn: None,
-            add_tables_selected_db: None,
-            add_tables_search: String::new(),
-            add_tables_selection: Vec::new(),
+            linked_databases: Vec::new(),
+            linked_relations: Vec::new(),
+            show_link_modal: false,
+            link_modal_conn: None,
+            link_modal_db: String::new(),
+            link_modal_relink: None,
+            link_modal_db_options: Vec::new(),
+            link_modal_db_options_for: None,
+            link_modal_db_reload: false,
             diagram_title: None,
             remote_id: None,
+            schema_syncing: false,
+            layout_baseline: None,
         }
     }
 }

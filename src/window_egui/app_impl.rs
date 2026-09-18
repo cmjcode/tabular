@@ -13,31 +13,68 @@ impl Tabular {
     /// Extracted verbatim from `update()` (behavior-preserving).
     fn render_auto_refresh_dialog(&mut self, ctx: &egui::Context) {
         if self.show_auto_refresh_dialog {
+            let mut close = false;
+            crate::window_egui::style::render_modal_backdrop(
+                ctx,
+                "auto_refresh_backdrop",
+                self.show_auto_refresh_dialog,
+            );
+
             egui::Window::new("Auto Refresh Interval")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(320.0)
                 .show(ctx, |ui| {
-                    ui.label("Set auto refresh interval (seconds):");
-                    ui.text_edit_singleline(&mut self.auto_refresh_interval_input);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Auto Refresh Interval",
+                        &mut close,
+                    );
+                    ui.add_space(8.0);
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Set auto refresh interval (seconds):");
+                        ui.add_space(4.0);
+                        crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut self.auto_refresh_interval_input),
+                            f32::INFINITY,
+                            None,
+                        );
+                    });
+
+                    ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            if let Ok(v) = self.auto_refresh_interval_input.trim().parse::<u32>() {
-                                let v = std::cmp::max(1, v); // minimum 1 second
-                                self.auto_refresh_interval_seconds = v;
-                                self.auto_refresh_active = true;
-                                self.auto_refresh_last_run = None;
-                                self.show_auto_refresh_dialog = false;
-                            } else {
-                                // Invalid input keeps dialog open; user can correct it
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let ok_btn = egui::Button::new(
+                                egui::RichText::new("OK")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                            if ui.add(ok_btn).clicked() {
+                                if let Ok(v) =
+                                    self.auto_refresh_interval_input.trim().parse::<u32>()
+                                {
+                                    let v = std::cmp::max(1, v); // minimum 1 second
+                                    self.auto_refresh_interval_seconds = v;
+                                    self.auto_refresh_active = true;
+                                    self.auto_refresh_last_run = None;
+                                    self.show_auto_refresh_dialog = false;
+                                }
                             }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_auto_refresh_dialog = false;
-                            self.stop_auto_refresh();
-                        }
+                        });
                     });
                 });
+
+            if close {
+                self.show_auto_refresh_dialog = false;
+                self.stop_auto_refresh();
+            }
         }
     }
 
@@ -45,6 +82,7 @@ impl Tabular {
     /// connection pool. Extracted verbatim from `update()`.
     fn render_connecting_overlay(&mut self, ctx: &egui::Context) {
         if self.pool_wait_in_progress {
+            crate::window_egui::style::render_modal_backdrop(ctx, "connecting_backdrop", true);
             let elapsed = self
                 .pool_wait_started_at
                 .map(|t| t.elapsed())
@@ -54,28 +92,38 @@ impl Tabular {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .collapsible(false)
                 .resizable(false)
-                .title_bar(true)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
+                .default_width(400.0)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let conn_name = self
-                            .pool_wait_connection_id
-                            .and_then(|id| self.get_connection_name(id))
-                            .unwrap_or_else(|| "(connection)".to_string());
-                        ui.label(format!("Establishing connection pool for '{}'…", conn_name));
-                    });
-                    if elapsed.as_secs() >= 10 {
-                        ui.label(
-                            egui::RichText::new("This can take a while for slow networks.")
-                                .size(11.0)
-                                .weak(),
-                        );
+                    let mut close_dialog = false;
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Connecting…",
+                        &mut close_dialog,
+                    );
+                    if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                        keep_open = false;
                     }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            keep_open = false;
+                    ui.add_space(8.0);
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            let conn_name = self
+                                .pool_wait_connection_id
+                                .and_then(|id| self.get_connection_name(id))
+                                .unwrap_or_else(|| "(connection)".to_string());
+                            ui.label(format!("Establishing connection pool for '{}'…", conn_name));
+                        });
+                        if elapsed.as_secs() >= 10 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("This can take a while for slow networks.")
+                                    .size(11.0)
+                                    .weak(),
+                            );
                         }
+                        ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new(format!("Waiting {}s", elapsed.as_secs()))
                                 .size(11.0)
@@ -3044,7 +3092,7 @@ impl Tabular {
                         if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save
                              && let Some(cid) = conn_id_opt {
                                  let db = db_name_opt.unwrap_or_else(|| "default".to_string());
-                                 self.save_diagram(cid, &db, &state);
+                                 self.save_diagram_and_propagate(cid, &db, &state);
                              }
                         if let Some((action, conn_id, db_name, state)) = diagram_action {
                             self.handle_diagram_action(action, conn_id, db_name, &state);
@@ -3569,21 +3617,30 @@ impl Tabular {
 
                     // Render MongoDB drop collection confirmation dialog if pending
                     if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
+                        crate::window_egui::style::render_modal_backdrop(
+                            ui.ctx(),
+                            "drop_coll_backdrop",
+                            true,
+                        );
                         let title = format!("Drop Collection {}.{}?", db, coll);
-                        egui::Window::new(title)
+                        let mut close_dialog = false;
+                        egui::Window::new(&title)
                             .collapsible(false)
                             .resizable(false)
                             .pivot(egui::Align2::CENTER_CENTER)
-                            .fixed_size(egui::vec2(480.0, 160.0))
+                            .default_width(460.0)
+                            .title_bar(false)
+                            .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
                             .show(ui.ctx(), |ui| {
-                                ui.label("This action cannot be undone.");
+                                crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
                                 ui.add_space(8.0);
-                                ui.code(format!("db.{}.{}.drop()", db, coll));
+                                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                    ui.label("This action cannot be undone.");
+                                    ui.add_space(8.0);
+                                    ui.code(format!("db.{}.{}.drop()", db, coll));
+                                });
                                 ui.add_space(12.0);
-                                ui.horizontal(|ui| {
-                                    if ui.button("Cancel").clicked() {
-                                        self.pending_drop_collection = None;
-                                    }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
@@ -3612,26 +3669,38 @@ impl Tabular {
                                     }
                                 });
                             });
+                        if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_drop_collection = None;
+                        }
                     }
 
                     // Render DROP TABLE confirmation dialog if pending
                     if let Some((conn_id, ref db, ref table, ref stmt)) = self.pending_drop_table.clone() {
+                        crate::window_egui::style::render_modal_backdrop(
+                            ui.ctx(),
+                            "drop_table_backdrop",
+                            true,
+                        );
                         let title = format!("Drop Table {}.{}?", db, table);
                         let stmt_str = stmt.clone();
-                        egui::Window::new(title)
+                        let mut close_dialog = false;
+                        egui::Window::new(&title)
                             .collapsible(false)
                             .resizable(false)
                             .pivot(egui::Align2::CENTER_CENTER)
-                            .fixed_size(egui::vec2(480.0, 180.0))
+                            .default_width(460.0)
+                            .title_bar(false)
+                            .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
                             .show(ui.ctx(), |ui| {
-                                ui.label("This action cannot be undone.");
+                                crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
                                 ui.add_space(8.0);
-                                ui.code(&stmt_str);
+                                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                    ui.label("This action cannot be undone.");
+                                    ui.add_space(8.0);
+                                    ui.code(&stmt_str);
+                                });
                                 ui.add_space(12.0);
-                                ui.horizontal(|ui| {
-                                    if ui.button("Cancel").clicked() {
-                                        self.pending_drop_table = None;
-                                    }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
@@ -3654,6 +3723,9 @@ impl Tabular {
                                     }
                                 });
                             });
+                        if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_drop_table = None;
+                        }
                     }
 
                     self.render_active_query_jobs_overlay(ctx);
@@ -5032,8 +5104,9 @@ impl App for Tabular {
         }
 
         // Show cache miss dialog (topmost)
+        self.poll_diagram_schema_jobs(ctx);
         self.render_cache_miss_dialog(ctx);
-        self.render_add_tables_dialog(ctx);
+        self.render_link_database_dialog(ctx);
 
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);

@@ -1,4 +1,4 @@
-use crate::{driver_mysql, models, modules, window_egui};
+use crate::{models, modules, window_egui};
 use log::debug;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions};
 use std::collections::HashMap;
@@ -523,83 +523,41 @@ pub(crate) fn fetch_procedure_definition(
     })
 }
 
-// Fetch foreign keys for a given connection/database (MySQL, PostgreSQL, SQLite, MSSQL).
-pub(crate) async fn get_foreign_keys(
-    tabular: &mut window_egui::Tabular,
+/// Write-through to the persistent FK cache so SQL-editor autocomplete can
+/// suggest `JOIN ... ON fk = pk` later without re-fetching (or an open ERD).
+pub(crate) async fn write_foreign_key_cache(
+    cache_pool: &sqlx::SqlitePool,
     connection_id: i64,
     database_name: &str,
-) -> Vec<models::structs::ForeignKey> {
-    let mut keys: Vec<models::structs::ForeignKey> = Vec::new();
-    if let Some(pool) = tabular.connection_pools.get(&connection_id).cloned() {
-        match pool {
-            models::enums::DatabasePool::MySQL(p) => {
-                match driver_mysql::fetch_mysql_foreign_keys(&p, database_name).await {
-                    Ok(k) => keys = k,
-                    Err(e) => debug!("Failed to fetch MySQL foreign keys: {}", e),
-                }
-            }
-            models::enums::DatabasePool::PostgreSQL(p) => {
-                match crate::driver_postgres::fetch_postgres_foreign_keys(&p).await {
-                    Ok(k) => keys = k,
-                    Err(e) => debug!("Failed to fetch PostgreSQL foreign keys: {}", e),
-                }
-            }
-            models::enums::DatabasePool::SQLite(p) => {
-                match crate::driver_sqlite::fetch_sqlite_foreign_keys(&p).await {
-                    Ok(k) => keys = k,
-                    Err(e) => debug!("Failed to fetch SQLite foreign keys: {}", e),
-                }
-            }
-            _ => {}
-        }
-    } else {
-        // MSSQL uses mssql-client (no sqlx pool) — fetch via one-off connection
-        let conn_opt = tabular
-            .connections
-            .iter()
-            .find(|c| c.id == Some(connection_id))
-            .cloned();
-        if let Some(conn) = conn_opt {
-            if conn.connection_type == models::enums::DatabaseType::MsSQL {
-                keys = fetch_mssql_foreign_keys(&conn, database_name).await;
-            }
-        } else {
-            debug!("Pool not found for connection {}", connection_id);
-        }
+    keys: &[models::structs::ForeignKey],
+) {
+    if keys.is_empty() {
+        return;
     }
-
-    // Write-through to the persistent FK cache so SQL-editor autocomplete can
-    // suggest `JOIN ... ON fk = pk` later without re-fetching (or an open ERD).
-    if !keys.is_empty()
-        && let Some(cache_pool) = tabular.db_pool.clone()
-    {
+    let _ = sqlx::query(
+        "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+    )
+    .bind(connection_id)
+    .bind(database_name)
+    .execute(cache_pool)
+    .await;
+    for fk in keys {
         let _ = sqlx::query(
-            "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
+            "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(connection_id)
         .bind(database_name)
-        .execute(cache_pool.as_ref())
+        .bind(&fk.table_name)
+        .bind(&fk.column_name)
+        .bind(&fk.referenced_table_name)
+        .bind(&fk.referenced_column_name)
+        .bind(&fk.constraint_name)
+        .execute(cache_pool)
         .await;
-        for fk in &keys {
-            let _ = sqlx::query(
-                "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(connection_id)
-            .bind(database_name)
-            .bind(&fk.table_name)
-            .bind(&fk.column_name)
-            .bind(&fk.referenced_table_name)
-            .bind(&fk.referenced_column_name)
-            .bind(&fk.constraint_name)
-            .execute(cache_pool.as_ref())
-            .await;
-        }
     }
-
-    keys
 }
 
-async fn fetch_mssql_foreign_keys(
+pub(crate) async fn fetch_mssql_foreign_keys(
     conn: &models::structs::ConnectionConfig,
     database_name: &str,
 ) -> Vec<models::structs::ForeignKey> {

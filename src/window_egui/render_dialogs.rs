@@ -359,67 +359,67 @@ impl super::Tabular {
             );
         }
 
+        crate::window_egui::style::render_modal_backdrop(ctx, "modal_replication_dialog", open);
+
         egui::Window::new("Setup Replication")
             .open(&mut open)
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                crate::window_egui::style::render_modal_header(ui, "Setup Replication", &mut close_dialog);
+
                 if let Some(state) = &mut self.replication_dialog {
-                    ui.heading("Configure Replication");
-                    ui.add_space(8.0);
-                    ui.label("Select the Master connection to replicate from:");
-                    
-                    let current_source = state.source_connection_id;
-                    let current_name = source_candidates.iter()
-                        .find(|(id, _)| *id == current_source)
-                        .map(|(_, name)| name.as_str())
-                        .unwrap_or("Select Master...");
-
-                    egui::ComboBox::from_id_salt("repl_master_combo")
-                        .selected_text(current_name)
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &source_candidates {
-                                let is_selected = current_source == *id;
-                                if ui.selectable_label(is_selected, name).clicked() {
-                                    state.source_connection_id = *id;
-                                    state.error = None;
-                                }
-                            }
-                        });
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Select the Master connection to replicate from:");
                         
-                    ui.add_space(8.0);
-                    ui.label("Replication User (Optional - leave empty to use connection default):");
-                    super::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut state.replication_user),
-                        f32::INFINITY,
-                        None,
-                    );
-                    
-                    ui.add_space(8.0);
-                    ui.label("Replication Password (Optional):");
-                    super::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut state.replication_password).password(true),
-                        f32::INFINITY,
-                        None,
-                    );
+                        let current_source = state.source_connection_id;
+                        let current_name = source_candidates.iter()
+                            .find(|(id, _)| *id == current_source)
+                            .map(|(_, name)| name.as_str())
+                            .unwrap_or("Select Master...");
 
+                        egui::ComboBox::from_id_salt("repl_master_combo")
+                            .selected_text(current_name)
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &source_candidates {
+                                    let is_selected = current_source == *id;
+                                    if ui.selectable_label(is_selected, name).clicked() {
+                                        state.source_connection_id = *id;
+                                        state.error = None;
+                                    }
+                                }
+                            });
+                            
+                        ui.add_space(8.0);
+                        ui.label("Replication User (Optional - leave empty to use connection default):");
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.replication_user),
+                            f32::INFINITY,
+                            None,
+                        );
+                        
+                        ui.add_space(8.0);
+                        ui.label("Replication Password (Optional):");
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.replication_password).password(true),
+                            f32::INFINITY,
+                            None,
+                        );
+
+                        if let Some(err) = &state.error {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
+                        }
+                    });
+                    
                     ui.add_space(8.0);
-                    
-                    if let Some(err) = &state.error {
-                         ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
-                         ui.add_space(8.0);
-                    }
-                    
-                    ui.separator();
                     
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close_dialog = true;
-                        }
-                        
                         let can_start = state.source_connection_id.is_some() && !state.is_executing;
                         if ui.add_enabled(can_start, egui::Button::new("Init & Start Replication")).clicked() {
                             if let Some(sid) = state.source_connection_id {
@@ -707,32 +707,47 @@ impl super::Tabular {
             } else {
                 "Add Custom View"
             };
+
+            crate::window_egui::style::render_modal_backdrop(
+                ctx,
+                "modal_add_view_dialog",
+                self.show_add_view_dialog,
+            );
+            let mut close_dialog = false;
+
             egui::Window::new(title)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(true)
                 .default_size([600.0, 400.0])
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("Name:");
-                    let name_response = super::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_view_name),
-                        f32::INFINITY,
-                        None,
-                    );
+                    crate::window_egui::style::render_modal_header(ui, title, &mut close_dialog);
 
-                    // Request focus on the name field when dialog first opens
-                    if ui.memory(|mem| mem.focused().is_none()) {
-                        name_response.request_focus();
-                    }
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Name:");
+                        let name_response = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut self.new_view_name),
+                            f32::INFINITY,
+                            None,
+                        );
 
-                    ui.add_space(8.0);
-                    ui.label("SQL Query:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.new_view_query)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(10),
-                    );
+                        // Request focus on the name field when dialog first opens
+                        if ui.memory(|mem| mem.focused().is_none()) {
+                            name_response.request_focus();
+                        }
+
+                        ui.add_space(8.0);
+                        ui.label("SQL Query:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.new_view_query)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(10),
+                        );
+                    });
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -779,11 +794,12 @@ impl super::Tabular {
                                 self.show_add_view_dialog = false;
                             }
                         }
-                        if ui.button("Cancel").clicked() {
-                            self.show_add_view_dialog = false;
-                        }
                     });
                 });
+
+            if close_dialog {
+                open = false;
+            }
         }
 
         if !open {
@@ -1466,96 +1482,106 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
         .collect();
     conn_labels.sort_by_key(|a| a.1.to_lowercase());
 
-    // Variables set inside the window closure and used after.
     let mut run_diff: Option<(i64, String, i64, String)> = None;
     let mut open = tabular.show_schema_diff_dialog;
+    let mut close_dialog = false;
+
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_schema_diff", open);
 
     egui::Window::new("Schema Diff")
         .open(&mut open)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .default_size(egui::vec2(820.0, 560.0))
         .resizable(true)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(ui, "Schema Diff", &mut close_dialog);
+
             if let Some(state) = &mut tabular.schema_diff_state {
-                // ── Connection pickers ────────────────────────────────────
-                ui.horizontal(|ui| {
-                    ui.label("Left:");
-                    egui::ComboBox::from_id_salt("schema_diff_left_conn")
-                        .selected_text(
-                            conn_labels
-                                .iter()
-                                .find(|(id, _)| *id == state.left_conn_id)
-                                .map(|(_, n)| n.as_str())
-                                .unwrap_or("—"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &conn_labels {
-                                ui.selectable_value(&mut state.left_conn_id, *id, name);
-                            }
-                        });
-                    super::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut state.left_db).hint_text("database"),
-                        120.0,
-                        None,
-                    );
-                    ui.add_space(16.0);
-                    ui.label("Right:");
-                    egui::ComboBox::from_id_salt("schema_diff_right_conn")
-                        .selected_text(
-                            conn_labels
-                                .iter()
-                                .find(|(id, _)| *id == state.right_conn_id)
-                                .map(|(_, n)| n.as_str())
-                                .unwrap_or("—"),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &conn_labels {
-                                ui.selectable_value(&mut state.right_conn_id, *id, name);
-                            }
-                        });
-                    super::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut state.right_db).hint_text("database"),
-                        120.0,
-                        None,
-                    );
+                // ── Connection pickers & Action bar Card ───────────────────
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Left:");
+                        egui::ComboBox::from_id_salt("schema_diff_left_conn")
+                            .selected_text(
+                                conn_labels
+                                    .iter()
+                                    .find(|(id, _)| *id == state.left_conn_id)
+                                    .map(|(_, n)| n.as_str())
+                                    .unwrap_or("—"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &conn_labels {
+                                    ui.selectable_value(&mut state.left_conn_id, *id, name);
+                                }
+                            });
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.left_db).hint_text("database"),
+                            120.0,
+                            None,
+                        );
+                        ui.add_space(16.0);
+                        ui.label("Right:");
+                        egui::ComboBox::from_id_salt("schema_diff_right_conn")
+                            .selected_text(
+                                conn_labels
+                                    .iter()
+                                    .find(|(id, _)| *id == state.right_conn_id)
+                                    .map(|(_, n)| n.as_str())
+                                    .unwrap_or("—"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &conn_labels {
+                                    ui.selectable_value(&mut state.right_conn_id, *id, name);
+                                }
+                            });
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.right_db).hint_text("database"),
+                            120.0,
+                            None,
+                        );
+                    });
+
+                    ui.add_space(6.0);
+
+                    // ── Action bar ────────────────────────────────────────────
+                    let running = state.status == SchemaDiffStatus::Running;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !running,
+                                egui::Button::new(if running {
+                                    "⏳ Running…"
+                                } else {
+                                    "▶ Compare"
+                                }),
+                            )
+                            .clicked()
+                        {
+                            run_diff = Some((
+                                state.left_conn_id,
+                                state.left_db.clone(),
+                                state.right_conn_id,
+                                state.right_db.clone(),
+                            ));
+                            state.status = SchemaDiffStatus::Running;
+                        }
+                        ui.checkbox(&mut state.show_same, "Show identical tables");
+                        ui.add_space(10.0);
+                        crate::window_egui::style::render_search_field(
+                            ui,
+                            &mut state.filter_text,
+                            "Filter tables…",
+                            160.0,
+                        );
+                    });
                 });
 
-                ui.add_space(6.0);
-
-                // ── Action bar ────────────────────────────────────────────
-                let running = state.status == SchemaDiffStatus::Running;
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !running,
-                            egui::Button::new(if running {
-                                "⏳ Running…"
-                            } else {
-                                "▶ Compare"
-                            }),
-                        )
-                        .clicked()
-                    {
-                        run_diff = Some((
-                            state.left_conn_id,
-                            state.left_db.clone(),
-                            state.right_conn_id,
-                            state.right_db.clone(),
-                        ));
-                        state.status = SchemaDiffStatus::Running;
-                    }
-                    ui.checkbox(&mut state.show_same, "Show identical tables");
-                    ui.add_space(10.0);
-                    crate::window_egui::style::render_search_field(
-                        ui,
-                        &mut state.filter_text,
-                        "Filter tables…",
-                        160.0,
-                    );
-                });
+                ui.add_space(8.0);
 
                 ui.separator();
 
@@ -1667,22 +1693,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_conn", true);
+
             egui::Window::new("Confirm Delete Connection")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Connection",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Connection")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to remove connection '{}'?",
                             conn_name
@@ -1693,26 +1726,21 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let delete_btn = egui::Button::new(
-                                        egui::RichText::new("Delete")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(super::style::theme_danger(ctx));
-                                    if ui.add(delete_btn).clicked() {
-                                        confirm_delete = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1734,22 +1762,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_clear = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_clear_history", true);
+
             egui::Window::new("Confirm Clear History")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Clear History",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Clear History")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label("Are you sure you want to clear all query history?");
                         ui.add_space(4.0);
                         ui.label(
@@ -1757,26 +1792,21 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let clear_btn = egui::Button::new(
-                                        egui::RichText::new("Clear History")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(super::style::theme_danger(ctx));
-                                    if ui.add(clear_btn).clicked() {
-                                        confirm_clear = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let clear_btn = egui::Button::new(
+                                egui::RichText::new("Clear History")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(clear_btn).clicked() {
+                                confirm_clear = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1795,22 +1825,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_req", true);
+
             egui::Window::new("Confirm Delete Request")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Request",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Request")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete request '{}'?",
                             req_name
@@ -1821,26 +1858,21 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let delete_btn = egui::Button::new(
-                                        egui::RichText::new("Delete")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(super::style::theme_danger(ctx));
-                                    if ui.add(delete_btn).clicked() {
-                                        confirm_delete = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1868,22 +1900,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_folder", true);
+
             egui::Window::new("Confirm Delete Folder")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Folder",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Folder")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete folder '{}'?",
                             folder_name
@@ -1896,26 +1935,21 @@ impl super::Tabular {
                             .small()
                             .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let delete_btn = egui::Button::new(
-                                        egui::RichText::new("Delete")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(super::style::theme_danger(ctx));
-                                    if ui.add(delete_btn).clicked() {
-                                        confirm_delete = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1943,22 +1977,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_ws", true);
+
             egui::Window::new("Confirm Delete Workspace")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Workspace",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Workspace")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete workspace '{}'?",
                             ws_name
@@ -1971,26 +2012,21 @@ impl super::Tabular {
                             .small()
                             .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let delete_btn = egui::Button::new(
-                                        egui::RichText::new("Delete")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(super::style::theme_danger(ctx));
-                                    if ui.add(delete_btn).clicked() {
-                                        confirm_delete = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2014,16 +2050,23 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_req", true);
+
             egui::Window::new("Rename HTTP Request")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("✏️ Rename HTTP Request").strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename HTTP Request",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label("Request Name:");
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
@@ -2037,20 +2080,15 @@ impl super::Tabular {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Save").clicked() {
-                                        confirm_rename = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2097,27 +2135,29 @@ impl super::Tabular {
             let mut confirm_create = false;
 
             let is_subfolder = parent_id_opt.is_some();
-            let title = if is_subfolder {
-                format!("📁 Add New Subfolder in '{}'", parent_name)
+            let heading_label = if is_subfolder {
+                "📁 Create Subfolder"
             } else {
-                format!("📁 Add New Folder in '{}'", parent_name)
+                "📁 Create Folder"
             };
 
-            egui::Window::new(title)
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_create_http_folder", true);
+
+            egui::Window::new(heading_label)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        let heading_label = if is_subfolder {
-                            "📁 Create Subfolder"
-                        } else {
-                            "📁 Create Folder"
-                        };
-                        ui.label(egui::RichText::new(heading_label).strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        heading_label,
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label(format!("Parent: {}", parent_name));
                         ui.add_space(6.0);
                         ui.label("Folder Name:");
@@ -2133,20 +2173,15 @@ impl super::Tabular {
                             confirm_create = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Create").clicked() {
-                                        confirm_create = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Create").clicked() {
+                                confirm_create = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2185,16 +2220,25 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_folder", true);
+
             egui::Window::new("Rename HTTP Folder")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("✏️ Rename Folder").strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename Folder",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(format!("Current folder: {}", current_name));
+                        ui.add_space(6.0);
                         ui.label("Folder Name:");
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
@@ -2208,20 +2252,15 @@ impl super::Tabular {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Save").clicked() {
-                                        confirm_rename = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2256,16 +2295,25 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_ws", true);
+
             egui::Window::new("Rename Workspace")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("✏️ Rename Workspace").strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename Workspace",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(format!("Current workspace: {}", current_name));
+                        ui.add_space(6.0);
                         ui.label("Workspace Name:");
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
@@ -2279,20 +2327,15 @@ impl super::Tabular {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Save").clicked() {
-                                        confirm_rename = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2324,18 +2367,23 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_create = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_create_http_ws", true);
+
             egui::Window::new("Create New HTTP Collection")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("📁 Create New Collection (Workspace)").strong(),
-                        );
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "📁 Create New Collection",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label("Collection Name:");
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
@@ -2349,20 +2397,15 @@ impl super::Tabular {
                             confirm_create = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Create").clicked() {
-                                        confirm_create = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Create").clicked() {
+                                confirm_create = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });

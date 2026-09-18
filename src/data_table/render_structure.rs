@@ -2369,49 +2369,63 @@ pub(crate) fn render_drop_column_confirmation(
     }
     let col_name = tabular.pending_drop_column_name.clone().unwrap();
     let stmt = tabular.pending_drop_column_stmt.clone().unwrap();
+    let mut close = false;
+    crate::window_egui::style::render_modal_backdrop(ctx, "drop_column_backdrop", true);
+
     egui::Window::new("Drop Column?")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_size(egui::vec2(440.0, 170.0))
+        .default_width(440.0)
         .show(ctx, |ui| {
-            ui.label(format!("Column: {}", col_name));
-            ui.add_space(4.0);
-            ui.code(&stmt);
+            crate::window_egui::style::render_modal_header(ui, "Drop Column?", &mut close);
+            ui.add_space(8.0);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Column: {}", col_name));
+                ui.add_space(4.0);
+                ui.code(&stmt);
+            });
+
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    tabular.pending_drop_column_name = None;
-                    tabular.pending_drop_column_stmt = None;
-                }
-                if ui
-                    .button(
-                        egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)),
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let confirm_btn = egui::Button::new(
+                        egui::RichText::new("Confirm").color(egui::Color32::WHITE),
                     )
-                    .clicked()
-                {
-                    if let Some(conn_id) = tabular.current_connection_id
-                        && !stmt.starts_with("--")
-                    {
-                        let victim = col_name.clone();
-                        run_structure_statement(
-                            tabular,
-                            conn_id,
-                            stmt.clone(),
-                            "Failed to drop column",
-                            move |tabular| {
-                                tabular.structure_columns.retain(|it| it.name != victim);
-                                tabular.request_structure_refresh = true;
-                                load_structure_info_for_current_table(tabular);
-                                crate::sidebar_database::refresh_connections_tree(tabular);
-                            },
-                        );
+                    .fill(crate::window_egui::style::theme_danger(ui.ctx()));
+
+                    if ui.add(confirm_btn).clicked() {
+                        if let Some(conn_id) = tabular.current_connection_id
+                            && !stmt.starts_with("--")
+                        {
+                            let victim = col_name.clone();
+                            run_structure_statement(
+                                tabular,
+                                conn_id,
+                                stmt.clone(),
+                                "Failed to drop column",
+                                move |tabular| {
+                                    tabular.structure_columns.retain(|it| it.name != victim);
+                                    tabular.request_structure_refresh = true;
+                                    load_structure_info_for_current_table(tabular);
+                                    crate::sidebar_database::refresh_connections_tree(tabular);
+                                },
+                            );
+                        }
+                        tabular.pending_drop_column_name = None;
+                        tabular.pending_drop_column_stmt = None;
                     }
-                    tabular.pending_drop_column_name = None;
-                    tabular.pending_drop_column_stmt = None;
-                }
+                });
             });
         });
+
+    if close {
+        tabular.pending_drop_column_name = None;
+        tabular.pending_drop_column_stmt = None;
+    }
 }
 
 fn commit_new_column(tabular: &mut window_egui::Tabular) {
@@ -2782,48 +2796,62 @@ pub(crate) fn render_drop_index_confirmation(
     }
     let idx_name = tabular.pending_drop_index_name.clone().unwrap();
     let stmt = tabular.pending_drop_index_stmt.clone().unwrap();
+    let mut close = false;
+    crate::window_egui::style::render_modal_backdrop(ctx, "drop_index_backdrop", true);
+
     egui::Window::new("Drop Index?")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_size(egui::vec2(420.0, 170.0))
+        .default_width(420.0)
         .show(ctx, |ui| {
-            ui.label(format!("Index: {}", idx_name));
-            ui.add_space(4.0);
-            ui.code(&stmt);
+            crate::window_egui::style::render_modal_header(ui, "Drop Index?", &mut close);
+            ui.add_space(8.0);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Index: {}", idx_name));
+                ui.add_space(4.0);
+                ui.code(&stmt);
+            });
+
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    tabular.pending_drop_index_name = None;
-                    tabular.pending_drop_index_stmt = None;
-                }
-                if ui
-                    .button(
-                        egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)),
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let confirm_btn = egui::Button::new(
+                        egui::RichText::new("Confirm").color(egui::Color32::WHITE),
                     )
-                    .clicked()
-                {
-                    if let Some(conn_id) = tabular.current_connection_id
-                        && !stmt.starts_with("--")
-                    {
-                        let victim = idx_name.clone();
-                        run_structure_statement(
-                            tabular,
-                            conn_id,
-                            stmt.clone(),
-                            "Failed to drop index",
-                            move |tabular| {
-                                tabular.structure_indexes.retain(|it| it.name != victim);
-                                tabular.request_structure_refresh = true;
-                                load_structure_info_for_current_table(tabular);
-                            },
-                        );
+                    .fill(crate::window_egui::style::theme_danger(ui.ctx()));
+
+                    if ui.add(confirm_btn).clicked() {
+                        if let Some(conn_id) = tabular.current_connection_id
+                            && !stmt.starts_with("--")
+                        {
+                            let victim = idx_name.clone();
+                            run_structure_statement(
+                                tabular,
+                                conn_id,
+                                stmt.clone(),
+                                "Failed to drop index",
+                                move |tabular| {
+                                    tabular.structure_indexes.retain(|it| it.name != victim);
+                                    tabular.request_structure_refresh = true;
+                                    load_structure_info_for_current_table(tabular);
+                                },
+                            );
+                        }
+                        tabular.pending_drop_index_name = None;
+                        tabular.pending_drop_index_stmt = None;
                     }
-                    tabular.pending_drop_index_name = None;
-                    tabular.pending_drop_index_stmt = None;
-                }
+                });
             });
         });
+
+    if close {
+        tabular.pending_drop_index_name = None;
+        tabular.pending_drop_index_stmt = None;
+    }
 }
 
 // Handle directory picker dialog

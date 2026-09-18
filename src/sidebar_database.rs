@@ -214,19 +214,29 @@ pub(crate) fn render_connection_dialog(
         }
     }
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_backdrop_connection", should_show);
+
     egui::Window::new(title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(400.0)
+        .default_width(420.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
-        .open(&mut open)
         .show(ctx, |ui| {
+            let mut close_dialog = false;
+            crate::window_egui::style::render_modal_header(ui, title, &mut close_dialog);
+            if close_dialog {
+                open = false;
+            }
+
             ui.vertical(|ui| {
-                egui::Grid::new("connection_form")
-                    .num_columns(2)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Connection Type:");
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    egui::Grid::new("connection_form")
+                        .num_columns(2)
+                        .spacing([10.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("Connection Type:");
                         egui::ComboBox::from_label("")
                             .selected_text(match connection_data.connection_type {
                                 models::enums::DatabaseType::MySQL => "MySQL",
@@ -606,8 +616,9 @@ pub(crate) fn render_connection_dialog(
                             }
                         }
                     });
+                });
 
-                ui.separator();
+                ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     let save_button_text = if is_edit_mode { "Update" } else { "Save" };
@@ -3027,16 +3038,30 @@ pub(crate) fn render_create_subfolder_dialog(
     } else {
         format!("Create Subfolder in \"{}\"", parent)
     };
-    egui::Window::new(title)
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "modal_create_subfolder",
+        tabular.show_create_subfolder_dialog,
+    );
+    let mut close_dialog = false;
+
+    egui::Window::new(&title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(320.0)
+        .default_width(340.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Folder name:");
-            let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
-            resp.request_focus();
+            crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label("Folder name:");
+                let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
+                resp.request_focus();
+            });
+
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let ok = !tabular.new_subfolder_name.trim().is_empty();
@@ -3058,13 +3083,9 @@ pub(crate) fn render_create_subfolder_dialog(
                         tabular.new_subfolder_name.clear();
                     }
                 });
-                if ui.button("Cancel").clicked() {
-                    tabular.show_create_subfolder_dialog = false;
-                    tabular.new_subfolder_name.clear();
-                }
             });
         });
-    if !open {
+    if !open || close_dialog {
         tabular.show_create_subfolder_dialog = false;
         tabular.new_subfolder_name.clear();
     }
@@ -3083,26 +3104,35 @@ pub(crate) fn render_rename_connection_folder_dialog(
     let mut close_dialog = false;
     let mut confirm_rename = false;
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_connection_folder", true);
+
     egui::Window::new("Rename Connection Folder")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(320.0)
+        .default_width(340.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("✏️ Rename Folder").strong());
-            ui.add_space(6.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "✏️ Rename Folder",
+                &mut close_dialog,
+            );
 
-            ui.label(format!("Current folder: {}", current_name));
-            ui.add_space(4.0);
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Current folder: {}", current_name));
+                ui.add_space(4.0);
 
-            ui.label("New folder name:");
-            let resp = ui.text_edit_singleline(&mut edit_name);
-            resp.request_focus();
+                ui.label("New folder name:");
+                let resp = ui.text_edit_singleline(&mut edit_name);
+                resp.request_focus();
 
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                confirm_rename = true;
-                close_dialog = true;
-            }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    confirm_rename = true;
+                    close_dialog = true;
+                }
+            });
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -3117,9 +3147,6 @@ pub(crate) fn render_rename_connection_folder_dialog(
                         close_dialog = true;
                     }
                 });
-                if ui.button("Cancel").clicked() {
-                    close_dialog = true;
-                }
             });
         });
 

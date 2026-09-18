@@ -932,6 +932,113 @@ pub fn render_modal_backdrop(ctx: &egui::Context, id_source: &str, open: bool) -
     progress
 }
 
+/// Frame standar untuk seluruh modal/popup window di Tabular.
+/// Polos tanpa bar atas bawaan, sudut 12px, border tipis elegan, dan bayangan mendalam.
+pub fn modal_window_frame(ctx: &egui::Context) -> egui::Frame {
+    let dark = ctx.global_style().visuals.dark_mode;
+    egui::Frame::window(&ctx.global_style())
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin {
+            left: 20,
+            right: 20,
+            top: 16,
+            bottom: 18,
+        })
+        .shadow(egui::Shadow {
+            offset: [0, 16],
+            blur: 48,
+            spread: 4,
+            color: egui::Color32::from_black_alpha(200),
+        })
+        .stroke(egui::Stroke::new(
+            1.0,
+            if dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+            },
+        ))
+}
+
+/// Frame kontainer (card) untuk mengelompokkan elemen/data berkategori sama di dalam modal.
+pub fn modal_card_frame(ctx: &egui::Context) -> egui::Frame {
+    let dark = ctx.global_style().visuals.dark_mode;
+    let card_bg = if dark {
+        egui::Color32::from_rgb(28, 31, 40)
+    } else {
+        egui::Color32::from_rgb(248, 250, 253)
+    };
+    let card_stroke = if dark {
+        egui::Color32::from_rgb(46, 50, 64)
+    } else {
+        egui::Color32::from_rgb(222, 226, 235)
+    };
+    egui::Frame::new()
+        .fill(card_bg)
+        .stroke(egui::Stroke::new(1.0, card_stroke))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(14))
+}
+
+/// Render header standar modal: Judul di sisi kiri dan tombol 'X' (Esc) di sisi kanan.
+pub fn render_modal_header(
+    ui: &mut egui::Ui,
+    title: impl Into<egui::RichText>,
+    on_close: &mut bool,
+) {
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        *on_close = true;
+    }
+
+    ui.horizontal(|ui| {
+        ui.heading(title);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let close_btn = egui::Button::new(
+                egui_icons::icons::ICON_CLOSE
+                    .rich_text()
+                    .size(16.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .frame(false);
+            if ui
+                .add(close_btn)
+                .on_hover_text("Close (Esc)")
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                *on_close = true;
+            }
+        });
+    });
+}
+
+/// Helper untuk merender seksi kartu berkategori dengan judul dan deskripsi opsional.
+pub fn render_modal_card<R>(
+    ui: &mut egui::Ui,
+    title: Option<&str>,
+    subtitle: Option<&str>,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    modal_card_frame(ui.ctx())
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            if let Some(t) = title {
+                ui.label(egui::RichText::new(t).strong().size(13.5));
+                if let Some(sub) = subtitle {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(sub)
+                            .size(11.5)
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                ui.add_space(10.0);
+            }
+            content(ui)
+        })
+        .inner
+}
+
 /// Render a modern macOS/Linear style keyboard shortcut pill badge
 pub fn render_shortcut_badge(ui: &mut egui::Ui, shortcut: &str) {
     let is_dark = ui.visuals().dark_mode;

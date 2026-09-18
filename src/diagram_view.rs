@@ -32,6 +32,11 @@ pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 1.5;
 pub const DEFAULT_ZOOM: f32 = 1.0;
 
+/// Ukuran seragam tombol square di floating toolbar diagram.
+const TOOLBAR_BTN_SIZE: f32 = 46.0;
+const TOOLBAR_ICON_SIZE: f32 = 18.0;
+const TOOLBAR_LABEL_SIZE: f32 = 9.5;
+
 /// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault, database).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagramAction {
@@ -43,8 +48,14 @@ pub enum DiagramAction {
     SaveToDatabase,
     /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
     LoadFromDatabase,
-    /// Buka dialog untuk menambahkan tabel dari database atau koneksi lain ke kanvas.
-    OpenAddTablesModal,
+    /// Buka dialog untuk me-link database lain sebagai kontainer di kanvas.
+    OpenLinkDatabaseModal,
+    /// Muat ulang isi kontainer link database (`None` = semua link).
+    RefreshLinks(Option<String>),
+    /// Arahkan link database ke koneksi lain (id node & relasi tetap).
+    RelinkDatabase(String),
+    /// Buka tab diagram sumber sebuah link database.
+    OpenLinkedDiagram(String),
     /// Sinkronkan diagram ke Tabular Server (Cloud E2EE).
     SyncToServer,
     Info(String),
@@ -152,6 +163,59 @@ fn import_mermaid(state: &mut DiagramState) -> Option<DiagramAction> {
     })
 }
 
+/// Tombol square toolbar: ikon besar di atas, label kecil di bawah.
+/// `selected` menandai toggle yang sedang aktif (warna seleksi tema).
+fn toolbar_square_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(TOOLBAR_BTN_SIZE, TOOLBAR_BTN_SIZE),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, label)
+    });
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        let painter = ui.painter();
+        // Latar hanya digambar saat hover/aktif/terpilih agar toolbar tetap bersih.
+        if selected
+            || response.hovered()
+            || response.has_focus()
+            || response.is_pointer_button_down_on()
+        {
+            painter.rect(
+                rect,
+                6.0,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let color = visuals.text_color();
+        painter.text(
+            rect.center_top() + egui::vec2(0.0, 17.0),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(TOOLBAR_ICON_SIZE),
+            color,
+        );
+        painter.text(
+            rect.center_bottom() - egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(TOOLBAR_LABEL_SIZE),
+            color,
+        );
+    }
+
+    response
+}
+
 /// Pusatkan posisi semua node diagram ke tengah area tampilan (viewport).
 pub fn center_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
     if state.nodes.is_empty() {
@@ -208,6 +272,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
         ui.separator();
         if ui
+            .checkbox(&mut state.show_relations, "Show relationship links")
+            .clicked()
+        {
+            state.save_requested = true;
+        }
+        if ui
             .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
             .clicked()
         {
@@ -223,7 +293,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
         if ui.button("⚡ Auto Arrange Diagram").clicked() {
             ui.close();
-            perform_auto_layout(state);
+            auto_layout_host(state);
             state.save_requested = true;
         }
     });
@@ -243,6 +313,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 || (!state.show_search && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             {
                 state.hand_tool = false;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::L) {
+                state.show_relations = !state.show_relations;
+                state.save_requested = true;
             }
         }
 
@@ -308,6 +382,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     if state.show_grid {
         draw_grid(ui, rect, pan, scale);
+    }
+
+    if let Some(a) = draw_link_containers(ui, state, &to_screen, is_hand_mode) {
+        action = Some(a);
     }
 
     // Draw Groups (Containers)
@@ -472,9 +550,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 egui::Color32::WHITE,
             );
 
-            // Interaction
+            // Interaction. Group milik link database mengikuti diagram
+            // sumbernya, jadi tidak bisa digeser/diubah di sini.
+            let is_linked_group = crate::diagram_links::is_linked_id(group_id);
             let interact_rect = title_rect;
-            let group_sense = if is_hand_mode {
+            let group_sense = if is_hand_mode || is_linked_group {
                 egui::Sense::hover()
             } else {
                 egui::Sense::click_and_drag()
@@ -485,53 +565,53 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 group_sense,
             );
 
-            if !is_hand_mode && response.dragged() {
+            if !is_hand_mode && !is_linked_group && response.dragged() {
                 let delta = response.drag_delta() / scale;
                 group_drag_delta = Some((group_id.clone(), delta));
             }
 
-            if !is_hand_mode {
+            if !is_hand_mode && !is_linked_group {
                 response.context_menu(|ui| {
-                if ui.button("Rename Container").clicked() {
-                    ui.close();
-                    _group_rename_request = Some((idx, group_id.clone()));
-                }
-                if ui.button("Delete Group").clicked() {
-                    ui.close();
-                    _group_delete_request = Some(group_id.clone());
-                }
+                    if ui.button("Rename Container").clicked() {
+                        ui.close();
+                        _group_rename_request = Some((idx, group_id.clone()));
+                    }
+                    if ui.button("Delete Group").clicked() {
+                        ui.close();
+                        _group_delete_request = Some(group_id.clone());
+                    }
 
-                ui.horizontal(|ui| {
-                    ui.label("Color:");
-                    egui::ScrollArea::horizontal()
-                        .max_width(200.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let colors = GROUP_COLORS;
+                    ui.horizontal(|ui| {
+                        ui.label("Color:");
+                        egui::ScrollArea::horizontal()
+                            .max_width(200.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let colors = GROUP_COLORS;
 
-                                for &c in &colors {
-                                    let (response, painter) = ui.allocate_painter(
-                                        egui::vec2(20.0, 20.0),
-                                        egui::Sense::click(),
-                                    );
-                                    let rect = response.rect;
-                                    painter.rect_filled(rect, 4.0, c);
-                                    if response.hovered() {
-                                        painter.rect_stroke(
-                                            rect,
-                                            4.0,
-                                            egui::Stroke::new(2.0, egui::Color32::WHITE),
-                                            egui::StrokeKind::Middle,
+                                    for &c in &colors {
+                                        let (response, painter) = ui.allocate_painter(
+                                            egui::vec2(20.0, 20.0),
+                                            egui::Sense::click(),
                                         );
+                                        let rect = response.rect;
+                                        painter.rect_filled(rect, 4.0, c);
+                                        if response.hovered() {
+                                            painter.rect_stroke(
+                                                rect,
+                                                4.0,
+                                                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                                egui::StrokeKind::Middle,
+                                            );
+                                        }
+                                        if response.clicked() {
+                                            group.color = c;
+                                            ui.close();
+                                        }
                                     }
-                                    if response.clicked() {
-                                        group.color = c;
-                                        ui.close();
-                                    }
-                                }
+                                });
                             });
-                        });
-                });
+                    });
                 });
             }
         }
@@ -570,130 +650,119 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut clicked_edge = None;
     let _pointer_pos = ui.input(|i| i.pointer.interact_pos());
     let pointer_down = !is_hand_mode && ui.input(|i| i.pointer.primary_clicked());
+    let mut edge_was_clicked = false;
 
-    // Background interaction to clear selection
-    if ui.input(|i| i.pointer.primary_clicked()) && !ui.ui_contains_pointer() {
-        // This check is tricky because ui.interact covers the whole rect.
-        // Reliance on the button click logic below is safer.
-    }
-    // Better: If we click the background rect (handled at start of function), we clear selection.
-    // However, the background interact response is at line 8. We need to check it there?
-    // Actually, we can check if any edge or node was clicked this frame. If not, and background was clicked, clear.
-    // But `response.dragged()` consumes click? No, drag is different.
+    if state.show_relations {
+        for edge in &state.edges {
+            // Resolve source and target nodes
+            let src_node = state.nodes.iter().find(|n| n.id == edge.source);
+            let dst_node = state.nodes.iter().find(|n| n.id == edge.target);
 
-    // Let's implement hit testing first.
+            if let (Some(src), Some(dst)) = (src_node, dst_node) {
+                let src_rect_size = src.size * scale;
+                let dst_rect_size = dst.size * scale;
 
-    for edge in &state.edges {
-        // Resolve source and target nodes
-        let src_node = state.nodes.iter().find(|n| n.id == edge.source);
-        let dst_node = state.nodes.iter().find(|n| n.id == edge.target);
+                let src_pos =
+                    to_screen(src.pos) + egui::vec2(src_rect_size.x, src_rect_size.y / 2.0); // right side
+                let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_rect_size.y / 2.0); // left side
 
-        if let (Some(src), Some(dst)) = (src_node, dst_node) {
-            let src_rect_size = src.size * scale;
-            let dst_rect_size = dst.size * scale;
+                // Determine if selected
+                let is_selected = state.selected_edge.as_ref()
+                    == Some(&(edge.source.clone(), edge.target.clone()));
 
-            let src_pos = to_screen(src.pos) + egui::vec2(src_rect_size.x, src_rect_size.y / 2.0); // right side
-            let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_rect_size.y / 2.0); // left side
+                // Determine if highlighted by column
+                let is_highlighted_by_col =
+                    if let Some((sel_table, sel_col)) = &state.selected_column {
+                        src.foreign_keys.iter().any(|fk| {
+                            fk.referenced_table_name == edge.target
+                                && ((fk.table_name == *sel_table && fk.column_name == *sel_col)
+                                    || (fk.referenced_table_name == *sel_table
+                                        && fk.referenced_column_name == *sel_col))
+                        })
+                    } else {
+                        false
+                    };
 
-            // Determine if selected
-            let is_selected =
-                state.selected_edge.as_ref() == Some(&(edge.source.clone(), edge.target.clone()));
+                let is_active = is_selected || is_highlighted_by_col;
 
-            // Determine if highlighted by column
-            let is_highlighted_by_col = if let Some((sel_table, sel_col)) = &state.selected_column {
-                src.foreign_keys.iter().any(|fk| {
-                    fk.referenced_table_name == edge.target
-                        && ((fk.table_name == *sel_table && fk.column_name == *sel_col)
-                            || (fk.referenced_table_name == *sel_table
-                                && fk.referenced_column_name == *sel_col))
-                })
-            } else {
-                false
-            };
+                // Determine base color from source group
+                let mut base_color = egui::Color32::from_gray(100);
+                if let Some(group_id) = src.group_ids.first().or(src.group_id.as_ref())
+                    && let Some(group) = state.groups.iter().find(|g| &g.id == group_id)
+                {
+                    base_color = group.color.linear_multiply(0.8); // Slight transparency
+                }
 
-            let is_active = is_selected || is_highlighted_by_col;
+                let color = if is_active {
+                    egui::Color32::from_rgb(255, 215, 0) // Gold
+                } else {
+                    base_color
+                };
 
-            // Determine base color from source group
-            let mut base_color = egui::Color32::from_gray(100);
-            if let Some(group_id) = src.group_ids.first().or(src.group_id.as_ref())
-                && let Some(group) = state.groups.iter().find(|g| &g.id == group_id)
-            {
-                base_color = group.color.linear_multiply(0.8); // Slight transparency
-            }
+                let width = if is_active { 3.0 * scale } else { 1.0 * scale };
+                let stroke = egui::Stroke::new(width, color);
 
-            let color = if is_active {
-                egui::Color32::from_rgb(255, 215, 0) // Gold
-            } else {
-                base_color
-            };
+                // Cubic bezier for smooth connection
+                let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
+                let control1 = src_pos + egui::vec2(control_scale, 0.0);
+                let control2 = dst_pos - egui::vec2(control_scale, 0.0);
 
-            let width = if is_active { 3.0 * scale } else { 1.0 * scale };
-            let stroke = egui::Stroke::new(width, color);
+                let points = [src_pos, control1, control2, dst_pos];
+                let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+                    points,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    stroke,
+                );
 
-            // Cubic bezier for smooth connection
-            let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
-            let control1 = src_pos + egui::vec2(control_scale, 0.0);
-            let control2 = dst_pos - egui::vec2(control_scale, 0.0);
-
-            let points = [src_pos, control1, control2, dst_pos];
-            let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-                points,
-                false,
-                egui::Color32::TRANSPARENT,
-                stroke,
-            );
-
-            // Hit detection (Check hover first)
-            let mut is_hovered = false;
-            // Sampling kurva hanya bila pointer di dekat bounding box edge.
-            if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
-                && egui::Rect::from_points(&points).expand(20.0).contains(pos)
-            {
-                let num_samples = 30;
-                for i in 0..=num_samples {
-                    let t = i as f32 / num_samples as f32;
-                    let p = bezier.sample(t);
-                    if p.distance(pos) < 20.0 {
-                        // Increased tolerance
-                        is_hovered = true;
-                        break;
+                // Hit detection (Check hover first)
+                let mut is_hovered = false;
+                // Sampling kurva hanya bila pointer di dekat bounding box edge.
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+                    && egui::Rect::from_points(&points).expand(20.0).contains(pos)
+                {
+                    let num_samples = 30;
+                    for i in 0..=num_samples {
+                        let t = i as f32 / num_samples as f32;
+                        let p = bezier.sample(t);
+                        if p.distance(pos) < 20.0 {
+                            // Increased tolerance
+                            is_hovered = true;
+                            break;
+                        }
                     }
                 }
-            }
 
-            if is_hovered {
-                if !is_hand_mode && pointer_down {
-                    clicked_edge = Some((edge.source.clone(), edge.target.clone()));
+                if is_hovered {
+                    if !is_hand_mode && pointer_down {
+                        clicked_edge = Some((edge.source.clone(), edge.target.clone()));
+                    }
+                    if !is_selected {
+                        // Hover feedback
+                        let hover_stroke =
+                            egui::Stroke::new(2.0 * scale, egui::Color32::from_gray(180));
+                        ui.painter()
+                            .add(egui::epaint::CubicBezierShape::from_points_stroke(
+                                points,
+                                false,
+                                egui::Color32::TRANSPARENT,
+                                hover_stroke,
+                            ));
+                    }
                 }
-                if !is_selected {
-                    // Hover feedback
-                    let hover_stroke =
-                        egui::Stroke::new(2.0 * scale, egui::Color32::from_gray(180));
-                    ui.painter()
-                        .add(egui::epaint::CubicBezierShape::from_points_stroke(
-                            points,
-                            false,
-                            egui::Color32::TRANSPARENT,
-                            hover_stroke,
-                        ));
-                }
+
+                ui.painter().add(bezier);
             }
-
-            ui.painter().add(bezier);
         }
-    }
 
-    let virtual_clicked = draw_virtual_relations(ui, state, rect, &to_screen, pointer_down);
-    let edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
-    if let Some(edge) = clicked_edge {
-        if !is_hand_mode {
-            state.selected_edge = Some(edge);
+        draw_linked_relations(ui, state, &to_screen);
+        let virtual_clicked = draw_virtual_relations(ui, state, rect, &to_screen, pointer_down);
+        edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
+        if let Some(edge) = clicked_edge {
+            if !is_hand_mode {
+                state.selected_edge = Some(edge);
+            }
         }
-    } else if pointer_down {
-        // If clicked but not on any edge, check if we clicked a node later.
-        // If not node either, we clear.
-        // Simplified: We handle clear at the start or via background response if possible.
-        // Actually, let's defer clearing to ensure we don't clear when clicking a node.
     }
 
     // Draw nodes
@@ -731,6 +800,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         .collect();
     let mut empty_group_retention: Option<(String, egui::Pos2)> = None;
     let mut add_group_at_pos: Option<egui::Pos2> = None;
+    let mut open_source_request: Option<String> = None;
 
     for node in &mut state.nodes {
         node.ensure_groups_migrated();
@@ -757,8 +827,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
         // Interact
         let node_id = ui.id().with("node").with(&node.id);
+        // Tabel milik link database: posisinya mengikuti diagram sumber, jadi
+        // tidak bisa digeser. Kolomnya tetap bisa dipakai membuat relasi.
+        let is_linked = crate::diagram_links::is_linked_id(&node.id);
         let node_sense = if is_hand_mode {
             egui::Sense::hover()
+        } else if is_linked {
+            egui::Sense::click()
         } else {
             egui::Sense::click_and_drag()
         };
@@ -774,6 +849,29 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             node_response.context_menu(|ui| {
             ui.label(egui::RichText::new(&node.title).strong());
             ui.separator();
+
+            if is_linked {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "From linked database {}",
+                        node.database_name.as_deref().unwrap_or("?")
+                    ))
+                    .weak(),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Layout and groups follow the source diagram.\nRelations can still be drawn from its columns.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                if ui.button("Open source diagram").clicked() {
+                    ui.close();
+                    open_source_request =
+                        crate::diagram_links::link_id_of(&node.id).map(str::to_string);
+                }
+                return;
+            }
 
             if node.detached {
                 ui.label(
@@ -791,6 +889,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.label(egui::RichText::new("No groups created yet").weak());
             } else {
                 for (gid, gtitle, gcolor) in &available_groups {
+                    if crate::diagram_links::is_linked_id(gid) {
+                        continue;
+                    }
                     let in_group = node.is_in_group(gid);
                     let (prefix, action_label) = if in_group {
                         ("✓", format!("Remove from {}", gtitle))
@@ -833,18 +934,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             add_group_at_pos = Some(node.pos + egui::vec2(node.size.x + 20.0, 0.0));
         }
 
-        if !is_hand_mode && node_response.dragged() {
+        if !is_hand_mode && !is_linked && node_response.dragged() {
             dragging_node_id = Some(node.id.clone());
             drag_delta = node_response.drag_delta();
 
             // Track globally for drop detection
             state.dragging_node = Some(node.id.clone());
-        } else if !is_hand_mode && node_response.drag_stopped() {
+        } else if !is_hand_mode && !is_linked && node_response.drag_stopped() {
             let shift_held = ui.input(|i| i.modifiers.shift);
             if shift_held {
                 // Check drop target
                 if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
                     for (_, gid, rect, _, _) in &group_bounds {
+                        if crate::diagram_links::is_linked_id(gid) {
+                            continue;
+                        }
                         if rect.contains(pointer_pos) {
                             node.add_to_group(gid.clone());
                             state.save_requested = true;
@@ -1057,34 +1161,36 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             if !is_hand_mode {
                 // Context menu saat klik kanan pada kolom
                 response.context_menu(|ui| {
-                ui.label(egui::RichText::new(format!("{}.{}", node.id, col)).strong());
-                if let Some(c_type) = info.map(|c| c.type_name.as_str()).filter(|t| !t.is_empty()) {
-                    ui.label(
-                        egui::RichText::new(format!("Type: {c_type}"))
-                            .weak()
-                            .small(),
-                    );
-                }
-                ui.separator();
-
-                if ui.button("🔍 Search relation").clicked() {
-                    ui.close();
-                    search_relations_for_column = Some((node.id.clone(), col.clone()));
-                }
-
-                ui.separator();
-                if is_selected_col {
-                    if ui.button("Deselect column").clicked() {
-                        ui.close();
-                        column_clicked_request = Some((String::new(), String::new()));
+                    ui.label(egui::RichText::new(format!("{}.{}", node.id, col)).strong());
+                    if let Some(c_type) =
+                        info.map(|c| c.type_name.as_str()).filter(|t| !t.is_empty())
+                    {
+                        ui.label(
+                            egui::RichText::new(format!("Type: {c_type}"))
+                                .weak()
+                                .small(),
+                        );
                     }
-                } else if ui
-                    .button("🔗 Select for manual relation (Ctrl+Click)")
-                    .clicked()
-                {
-                    ui.close();
-                    column_clicked_request = Some((node.id.clone(), col.clone()));
-                }
+                    ui.separator();
+
+                    if ui.button("🔍 Search relation").clicked() {
+                        ui.close();
+                        search_relations_for_column = Some((node.id.clone(), col.clone()));
+                    }
+
+                    ui.separator();
+                    if is_selected_col {
+                        if ui.button("Deselect column").clicked() {
+                            ui.close();
+                            column_clicked_request = Some((String::new(), String::new()));
+                        }
+                    } else if ui
+                        .button("🔗 Select for manual relation (Ctrl+Click)")
+                        .clicked()
+                    {
+                        ui.close();
+                        column_clicked_request = Some((node.id.clone(), col.clone()));
+                    }
                 });
             }
 
@@ -1267,6 +1373,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         state.add_group_popup = Some(pos);
         state.new_group_buffer.clear();
     }
+    if let Some(link_id) = open_source_request {
+        action = Some(DiagramAction::OpenLinkedDiagram(link_id));
+    }
 
     // Clear selection if clicked on background (and not on an edge or node)
     // We check `response` from the beginning of the function (passed down? no it was `ui.interact(rect...)`)
@@ -1343,11 +1452,32 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
     }
 
+    // Indikator sinkronisasi skema live (tampilan masih dari cache).
+    if state.schema_syncing {
+        let text = if state.nodes.is_empty() {
+            "Loading schema…"
+        } else {
+            "Syncing schema…"
+        };
+        let spinner_rect = egui::Rect::from_center_size(
+            rect.center_top() + egui::vec2(-60.0, 24.0),
+            egui::vec2(14.0, 14.0),
+        );
+        ui.put(spinner_rect, egui::Spinner::new().size(14.0));
+        ui.painter().text(
+            spinner_rect.right_center() + egui::vec2(8.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(12.0),
+            ui.visuals().weak_text_color(),
+        );
+    }
+
     // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Sync, Save, Import & Export.
     let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
-    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(1080.0);
-    let toolbar_width = measured_width.max(1080.0);
-    let toolbar_height = 36.0;
+    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(760.0);
+    let toolbar_width = measured_width.max(TOOLBAR_BTN_SIZE * 4.0);
+    let toolbar_height = TOOLBAR_BTN_SIZE + 8.0;
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
         egui::vec2(toolbar_width, toolbar_height),
@@ -1363,50 +1493,50 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0)),
         |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
                 // --- 1. Zoom & Navigasi ---
-                if ui
-                    .button(egui_icons::icons::ICON_REMOVE.codepoint)
+                if toolbar_square_button(ui, egui_icons::icons::ICON_REMOVE.codepoint, "Out", false)
                     .on_hover_text("Zoom Out (Cmd -)")
                     .clicked()
                 {
                     state.zoom = (state.zoom / 1.15).max(MIN_ZOOM);
                 }
 
+                // Persentase zoom ditampilkan di posisi ikon.
                 let zoom_text = format!("{:.0}%", state.zoom * 100.0);
-                if ui
-                    .button(egui::RichText::new(zoom_text).monospace().size(11.5))
+                if toolbar_square_button(ui, &zoom_text, "Zoom", false)
                     .on_hover_text("Reset Zoom to 100% (Cmd 0)")
                     .clicked()
                 {
                     state.zoom = DEFAULT_ZOOM;
                 }
 
-                if ui
-                    .button(egui_icons::icons::ICON_ADD.codepoint)
+                if toolbar_square_button(ui, egui_icons::icons::ICON_ADD.codepoint, "In", false)
                     .on_hover_text("Zoom In (Cmd +)")
                     .clicked()
                 {
                     state.zoom = (state.zoom * 1.15).min(MAX_ZOOM);
                 }
 
-                if ui
-                    .button(format!(
-                        "{} Center",
-                        egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint
-                    ))
-                    .on_hover_text("Move diagram to center of view")
-                    .clicked()
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint,
+                    "Center",
+                    false,
+                )
+                .on_hover_text("Move diagram to center of view")
+                .clicked()
                 {
                     center_diagram(state, rect.size());
                 }
 
-                if ui
-                    .selectable_label(
-                        is_hand_mode,
-                        format!("{} Hand", egui_icons::icons::ICON_PAN_TOOL.codepoint),
-                    )
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_PAN_TOOL.codepoint,
+                    "Hand",
+                    is_hand_mode,
+                )
                     .on_hover_text("Hand Tool (H or hold Space)\nClick and drag anywhere to pan diagram navigation")
                     .clicked()
                 {
@@ -1416,11 +1546,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.separator();
 
                 // --- 2. Grid & Anti-Overlap Toggles ---
-                if ui
-                    .selectable_label(
-                        state.show_grid,
-                        format!("{} Grid", egui_icons::icons::ICON_GRID_ON.codepoint),
-                    )
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_GRID_ON.codepoint,
+                    "Grid",
+                    state.show_grid,
+                )
                     .on_hover_text("Show or hide the background grid")
                     .clicked()
                 {
@@ -1428,11 +1559,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     state.save_requested = true;
                 }
 
-                if ui
-                    .selectable_label(
-                        state.prevent_overlap,
-                        format!("{} No Overlap", egui_icons::icons::ICON_DASHBOARD.codepoint),
-                    )
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_DASHBOARD.codepoint,
+                    "Overlap",
+                    state.prevent_overlap,
+                )
                     .on_hover_text("Prevent tables from overlapping (auto-separates on drop and drag)")
                     .clicked()
                 {
@@ -1446,8 +1578,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.separator();
 
                 // --- 3. Layout Menu ---
-                ui.menu_button(
-                    format!("{} Layout", egui_icons::icons::ICON_VIEW_MODULE.codepoint),
+                let layout_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_VIEW_MODULE.codepoint,
+                    "Layout",
+                    false,
+                )
+                .on_hover_text("Layout options");
+                egui::Popup::menu(&layout_btn).show(
                     |ui| {
                         if ui
                             .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
@@ -1462,7 +1600,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.separator();
                         if ui.button("⚡ Auto Arrange All (Smart Layout)").clicked() {
                             ui.close();
-                            perform_auto_layout(state);
+                            auto_layout_host(state);
                             state.save_requested = true;
                         }
                         if ui.button("↔ Resolve Overlaps Now").clicked() {
@@ -1476,9 +1614,23 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.separator();
 
                 // --- 3. Relations & Database Sync ---
-                ui.menu_button(
-                    format!("{} Relations", egui_icons::icons::ICON_LINK.codepoint),
+                let relations_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_LINK.codepoint,
+                    "Links",
+                    false,
+                )
+                .on_hover_text("Relations");
+                egui::Popup::menu(&relations_btn).show(
                     |ui| {
+                        if ui
+                            .checkbox(&mut state.show_relations, "Show relationship links")
+                            .on_hover_text("Show or hide relationship links between table columns (L)")
+                            .clicked()
+                        {
+                            state.save_requested = true;
+                        }
+                        ui.separator();
                         if ui.button("🔍 Suggest from all similar columns…").clicked() {
                             ui.close();
                             let suggestions = crate::diagram_relations::suggest_relations(state);
@@ -1542,21 +1694,44 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     },
                 );
 
-                // --- 4. Multi-Database: Add Tables ---
-                if ui
-                    .button(format!("{} Add Tables…", egui_icons::icons::ICON_ADD.codepoint))
-                    .on_hover_text("Add tables from another database or connection to this diagram")
+                // --- 4. Multi-Database: Link Database ---
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_ADD_LINK.codepoint,
+                    "Link DB",
+                    false,
+                )
+                    .on_hover_text(
+                        "Link Database…\nShow every table of another database in its own container.\nThe container follows that database's diagram when it changes.",
+                    )
                     .clicked()
                 {
-                    state.show_add_tables_modal = true;
-                    action = Some(DiagramAction::OpenAddTablesModal);
+                    action = Some(DiagramAction::OpenLinkDatabaseModal);
+                }
+                if !state.linked_databases.is_empty()
+                    && toolbar_square_button(
+                        ui,
+                        egui_icons::icons::ICON_REFRESH.codepoint,
+                        "Reload",
+                        false,
+                    )
+                        .on_hover_text("Reload linked databases from their source diagrams")
+                        .clicked()
+                {
+                    action = Some(DiagramAction::RefreshLinks(None));
                 }
 
                 ui.separator();
 
                 // --- 5. Sync Menu ---
-                ui.menu_button(
-                    format!("{} Sync", egui_icons::icons::ICON_SYNC.codepoint),
+                let sync_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_SYNC.codepoint,
+                    "Sync",
+                    false,
+                )
+                .on_hover_text("Sync to server or database");
+                egui::Popup::menu(&sync_btn).show(
                     |ui| {
                         if ui.button("☁️ Sync to Tabular Server (E2EE)").clicked() {
                             ui.close();
@@ -1585,8 +1760,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.separator();
 
                 // --- 4. File / Persistence (Save, Import, Export) ---
-                if ui
-                    .button(format!("{} Save", egui_icons::icons::ICON_SAVE.codepoint))
+                if toolbar_square_button(ui, egui_icons::icons::ICON_SAVE.codepoint, "Save", false)
                     .on_hover_text(
                         "Save diagram layout (Cmd S) - default saves to Obsidian vault if enabled",
                     )
@@ -1596,8 +1770,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     action = Some(DiagramAction::Save);
                 }
 
-                ui.menu_button(
-                    format!("{} Import", egui_icons::icons::ICON_UPLOAD.codepoint),
+                let import_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_UPLOAD.codepoint,
+                    "Import",
+                    false,
+                )
+                .on_hover_text("Import diagram");
+                egui::Popup::menu(&import_btn).show(
                     |ui| {
                         if ui.button("Diagram layout (JSON)…").clicked() {
                             ui.close();
@@ -1610,8 +1790,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     },
                 );
 
-                ui.menu_button(
-                    format!("{} Export", egui_icons::icons::ICON_DOWNLOAD.codepoint),
+                let export_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_DOWNLOAD.codepoint,
+                    "Export",
+                    false,
+                )
+                .on_hover_text("Export diagram");
+                egui::Popup::menu(&export_btn).show(
                     |ui| {
                         if ui.button("Diagram layout (JSON)…").clicked() {
                             ui.close();
@@ -1801,51 +1987,77 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Render "Add Group" Popup
     if let Some(pos) = state.add_group_popup {
-        let mut open = true;
+        let mut close = false;
         let window_pos = to_screen(pos);
 
+        crate::window_egui::style::render_modal_backdrop(
+            ui.ctx(),
+            "add_group_popup_backdrop",
+            state.add_group_popup.is_some(),
+        );
+
         egui::Window::new("New Group")
-            .open(&mut open)
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
             .collapsible(false)
             .resizable(false)
             .fixed_pos(window_pos)
+            .default_width(280.0)
             .show(ui.ctx(), |ui| {
-                ui.label("Enter group name:");
-                let text_res = ui.text_edit_singleline(&mut state.new_group_buffer);
-                if text_res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    // Trigger save
-                } else {
-                    text_res.request_focus();
-                }
+                crate::window_egui::style::render_modal_header(ui, "New Group", &mut close);
+                ui.add_space(8.0);
 
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.label("Enter group name:");
+                    ui.add_space(4.0);
+                    let text_res = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.new_group_buffer),
+                        f32::INFINITY,
+                        None,
+                    );
+                    if text_res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        // Trigger save
+                    } else {
+                        text_res.request_focus();
+                    }
+                });
+
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked()
-                        || (ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            && !state.new_group_buffer.is_empty())
-                    {
-                        let timestamp = chrono::Utc::now().to_rfc3339();
-                        let digest = md5::compute(timestamp);
-                        let group_id = format!("{:x}", digest);
-                        let color = egui::Color32::from_rgb(100, 149, 237); // Default Blue
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let save_btn = egui::Button::new(
+                            egui::RichText::new("Save")
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
 
-                        let new_group = crate::models::structs::DiagramGroup {
-                            id: group_id,
-                            title: state.new_group_buffer.clone(),
-                            color,
-                            manual_pos: Some(pos),
-                        };
+                        if ui.add(save_btn).clicked()
+                            || (ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                && !state.new_group_buffer.is_empty())
+                        {
+                            let timestamp = chrono::Utc::now().to_rfc3339();
+                            let digest = md5::compute(timestamp);
+                            let group_id = format!("{:x}", digest);
+                            let color = egui::Color32::from_rgb(100, 149, 237); // Default Blue
 
-                        state.groups.push(new_group);
-                        state.add_group_popup = None;
-                        state.new_group_buffer.clear();
-                    }
-                    if ui.button("Cancel").clicked() {
-                        state.add_group_popup = None;
-                    }
+                            let new_group = crate::models::structs::DiagramGroup {
+                                id: group_id,
+                                title: state.new_group_buffer.clone(),
+                                color,
+                                manual_pos: Some(pos),
+                            };
+
+                            state.groups.push(new_group);
+                            state.add_group_popup = None;
+                            state.new_group_buffer.clear();
+                        }
+                    });
                 });
             });
 
-        if !open {
+        if close {
             state.add_group_popup = None;
         }
     }
@@ -1941,6 +2153,303 @@ fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     p.distance(proj)
 }
 
+/// Kurva relasi dari baris kolom child ke baris kolom parent, keluar dari sisi
+/// yang menghadap tabel tujuan. Mengembalikan (start, end, arah x, kurva).
+fn relation_curve(
+    child: &DiagramNode,
+    parent: &DiagramNode,
+    rel: &VirtualRelation,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    scale: f32,
+) -> (egui::Pos2, egui::Pos2, f32, egui::epaint::CubicBezierShape) {
+    let parent_is_right = parent.pos.x + parent.size.x / 2.0 >= child.pos.x + child.size.x / 2.0;
+    let (cx, px, dir) = if parent_is_right {
+        (child.pos.x + child.size.x, parent.pos.x, 1.0)
+    } else {
+        (child.pos.x, parent.pos.x + parent.size.x, -1.0)
+    };
+    let start = to_screen(egui::pos2(cx, column_anchor_y(child, &rel.child_column)));
+    let end = to_screen(egui::pos2(px, column_anchor_y(parent, &rel.parent_column)));
+    let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
+    let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+        [
+            start,
+            start + egui::vec2(bend * dir, 0.0),
+            end - egui::vec2(bend * dir, 0.0),
+            end,
+        ],
+        false,
+        egui::Color32::TRANSPARENT,
+        egui::Stroke::NONE,
+    );
+    (start, end, dir, bezier)
+}
+
+/// Relasi bawaan diagram sumber link database: garis putus-putus tipis,
+/// read-only (tanpa seleksi/hapus; diubah dari diagram sumbernya).
+fn draw_linked_relations(
+    ui: &egui::Ui,
+    state: &DiagramState,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+) {
+    let scale = state.zoom;
+    let color = egui::Color32::from_rgb(0, 190, 200).linear_multiply(0.5);
+    for rel in &state.linked_relations {
+        let (Some(child), Some(parent)) = (
+            state.nodes.iter().find(|n| n.id == rel.child),
+            state.nodes.iter().find(|n| n.id == rel.parent),
+        ) else {
+            continue;
+        };
+        let (_, end, _, bezier) = relation_curve(child, parent, rel, to_screen, scale);
+        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
+        ui.painter().extend(egui::Shape::dashed_line(
+            &points,
+            egui::Stroke::new(1.2 * scale.max(0.5), color),
+            6.0 * scale,
+            4.0 * scale,
+        ));
+        ui.painter().circle_filled(end, 2.5 * scale, color);
+    }
+}
+
+/// Gambar kontainer database: satu untuk tabel host (bila ada link) dan satu
+/// per link. Header kontainer bisa digeser; kontainer link punya tombol buka
+/// sumber / refresh / unlink, dan tampil sebagai placeholder bila gagal dimuat.
+fn draw_link_containers(
+    ui: &mut egui::Ui,
+    state: &mut DiagramState,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    is_hand_mode: bool,
+) -> Option<DiagramAction> {
+    use crate::diagram_links as links;
+    use crate::models::structs::LinkStatus;
+    if state.linked_databases.is_empty() {
+        return None;
+    }
+    let scale = state.zoom;
+    let mut action = None;
+    let mut drag: Option<(Option<String>, egui::Vec2)> = None;
+    let mut drag_stopped = false;
+    let mut unlink_request: Option<String> = None;
+
+    // (link_id, rect koordinat diagram, judul, warna, status); `None` = host.
+    let mut boxes: Vec<(
+        Option<String>,
+        egui::Rect,
+        String,
+        egui::Color32,
+        LinkStatus,
+    )> = Vec::new();
+    if let Some(r) = links::host_rect(state) {
+        let title = state
+            .nodes
+            .iter()
+            .find(|n| !links::is_linked_id(&n.id))
+            .and_then(|n| n.database_name.clone())
+            .map(|db| format!("{db} (this diagram)"))
+            .unwrap_or_else(|| "This diagram".to_string());
+        boxes.push((
+            None,
+            r,
+            title,
+            egui::Color32::from_gray(150),
+            LinkStatus::Loaded,
+        ));
+    }
+    for l in &state.linked_databases {
+        let title = if l.connection_name.is_empty() {
+            l.database_name.clone()
+        } else {
+            format!("{} / {}", l.connection_name, l.database_name)
+        };
+        boxes.push((
+            Some(l.link_id.clone()),
+            links::container_rect(state, l),
+            title,
+            l.color,
+            l.status.clone(),
+        ));
+    }
+
+    let btn_size = egui::vec2(24.0, 22.0);
+    for (link_id, world, title, color, status) in boxes {
+        let rect = egui::Rect::from_min_max(to_screen(world.min), to_screen(world.max));
+        if !ui.clip_rect().intersects(rect) {
+            continue;
+        }
+        ui.painter()
+            .rect_filled(rect, 10.0 * scale, color.linear_multiply(0.05));
+        ui.painter().rect_stroke(
+            rect,
+            10.0 * scale,
+            egui::Stroke::new(1.5 * scale.max(0.6), color.linear_multiply(0.7)),
+            egui::StrokeKind::Middle,
+        );
+        let header = egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(rect.width(), links::CONTAINER_HEADER * scale),
+        );
+        ui.painter()
+            .rect_filled(header, 10.0 * scale, color.linear_multiply(0.35));
+        ui.painter().text(
+            egui::pos2(header.left() + 12.0 * scale, header.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{}  {}", egui_icons::icons::ICON_STORAGE.codepoint, title),
+            egui::FontId::proportional(14.0 * scale),
+            egui::Color32::WHITE,
+        );
+
+        let key = link_id.clone().unwrap_or_else(|| "host".to_string());
+        let mut buttons_left = header.right();
+        if let Some(id) = &link_id
+            && !is_hand_mode
+        {
+            let items = [
+                (
+                    egui_icons::icons::ICON_LINK_OFF.codepoint,
+                    "Unlink database",
+                ),
+                (
+                    egui_icons::icons::ICON_REFRESH.codepoint,
+                    "Reload from source diagram",
+                ),
+                (
+                    egui_icons::icons::ICON_OPEN_IN_NEW.codepoint,
+                    "Open source diagram",
+                ),
+            ];
+            for (i, (icon, tip)) in items.iter().enumerate() {
+                let x = header.right() - 8.0 - (i as f32 + 1.0) * (btn_size.x + 4.0);
+                if x < header.left() + 60.0 {
+                    break;
+                }
+                let r = egui::Rect::from_min_size(
+                    egui::pos2(x, header.center().y - btn_size.y / 2.0),
+                    btn_size,
+                );
+                buttons_left = r.left();
+                if ui
+                    .put(r, egui::Button::new(*icon))
+                    .on_hover_text(*tip)
+                    .clicked()
+                {
+                    match i {
+                        0 => unlink_request = Some(id.clone()),
+                        1 => action = Some(DiagramAction::RefreshLinks(Some(id.clone()))),
+                        _ => action = Some(DiagramAction::OpenLinkedDiagram(id.clone())),
+                    }
+                }
+            }
+        }
+
+        if !is_hand_mode {
+            let drag_rect = egui::Rect::from_min_max(
+                header.min,
+                egui::pos2(buttons_left.max(header.left()), header.max.y),
+            );
+            let response = ui
+                .interact(
+                    drag_rect,
+                    ui.id().with("db_container").with(&key),
+                    egui::Sense::click_and_drag(),
+                )
+                .on_hover_text(if link_id.is_some() {
+                    "Linked database. Drag to move the container.\nTables inside follow the source diagram."
+                } else {
+                    "Tables of this diagram's database. Drag to move them together."
+                });
+            if response.dragged() {
+                drag = Some((link_id.clone(), response.drag_delta() / scale));
+            }
+            if response.drag_stopped() {
+                drag_stopped = true;
+            }
+            if let Some(id) = &link_id {
+                response.context_menu(|ui| {
+                    if ui.button("Open source diagram").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::OpenLinkedDiagram(id.clone()));
+                    }
+                    if ui.button("Reload from source").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::RefreshLinks(Some(id.clone())));
+                    }
+                    if ui.button("Relink to another connection…").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::RelinkDatabase(id.clone()));
+                    }
+                    ui.separator();
+                    if ui.button("Unlink database").clicked() {
+                        ui.close();
+                        unlink_request = Some(id.clone());
+                    }
+                });
+            }
+        }
+
+        // Placeholder: link belum/gagal dimuat, atau database tanpa tabel.
+        let empty = link_id.as_deref().is_some_and(|id| {
+            !state
+                .nodes
+                .iter()
+                .any(|n| links::link_id_of(&n.id) == Some(id))
+        });
+        if let Some(id) = &link_id
+            && empty
+        {
+            let (msg, warn) = match &status {
+                LinkStatus::Pending => ("Loading…".to_string(), false),
+                LinkStatus::Failed(e) => (format!("Could not load: {e}"), true),
+                LinkStatus::Loaded => ("No tables in this database.".to_string(), false),
+            };
+            let body_center = egui::pos2(rect.center().x, (header.bottom() + rect.bottom()) / 2.0);
+            ui.painter().text(
+                body_center - egui::vec2(0.0, 12.0),
+                egui::Align2::CENTER_CENTER,
+                msg,
+                egui::FontId::proportional(12.0),
+                if warn {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().weak_text_color()
+                },
+            );
+            if warn && !is_hand_mode {
+                let r = egui::Rect::from_center_size(
+                    body_center + egui::vec2(0.0, 16.0),
+                    egui::vec2(130.0, 22.0),
+                );
+                if ui.put(r, egui::Button::new("Relink…")).clicked() {
+                    action = Some(DiagramAction::RelinkDatabase(id.clone()));
+                }
+            }
+        }
+    }
+
+    if let Some((link_id, delta)) = drag {
+        match link_id {
+            Some(id) => links::move_link(state, &id, delta),
+            None => links::move_host(state, delta),
+        }
+    }
+    if drag_stopped {
+        state.save_requested = true;
+    }
+    if let Some(id) = unlink_request {
+        let name = state
+            .linked_databases
+            .iter()
+            .find(|l| l.link_id == id)
+            .map(|l| l.database_name.clone())
+            .unwrap_or_default();
+        links::unlink(state, &id);
+        state.save_requested = true;
+        action = Some(DiagramAction::Info(format!("Database '{name}' unlinked")));
+    }
+    action
+}
+
 /// Gambar relasi virtual sebagai garis putus-putus dari baris kolom child ke
 /// baris kolom parent. Mengembalikan `true` bila salah satunya diklik.
 fn draw_virtual_relations(
@@ -1971,28 +2480,7 @@ fn draw_virtual_relations(
         ) else {
             continue;
         };
-        // Keluar dari sisi yang menghadap tabel tujuan.
-        let parent_is_right =
-            parent.pos.x + parent.size.x / 2.0 >= child.pos.x + child.size.x / 2.0;
-        let (cx, px, dir) = if parent_is_right {
-            (child.pos.x + child.size.x, parent.pos.x, 1.0)
-        } else {
-            (child.pos.x, parent.pos.x + parent.size.x, -1.0)
-        };
-        let start = to_screen(egui::pos2(cx, column_anchor_y(child, &rel.child_column)));
-        let end = to_screen(egui::pos2(px, column_anchor_y(parent, &rel.parent_column)));
-        let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
-        let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-            [
-                start,
-                start + egui::vec2(bend * dir, 0.0),
-                end - egui::vec2(bend * dir, 0.0),
-                end,
-            ],
-            false,
-            egui::Color32::TRANSPARENT,
-            egui::Stroke::NONE,
-        );
+        let (start, end, dir, bezier) = relation_curve(child, parent, rel, to_screen, scale);
         let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
 
         let btn_size = egui::vec2(20.0, 20.0);
@@ -2101,7 +2589,6 @@ fn render_relation_suggestions(
     state: &mut DiagramState,
 ) -> Option<DiagramAction> {
     let mut suggestions = state.relation_suggestions.take()?;
-    let mut open = true;
     let mut close = false;
     let mut result = None;
 
@@ -2123,150 +2610,170 @@ fn render_relation_suggestions(
         "Suggested relations".to_string()
     };
 
-    egui::Window::new(window_title)
-        .open(&mut open)
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "relation_suggestions_backdrop",
+        state.relation_suggestions.is_some(),
+    );
+
+    egui::Window::new(&window_title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(true)
         .default_width(520.0)
         .show(ctx, |ui| {
-            if let Some(t) = &state.relation_suggestions_title {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Target: {t} — search or filter similar columns below:"
-                    ))
-                    .strong(),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new(
-                        "Based on column names, similarity, and types. Accepted relations are saved with the diagram and shown as dashed lines.",
-                    )
-                    .weak(),
-                );
-            }
+            crate::window_egui::style::render_modal_header(ui, &window_title, &mut close);
+            ui.add_space(8.0);
 
-            // Input pencarian kolom dinamis
-            let mut search_triggered = false;
-            ui.horizontal(|ui| {
-                ui.label("🔍 Search column:");
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut state.relation_column_search_query)
-                        .hint_text("Enter column name to search (e.g. user_id, imei)...")
-                        .desired_width(280.0),
-                );
-                if edit.changed() {
-                    search_triggered = true;
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                if let Some(t) = &state.relation_suggestions_title {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Target: {t} — search or filter similar columns below:"
+                        ))
+                        .strong(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(
+                            "Based on column names, similarity, and types. Accepted relations are saved with the diagram and shown as dashed lines.",
+                        )
+                        .weak(),
+                    );
                 }
-                if !state.relation_column_search_query.is_empty() && ui.small_button("✖").clicked() {
-                    state.relation_column_search_query.clear();
-                    search_triggered = true;
+                ui.add_space(6.0);
+
+                // Input pencarian kolom dinamis
+                let mut search_triggered = false;
+                ui.horizontal(|ui| {
+                    ui.label("🔍 Search column:");
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut state.relation_column_search_query)
+                            .hint_text("Enter column name to search (e.g. user_id, imei)...")
+                            .desired_width(280.0),
+                    );
+                    if edit.changed() {
+                        search_triggered = true;
+                    }
+                    if !state.relation_column_search_query.is_empty() && ui.small_button("✖").clicked() {
+                        state.relation_column_search_query.clear();
+                        search_triggered = true;
+                    }
+                });
+
+                if search_triggered {
+                    let trimmed = state.relation_column_search_query.trim();
+                    if trimmed.is_empty() {
+                        if let Some(base) = ctx.data(|d| {
+                            d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
+                                base_id,
+                            )
+                        }) {
+                            suggestions = base;
+                        }
+                    } else {
+                        let found = crate::diagram_relations::suggest_relations_by_column_search(
+                            state, trimmed,
+                        );
+                        suggestions = found.into_iter().map(|s| (s, true)).collect();
+                    }
                 }
             });
-
-            if search_triggered {
-                let trimmed = state.relation_column_search_query.trim();
-                if trimmed.is_empty() {
-                    if let Some(base) = ctx.data(|d| {
-                        d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
-                            base_id,
-                        )
-                    }) {
-                        suggestions = base;
-                    }
-                } else {
-                    let found = crate::diagram_relations::suggest_relations_by_column_search(
-                        state, trimmed,
-                    );
-                    suggestions = found.into_iter().map(|s| (s, true)).collect();
-                }
-            }
 
             let is_searching = !state.relation_column_search_query.trim().is_empty();
 
             if suggestions.is_empty() {
                 ui.add_space(8.0);
-                if is_searching {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "No relations found matching column \"{}\"",
-                            state.relation_column_search_query.trim()
-                        ))
-                        .italics()
-                        .weak(),
-                    );
-                } else {
-                    ui.label("No automatic relations found. Enter a column name above to search across the diagram.");
-                }
-                ui.add_space(8.0);
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    if is_searching {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "No relations found matching column \"{}\"",
+                                state.relation_column_search_query.trim()
+                            ))
+                            .italics()
+                            .weak(),
+                        );
+                    } else {
+                        ui.label("No automatic relations found. Enter a column name above to search across the diagram.");
+                    }
+                });
                 return;
             }
 
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.small_button("Select all").clicked() {
-                    for (_, on) in suggestions.iter_mut() {
-                        *on = true;
-                    }
-                }
-                if ui.small_button("Select none").clicked() {
-                    for (_, on) in suggestions.iter_mut() {
-                        *on = false;
-                    }
-                }
-                let total = suggestions.len();
-                let chosen = suggestions.iter().filter(|(_, on)| *on).count();
-                ui.label(
-                    egui::RichText::new(format!("{chosen} of {total} selected"))
-                        .weak()
-                        .small(),
-                );
-            });
+            ui.add_space(8.0);
 
-            ui.separator();
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for (s, on) in suggestions.iter_mut() {
-                    let r = &s.relation;
-                    ui.horizontal(|ui| {
-                        ui.checkbox(
-                            on,
-                            format!("{}.{} → {}.{}", r.child, r.child_column, r.parent, r.parent_column),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("{:.0}% · {}", s.score * 100.0, s.reason))
-                                .weak()
-                                .small(),
-                        );
-                    });
-                }
-            });
-
-            ui.separator();
-            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(chosen > 0, egui::Button::new(format!("Add {chosen} relation(s)")))
-                    .clicked()
-                {
-                    let mut added = 0;
-                    for (s, on) in &suggestions {
-                        if *on && crate::diagram_relations::add_virtual_relation(state, s.relation.clone()) {
-                            added += 1;
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Select all").clicked() {
+                        for (_, on) in suggestions.iter_mut() {
+                            *on = true;
                         }
                     }
-                    state.save_requested = true;
-                    result = Some(DiagramAction::Info(format!("Added {added} relation(s)")));
-                    close = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
+                    if ui.small_button("Select none").clicked() {
+                        for (_, on) in suggestions.iter_mut() {
+                            *on = false;
+                        }
+                    }
+                    let total = suggestions.len();
+                    let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+                    ui.label(
+                        egui::RichText::new(format!("{chosen} of {total} selected"))
+                            .weak()
+                            .small(),
+                    );
+                });
+
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for (s, on) in suggestions.iter_mut() {
+                        let r = &s.relation;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(
+                                on,
+                                format!("{}.{} → {}.{}", r.child, r.child_column, r.parent, r.parent_column),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{:.0}% · {}", s.score * 100.0, s.reason))
+                                    .weak()
+                                    .small(),
+                            );
+                        });
+                    }
+                });
+            });
+
+            ui.add_space(10.0);
+            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = egui::Button::new(
+                        egui::RichText::new(format!("Add {chosen} relation(s)"))
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui
+                        .add_enabled(chosen > 0, btn)
+                        .clicked()
+                    {
+                        let mut added = 0;
+                        for (s, on) in &suggestions {
+                            if *on && crate::diagram_relations::add_virtual_relation(state, s.relation.clone()) {
+                                added += 1;
+                            }
+                        }
+                        state.save_requested = true;
+                        result = Some(DiagramAction::Info(format!("Added {added} relation(s)")));
+                        close = true;
+                    }
+                });
             });
         });
 
-    if open && !close {
+    if !close {
         state.relation_suggestions = Some(suggestions);
     } else {
         ctx.data_mut(|d| {
@@ -2333,6 +2840,14 @@ pub fn resolve_node_overlaps(nodes: &mut [DiagramNode], padding: f32) {
                 let rect_j =
                     egui::Rect::from_min_size(nodes[j].pos, nodes[j].size).expand(half_pad);
 
+                // Tabel milik link database tidak digeser (posisinya milik
+                // diagram sumber); tabel host yang menabraknya didorong penuh.
+                let pin_i = crate::diagram_links::is_linked_id(&nodes[i].id);
+                let pin_j = crate::diagram_links::is_linked_id(&nodes[j].id);
+                if pin_i && pin_j {
+                    continue;
+                }
+
                 let inter = rect_i.intersect(rect_j);
                 if inter.width() > 0.0 && inter.height() > 0.0 {
                     any_collision = true;
@@ -2356,8 +2871,14 @@ pub fn resolve_node_overlaps(nodes: &mut [DiagramNode], padding: f32) {
                         egui::vec2(0.0, dir * (overlap_h / 2.0 + 1.0))
                     };
 
-                    nodes[i].pos += push;
-                    nodes[j].pos -= push;
+                    match (pin_i, pin_j) {
+                        (true, _) => nodes[j].pos -= push * 2.0,
+                        (_, true) => nodes[i].pos += push * 2.0,
+                        _ => {
+                            nodes[i].pos += push;
+                            nodes[j].pos -= push;
+                        }
+                    }
                 }
             }
         }
@@ -2438,6 +2959,22 @@ pub fn resolve_dragged_node_overlap(nodes: &mut [DiagramNode], dragged_id: &str,
     if still_colliding {
         resolve_node_overlaps(nodes, padding);
     }
+}
+
+/// Auto-arrange tabel host saja; kontainer link database lalu dijajarkan di
+/// kanannya (posisi tabel di dalam kontainer milik diagram sumber).
+pub fn auto_layout_host(state: &mut DiagramState) {
+    if state.linked_databases.is_empty() {
+        perform_auto_layout(state);
+        return;
+    }
+    let (linked, host): (Vec<DiagramNode>, Vec<DiagramNode>) = std::mem::take(&mut state.nodes)
+        .into_iter()
+        .partition(|n| crate::diagram_links::is_linked_id(&n.id));
+    state.nodes = host;
+    perform_auto_layout(state);
+    state.nodes.extend(linked);
+    crate::diagram_links::restack_links(state);
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
@@ -3127,5 +3664,37 @@ mod tests {
         let deserialized: DiagramState =
             serde_json::from_str(json_data).expect("should deserialize");
         assert!(!deserialized.hand_tool);
+    }
+
+    #[test]
+    fn test_diagram_state_show_relations_default() {
+        let state = DiagramState::default();
+        assert!(state.show_relations);
+
+        // JSON tanpa properti show_relations harus mendefaultkan ke true
+        let json_data =
+            r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState =
+            serde_json::from_str(json_data).expect("should deserialize");
+        assert!(deserialized.show_relations);
+    }
+
+    #[test]
+    fn test_diagram_state_show_relations_toggle_and_persistence() {
+        let mut state = DiagramState::default();
+        assert!(state.show_relations);
+
+        // Toggle sembunyikan relasi
+        state.show_relations = false;
+        assert!(!state.show_relations);
+
+        // Serialize ke JSON dan pastikan tersimpan sebagai false
+        let serialized = serde_json::to_string(&state).expect("should serialize");
+        assert!(serialized.contains(r#""show_relations":false"#));
+
+        // Deserialize kembali dan pastikan nilai false tetap dipertahankan
+        let deserialized: DiagramState =
+            serde_json::from_str(&serialized).expect("should deserialize");
+        assert!(!deserialized.show_relations);
     }
 }

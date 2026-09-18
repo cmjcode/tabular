@@ -342,75 +342,88 @@ fn render_save_dialog(
         }
     }
 
-    egui::Window::new("💾 Save Request to Collection")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_save_request_backdrop",
+        state.show_save_dialog,
+    );
+
+    egui::Window::new("Save Request to Collection")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(380.0)
         .show(ui.ctx(), |ui| {
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Request Name:").strong());
-                crate::window_egui::style::render_text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut state.save_dialog_name)
-                        .hint_text("e.g. Get User Profile"),
-                    f32::INFINITY,
-                    None,
-                );
-                ui.add_space(8.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Save Request to Collection",
+                &mut close,
+            );
+            ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Workspace:");
-                    if state.workspaces.is_empty() {
-                        ui.label(egui::RichText::new("Default Collection").weak());
-                    } else {
-                        let current_ws = state
-                            .collection_panel
-                            .active_workspace_id
-                            .clone()
-                            .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
-                            .unwrap_or_else(|| "default".to_string());
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Request Name:").strong());
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.save_dialog_name)
+                            .hint_text("e.g. Get User Profile"),
+                        f32::INFINITY,
+                        None,
+                    );
+                    ui.add_space(8.0);
 
-                        let selected_name = state
-                            .workspaces
-                            .iter()
-                            .find(|w| w.id == current_ws)
-                            .map(|w| w.name.as_str())
-                            .unwrap_or("Collection");
+                    ui.horizontal(|ui| {
+                        ui.label("Workspace:");
+                        if state.workspaces.is_empty() {
+                            ui.label(egui::RichText::new("Default Collection").weak());
+                        } else {
+                            let current_ws = state
+                                .collection_panel
+                                .active_workspace_id
+                                .clone()
+                                .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
+                                .unwrap_or_else(|| "default".to_string());
 
-                        egui::ComboBox::from_id_salt("save_dialog_ws_combo")
-                            .selected_text(selected_name)
-                            .show_ui(ui, |ui| {
-                                for ws in &state.workspaces {
-                                    ui.selectable_value(
-                                        &mut state.collection_panel.active_workspace_id,
-                                        Some(ws.id.clone()),
-                                        &ws.name,
-                                    );
-                                }
-                            });
-                    }
-                });
+                            let selected_name = state
+                                .workspaces
+                                .iter()
+                                .find(|w| w.id == current_ws)
+                                .map(|w| w.name.as_str())
+                                .unwrap_or("Collection");
 
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let save_btn = egui::Button::new(
-                            egui::RichText::new("Save")
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(save_btn).clicked() {
-                            save = true;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
+                            egui::ComboBox::from_id_salt("save_dialog_ws_combo")
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for ws in &state.workspaces {
+                                        ui.selectable_value(
+                                            &mut state.collection_panel.active_workspace_id,
+                                            Some(ws.id.clone()),
+                                            &ws.name,
+                                        );
+                                    }
+                                });
                         }
                     });
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save_btn = egui::Button::new(
+                        egui::RichText::new("Save")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(save_btn).clicked() {
+                        save = true;
+                        close = true;
+                    }
                 });
             });
         });
@@ -508,72 +521,55 @@ fn render_code_dialog(
     let mut close_requested = false;
     let mut copy_clicked = false;
 
-    egui::Window::new("👨‍💻 Copy as Code")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_code_dialog_backdrop",
+        state.show_code_dialog,
+    );
+
+    egui::Window::new("Copy as Code")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(true)
-        .default_size(egui::vec2(560.0, 440.0))
+        .default_size(egui::vec2(580.0, 460.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            // Generated once per frame, up front, so both the footer (Copy button)
-            // and the central content (code preview) can use it without any
-            // manual `available_height()` arithmetic — that pattern is what caused
-            // the dialog to grow every frame (self-referential sizing feedback
-            // loop) and the Beautify button to render in a broken spot. Panels
-            // reserve their own space via egui's normal layout pass instead.
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Copy as Code",
+                &mut close_requested,
+            );
+            ui.add_space(8.0);
+
             let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
 
-            egui::Panel::bottom("http_code_dialog_footer").show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let copy_label = format!(
-                            "{} Copy to Clipboard",
-                            egui_icons::icons::ICON_CONTENT_COPY.codepoint
-                        );
-                        let copy_btn = egui::Button::new(
-                            egui::RichText::new(copy_label)
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(copy_btn).clicked() {
-                            ui.ctx().copy_text(code.clone());
-                            copy_clicked = true;
-                        }
-                        if ui.button("Close").clicked() {
-                            close_requested = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-            });
-
-            egui::CentralPanel::default().show(ui, |ui| {
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for lang in CodeLang::all() {
                         let label = lang.label();
                         ui.selectable_value(&mut state.code_dialog_lang, lang, label);
                     }
                 });
+            });
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
+            ui.add_space(8.0);
 
-                let dark = ui.visuals().dark_mode;
-                let lang_for_highlight = state.code_dialog_lang.clone();
-                let mut layouter =
-                    move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let s = buf.as_str();
-                        let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                        let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
+            let dark = ui.visuals().dark_mode;
+            let lang_for_highlight = state.code_dialog_lang.clone();
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
 
+            let avail_h = (ui.available_height() - 44.0).max(180.0);
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 egui::ScrollArea::both()
                     .id_salt("http_code_preview_scroll")
+                    .max_height(avail_h)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.add(
@@ -583,6 +579,27 @@ fn render_code_dialog(
                                 .layouter(&mut layouter),
                         );
                     });
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let copy_label = format!(
+                        "{} Copy to Clipboard",
+                        egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                    );
+                    let copy_btn = egui::Button::new(
+                        egui::RichText::new(copy_label)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(copy_btn).clicked() {
+                        ui.ctx().copy_text(code.clone());
+                        copy_clicked = true;
+                    }
+                });
             });
         });
 
