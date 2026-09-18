@@ -20,7 +20,8 @@ impl super::Tabular {
 
         match connection.connection_type {
             models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB => {
-                self.toasts.error("Create Table is not available for this database type.".to_string());
+                self.toasts
+                    .error("Create Table is not available for this database type.".to_string());
                 return;
             }
             _ => {}

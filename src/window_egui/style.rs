@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::config::AppTheme;
+use eframe::egui;
 
 pub fn dark_visuals() -> egui::Visuals {
     let mut v = egui::Visuals::dark();
@@ -168,7 +168,10 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme, metrics: &DeviceUiMetri
         style.visuals.widgets.open.corner_radius = radius.into();
 
         // Typography dynamically sized for desktop or touch tablet.
-        style.override_font_id = Some(egui::FontId::new(metrics.font_body_size, egui::FontFamily::Proportional));
+        style.override_font_id = Some(egui::FontId::new(
+            metrics.font_body_size,
+            egui::FontFamily::Proportional,
+        ));
         style.text_styles.insert(
             egui::TextStyle::Body,
             egui::FontId::new(metrics.font_body_size, egui::FontFamily::Proportional),
@@ -313,7 +316,8 @@ pub fn render_custom_tab(
                 egui::pos2(rect.left(), rect.bottom() - line_height),
                 egui::vec2(rect.width(), line_height),
             );
-            ui.painter().rect_filled(bottom_accent_rect, 0.0, theme_accent(ui.ctx()));
+            ui.painter()
+                .rect_filled(bottom_accent_rect, 0.0, theme_accent(ui.ctx()));
         }
 
         // 4. Text
@@ -417,7 +421,8 @@ pub fn render_sidebar_subtab(
                 egui::pos2(rect.center().x, rect.bottom() - 1.0),
                 egui::vec2(rect.width() * 0.5, 2.0),
             );
-            ui.painter().rect_filled(underline_rect, 1.0, theme_accent(ui.ctx()));
+            ui.painter()
+                .rect_filled(underline_rect, 1.0, theme_accent(ui.ctx()));
         }
     }
     response
@@ -486,15 +491,27 @@ pub fn theme_alert_frame(ctx: &egui::Context, is_danger: bool) -> egui::Frame {
     let visuals = &ctx.global_style().visuals;
     let (bg, stroke_col) = if is_danger {
         if visuals.dark_mode {
-            (egui::Color32::from_rgb(60, 25, 28), egui::Color32::from_rgb(180, 60, 60))
+            (
+                egui::Color32::from_rgb(60, 25, 28),
+                egui::Color32::from_rgb(180, 60, 60),
+            )
         } else {
-            (egui::Color32::from_rgb(255, 235, 238), egui::Color32::from_rgb(230, 100, 100))
+            (
+                egui::Color32::from_rgb(255, 235, 238),
+                egui::Color32::from_rgb(230, 100, 100),
+            )
         }
     } else {
         if visuals.dark_mode {
-            (egui::Color32::from_rgb(25, 45, 30), egui::Color32::from_rgb(60, 150, 80))
+            (
+                egui::Color32::from_rgb(25, 45, 30),
+                egui::Color32::from_rgb(60, 150, 80),
+            )
         } else {
-            (egui::Color32::from_rgb(235, 248, 238), egui::Color32::from_rgb(100, 200, 120))
+            (
+                egui::Color32::from_rgb(235, 248, 238),
+                egui::Color32::from_rgb(100, 200, 120),
+            )
         }
     };
     egui::Frame::group(&ctx.global_style())
@@ -504,13 +521,23 @@ pub fn theme_alert_frame(ctx: &egui::Context, is_danger: bool) -> egui::Frame {
         .inner_margin(egui::Margin::same(8))
 }
 
-pub fn render_badge(ui: &mut egui::Ui, text: &str, bg_color: egui::Color32, fg_color: egui::Color32) {
+pub fn render_badge(
+    ui: &mut egui::Ui,
+    text: &str,
+    bg_color: egui::Color32,
+    fg_color: egui::Color32,
+) {
     egui::Frame::new()
         .fill(bg_color)
         .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(11.0).color(fg_color).strong());
+            ui.label(
+                egui::RichText::new(text)
+                    .size(11.0)
+                    .color(fg_color)
+                    .strong(),
+            );
         });
 }
 
@@ -531,11 +558,8 @@ pub fn render_close_icon_button(ui: &mut egui::Ui) -> egui::Response {
         };
 
         if hover {
-            ui.painter().rect_filled(
-                rect,
-                egui::CornerRadius::same(10u8),
-                bg_color,
-            );
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(10u8), bg_color);
         }
 
         let icon_color = if hover {
@@ -563,8 +587,17 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 }
 
 /// Helper to get an animated 0.0 -> 1.0 modal presentation factor
-pub fn animate_modal_progress(ctx: &egui::Context, id_source: &str, open: bool, duration_secs: f32) -> f32 {
-    let raw = ctx.animate_value_with_time(egui::Id::new(id_source), if open { 1.0 } else { 0.0 }, duration_secs);
+pub fn animate_modal_progress(
+    ctx: &egui::Context,
+    id_source: &str,
+    open: bool,
+    duration_secs: f32,
+) -> f32 {
+    let raw = ctx.animate_value_with_time(
+        egui::Id::new(id_source),
+        if open { 1.0 } else { 0.0 },
+        duration_secs,
+    );
     ease_out_cubic(raw)
 }
 
@@ -581,16 +614,12 @@ pub fn render_modal_backdrop(ctx: &egui::Context, id_source: &str, open: bool) -
         } else {
             egui::Color32::from_rgba_unmultiplied(15, 23, 42, alpha)
         };
-        
+
         egui::Area::new(egui::Id::new(format!("{}_backdrop_area", id_source)))
             .order(egui::Order::Middle)
             .fixed_pos(screen_rect.min)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    fill_color,
-                );
+                ui.painter().rect_filled(screen_rect, 0.0, fill_color);
             });
     }
     progress
@@ -663,5 +692,3 @@ pub fn render_execution_pill(ui: &mut egui::Ui, duration_ms: u128, row_count: us
             });
         });
 }
-
-

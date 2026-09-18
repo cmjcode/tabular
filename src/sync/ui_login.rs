@@ -142,133 +142,99 @@ pub fn open_account_dialog(tabular: &mut Tabular) {
 
 /// Render the Cloud Sync panel inside the Settings / Preferences modal.
 pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    ui.vertical(|ui| {
-        ui.add_space(6.0);
-        ui.heading("☁ Cloud Synchronization");
-        ui.add_space(4.0);
-        ui.label("Synchronize database connections, query history, and collaborate securely across devices.");
-        ui.add_space(10.0);
+    use crate::window_egui::preferences::{Tone, divider, hint, page_header, row, section, stacked, status};
 
-        // Account status card
-        let dark = ui.visuals().dark_mode;
-        let card_bg = if dark {
-            egui::Color32::from_rgb(32, 34, 42)
-        } else {
-            egui::Color32::from_rgb(245, 247, 250)
-        };
-        let card_stroke = if dark {
-            egui::Color32::from_rgb(52, 56, 68)
-        } else {
-            egui::Color32::from_rgb(220, 224, 232)
-        };
+    page_header(
+        ui,
+        "Cloud Sync",
+        "Synchronize connections and query history across devices and collaborate securely.",
+    );
 
-        egui::Frame::new()
-            .fill(card_bg)
-            .stroke(egui::Stroke::new(1.0, card_stroke))
-            .corner_radius(egui::CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(ref account) = tabular.sync_account {
-                        draw_circular_avatar(
-                            ui,
-                            tabular,
-                            36.0,
-                            &account.email,
-                            account.display_name.as_deref(),
-                        );
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            let name = account.display_name.as_deref().unwrap_or(&account.email);
-                            ui.label(egui::RichText::new(name).strong().size(13.5));
-                            ui.label(egui::RichText::new(&account.email).color(ui.visuals().weak_text_color()).size(11.5));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(style::btn_primary_ctx(ui.ctx(), "👤 Manage Account")).clicked() {
-                                open_account_dialog(tabular);
-                            }
-                        });
-                    } else {
-                        ui.label(egui::RichText::new("⚙").size(24.0));
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Offline Mode (No Account)").strong().size(13.0));
-                            ui.label(egui::RichText::new("Tabular works fully offline. Sign in to enable cloud sync.").color(ui.visuals().weak_text_color()).size(11.5));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(style::btn_primary_ctx(ui.ctx(), "👤 Sign In / Create Account")).clicked() {
-                                open_account_dialog(tabular);
-                            }
-                        });
+    section(ui, "Account", |ui| {
+        ui.horizontal(|ui| {
+            if let Some(ref account) = tabular.sync_account {
+                draw_circular_avatar(ui, tabular, 36.0, &account.email, account.display_name.as_deref());
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    let name = account.display_name.as_deref().unwrap_or(&account.email);
+                    ui.label(egui::RichText::new(name).strong().size(13.5));
+                    hint(ui, &account.email);
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(style::btn_primary_ctx(ui.ctx(), "Manage Account")).clicked() {
+                        open_account_dialog(tabular);
                     }
                 });
-            });
-
-        ui.add_space(10.0);
-
-        // Server URL input
-        ui.label(egui::RichText::new("Sync Server URL:").strong());
-        let server_url = &mut tabular.sync_server_url;
-        let url_resp = ui.add(
-            egui::TextEdit::singleline(server_url)
-                .hint_text("https://api.tabular.id")
-                .desired_width(f32::INFINITY),
-        );
-        if url_resp.lost_focus() || url_resp.changed() {
-            tabular.prefs_dirty = true;
-        }
-        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 193, 7),
-                "⚠ Use https:// — plain http:// is only accepted for localhost",
-            );
-        }
-
-        ui.add_space(8.0);
-
-        // Sync status
-        let status_label = tabular.sync_status.label();
-        let status_color = match &tabular.sync_status {
-            super::SyncStatus::Synced  => egui::Color32::from_rgb(72, 199, 116),
-            super::SyncStatus::Syncing => egui::Color32::from_rgb(255, 213, 0),
-            super::SyncStatus::Error(_) => egui::Color32::from_rgb(255, 80, 80),
-            super::SyncStatus::Offline => egui::Color32::GRAY,
-        };
-        ui.horizontal(|ui| {
-            ui.label("Sync status:");
-            ui.colored_label(status_color, status_label);
+            } else {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Not signed in").strong().size(13.5));
+                    hint(ui, "Tabular works fully offline. Sign in to enable cloud sync.");
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(style::btn_primary_ctx(ui.ctx(), "Sign In / Create Account")).clicked() {
+                        open_account_dialog(tabular);
+                    }
+                });
+            }
         });
+    });
 
-        if let super::SyncStatus::Error(e) = &tabular.sync_status {
-            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("  {}", e));
+    section(ui, "Server", |ui| {
+        stacked(ui, "Sync server URL", None, |ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut tabular.sync_server_url)
+                    .hint_text("https://api.tabular.id")
+                    .desired_width(f32::INFINITY),
+            );
+            if resp.lost_focus() || resp.changed() {
+                tabular.prefs_dirty = true;
+            }
+        });
+        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
+            status(ui, Tone::Warning, "⚠ Use https://. Plain http:// is only accepted for localhost.");
         }
+        divider(ui);
 
-        if tabular.sync_account.is_some() {
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
+        let tone = match &tabular.sync_status {
+            super::SyncStatus::Synced => Tone::Success,
+            super::SyncStatus::Syncing => Tone::Warning,
+            super::SyncStatus::Error(_) => Tone::Danger,
+            super::SyncStatus::Offline => Tone::Muted,
+        };
+        let label = tabular.sync_status.label().to_string();
+        row(ui, "Status", None, |ui| {
+            let color = crate::window_egui::preferences::tone_color(ui.ctx(), tone);
+            style::render_badge(ui, &label, color.gamma_multiply(0.18), color);
+        });
+        if let super::SyncStatus::Error(e) = &tabular.sync_status {
+            status(ui, Tone::Danger, e.clone());
+        }
+    });
 
-            // Manual sync buttons
-            ui.label(egui::RichText::new("Manual Sync Actions").strong());
-            ui.add_space(4.0);
+    if tabular.sync_account.is_some() {
+        section(ui, "Manual Sync", |ui| {
+            hint(ui, "Push and pull changes immediately instead of waiting for the next automatic sync.");
+            ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                if ui.add(style::btn_secondary("🔗  Sync Connections")).clicked() {
+                if ui.add(style::btn_secondary("🔗  Connections")).clicked() {
                     tabular.sync_trigger_connections = true;
                 }
-                if ui.add(style::btn_secondary("📜  Sync History")).clicked() {
+                if ui.add(style::btn_secondary("📜  History")).clicked() {
                     tabular.sync_trigger_history = true;
                 }
-                if ui.add(style::btn_secondary("💾  Sync Queries")).clicked() {
+                if ui.add(style::btn_secondary("💾  Queries")).clicked() {
                     tabular.sync_trigger_queries = true;
                 }
-                if ui.add(style::btn_secondary("🌐  Sync HTTP Requests")).clicked() {
+                if ui.add(style::btn_secondary("🌐  HTTP Requests")).clicked() {
                     tabular.sync_trigger_http = true;
                 }
             });
+        });
 
+        section(ui, "End-to-End Encryption", |ui| {
             super::ui_vault_setup::render_vault_panel(tabular, ui);
-        }
-    });
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

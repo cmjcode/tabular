@@ -1,4 +1,3 @@
-
 use crate::rfd;
 
 impl super::Tabular {

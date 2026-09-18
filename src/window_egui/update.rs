@@ -1,7 +1,7 @@
+use crate::auto_updater::UpdateStage;
+use crate::models;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use crate::models;
-use crate::auto_updater::UpdateStage;
 
 impl super::Tabular {
     pub fn check_for_updates(&mut self, manual: bool) {
@@ -257,7 +257,8 @@ impl super::Tabular {
             } else {
                 log::error!("❌ Auto updater component not available");
                 self.update_download_in_progress = false;
-                self.update_stage = UpdateStage::Failed("Auto updater component not available".to_string());
+                self.update_stage =
+                    UpdateStage::Failed("Auto updater component not available".to_string());
             }
         } else {
             log::error!("❌ No update info available");

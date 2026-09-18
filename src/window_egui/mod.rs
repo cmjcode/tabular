@@ -6,29 +6,27 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::{
-    connection, models, query_tools,
-};
+use crate::{connection, models, query_tools};
 
-
-pub mod app_impl;
 mod ai_cli_settings;
+pub mod app_impl;
 pub mod connection_mgr;
+pub mod device_profile;
 pub mod diagram;
 pub mod init;
 pub mod notifications;
 pub mod pagination;
+pub(crate) mod preferences;
 pub mod query_jobs;
 pub mod render_dialogs;
 pub mod search;
 pub mod settings;
 pub mod sidebar_tree;
+pub mod style;
+pub mod sync_tick;
 pub mod table_wizard;
 pub mod tree_loader;
 pub mod update;
-pub mod style;
-pub mod sync_tick;
-pub mod device_profile;
 
 /// Callback untuk job query yang hasilnya ditangani sendiri oleh pemanggil
 /// (bukan lewat panel hasil tab). Dipanggil tepat sekali, sukses maupun gagal.
@@ -313,7 +311,8 @@ pub struct Tabular {
     // Avatar texture for profile / top bar
     pub avatar_texture: Option<egui::TextureHandle>,
     pub avatar_texture_url: Option<String>,
-    pub avatar_image_receiver: Option<std::sync::mpsc::Receiver<Result<(String, egui::ColorImage), String>>>,
+    pub avatar_image_receiver:
+        Option<std::sync::mpsc::Receiver<Result<(String, egui::ColorImage), String>>>,
     // Preferences persistence
     pub config_store: Option<crate::config::ConfigStore>,
     pub last_saved_prefs: Option<crate::config::AppPreferences>,
@@ -368,7 +367,8 @@ pub struct Tabular {
     pub autocomplete_cols_mem: std::collections::HashMap<(i64, String), Vec<String>>,
     // In-memory foreign keys per (connection_id, database_name) for autocomplete.
     // Avoids repeated blocking SQLite queries during query editor rendering.
-    pub autocomplete_fks_mem: std::collections::HashMap<(i64, String), Vec<models::structs::ForeignKey>>,
+    pub autocomplete_fks_mem:
+        std::collections::HashMap<(i64, String), Vec<models::structs::ForeignKey>>,
     // In-memory table list per (connection_id, database_name) for autocomplete.
     pub autocomplete_tables_mem: std::collections::HashMap<(i64, String), Vec<String>>,
     // In-memory column types per (connection_id, table_lowercase, column_lowercase).
@@ -558,10 +558,10 @@ pub struct Tabular {
     pub edit_view_original_name: Option<String>,
     // Result of the background custom-view save (Ok = persisted, Err = message)
     pub custom_view_save_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
-    
+
     pub global_backspace_pressed: bool,
     pub sidebar_visible: bool,
-    
+
     // Replication dialog state
     pub show_add_replication_dialog: bool,
     pub replication_dialog: Option<crate::models::structs::ReplicationDialogState>,
@@ -579,6 +579,7 @@ pub struct Tabular {
 
     // --- AI Assistant ---
     pub show_ai_panel: bool,
+    pub ai_panel_width: f32,
     pub ai_input: String,
     pub ai_is_loading: bool,
     pub ai_error: Option<String>,
@@ -623,7 +624,12 @@ pub struct Tabular {
     pub ai_inline_processed: std::collections::HashSet<u64>,
     // (block_hash, placeholder_start, placeholder_end, rx)
     #[allow(clippy::type_complexity)]
-    pub ai_inline_receiver: Option<(u64, usize, usize, std::sync::mpsc::Receiver<Result<String, String>>)>,
+    pub ai_inline_receiver: Option<(
+        u64,
+        usize,
+        usize,
+        std::sync::mpsc::Receiver<Result<String, String>>,
+    )>,
     // Centralized, non-blocking toast/notification surface (see notifications.rs)
     pub toasts: notifications::ToastManager,
     // Visual data filter state for table browsing
@@ -680,7 +686,8 @@ pub struct Tabular {
     /// Editable buffer for the Phone field in Settings → Sync & Account
     pub profile_phone_input: String,
     /// Async receiver for the profile save result
-    pub profile_update_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::RemoteUser, String>>>,
+    pub profile_update_receiver:
+        Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::RemoteUser, String>>>,
     /// Whether the "Delete Account" confirmation modal is open.
     pub show_delete_account_dialog: bool,
     /// Buffer for the type-to-confirm field in that modal — deletion is only
@@ -706,14 +713,17 @@ pub struct Tabular {
     pub block_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// Everyone the signed-in account has blocked, for the unblock list.
     pub blocked_users: Vec<crate::sync::api_client::BlockedUser>,
-    pub blocked_users_receiver:
-        Option<std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::BlockedUser>, String>>>,
+    pub blocked_users_receiver: Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::BlockedUser>, String>>,
+    >,
     /// Input for creating a new collab room
     pub new_collab_room_name: String,
     /// Async receiver for room list refresh
-    pub collab_rooms_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::CollabRoom>>>>,
+    pub collab_rooms_receiver:
+        Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::CollabRoom>>>>,
     /// Async receiver for room creation result
-    pub collab_room_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::CollabRoom>>>,
+    pub collab_room_create_receiver:
+        Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::CollabRoom>>>,
     /// Async receiver for room deletion result
     pub collab_room_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     // Teams state
@@ -722,7 +732,8 @@ pub struct Tabular {
     pub new_team_desc: String,
     pub expanded_team_ids: std::collections::HashSet<String>,
     pub show_add_member_team_ids: std::collections::HashSet<String>,
-    pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
+    pub team_members:
+        std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
     pub team_add_member_inputs: std::collections::HashMap<String, (String, usize, usize)>,
     pub show_add_member_dialog: bool,
     pub add_member_target_team_id: Option<String>,
@@ -731,12 +742,20 @@ pub struct Tabular {
     pub add_member_search_results: Vec<crate::sync::api_client::RemoteUser>,
     pub add_member_search_in_progress: bool,
     pub add_member_search_query: String,
-    pub add_member_search_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteUser>>>>,
-    pub teams_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteTeam>>>>,
-    pub team_create_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::api_client::RemoteTeam>>>,
+    pub add_member_search_receiver:
+        Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteUser>>>>,
+    pub teams_receiver:
+        Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteTeam>>>>,
+    pub team_create_receiver:
+        Option<std::sync::mpsc::Receiver<anyhow::Result<crate::sync::api_client::RemoteTeam>>>,
     pub team_delete_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<String>>>,
     pub team_to_delete: Option<(String, String)>,
-    pub team_members_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<Vec<crate::sync::api_client::RemoteTeamMember>>)>>,
+    pub team_members_receiver: Option<
+        std::sync::mpsc::Receiver<(
+            String,
+            anyhow::Result<Vec<crate::sync::api_client::RemoteTeamMember>>,
+        )>,
+    >,
     pub team_add_member_receiver: Option<std::sync::mpsc::Receiver<(String, anyhow::Result<()>)>>,
     // Share Folder state
     pub show_share_folder_dialog: bool,
@@ -746,13 +765,17 @@ pub struct Tabular {
     pub share_folder_path_input: String,
     pub share_folder_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<()>>>,
     pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
-    pub shared_folders_receiver: Option<std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteSharedFolder>>>>,
+    pub shared_folders_receiver: Option<
+        std::sync::mpsc::Receiver<anyhow::Result<Vec<crate::sync::api_client::RemoteSharedFolder>>>,
+    >,
     // Login dialog state
     pub sync_login_pending: bool,
     pub sync_token_input: String,
     pub sync_login_error: Option<String>,
-    pub sync_auth_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::TokenResponse, String>>>,
-    pub sync_refresh_receiver: Option<std::sync::mpsc::Receiver<Result<crate::sync::TabularAccount, String>>>,
+    pub sync_auth_receiver:
+        Option<std::sync::mpsc::Receiver<Result<crate::sync::api_client::TokenResponse, String>>>,
+    pub sync_refresh_receiver:
+        Option<std::sync::mpsc::Receiver<Result<crate::sync::TabularAccount, String>>>,
     /// Number of consecutive token refresh failures. Stops retrying after MAX_REFRESH_ATTEMPTS.
     pub sync_refresh_attempt_count: u32,
     /// True once we have shown the "session expired" toast, so it only fires once per exhaustion cycle.
@@ -765,7 +788,9 @@ pub struct Tabular {
     pub sync_http_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub sync_http_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     // Async receivers for sync operations
-    pub sync_connections_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::RemoteConnection>, String>>>,
+    pub sync_connections_receiver: Option<
+        std::sync::mpsc::Receiver<Result<Vec<crate::sync::api_client::RemoteConnection>, String>>,
+    >,
     pub sync_connections_push_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     pub sync_history_push_receiver: Option<std::sync::mpsc::Receiver<Result<u64, String>>>,
     pub sync_history_pull_receiver: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
@@ -791,22 +816,32 @@ pub struct Tabular {
     pub vault_recovery_code_display: Option<String>,
     pub vault_recovery_code_saved_confirmed: bool,
     pub vault_error: Option<String>,
-    pub vault_check_receiver: Option<std::sync::mpsc::Receiver<Result<Option<crate::sync::api_client::RemoteVaultKeys>, String>>>,
+    pub vault_check_receiver: Option<
+        std::sync::mpsc::Receiver<Result<Option<crate::sync::api_client::RemoteVaultKeys>, String>>,
+    >,
     pub vault_upload_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// Result of unsealing Team vault keys we didn't have yet.
-    pub vault_team_keys_receiver: Option<std::sync::mpsc::Receiver<std::collections::HashMap<String, crate::sync::vault_crypto::SymKey>>>,
+    pub vault_team_keys_receiver: Option<
+        std::sync::mpsc::Receiver<
+            std::collections::HashMap<String, crate::sync::vault_crypto::SymKey>,
+        >,
+    >,
     /// Result of minting/fetching + granting a Team's vault key right after sharing a folder.
-    pub vault_team_bootstrap_receiver: Option<std::sync::mpsc::Receiver<(String, Result<crate::sync::vault_crypto::SymKey, String>)>>,
+    pub vault_team_bootstrap_receiver: Option<
+        std::sync::mpsc::Receiver<(String, Result<crate::sync::vault_crypto::SymKey, String>)>,
+    >,
 
     // ─── Database & Connection Initialization ───────────────────────────────
     /// Background receiver for initial asynchronous loading of connections.db & metadata
-    pub db_init_receiver: Option<std::sync::mpsc::Receiver<crate::sidebar_database::DatabaseInitResult>>,
+    pub db_init_receiver:
+        Option<std::sync::mpsc::Receiver<crate::sidebar_database::DatabaseInitResult>>,
 
     // ─── HTTP Collections (Yaak import) ──────────────────────────────────────
     /// All imported/saved API collections (workspaces → folders → requests).
     pub yaak_workspaces: Vec<crate::http_collection::HttpWorkspace>,
     /// Background receiver for initial asynchronous loading of yaak_workspaces
-    pub workspaces_load_receiver: Option<std::sync::mpsc::Receiver<Vec<crate::http_collection::HttpWorkspace>>>,
+    pub workspaces_load_receiver:
+        Option<std::sync::mpsc::Receiver<Vec<crate::http_collection::HttpWorkspace>>>,
     /// Search filter text for the Collections sidebar tab.
     pub collection_search: String,
     /// Which folder ids are expanded in the sidebar tree.
@@ -856,4 +891,3 @@ impl Default for Tabular {
         Self::new()
     }
 }
-

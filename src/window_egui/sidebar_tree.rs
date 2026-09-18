@@ -1,11 +1,13 @@
-use eframe::egui;
-use std::sync::Arc;
-use std::collections::HashMap;
-use log::{debug};
 use super::Tabular;
 use crate::spreadsheet::SpreadsheetOperations;
-use crate::{models, connection, editor, sidebar_database,
-            sidebar_query, data_table, driver_mssql, directory};
+use crate::{
+    connection, data_table, directory, driver_mssql, editor, models, sidebar_database,
+    sidebar_query,
+};
+use eframe::egui;
+use log::debug;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub(crate) struct RenderTreeNodeParams<'a> {
     node_index: usize,
@@ -25,7 +27,6 @@ pub(crate) struct RenderTreeNodeParams<'a> {
     // Pre-loaded PNG textures for DB type icons (key = DatabaseType::icon_key())
     db_icon_textures: &'a HashMap<String, egui::TextureHandle>,
 }
-
 
 impl super::Tabular {
     pub fn get_connection_name(&self, connection_id: i64) -> Option<String> {
@@ -50,7 +51,9 @@ impl super::Tabular {
             );
         }
         for connection_id in pending_loads {
-            if self.cached_connection_types.get(&connection_id) == Some(&models::enums::DatabaseType::ApiHttp) {
+            if self.cached_connection_types.get(&connection_id)
+                == Some(&models::enums::DatabaseType::ApiHttp)
+            {
                 continue;
             }
             debug!("📂 Processing auto-load for connection {}", connection_id);
@@ -65,11 +68,14 @@ impl super::Tabular {
         }
 
         // Rebuild connection_type cache only when connections list length changes
-        if self.cached_connection_types.len() != self.connections.iter().filter(|c| c.id.is_some()).count() {
+        if self.cached_connection_types.len()
+            != self.connections.iter().filter(|c| c.id.is_some()).count()
+        {
             self.cached_connection_types.clear();
             for c in &self.connections {
                 if let Some(id) = c.id {
-                    self.cached_connection_types.insert(id, c.connection_type.clone());
+                    self.cached_connection_types
+                        .insert(id, c.connection_type.clone());
                 }
             }
         }
@@ -77,7 +83,8 @@ impl super::Tabular {
         let mut expansion_requests = Vec::new();
         let mut tables_to_expand = Vec::new();
         let mut context_menu_requests = Vec::new();
-        let mut table_click_requests: Vec<(i64, String, models::enums::NodeType, Option<String>)> = Vec::new();
+        let mut table_click_requests: Vec<(i64, String, models::enums::NodeType, Option<String>)> =
+            Vec::new();
         let mut connection_click_requests = Vec::new();
         let mut index_click_requests: Vec<(i64, String, Option<String>, Option<String>)> =
             Vec::new();
@@ -235,7 +242,8 @@ impl super::Tabular {
             }
             if let Some(conn_id) = request_add_replication_dialog {
                 self.show_add_replication_dialog = true;
-                self.replication_dialog = Some(models::structs::ReplicationDialogState::new(conn_id));
+                self.replication_dialog =
+                    Some(models::structs::ReplicationDialogState::new(conn_id));
             }
             if let Some(req) = delete_custom_view_request {
                 delete_custom_view_requests.push(req);
@@ -287,19 +295,39 @@ impl super::Tabular {
         for (conn_id, node_type) in dba_click_requests {
             match node_type {
                 models::enums::NodeType::BlockedQueriesFolder => {
-                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::LockTree);
+                    editor::open_dba_monitor_tab(
+                        self,
+                        conn_id,
+                        models::enums::DbaMonitorTab::LockTree,
+                    );
                 }
                 models::enums::NodeType::ProcessesFolder => {
-                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::Processlist);
+                    editor::open_dba_monitor_tab(
+                        self,
+                        conn_id,
+                        models::enums::DbaMonitorTab::Processlist,
+                    );
                 }
                 models::enums::NodeType::UsersFolder => {
-                    editor::open_user_manager_tab(self, conn_id, crate::user_manager::UserManagerTab::Users);
+                    editor::open_user_manager_tab(
+                        self,
+                        conn_id,
+                        crate::user_manager::UserManagerTab::Users,
+                    );
                 }
                 models::enums::NodeType::PrivilegesFolder => {
-                    editor::open_user_manager_tab(self, conn_id, crate::user_manager::UserManagerTab::ObjectGrants);
+                    editor::open_user_manager_tab(
+                        self,
+                        conn_id,
+                        crate::user_manager::UserManagerTab::ObjectGrants,
+                    );
                 }
                 _ => {
-                    editor::open_dba_monitor_tab(self, conn_id, models::enums::DbaMonitorTab::Processlist);
+                    editor::open_dba_monitor_tab(
+                        self,
+                        conn_id,
+                        models::enums::DbaMonitorTab::Processlist,
+                    );
                 }
             }
         }
@@ -339,9 +367,9 @@ impl super::Tabular {
                 continue;
             }
 
-             // Create (and switch to) the tab first so it's visible immediately,
-             // before any connection/query work happens.
-             editor::create_new_tab_with_connection(
+            // Create (and switch to) the tab first so it's visible immediately,
+            // before any connection/query work happens.
+            editor::create_new_tab_with_connection(
                 self,
                 view_name.clone(),
                 query.clone(),
@@ -383,15 +411,22 @@ impl super::Tabular {
                 let job_id = self.jobs.allocate_id();
                 match connection::prepare_query_job(self, conn_id, query.clone(), job_id) {
                     Ok(job) => {
-                        match connection::spawn_query_job(self, job, self.query_result_sender.clone()) {
+                        match connection::spawn_query_job(
+                            self,
+                            job,
+                            self.query_result_sender.clone(),
+                        ) {
                             Ok(handle) => {
-                                self.jobs.active.insert(job_id, connection::QueryJobStatus {
+                                self.jobs.active.insert(
                                     job_id,
-                                    connection_id: conn_id,
-                                    query_preview: query.chars().take(80).collect(),
-                                    started_at: std::time::Instant::now(),
-                                    completed: false,
-                                });
+                                    connection::QueryJobStatus {
+                                        job_id,
+                                        connection_id: conn_id,
+                                        query_preview: query.chars().take(80).collect(),
+                                        started_at: std::time::Instant::now(),
+                                        completed: false,
+                                    },
+                                );
                                 self.jobs.handles.insert(job_id, handle);
                                 self.current_table_name = "Running query…".to_string();
                             }
@@ -416,24 +451,24 @@ impl super::Tabular {
 
         // Process add view requests
         for conn_id in add_view_requests {
-             self.show_add_view_dialog = true;
-             self.new_view_connection_id = Some(conn_id);
-             self.new_view_name = String::new();
-             self.new_view_query = "SELECT * FROM ...".to_string();
+            self.show_add_view_dialog = true;
+            self.new_view_connection_id = Some(conn_id);
+            self.new_view_name = String::new();
+            self.new_view_query = "SELECT * FROM ...".to_string();
         }
 
         if let Some((conn_id, view_name)) = delete_custom_view_requests.pop() {
             let mut conn_to_save = None;
             // Find connection and remove view
             if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(conn_id)) {
-                 conn.custom_views.retain(|v| v.name != view_name);
-                 conn_to_save = Some(conn.clone());
+                conn.custom_views.retain(|v| v.name != view_name);
+                conn_to_save = Some(conn.clone());
             }
 
             // Save connection (outside of mutable borrow of connections)
             if let Some(conn) = conn_to_save {
-                 crate::sidebar_database::refresh_connections_tree(self);
-                 crate::sidebar_database::update_connection_in_database_background(self, &conn);
+                crate::sidebar_database::refresh_connections_tree(self);
+                crate::sidebar_database::update_connection_in_database_background(self, &conn);
             }
         }
 
@@ -444,7 +479,6 @@ impl super::Tabular {
             self.new_view_query = query;
             self.edit_view_original_name = Some(view_name);
         }
-
 
         for (conn_id, db_name) in create_table_requests {
             self.open_create_table_wizard(conn_id, db_name);
@@ -459,22 +493,28 @@ impl super::Tabular {
                 rt.block_on(async {
                     let _ = crate::connection::pool_if_connected_or_start(self, conn_id).await;
                     fks = crate::connection::get_foreign_keys(self, conn_id, &db_name).await;
-                    
+
                     // Fetch all columns for diagram (all supported engines)
                     if let Some(pool_enum) = self.connection_pools.get(&conn_id).cloned() {
                         match pool_enum {
                             models::enums::DatabasePool::MySQL(p) => {
-                                if let Ok(cols) = crate::driver_mysql::fetch_mysql_columns(&p, &db_name).await {
+                                if let Ok(cols) =
+                                    crate::driver_mysql::fetch_mysql_columns(&p, &db_name).await
+                                {
                                     columns_map = cols;
                                 }
                             }
                             models::enums::DatabasePool::PostgreSQL(p) => {
-                                if let Ok(cols) = crate::driver_postgres::fetch_postgres_columns(&p).await {
+                                if let Ok(cols) =
+                                    crate::driver_postgres::fetch_postgres_columns(&p).await
+                                {
                                     columns_map = cols;
                                 }
                             }
                             models::enums::DatabasePool::SQLite(p) => {
-                                if let Ok(cols) = crate::driver_sqlite::fetch_sqlite_columns(&p).await {
+                                if let Ok(cols) =
+                                    crate::driver_sqlite::fetch_sqlite_columns(&p).await
+                                {
                                     columns_map = cols;
                                 }
                             }
@@ -486,81 +526,107 @@ impl super::Tabular {
 
             // 1b. Fetch All Tables (to ensure isolated tables are shown)
             let mut all_tables = Vec::new();
-            let db_type = self.connections.iter().find(|c| c.id == Some(conn_id)).map(|c| c.connection_type.clone());
+            let db_type = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .map(|c| c.connection_type.clone());
             match db_type {
                 Some(models::enums::DatabaseType::MySQL) => {
-                     if let Some(t) = crate::driver_mysql::fetch_tables_from_mysql_connection(self, conn_id, &db_name, "table") {
-                         all_tables = t;
-                     }
-                },
+                    if let Some(t) = crate::driver_mysql::fetch_tables_from_mysql_connection(
+                        self, conn_id, &db_name, "table",
+                    ) {
+                        all_tables = t;
+                    }
+                }
                 Some(models::enums::DatabaseType::PostgreSQL) => {
-                      if let Some(t) = crate::driver_postgres::fetch_tables_from_postgres_connection(self, conn_id, &db_name, "BASE TABLE") {
-                          all_tables = t;
-                      }
-                },
+                    if let Some(t) = crate::driver_postgres::fetch_tables_from_postgres_connection(
+                        self,
+                        conn_id,
+                        &db_name,
+                        "BASE TABLE",
+                    ) {
+                        all_tables = t;
+                    }
+                }
                 Some(models::enums::DatabaseType::SQLite) => {
-                      if let Some(t) = crate::driver_sqlite::fetch_tables_from_sqlite_connection(self, conn_id, "table") {
-                          all_tables = t;
-                      }
-                },
+                    if let Some(t) = crate::driver_sqlite::fetch_tables_from_sqlite_connection(
+                        self, conn_id, "table",
+                    ) {
+                        all_tables = t;
+                    }
+                }
                 Some(models::enums::DatabaseType::MsSQL) => {
-                      if let Some(t) = crate::driver_mssql::fetch_tables_from_mssql_connection(self, conn_id, &db_name, "table") {
-                          all_tables = t;
-                      }
-                },
+                    if let Some(t) = crate::driver_mssql::fetch_tables_from_mssql_connection(
+                        self, conn_id, &db_name, "table",
+                    ) {
+                        all_tables = t;
+                    }
+                }
                 _ => {}
             }
 
             // 2. Initialize Diagram State
             let mut state = self.load_diagram(conn_id, &db_name).unwrap_or_default();
-            
+
             // Populate nodes (tables)
             let mut table_names = std::collections::HashSet::new();
             for fk in &fks {
                 table_names.insert(fk.table_name.clone());
                 table_names.insert(fk.referenced_table_name.clone());
             }
-            log::debug!("Diagram Init: Found {} FKs and {} tables", fks.len(), all_tables.len());
+            log::debug!(
+                "Diagram Init: Found {} FKs and {} tables",
+                fks.len(),
+                all_tables.len()
+            );
             for t in all_tables {
                 table_names.insert(t);
             }
-            
+
             for (t_name, cols) in &columns_map {
                 log::debug!("Table {} has {} columns", t_name, cols.len());
             }
 
             // Sync FKs (edges) - Always refresh edges based on current Schema
-            let edges: Vec<models::structs::DiagramEdge> = fks.iter().map(|fk| models::structs::DiagramEdge {
-                source: fk.table_name.clone(),
-                target: fk.referenced_table_name.clone(),
-                label: "".to_string(),
-            }).collect();
+            let edges: Vec<models::structs::DiagramEdge> = fks
+                .iter()
+                .map(|fk| models::structs::DiagramEdge {
+                    source: fk.table_name.clone(),
+                    target: fk.referenced_table_name.clone(),
+                    label: "".to_string(),
+                })
+                .collect();
             state.edges = edges;
 
             // Grouping Logic (Refresh groups if empty or for new nodes?)
-            // For MVP, we regenerate groups map for new nodes usage, 
+            // For MVP, we regenerate groups map for new nodes usage,
             // but we should probably keep existing groups if possible?
             // Let's re-calculate groups for ALL tables.
-            let mut groups_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-            
+            let mut groups_map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+
             // Helper to get prefix
-            let get_prefix = |name: &str| -> String {
-                name.split('_').next().unwrap_or(name).to_string()
-            };
+            let get_prefix =
+                |name: &str| -> String { name.split('_').next().unwrap_or(name).to_string() };
 
             for table in &table_names {
                 let prefix = get_prefix(table);
-                groups_map.entry(prefix).or_default().push(table.to_string());
+                groups_map
+                    .entry(prefix)
+                    .or_default()
+                    .push(table.to_string());
             }
 
-            // Update/Create DiagramGroups 
-            let mut existing_group_ids: std::collections::HashSet<String> = state.groups.iter().map(|g| g.id.clone()).collect();
-            
+            // Update/Create DiagramGroups
+            let mut existing_group_ids: std::collections::HashSet<String> =
+                state.groups.iter().map(|g| g.id.clone()).collect();
+
             // Simple color palette generator
             let colors = [
                 eframe::egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
                 eframe::egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
-                eframe::egui::Color32::from_rgb(255, 0, 0),   // Indian Red
+                eframe::egui::Color32::from_rgb(255, 0, 0),     // Indian Red
                 eframe::egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
                 eframe::egui::Color32::from_rgb(147, 112, 219), // Medium Purple
                 eframe::egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
@@ -571,7 +637,7 @@ impl super::Tabular {
             for (prefix, tables) in groups_map {
                 if tables.len() > 1 {
                     let group_id = format!("group_{}", prefix);
-                    
+
                     if !existing_group_ids.contains(&group_id) {
                         let title = prefix[0..1].to_uppercase() + &prefix[1..]; // Capitalize
                         let color = colors[color_idx % colors.len()];
@@ -591,55 +657,65 @@ impl super::Tabular {
             // Sync Nodes
             // 1. Remove nodes that no longer exist
             state.nodes.retain(|n| table_names.contains(&n.id));
-            
+
             // 2. Identify new nodes
-            let existing_node_ids: std::collections::HashSet<String> = state.nodes.iter().map(|n| n.id.clone()).collect();
-            let new_tables: Vec<String> = table_names.iter().filter(|t| !existing_node_ids.contains(*t)).cloned().collect();
+            let existing_node_ids: std::collections::HashSet<String> =
+                state.nodes.iter().map(|n| n.id.clone()).collect();
+            let new_tables: Vec<String> = table_names
+                .iter()
+                .filter(|t| !existing_node_ids.contains(*t))
+                .cloned()
+                .collect();
             let is_init = state.nodes.is_empty();
 
             // apply to state (this block replaces the old logic)
             // We need to call layout ONLY if it was empty, or only for new nodes?
             // If we have saved state, we DON'T run full auto layout that resets everything.
-            
+
             // Add new nodes
             for table in new_tables {
-                 let hash: u64 = table.bytes().fold(5381, |acc, c| acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64));
-                 let x = (hash % 800) as f32 + 100.0;
-                 let y = ((hash / 800) % 600) as f32 + 100.0;
-                 
-                  let mut node = models::structs::DiagramNode {
+                let hash: u64 = table.bytes().fold(5381, |acc, c| {
+                    acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64)
+                });
+                let x = (hash % 800) as f32 + 100.0;
+                let y = ((hash / 800) % 600) as f32 + 100.0;
+
+                let mut node = models::structs::DiagramNode {
                     id: table.clone(),
                     title: table.clone(),
-                     pos: eframe::egui::pos2(x, y),
-                     size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
-                     columns: columns_map.get(&table).cloned().unwrap_or_default(),
-                     foreign_keys: fks.iter().filter(|fk| fk.table_name == table).cloned().collect(),
-                     group_id: None,
-                 };
+                    pos: eframe::egui::pos2(x, y),
+                    size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
+                    columns: columns_map.get(&table).cloned().unwrap_or_default(),
+                    foreign_keys: fks
+                        .iter()
+                        .filter(|fk| fk.table_name == table)
+                        .cloned()
+                        .collect(),
+                    group_id: None,
+                };
                 // Assign group
                 let prefix = get_prefix(&table);
                 if existing_group_ids.contains(&format!("group_{}", prefix)) {
-                     node.group_id = Some(format!("group_{}", prefix));
+                    node.group_id = Some(format!("group_{}", prefix));
                 }
                 state.nodes.push(node);
             }
-            
-             // Refresh columns for existing nodes too (in case of schema change)
-             for node in &mut state.nodes {
-                  if let Some(cols) = columns_map.get(&node.id) {
-                      node.columns = cols.clone();
-                  }
-             }
+
+            // Refresh columns for existing nodes too (in case of schema change)
+            for node in &mut state.nodes {
+                if let Some(cols) = columns_map.get(&node.id) {
+                    node.columns = cols.clone();
+                }
+            }
 
             // Apply Layout ONLY if it was fresh init (no saved state used)
             if is_init {
-                 crate::diagram_view::perform_auto_layout(&mut state);
+                crate::diagram_view::perform_auto_layout(&mut state);
             }
-            
+
             // 3. Create Tab
             // fks consumed? No, we used iter().
             // Original code used into_iter() for edges. I replaced it with iter above.
-
 
             // 3. Create Tab
             let title = format!("Diagram: {}", db_name);
@@ -650,7 +726,7 @@ impl super::Tabular {
                 Some(conn_id),
                 Some(db_name.clone()),
             );
-            
+
             // 4. Attach Diagram State to the new active tab
             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                 tab.diagram_state = Some(state);
@@ -659,8 +735,17 @@ impl super::Tabular {
         }
 
         for (conn_id, db_name, table_name) in generate_ddl_requests {
-            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
-                let definition = crate::connection::fetch_table_definition(&conn, db_name.as_deref(), &table_name);
+            if let Some(conn) = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .cloned()
+            {
+                let definition = crate::connection::fetch_table_definition(
+                    &conn,
+                    db_name.as_deref(),
+                    &table_name,
+                );
                 if let Some(sql) = definition {
                     let title = format!("DDL: {}", table_name);
                     crate::editor::create_new_tab_with_connection_and_database(
@@ -678,15 +763,26 @@ impl super::Tabular {
         }
 
         for (conn_id, db_name, table_name) in copy_ddl_requests {
-            if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned() {
-                match crate::connection::fetch_table_definition(&conn, db_name.as_deref(), &table_name) {
+            if let Some(conn) = self
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .cloned()
+            {
+                match crate::connection::fetch_table_definition(
+                    &conn,
+                    db_name.as_deref(),
+                    &table_name,
+                ) {
                     Some(sql) => {
-                        self.toasts.success(format!("DDL for '{}' copied to clipboard", table_name));
+                        self.toasts
+                            .success(format!("DDL for '{}' copied to clipboard", table_name));
                         // egui clipboard write happens next frame via ctx; store in a field
                         self.pending_clipboard_text = Some(sql);
                     }
                     None => {
-                        self.toasts.error(format!("Could not generate DDL for '{}'", table_name));
+                        self.toasts
+                            .error(format!("Could not generate DDL for '{}'", table_name));
                     }
                 }
             }
@@ -695,21 +791,27 @@ impl super::Tabular {
         for (conn_id, db_name) in schema_diff_requests {
             self.show_schema_diff_dialog = true;
             self.schema_diff_state = Some(crate::models::structs::SchemaDiffState::new(
-                conn_id, db_name, &self.connections,
+                conn_id,
+                db_name,
+                &self.connections,
             ));
         }
 
         for (conn_id, db_name) in backup_requests {
             self.show_backup_dialog = true;
             self.backup_state = Some(crate::dialog_backup_restore::BackupDialogState::new(
-                conn_id, db_name, &self.connections,
+                conn_id,
+                db_name,
+                &self.connections,
             ));
         }
 
         for (conn_id, db_name) in restore_requests {
             self.show_restore_dialog = true;
             self.restore_state = Some(crate::dialog_backup_restore::RestoreDialogState::new(
-                conn_id, db_name, &self.connections,
+                conn_id,
+                db_name,
+                &self.connections,
             ));
         }
 
@@ -755,9 +857,11 @@ impl super::Tabular {
 
         // Check table clicks for missing pools too
         for (connection_id, _, _, _) in &table_click_requests {
-             if !self.connection_pools.contains_key(connection_id) && !pools_to_create.contains(connection_id) {
-                 pools_to_create.push(*connection_id);
-             }
+            if !self.connection_pools.contains_key(connection_id)
+                && !pools_to_create.contains(connection_id)
+            {
+                pools_to_create.push(*connection_id);
+            }
         }
 
         for connection_id in connection_click_requests {
@@ -766,15 +870,30 @@ impl super::Tabular {
                 .connections
                 .iter()
                 .find(|conn| conn.id == Some(connection_id))
-                .map(|conn| (conn.name.clone(), conn.connection_type.clone(), conn.connection_type == models::enums::DatabaseType::ApiHttp))
-                .unwrap_or_else(|| (format!("Connection {}", connection_id), models::enums::DatabaseType::SQLite, false));
+                .map(|conn| {
+                    (
+                        conn.name.clone(),
+                        conn.connection_type.clone(),
+                        conn.connection_type == models::enums::DatabaseType::ApiHttp,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        format!("Connection {}", connection_id),
+                        models::enums::DatabaseType::SQLite,
+                        false,
+                    )
+                });
 
             let is_redis = connection_type == models::enums::DatabaseType::Redis;
 
             // Check if there is already an open unsaved query tab for this connection
-            if let Some(existing_index) =
-                editor::find_unsaved_query_tab_for_connection(self, connection_id, is_api_http, is_redis)
-            {
+            if let Some(existing_index) = editor::find_unsaved_query_tab_for_connection(
+                self,
+                connection_id,
+                is_api_http,
+                is_redis,
+            ) {
                 if existing_index != self.active_tab_index {
                     editor::switch_to_tab(self, existing_index);
                 }
@@ -804,19 +923,16 @@ impl super::Tabular {
                 }
 
                 // For API-HTTP connections, set up the HTTP client state on the new tab
-                if is_api_http
-                    && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        // Load previously saved state if available, else use defaults
-                        let state = crate::http_client::load_http_state(connection_id)
-                            .unwrap_or_default();
-                        tab.http_client_state = Some(state);
-                    }
+                if is_api_http && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                    // Load previously saved state if available, else use defaults
+                    let state =
+                        crate::http_client::load_http_state(connection_id).unwrap_or_default();
+                    tab.http_client_state = Some(state);
+                }
 
                 if is_redis {
-                    let cached_state = crate::driver_redis::load_cached_redis_browser_state(
-                        self,
-                        connection_id,
-                    );
+                    let cached_state =
+                        crate::driver_redis::load_cached_redis_browser_state(self, connection_id);
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                         let mut redis_state = cached_state
                             .or_else(|| {
@@ -833,10 +949,11 @@ impl super::Tabular {
                     if self.fetching_redis_browser.insert(connection_id)
                         && let Some(sender) = &self.background_sender
                     {
-                        let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
-                            connection_id,
-                            database_name: None,
-                        });
+                        let _ =
+                            sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                                connection_id,
+                                database_name: None,
+                            });
                     }
                     self.query_message.clear();
                     self.current_table_headers.clear();
@@ -855,7 +972,9 @@ impl super::Tabular {
                 self.connection_errors.remove(&connection_id);
                 self.fetching_databases.remove(&connection_id);
                 self.refreshing_connections.remove(&connection_id);
-                if let Some(connection_node) = Self::find_connection_node_recursive(nodes, connection_id) {
+                if let Some(connection_node) =
+                    Self::find_connection_node_recursive(nodes, connection_id)
+                {
                     connection_node.is_loaded = false;
                     self.load_connection_tables(connection_id, connection_node);
                 }
@@ -877,11 +996,11 @@ impl super::Tabular {
         // Now create pools (after mutable/immutable borrows ended)
         // Now create pools (after mutable/immutable borrows ended)
         if !pools_to_create.is_empty() {
-             for cid in pools_to_create {
-                 if !self.connection_pools.contains_key(&cid) {
+            for cid in pools_to_create {
+                if !self.connection_pools.contains_key(&cid) {
                     crate::connection::start_background_pool_creation(self, cid);
-                 }
-             }
+                }
+            }
         }
 
         // Handle expansions after rendering
@@ -889,14 +1008,17 @@ impl super::Tabular {
             match expansion_req.node_type {
                 models::enums::NodeType::Connection => {
                     // Find Connection node recursively and load if not already loaded or if previously failed
-                    let is_failed = self.connection_errors.contains_key(&expansion_req.connection_id);
+                    let is_failed = self
+                        .connection_errors
+                        .contains_key(&expansion_req.connection_id);
                     if let Some(connection_node) =
                         Self::find_connection_node_recursive(nodes, expansion_req.connection_id)
                     {
                         if !connection_node.is_loaded || is_failed {
                             self.connection_errors.remove(&expansion_req.connection_id);
                             self.fetching_databases.remove(&expansion_req.connection_id);
-                            self.refreshing_connections.remove(&expansion_req.connection_id);
+                            self.refreshing_connections
+                                .remove(&expansion_req.connection_id);
                             connection_node.is_loaded = false;
                             self.load_connection_tables(
                                 expansion_req.connection_id,
@@ -919,10 +1041,7 @@ impl super::Tabular {
                             if child.node_type == models::enums::NodeType::DatabasesFolder
                                 && !child.is_loaded
                             {
-                                self.load_databases_for_folder(
-                                    expansion_req.connection_id,
-                                    child,
-                                );
+                                self.load_databases_for_folder(expansion_req.connection_id, child);
                                 break;
                             }
                         }
@@ -1041,7 +1160,9 @@ impl super::Tabular {
                                 db,
                             );
                         } else {
-                            debug!("[TABULAR-DEBUG] expansion_handler: force_clear=true but database_name is None! Cannot clear cache.");
+                            debug!(
+                                "[TABULAR-DEBUG] expansion_handler: force_clear=true but database_name is None! Cannot clear cache."
+                            );
                         }
                     }
 
@@ -1155,23 +1276,29 @@ impl super::Tabular {
                                         editor::switch_to_tab(self, existing_index);
                                     }
                                 } else {
-                                    let preview_result = crate::driver_redis::fetch_redis_key_pretty_json(
-                                        self,
-                                        connection_id,
-                                        &keyspace,
-                                        &table_name,
-                                        &k_type,
-                                    );
+                                    let preview_result =
+                                        crate::driver_redis::fetch_redis_key_pretty_json(
+                                            self,
+                                            connection_id,
+                                            &keyspace,
+                                            &table_name,
+                                            &k_type,
+                                        );
 
                                     let tab_content = match preview_result {
                                         Ok(pretty_json) => pretty_json,
-                                        Err(error) => serde_json::to_string_pretty(&serde_json::json!({
-                                            "key": table_name,
-                                            "type": k_type,
-                                            "database": keyspace,
-                                            "error": error,
-                                        }))
-                                        .unwrap_or_else(|_| "{\n  \"error\": \"Failed to build Redis preview\"\n}".to_string()),
+                                        Err(error) => serde_json::to_string_pretty(
+                                            &serde_json::json!({
+                                                "key": table_name,
+                                                "type": k_type,
+                                                "database": keyspace,
+                                                "error": error,
+                                            }),
+                                        )
+                                        .unwrap_or_else(|_| {
+                                            "{\n  \"error\": \"Failed to build Redis preview\"\n}"
+                                                .to_string()
+                                        }),
                                     };
 
                                     editor::create_new_tab_with_connection_and_database(
@@ -1182,14 +1309,26 @@ impl super::Tabular {
                                         database_name.clone(),
                                     );
 
-                                    if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                        active_tab.file_path = Some(crate::driver_redis::fetch_redis_key_preview_filename(&table_name));
-                                        active_tab.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                    if let Some(active_tab) =
+                                        self.query_tabs.get_mut(self.active_tab_index)
+                                    {
+                                        active_tab.file_path = Some(
+                                            crate::driver_redis::fetch_redis_key_preview_filename(
+                                                &table_name,
+                                            ),
+                                        );
+                                        active_tab.query_message = format!(
+                                            "Loaded Redis key '{}' as JSON preview",
+                                            table_name
+                                        );
                                         active_tab.query_message_is_error = false;
                                     }
 
                                     self.current_connection_id = Some(connection_id);
-                                    self.query_message = format!("Loaded Redis key '{}' as JSON preview", table_name);
+                                    self.query_message = format!(
+                                        "Loaded Redis key '{}' as JSON preview",
+                                        table_name
+                                    );
                                     self.query_message_is_error = false;
                                     self.current_table_headers.clear();
                                     self.current_table_data.clear();
@@ -1259,48 +1398,52 @@ impl super::Tabular {
                                     editor::switch_to_tab(self, existing_index);
                                 }
                             } else {
-                            editor::create_new_tab_with_connection_and_database(
-                                self,
-                                tab_title.clone(),
-                                String::new(),
-                                Some(connection_id),
-                                database_name.clone(),
-                            );
-                            self.current_connection_id = Some(connection_id);
-                            // Reset spreadsheet editing state when opening a collection
-                            self.reset_spreadsheet_state();
-                            if let Some((headers, data)) =
-                                crate::driver_mongodb::sample_collection_documents(
+                                editor::create_new_tab_with_connection_and_database(
                                     self,
-                                    connection_id,
-                                    db_name,
-                                    &table_name,
-                                    100,
-                                )
-                            {
-                                self.current_table_headers = headers;
-                                self.current_table_data = data.clone();
-                                self.all_table_data = data;
-                                self.current_table_name = tab_title;
-                                self.total_rows = self.all_table_data.len();
-                                self.current_page = 0;
-                                if let Some(active_tab) =
-                                    self.query_tabs.get_mut(self.active_tab_index)
+                                    tab_title.clone(),
+                                    String::new(),
+                                    Some(connection_id),
+                                    database_name.clone(),
+                                );
+                                self.current_connection_id = Some(connection_id);
+                                // Reset spreadsheet editing state when opening a collection
+                                self.reset_spreadsheet_state();
+                                if let Some((headers, data)) =
+                                    crate::driver_mongodb::sample_collection_documents(
+                                        self,
+                                        connection_id,
+                                        db_name,
+                                        &table_name,
+                                        100,
+                                    )
                                 {
-                                    active_tab.result_headers = self.current_table_headers.clone();
-                                    active_tab.result_rows = self.current_table_data.clone();
-                                    active_tab.result_all_rows = self.all_table_data.clone();
-                                    active_tab.result_table_name = self.current_table_name.clone();
-                                    active_tab.is_table_browse_mode = self.is_table_browse_mode;
-                                    active_tab.current_page = self.current_page;
-                                    active_tab.page_size = self.page_size;
-                                    active_tab.total_rows = self.total_rows;
+                                    self.current_table_headers = headers;
+                                    self.current_table_data = data.clone();
+                                    self.all_table_data = data;
+                                    self.current_table_name = tab_title;
+                                    self.total_rows = self.all_table_data.len();
+                                    self.current_page = 0;
+                                    if let Some(active_tab) =
+                                        self.query_tabs.get_mut(self.active_tab_index)
+                                    {
+                                        active_tab.result_headers =
+                                            self.current_table_headers.clone();
+                                        active_tab.result_rows = self.current_table_data.clone();
+                                        active_tab.result_all_rows = self.all_table_data.clone();
+                                        active_tab.result_table_name =
+                                            self.current_table_name.clone();
+                                        active_tab.is_table_browse_mode = self.is_table_browse_mode;
+                                        active_tab.current_page = self.current_page;
+                                        active_tab.page_size = self.page_size;
+                                        active_tab.total_rows = self.total_rows;
+                                    }
                                 }
                             }
-                            }
                         } else {
-                            self.toasts.error("MongoDB requires a database; please select a database."
-                                    .to_string());
+                            self.toasts.error(
+                                "MongoDB requires a database; please select a database."
+                                    .to_string(),
+                            );
                         }
                     }
                     _ => {
@@ -1373,267 +1516,293 @@ impl super::Tabular {
                             }
                             self.current_connection_id = Some(connection_id);
                         } else {
-                        editor::create_new_tab_with_connection_and_database(
-                            self,
-                            tab_title.clone(),
-                            query_content.clone(),
-                            Some(connection_id),
-                            database_name.clone(),
-                        );
-
-                        // Reset spreadsheet editing state when opening a table
-                        self.reset_spreadsheet_state();
-                        self.current_column_metadata = None;
-
-                        // Set database context for current tab and auto-execute the query and display results in bottom
-                        self.current_connection_id = Some(connection_id);
-                        // Ensure the newly created tab stores selected database (important for MsSQL)
-                        if let Some(dbn) = &database_name
-                            && let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
-                        {
-                            active_tab.database_name = Some(dbn.clone());
-                        }
-
-                        // Set early so infer_current_table_name() bekerja saat Structure view aktif
-                        let label_prefix = if is_view { "View" } else { "Table" };
-                        self.current_table_name = format!(
-                            "{}: {} (Database: {})",
-                            label_prefix,
-                            table_name,
-                            database_name.as_deref().unwrap_or("Unknown")
-                        );
-
-                        // Clear newly created rows highlight when switching tables
-                        self.newly_created_rows.clear();
-
-                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                            active_tab.result_table_name = self.current_table_name.clone();
-                        }
-
-                        // Try show cached 100 rows immediately (cache-first UX)
-                        let mut had_cache = false;
-                        if let Some(dbn) = &database_name
-                            && let Some((cached_headers, cached_rows)) =
-                                crate::cache_data::get_table_rows_from_cache(
-                                    self,
-                                    connection_id,
-                                    dbn,
-                                    &table_name,
-                                )
-                            && !cached_headers.is_empty()
-                        {
-                            debug!(
-                                "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
-                                dbn,
-                                table_name,
-                                cached_headers.len(),
-                                cached_rows.len()
+                            editor::create_new_tab_with_connection_and_database(
+                                self,
+                                tab_title.clone(),
+                                query_content.clone(),
+                                Some(connection_id),
+                                database_name.clone(),
                             );
-                            self.current_table_headers = cached_headers.clone();
-                            self.current_table_data = cached_rows.clone();
-                            self.all_table_data = cached_rows;
-                            self.total_rows = self.all_table_data.len();
-                            self.current_page = 0;
-                            had_cache = true;
-                            // Table context changed; ensure future Structure load is for this table
-                            self.last_structure_target = None;
+
+                            // Reset spreadsheet editing state when opening a table
+                            self.reset_spreadsheet_state();
+                            self.current_column_metadata = None;
+
+                            // Set database context for current tab and auto-execute the query and display results in bottom
+                            self.current_connection_id = Some(connection_id);
+                            // Ensure the newly created tab stores selected database (important for MsSQL)
+                            if let Some(dbn) = &database_name
+                                && let Some(active_tab) =
+                                    self.query_tabs.get_mut(self.active_tab_index)
+                            {
+                                active_tab.database_name = Some(dbn.clone());
+                            }
+
+                            // Set early so infer_current_table_name() bekerja saat Structure view aktif
+                            let label_prefix = if is_view { "View" } else { "Table" };
+                            self.current_table_name = format!(
+                                "{}: {} (Database: {})",
+                                label_prefix,
+                                table_name,
+                                database_name.as_deref().unwrap_or("Unknown")
+                            );
+
+                            // Clear newly created rows highlight when switching tables
+                            self.newly_created_rows.clear();
+
                             if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
                             {
-                                active_tab.result_headers = self.current_table_headers.clone();
-                                active_tab.result_rows = self.current_table_data.clone();
-                                active_tab.result_all_rows = self.all_table_data.clone();
                                 active_tab.result_table_name = self.current_table_name.clone();
-                                active_tab.is_table_browse_mode = true;
-                                active_tab.current_page = self.current_page;
-                                active_tab.page_size = self.page_size;
-                                active_tab.total_rows = self.total_rows;
                             }
-                        }
 
-                        // Use server-side pagination only when refreshing or when no cache available.
-                        if self.use_server_pagination {
-                            // Build base query without LIMIT for potential server pagination (store for future refresh),
-                            // but don't execute it if we already have cache.
-                            let base_query = if let Some(db_name) = &database_name {
-                                match conn.connection_type {
-                                    models::enums::DatabaseType::MySQL => {
-                                        format!(
-                                            "USE `{}`;\nSELECT * FROM `{}`",
-                                            db_name, table_name
-                                        )
-                                    }
-                                    models::enums::DatabaseType::PostgreSQL => {
-                                        format!("SELECT * FROM \"{}\".\"{}\"", db_name, table_name)
-                                    }
-                                    models::enums::DatabaseType::MsSQL => {
-                                        // Build robust MsSQL SELECT with explicit database context but without LIMIT
-                                        let mssql_query = driver_mssql::build_mssql_select_query(
-                                            db_name.clone(),
-                                            table_name.clone(),
-                                        );
-                                        // Remove the LIMIT part from MsSQL query
-                                        mssql_query.replace("SELECT TOP 100", "SELECT")
-                                    }
-                                    models::enums::DatabaseType::SQLite
-                                    | models::enums::DatabaseType::Redis => {
-                                        format!("SELECT * FROM `{}`", table_name)
-                                    }
-                                    models::enums::DatabaseType::MongoDB
-                                    | models::enums::DatabaseType::ApiHttp => {
-                                        // MongoDB/ApiHttp handled separately above
-                                        String::new()
-                                    }
-                                }
-                            } else {
-                                match conn.connection_type {
-                                    models::enums::DatabaseType::MsSQL => {
-                                        let mssql_query = driver_mssql::build_mssql_select_query(
-                                            "".to_string(),
-                                            table_name.clone(),
-                                        );
-                                        mssql_query.replace("SELECT TOP 100", "SELECT")
-                                    }
-                                    _ => format!("SELECT * FROM `{}`", table_name),
-                                }
-                            };
-                            // Always store base_query for potential manual refresh
-                            if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index)
-                            {
-                                active_tab.base_query = base_query.clone();
-                            }
-                            self.current_base_query = base_query;
-
-                            // If we already showed cache, do NOT auto-fetch from server now.
-                            if had_cache {
-                                debug!(
-                                    "🛑 Skipping live server load on table click because cache exists"
-                                );
-                                // Keep browse mode enabled for filters to apply on cached data
-                                self.is_table_browse_mode = true;
-                                self.sql_filter_text.clear();
-                                // New table opened; structure target should refresh on demand
-                                self.last_structure_target = None;
-                            } else {
-                                // Set browse mode when opening table via sidebar click
-                                self.is_table_browse_mode = true;
-                                // If the pool is not ready, queue the first-page query; otherwise execute.
-                                // Only ever check the cache here — never block the UI thread waiting
-                                // for a pool to be created; the pool-wait poller in app_impl.rs handles
-                                // running the query as soon as the pool becomes available.
-                                let pool_ready = self.connection_pools.contains_key(&connection_id)
-                                    || self
-                                        .shared_connection_pools
-                                        .lock()
-                                        .map(|p| p.contains_key(&connection_id))
-                                        .unwrap_or(false);
-
-                                if !pool_ready {
-                                    crate::connection::ensure_background_pool_creation(
+                            // Try show cached 100 rows immediately (cache-first UX)
+                            let mut had_cache = false;
+                            if let Some(dbn) = &database_name
+                                && let Some((cached_headers, cached_rows)) =
+                                    crate::cache_data::get_table_rows_from_cache(
                                         self,
                                         connection_id,
-                                    );
-                                    // Prepare server pagination state but defer execution
-                                    self.current_page = 0;
-                                    if let Some(total) = self.execute_count_query() {
-                                        self.actual_total_rows = Some(total);
-                                    }
-                                    let first_query = self.build_paginated_query(0, self.page_size);
-                                    self.pool_wait_in_progress = true;
-                                    self.pool_wait_connection_id = Some(connection_id);
-                                    self.pool_wait_query = first_query;
-                                    self.pool_wait_started_at = Some(std::time::Instant::now());
-                                    self.current_table_name =
-                                        "Connecting… waiting for pool".to_string();
-                                } else {
-                                    self.initialize_server_pagination(
-                                        self.current_base_query.clone(),
-                                    );
+                                        dbn,
+                                        &table_name,
+                                    )
+                                && !cached_headers.is_empty()
+                            {
+                                debug!(
+                                    "📦 Showing cached data for table {}/{} ({} cols, {} rows)",
+                                    dbn,
+                                    table_name,
+                                    cached_headers.len(),
+                                    cached_rows.len()
+                                );
+                                self.current_table_headers = cached_headers.clone();
+                                self.current_table_data = cached_rows.clone();
+                                self.all_table_data = cached_rows;
+                                self.total_rows = self.all_table_data.len();
+                                self.current_page = 0;
+                                had_cache = true;
+                                // Table context changed; ensure future Structure load is for this table
+                                self.last_structure_target = None;
+                                if let Some(active_tab) =
+                                    self.query_tabs.get_mut(self.active_tab_index)
+                                {
+                                    active_tab.result_headers = self.current_table_headers.clone();
+                                    active_tab.result_rows = self.current_table_data.clone();
+                                    active_tab.result_all_rows = self.all_table_data.clone();
+                                    active_tab.result_table_name = self.current_table_name.clone();
+                                    active_tab.is_table_browse_mode = true;
+                                    active_tab.current_page = self.current_page;
+                                    active_tab.page_size = self.page_size;
+                                    active_tab.total_rows = self.total_rows;
                                 }
                             }
-                        } else {
-                            // Client-side path (rare). Only run live query if no cache.
-                            if !had_cache {
-                                // Set browse mode when opening table via sidebar click
-                                self.is_table_browse_mode = true;
-                                debug!("🔄 Taking client-side pagination fallback path");
-                                debug!(
-                                    "🌐 Loading live data from server for table {}/{} (client pagination)",
-                                    database_name.clone().unwrap_or_default(),
-                                    table_name
-                                );
-                                // New table; force structure reload on next toggle
-                                self.last_structure_target = None;
-                                // Fallback to client-side pagination (original behavior)
-                                // For MsSQL, we need to strip TOP from query_content to avoid conflicts
-                                let safe_query =
-                                    if conn.connection_type == models::enums::DatabaseType::MsSQL {
+
+                            // Use server-side pagination only when refreshing or when no cache available.
+                            if self.use_server_pagination {
+                                // Build base query without LIMIT for potential server pagination (store for future refresh),
+                                // but don't execute it if we already have cache.
+                                let base_query = if let Some(db_name) = &database_name {
+                                    match conn.connection_type {
+                                        models::enums::DatabaseType::MySQL => {
+                                            format!(
+                                                "USE `{}`;\nSELECT * FROM `{}`",
+                                                db_name, table_name
+                                            )
+                                        }
+                                        models::enums::DatabaseType::PostgreSQL => {
+                                            format!(
+                                                "SELECT * FROM \"{}\".\"{}\"",
+                                                db_name, table_name
+                                            )
+                                        }
+                                        models::enums::DatabaseType::MsSQL => {
+                                            // Build robust MsSQL SELECT with explicit database context but without LIMIT
+                                            let mssql_query =
+                                                driver_mssql::build_mssql_select_query(
+                                                    db_name.clone(),
+                                                    table_name.clone(),
+                                                );
+                                            // Remove the LIMIT part from MsSQL query
+                                            mssql_query.replace("SELECT TOP 100", "SELECT")
+                                        }
+                                        models::enums::DatabaseType::SQLite
+                                        | models::enums::DatabaseType::Redis => {
+                                            format!("SELECT * FROM `{}`", table_name)
+                                        }
+                                        models::enums::DatabaseType::MongoDB
+                                        | models::enums::DatabaseType::ApiHttp => {
+                                            // MongoDB/ApiHttp handled separately above
+                                            String::new()
+                                        }
+                                    }
+                                } else {
+                                    match conn.connection_type {
+                                        models::enums::DatabaseType::MsSQL => {
+                                            let mssql_query =
+                                                driver_mssql::build_mssql_select_query(
+                                                    "".to_string(),
+                                                    table_name.clone(),
+                                                );
+                                            mssql_query.replace("SELECT TOP 100", "SELECT")
+                                        }
+                                        _ => format!("SELECT * FROM `{}`", table_name),
+                                    }
+                                };
+                                // Always store base_query for potential manual refresh
+                                if let Some(active_tab) =
+                                    self.query_tabs.get_mut(self.active_tab_index)
+                                {
+                                    active_tab.base_query = base_query.clone();
+                                }
+                                self.current_base_query = base_query;
+
+                                // If we already showed cache, do NOT auto-fetch from server now.
+                                if had_cache {
+                                    debug!(
+                                        "🛑 Skipping live server load on table click because cache exists"
+                                    );
+                                    // Keep browse mode enabled for filters to apply on cached data
+                                    self.is_table_browse_mode = true;
+                                    self.sql_filter_text.clear();
+                                    // New table opened; structure target should refresh on demand
+                                    self.last_structure_target = None;
+                                } else {
+                                    // Set browse mode when opening table via sidebar click
+                                    self.is_table_browse_mode = true;
+                                    // If the pool is not ready, queue the first-page query; otherwise execute.
+                                    // Only ever check the cache here — never block the UI thread waiting
+                                    // for a pool to be created; the pool-wait poller in app_impl.rs handles
+                                    // running the query as soon as the pool becomes available.
+                                    let pool_ready =
+                                        self.connection_pools.contains_key(&connection_id)
+                                            || self
+                                                .shared_connection_pools
+                                                .lock()
+                                                .map(|p| p.contains_key(&connection_id))
+                                                .unwrap_or(false);
+
+                                    if !pool_ready {
+                                        crate::connection::ensure_background_pool_creation(
+                                            self,
+                                            connection_id,
+                                        );
+                                        // Prepare server pagination state but defer execution
+                                        self.current_page = 0;
+                                        if let Some(total) = self.execute_count_query() {
+                                            self.actual_total_rows = Some(total);
+                                        }
+                                        let first_query =
+                                            self.build_paginated_query(0, self.page_size);
+                                        self.pool_wait_in_progress = true;
+                                        self.pool_wait_connection_id = Some(connection_id);
+                                        self.pool_wait_query = first_query;
+                                        self.pool_wait_started_at = Some(std::time::Instant::now());
+                                        self.current_table_name =
+                                            "Connecting… waiting for pool".to_string();
+                                    } else {
+                                        self.initialize_server_pagination(
+                                            self.current_base_query.clone(),
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Client-side path (rare). Only run live query if no cache.
+                                if !had_cache {
+                                    // Set browse mode when opening table via sidebar click
+                                    self.is_table_browse_mode = true;
+                                    debug!("🔄 Taking client-side pagination fallback path");
+                                    debug!(
+                                        "🌐 Loading live data from server for table {}/{} (client pagination)",
+                                        database_name.clone().unwrap_or_default(),
+                                        table_name
+                                    );
+                                    // New table; force structure reload on next toggle
+                                    self.last_structure_target = None;
+                                    // Fallback to client-side pagination (original behavior)
+                                    // For MsSQL, we need to strip TOP from query_content to avoid conflicts
+                                    let safe_query = if conn.connection_type
+                                        == models::enums::DatabaseType::MsSQL
+                                    {
                                         driver_mssql::sanitize_mssql_select_for_pagination(
                                             &query_content,
                                         )
                                     } else {
                                         query_content.clone()
                                     };
-                                debug!("🔄 Client-side query after sanitization: {}", safe_query);
-
-                                // If pool not ready, queue and show loading; otherwise execute now.
-                                // Only check the cache here — never block the UI thread waiting for
-                                // a pool to be created; the pool-wait poller in app_impl.rs handles
-                                // running the query as soon as the pool becomes available.
-                                let pool_ready = self.connection_pools.contains_key(&connection_id)
-                                    || self
-                                        .shared_connection_pools
-                                        .lock()
-                                        .map(|p| p.contains_key(&connection_id))
-                                        .unwrap_or(false);
-
-                                if !pool_ready {
-                                    crate::connection::ensure_background_pool_creation(
-                                        self,
-                                        connection_id,
+                                    debug!(
+                                        "🔄 Client-side query after sanitization: {}",
+                                        safe_query
                                     );
-                                    self.pool_wait_in_progress = true;
-                                    self.pool_wait_connection_id = Some(connection_id);
-                                    self.pool_wait_query = safe_query;
-                                    self.pool_wait_started_at = Some(std::time::Instant::now());
-                                    self.current_table_name =
-                                        "Connecting… waiting for pool".to_string();
-                                } else {
-                                    let job_id = self.jobs.allocate_id();
-                                    if let Ok(mut job) = connection::prepare_query_job(
-                                        self,
-                                        connection_id,
-                                        safe_query.clone(),
-                                        job_id,
-                                    ) {
-                                        job.options.save_to_history = false;
-                                        let status = connection::QueryJobStatus {
-                                            job_id,
+
+                                    // If pool not ready, queue and show loading; otherwise execute now.
+                                    // Only check the cache here — never block the UI thread waiting for
+                                    // a pool to be created; the pool-wait poller in app_impl.rs handles
+                                    // running the query as soon as the pool becomes available.
+                                    let pool_ready =
+                                        self.connection_pools.contains_key(&connection_id)
+                                            || self
+                                                .shared_connection_pools
+                                                .lock()
+                                                .map(|p| p.contains_key(&connection_id))
+                                                .unwrap_or(false);
+
+                                    if !pool_ready {
+                                        crate::connection::ensure_background_pool_creation(
+                                            self,
                                             connection_id,
-                                            query_preview: safe_query.chars().take(80).collect(),
-                                            started_at: std::time::Instant::now(),
-                                            completed: false,
-                                        };
-                                        self.jobs.active.insert(job_id, status);
-                                        self.query_execution_in_progress = true;
-                                        self.extend_query_icon_hold();
-                                        self.current_table_name = format!(
-                                            "Table: {} (Database: {})",
-                                            table_name,
-                                            database_name.as_deref().unwrap_or("Unknown")
                                         );
-                                        if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                            active_tab.result_table_name = self.current_table_name.clone();
+                                        self.pool_wait_in_progress = true;
+                                        self.pool_wait_connection_id = Some(connection_id);
+                                        self.pool_wait_query = safe_query;
+                                        self.pool_wait_started_at = Some(std::time::Instant::now());
+                                        self.current_table_name =
+                                            "Connecting… waiting for pool".to_string();
+                                    } else {
+                                        let job_id = self.jobs.allocate_id();
+                                        if let Ok(mut job) = connection::prepare_query_job(
+                                            self,
+                                            connection_id,
+                                            safe_query.clone(),
+                                            job_id,
+                                        ) {
+                                            job.options.save_to_history = false;
+                                            let status = connection::QueryJobStatus {
+                                                job_id,
+                                                connection_id,
+                                                query_preview: safe_query
+                                                    .chars()
+                                                    .take(80)
+                                                    .collect(),
+                                                started_at: std::time::Instant::now(),
+                                                completed: false,
+                                            };
+                                            self.jobs.active.insert(job_id, status);
+                                            self.query_execution_in_progress = true;
+                                            self.extend_query_icon_hold();
+                                            self.current_table_name = format!(
+                                                "Table: {} (Database: {})",
+                                                table_name,
+                                                database_name.as_deref().unwrap_or("Unknown")
+                                            );
+                                            if let Some(active_tab) =
+                                                self.query_tabs.get_mut(self.active_tab_index)
+                                            {
+                                                active_tab.result_table_name =
+                                                    self.current_table_name.clone();
+                                            }
+                                            let _ = connection::spawn_query_job(
+                                                self,
+                                                job,
+                                                self.query_result_sender.clone(),
+                                            );
                                         }
-                                        let _ = connection::spawn_query_job(self, job, self.query_result_sender.clone());
                                     }
+                                } else {
+                                    debug!(
+                                        "🛑 Skipping client-side live load on table click because cache exists"
+                                    );
+                                    self.last_structure_target = None;
                                 }
-                            } else {
-                                debug!(
-                                    "🛑 Skipping client-side live load on table click because cache exists"
-                                );
-                                self.last_structure_target = None;
                             }
-                        }
                         }
                     }
                 };
@@ -1731,60 +1900,75 @@ impl super::Tabular {
                 if let Some(conn) = self.connections.iter().find(|c| c.id == Some(conn_id)) {
                     master_id_opt = conn.replication_master_id;
                 }
-                
-                if let (Some(models::enums::DatabasePool::MySQL(replica_pool)), Some(master_id)) = (replica_pool_opt, master_id_opt) {
-                     if let Some(models::enums::DatabasePool::MySQL(master_pool)) = self.connection_pools.get(&master_id).cloned() {
-                         let rt = self.get_runtime();
-                         let (tx, rx) = std::sync::mpsc::channel();
-                         self.replication_setup_receiver = Some(rx);
-                         
-                         rt.spawn(async move {
-                             let res = crate::driver_mysql::restart_replication(&master_pool, &replica_pool).await;
-                             let _ = tx.send(res);
-                         });
-                         
-                         self.query_message = "Restarting replication...".to_string();
-                         self.show_message_panel = true;
-                         self.query_message_is_error = false;
-                     } else {
-                         self.query_message = "Master connection is not active. Please connect to Master first.".to_string();
-                         self.show_message_panel = true;
-                         self.query_message_is_error = true;
-                     }
+
+                if let (Some(models::enums::DatabasePool::MySQL(replica_pool)), Some(master_id)) =
+                    (replica_pool_opt, master_id_opt)
+                {
+                    if let Some(models::enums::DatabasePool::MySQL(master_pool)) =
+                        self.connection_pools.get(&master_id).cloned()
+                    {
+                        let rt = self.get_runtime();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        self.replication_setup_receiver = Some(rx);
+
+                        rt.spawn(async move {
+                            let res = crate::driver_mysql::restart_replication(
+                                &master_pool,
+                                &replica_pool,
+                            )
+                            .await;
+                            let _ = tx.send(res);
+                        });
+
+                        self.query_message = "Restarting replication...".to_string();
+                        self.show_message_panel = true;
+                        self.query_message_is_error = false;
+                    } else {
+                        self.query_message =
+                            "Master connection is not active. Please connect to Master first."
+                                .to_string();
+                        self.show_message_panel = true;
+                        self.query_message_is_error = true;
+                    }
                 } else {
-                     self.query_message = "Could not identify Master connection or pools not active.".to_string();
-                     self.show_message_panel = true;
-                     self.query_message_is_error = true;
+                    self.query_message =
+                        "Could not identify Master connection or pools not active.".to_string();
+                    self.show_message_panel = true;
+                    self.query_message_is_error = true;
                 }
             } else if context_id >= 61000 {
                 // Stop Replication
                 let conn_id = context_id - 61000;
-                if let Some(models::enums::DatabasePool::MySQL(pool)) = self.connection_pools.get(&conn_id).cloned() {
-                     let rt = self.get_runtime();
-                     let (tx, rx) = std::sync::mpsc::channel();
-                     self.replication_setup_receiver = Some(rx);
-                     rt.spawn(async move {
-                         let res = crate::driver_mysql::stop_replication(&pool).await;
-                         let _ = tx.send(res);
-                     });
-                     self.query_message = "Stopping replication...".to_string();
-                     self.show_message_panel = true;
-                     self.query_message_is_error = false;
+                if let Some(models::enums::DatabasePool::MySQL(pool)) =
+                    self.connection_pools.get(&conn_id).cloned()
+                {
+                    let rt = self.get_runtime();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.replication_setup_receiver = Some(rx);
+                    rt.spawn(async move {
+                        let res = crate::driver_mysql::stop_replication(&pool).await;
+                        let _ = tx.send(res);
+                    });
+                    self.query_message = "Stopping replication...".to_string();
+                    self.show_message_panel = true;
+                    self.query_message_is_error = false;
                 }
             } else if context_id >= 60000 {
                 // Start Replication
                 let conn_id = context_id - 60000;
-                if let Some(models::enums::DatabasePool::MySQL(pool)) = self.connection_pools.get(&conn_id).cloned() {
-                     let rt = self.get_runtime();
-                     let (tx, rx) = std::sync::mpsc::channel();
-                     self.replication_setup_receiver = Some(rx);
-                     rt.spawn(async move {
-                         let res = crate::driver_mysql::start_replication(&pool).await;
-                         let _ = tx.send(res);
-                     });
-                     self.query_message = "Starting replication...".to_string();
-                     self.show_message_panel = true;
-                     self.query_message_is_error = false;
+                if let Some(models::enums::DatabasePool::MySQL(pool)) =
+                    self.connection_pools.get(&conn_id).cloned()
+                {
+                    let rt = self.get_runtime();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.replication_setup_receiver = Some(rx);
+                    rt.spawn(async move {
+                        let res = crate::driver_mysql::start_replication(&pool).await;
+                        let _ = tx.send(res);
+                    });
+                    self.query_message = "Starting replication...".to_string();
+                    self.show_message_panel = true;
+                    self.query_message_is_error = false;
                 }
             } else if context_id >= 50000 {
                 // ID >= 50000 means create folder in folder operation
@@ -1895,7 +2079,6 @@ impl super::Tabular {
                     break;
                 }
             }
-
         }
 
         // Force complete UI refresh after any removal
@@ -1918,7 +2101,11 @@ impl super::Tabular {
             .ctx()
             .data(|d| d.get_temp(egui::Id::new("conn_dnd_drop")));
         if let Some((drag_conn_id, target_folder)) = dnd_drop {
-            log::warn!("[DnD] EXECUTING DROP conn_id={} -> folder='{}'", drag_conn_id, target_folder);
+            log::warn!(
+                "[DnD] EXECUTING DROP conn_id={} -> folder='{}'",
+                drag_conn_id,
+                target_folder
+            );
             ui.ctx().data_mut(|d| {
                 d.remove_temp::<(i64, String)>(egui::Id::new("conn_dnd_drop"));
                 d.remove_temp::<i64>(egui::Id::new("conn_dnd_source"));
@@ -1998,8 +2185,7 @@ impl super::Tabular {
             ui.ctx().data_mut(|d| {
                 d.remove_temp::<(String, String)>(egui::Id::new("query_rename_folder_req"));
             });
-            self.pending_rename_query_folder =
-                Some((rel_path, folder_name.clone(), folder_name));
+            self.pending_rename_query_folder = Some((rel_path, folder_name.clone(), folder_name));
         }
 
         // Handle "Share to Team" context menu request
@@ -2044,7 +2230,12 @@ impl super::Tabular {
         let mut expansion_request = None;
         let mut table_expansion = None;
         let mut context_menu_request = None;
-        let mut table_click_request: Option<(i64, String, models::enums::NodeType, Option<String>)> = None;
+        let mut table_click_request: Option<(
+            i64,
+            String,
+            models::enums::NodeType,
+            Option<String>,
+        )> = None;
         let mut folder_removal_mapping: Option<(i64, String)> = None;
         let mut connection_click_request = None;
         let mut query_file_to_open = None;
@@ -2072,11 +2263,12 @@ impl super::Tabular {
         let mut restore_request: Option<(i64, String)> = None;
 
         let is_api_http = if node.node_type == models::enums::NodeType::Connection
-            && let Some(conn_id) = node.connection_id {
-                params.connection_types.get(&conn_id) == Some(&models::enums::DatabaseType::ApiHttp)
-            } else {
-                false
-            };
+            && let Some(conn_id) = node.connection_id
+        {
+            params.connection_types.get(&conn_id) == Some(&models::enums::DatabaseType::ApiHttp)
+        } else {
+            false
+        };
 
         if is_api_http {
             node.is_expanded = false;
@@ -3360,10 +3552,10 @@ impl super::Tabular {
                             custom_view_click_request = Some(child_req);
                         }
                         if let Some(child_req) = child_delete_custom_view {
-                             delete_custom_view_request = Some(child_req);
+                            delete_custom_view_request = Some(child_req);
                         }
                         if let Some(child_req) = child_edit_custom_view {
-                             edit_custom_view_request = Some(child_req);
+                            edit_custom_view_request = Some(child_req);
                         }
                         let _ = _child_csv_import_request;
                     }
@@ -3410,7 +3602,7 @@ impl super::Tabular {
                                     connection_errors: params.connection_errors,
                                     connection_pools: params.connection_pools,
                                     pending_connection_pools: params.pending_connection_pools,
-                                pending_started_at: params.pending_started_at,
+                                    pending_started_at: params.pending_started_at,
                                     shared_connection_pools: params.shared_connection_pools,
                                     is_search_mode: params.is_search_mode,
                                     connection_types: params.connection_types,
@@ -3439,8 +3631,11 @@ impl super::Tabular {
                             }
 
                             // Handle child table clicks - propagate to parent
-                            if let Some((conn_id, table_name, node_type, db_name)) = child_table_click {
-                                table_click_request = Some((conn_id, table_name, node_type, db_name));
+                            if let Some((conn_id, table_name, node_type, db_name)) =
+                                child_table_click
+                            {
+                                table_click_request =
+                                    Some((conn_id, table_name, node_type, db_name));
                             }
                             // Propagate connection click to parent
                             if let Some(v) = child_connection_click {
@@ -3568,10 +3763,8 @@ impl super::Tabular {
                 };
 
                 // Allocate the full-width row rect
-                let (rect, mut row_response) = ui.allocate_exact_size(
-                    egui::vec2(available_width, item_h),
-                    egui::Sense::click(),
-                );
+                let (rect, mut row_response) = ui
+                    .allocate_exact_size(egui::vec2(available_width, item_h), egui::Sense::click());
 
                 if ui.is_rect_visible(rect) {
                     let hovered = row_response.hovered();
@@ -3630,12 +3823,12 @@ impl super::Tabular {
                 }
 
                 // Tooltip with full query
-                if let Some((_conn, rest)) = node.file_path.as_deref().and_then(|d| d.split_once("||")) {
+                if let Some((_conn, rest)) =
+                    node.file_path.as_deref().and_then(|d| d.split_once("||"))
+                {
                     let (_ts, original_query) = rest.split_once("||").unwrap_or(("", rest));
-                    row_response = row_response.on_hover_text_at_pointer(format!(
-                        "Full query:\n{}",
-                        original_query
-                    ));
+                    row_response = row_response
+                        .on_hover_text_at_pointer(format!("Full query:\n{}", original_query));
                 }
                 if row_response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -3648,10 +3841,8 @@ impl super::Tabular {
                 let body_h = ui.text_style_height(&egui::TextStyle::Body);
                 let item_h = body_h + 8.0;
 
-                let (rect, row_response) = ui.allocate_exact_size(
-                    egui::vec2(available_width, item_h),
-                    egui::Sense::click(),
-                );
+                let (rect, row_response) = ui
+                    .allocate_exact_size(egui::vec2(available_width, item_h), egui::Sense::click());
 
                 if ui.is_rect_visible(rect) {
                     let hovered = row_response.hovered();
@@ -3718,11 +3909,9 @@ impl super::Tabular {
                         egui::pos2(text_pos.x, rect.top()),
                         egui::vec2(max_text_width, rect.height()),
                     );
-                    ui.painter().with_clip_rect(clip_rect).galley(
-                        text_pos,
-                        galley,
-                        text_color,
-                    );
+                    ui.painter()
+                        .with_clip_rect(clip_rect)
+                        .galley(text_pos, galley, text_color);
                 }
 
                 if row_response.hovered() {
@@ -3741,30 +3930,70 @@ impl super::Tabular {
                     let _sp = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
 
                     let icon = match node.node_type {
-                        models::enums::NodeType::Database => egui_icons::icons::MDI_DATABASE.codepoint,
+                        models::enums::NodeType::Database => {
+                            egui_icons::icons::MDI_DATABASE.codepoint
+                        }
                         models::enums::NodeType::Table => "",
                         // Use a plain bullet again for columns in fallback rendering
                         models::enums::NodeType::Column => "•",
                         models::enums::NodeType::Query => egui_icons::icons::ICON_SEARCH.codepoint,
-                        models::enums::NodeType::Connection => egui_icons::icons::ICON_LINK.codepoint,
-                        models::enums::NodeType::DatabasesFolder => egui_icons::icons::ICON_FOLDER.codepoint,
-                        models::enums::NodeType::TablesFolder => egui_icons::icons::MDI_TABLE.codepoint,
-                        models::enums::NodeType::ViewsFolder => egui_icons::icons::ICON_VISIBILITY.codepoint,
-                        models::enums::NodeType::StoredProceduresFolder => egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint,
-                        models::enums::NodeType::UserFunctionsFolder => egui_icons::icons::MDI_FUNCTION.codepoint,
-                        models::enums::NodeType::TriggersFolder => egui_icons::icons::ICON_BOLT.codepoint,
-                        models::enums::NodeType::EventsFolder => egui_icons::icons::ICON_EVENT.codepoint,
-                        models::enums::NodeType::DBAViewsFolder => egui_icons::icons::ICON_SHIELD.codepoint,
-                        models::enums::NodeType::UsersFolder => egui_icons::icons::ICON_GROUP.codepoint,
-                        models::enums::NodeType::PrivilegesFolder => egui_icons::icons::ICON_LOCK.codepoint,
-                        models::enums::NodeType::ProcessesFolder => egui_icons::icons::ICON_BOLT.codepoint,
-                        models::enums::NodeType::StatusFolder => egui_icons::icons::ICON_BAR_CHART.codepoint,
-                        models::enums::NodeType::BlockedQueriesFolder => egui_icons::icons::ICON_BLOCK.codepoint,
-                        models::enums::NodeType::ReplicationStatusFolder => egui_icons::icons::ICON_SYNC.codepoint,
-                        models::enums::NodeType::MasterStatusFolder => egui_icons::icons::ICON_STAR.codepoint,
-                        models::enums::NodeType::View => egui_icons::icons::ICON_VISIBILITY.codepoint,
-                        models::enums::NodeType::StoredProcedure => egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint,
-                        models::enums::NodeType::UserFunction => egui_icons::icons::MDI_FUNCTION.codepoint,
+                        models::enums::NodeType::Connection => {
+                            egui_icons::icons::ICON_LINK.codepoint
+                        }
+                        models::enums::NodeType::DatabasesFolder => {
+                            egui_icons::icons::ICON_FOLDER.codepoint
+                        }
+                        models::enums::NodeType::TablesFolder => {
+                            egui_icons::icons::MDI_TABLE.codepoint
+                        }
+                        models::enums::NodeType::ViewsFolder => {
+                            egui_icons::icons::ICON_VISIBILITY.codepoint
+                        }
+                        models::enums::NodeType::StoredProceduresFolder => {
+                            egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint
+                        }
+                        models::enums::NodeType::UserFunctionsFolder => {
+                            egui_icons::icons::MDI_FUNCTION.codepoint
+                        }
+                        models::enums::NodeType::TriggersFolder => {
+                            egui_icons::icons::ICON_BOLT.codepoint
+                        }
+                        models::enums::NodeType::EventsFolder => {
+                            egui_icons::icons::ICON_EVENT.codepoint
+                        }
+                        models::enums::NodeType::DBAViewsFolder => {
+                            egui_icons::icons::ICON_SHIELD.codepoint
+                        }
+                        models::enums::NodeType::UsersFolder => {
+                            egui_icons::icons::ICON_GROUP.codepoint
+                        }
+                        models::enums::NodeType::PrivilegesFolder => {
+                            egui_icons::icons::ICON_LOCK.codepoint
+                        }
+                        models::enums::NodeType::ProcessesFolder => {
+                            egui_icons::icons::ICON_BOLT.codepoint
+                        }
+                        models::enums::NodeType::StatusFolder => {
+                            egui_icons::icons::ICON_BAR_CHART.codepoint
+                        }
+                        models::enums::NodeType::BlockedQueriesFolder => {
+                            egui_icons::icons::ICON_BLOCK.codepoint
+                        }
+                        models::enums::NodeType::ReplicationStatusFolder => {
+                            egui_icons::icons::ICON_SYNC.codepoint
+                        }
+                        models::enums::NodeType::MasterStatusFolder => {
+                            egui_icons::icons::ICON_STAR.codepoint
+                        }
+                        models::enums::NodeType::View => {
+                            egui_icons::icons::ICON_VISIBILITY.codepoint
+                        }
+                        models::enums::NodeType::StoredProcedure => {
+                            egui_icons::icons::MDI_PACKAGE_VARIANT.codepoint
+                        }
+                        models::enums::NodeType::UserFunction => {
+                            egui_icons::icons::MDI_FUNCTION.codepoint
+                        }
                         models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                         models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
                         models::enums::NodeType::MySQLFolder => "🐬",
@@ -3773,13 +4002,25 @@ impl super::Tabular {
                         models::enums::NodeType::RedisFolder => "🔴",
                         models::enums::NodeType::MongoDBFolder => "🍃",
                         models::enums::NodeType::MsSQLFolder => "⛁",
-                        models::enums::NodeType::CustomFolder => egui_icons::icons::ICON_FOLDER.codepoint,
-                        models::enums::NodeType::QueryFolder => egui_icons::icons::ICON_FOLDER.codepoint,
+                        models::enums::NodeType::CustomFolder => {
+                            egui_icons::icons::ICON_FOLDER.codepoint
+                        }
+                        models::enums::NodeType::QueryFolder => {
+                            egui_icons::icons::ICON_FOLDER.codepoint
+                        }
                         models::enums::NodeType::HistoryDateFolder => "",
-                        models::enums::NodeType::ColumnsFolder => egui_icons::icons::ICON_VIEW_COLUMN.codepoint,
-                        models::enums::NodeType::IndexesFolder => egui_icons::icons::ICON_TAG.codepoint,
-                        models::enums::NodeType::PrimaryKeysFolder => egui_icons::icons::ICON_KEY.codepoint,
-                        models::enums::NodeType::PartitionsFolder => egui_icons::icons::ICON_BAR_CHART.codepoint,
+                        models::enums::NodeType::ColumnsFolder => {
+                            egui_icons::icons::ICON_VIEW_COLUMN.codepoint
+                        }
+                        models::enums::NodeType::IndexesFolder => {
+                            egui_icons::icons::ICON_TAG.codepoint
+                        }
+                        models::enums::NodeType::PrimaryKeysFolder => {
+                            egui_icons::icons::ICON_KEY.codepoint
+                        }
+                        models::enums::NodeType::PartitionsFolder => {
+                            egui_icons::icons::ICON_BAR_CHART.codepoint
+                        }
                         models::enums::NodeType::Index => "#",
                         _ => "🧾",
                     };
@@ -3803,11 +4044,17 @@ impl super::Tabular {
                     let is_dark = ui.visuals().dark_mode;
                     let is_active = resp.is_pointer_button_down_on();
                     let bg = if is_active {
-                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                        if is_dark {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                        }
                     } else {
-                        if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-                        else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                        if is_dark {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                        }
                     };
                     let accent_color = super::style::theme_accent(ui.ctx());
                     let bar_rect = egui::Rect::from_min_size(
@@ -3836,8 +4083,12 @@ impl super::Tabular {
                         if let Some(conn_id) = node.connection_id {
                             let actual_table_name =
                                 node.table_name.as_ref().unwrap_or(&node.name).clone();
-                            table_click_request =
-                                Some((conn_id, actual_table_name, node.node_type.clone(), node.database_name.clone()));
+                            table_click_request = Some((
+                                conn_id,
+                                actual_table_name,
+                                node.node_type.clone(),
+                                node.database_name.clone(),
+                            ));
                         }
                     }
                     // DBA quick views: emit a click request to be handled by parent (needs self)
@@ -3853,10 +4104,11 @@ impl super::Tabular {
                     | models::enums::NodeType::CustomView => {
                         debug!("👁️ View clicked: {}", node.name);
                         if let Some(query) = &node.query {
-                           // Use the robust execution path
-                           if let Some(conn_id) = node.connection_id {
-                                custom_view_click_request = Some((conn_id, node.name.clone(), query.clone()));
-                           }
+                            // Use the robust execution path
+                            if let Some(conn_id) = node.connection_id {
+                                custom_view_click_request =
+                                    Some((conn_id, node.name.clone(), query.clone()));
+                            }
                         }
                     }
                     models::enums::NodeType::Query => {
@@ -3898,9 +4150,8 @@ impl super::Tabular {
                             // Parse connection name, timestamp, and query from the stored data
                             // Format: "connection_name||executed_at||original_query"
                             if let Some((_connection_name, rest)) = data.split_once("||") {
-                                let (executed_at, original_query) = rest
-                                    .split_once("||")
-                                    .unwrap_or(("", rest));
+                                let (executed_at, original_query) =
+                                    rest.split_once("||").unwrap_or(("", rest));
                                 // Build compact tab title: Hist-YYMMDD HH:MM:SS
                                 let tab_title = {
                                     // executed_at is e.g. "2026-03-11 11:45:56" or "2026-03-11T11:45:56"
@@ -3908,9 +4159,8 @@ impl super::Tabular {
                                     let yy = ts.get(2..4).unwrap_or("");
                                     let mm = ts.get(5..7).unwrap_or("");
                                     let dd = ts.get(8..10).unwrap_or("");
-                                    let time_part = ts.get(11..19)
-                                        .or_else(|| ts.get(11..))
-                                        .unwrap_or("");
+                                    let time_part =
+                                        ts.get(11..19).or_else(|| ts.get(11..)).unwrap_or("");
                                     if !yy.is_empty() && !time_part.is_empty() {
                                         format!("Hist-{}{}{} {}", yy, mm, dd, time_part)
                                     } else {
@@ -3929,11 +4179,8 @@ impl super::Tabular {
                             } else {
                                 debug!("📝 Using fallback format for old history item");
                                 // Fallback for old format without connection name
-                                query_file_to_open = Some((
-                                    "Hist".to_string(),
-                                    data.clone(),
-                                    String::new(),
-                                ));
+                                query_file_to_open =
+                                    Some(("Hist".to_string(), data.clone(), String::new()));
                             }
                         } else {
                             debug!("❌ No file_path data for history item");
@@ -3949,7 +4196,6 @@ impl super::Tabular {
                     _ => {}
                 }
             }
-
 
             // Add context menu for query nodes
             if node.node_type == models::enums::NodeType::Query {
@@ -4043,7 +4289,6 @@ impl super::Tabular {
                 });
             }
 
-
             // Add context menu for DBA Views and Custom View items
             let is_dba_item = matches!(
                 node.node_type,
@@ -4064,20 +4309,27 @@ impl super::Tabular {
                         if ui.button("⚡ Open View / Interactive Tab").clicked() {
                             match node.node_type {
                                 models::enums::NodeType::ProcessesFolder => {
-                                    dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
+                                    dba_click_request =
+                                        Some((conn_id, models::enums::NodeType::ProcessesFolder));
                                 }
                                 models::enums::NodeType::BlockedQueriesFolder => {
-                                    dba_click_request = Some((conn_id, models::enums::NodeType::BlockedQueriesFolder));
+                                    dba_click_request = Some((
+                                        conn_id,
+                                        models::enums::NodeType::BlockedQueriesFolder,
+                                    ));
                                 }
                                 models::enums::NodeType::UsersFolder => {
-                                    dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
+                                    dba_click_request =
+                                        Some((conn_id, models::enums::NodeType::UsersFolder));
                                 }
                                 models::enums::NodeType::PrivilegesFolder => {
-                                    dba_click_request = Some((conn_id, models::enums::NodeType::PrivilegesFolder));
+                                    dba_click_request =
+                                        Some((conn_id, models::enums::NodeType::PrivilegesFolder));
                                 }
                                 _ => {
                                     if let Some(query) = &node.query {
-                                        custom_view_click_request = Some((conn_id, node.name.clone(), query.clone()));
+                                        custom_view_click_request =
+                                            Some((conn_id, node.name.clone(), query.clone()));
                                     }
                                 }
                             }
@@ -4105,7 +4357,8 @@ impl super::Tabular {
                             ui.separator();
                             if let Some(query) = &node.query {
                                 if ui.button("✏️ Edit View").clicked() {
-                                    edit_custom_view_request = Some((conn_id, node.name.clone(), query.clone()));
+                                    edit_custom_view_request =
+                                        Some((conn_id, node.name.clone(), query.clone()));
                                     ui.close();
                                 }
                             }
@@ -4169,7 +4422,6 @@ impl super::Tabular {
         )
     }
 
-
     pub fn sanitize_display_table_name(display: &str) -> String {
         // Remove leading known emoji + whitespace
         let mut s = display.trim_start();
@@ -4187,8 +4439,6 @@ impl super::Tabular {
         }
     }
 
-
-
     pub fn render_tree_for_database_section(&mut self, ui: &mut egui::Ui) {
         // Use search results if search is active, otherwise use normal tree
         if self.show_search_results && !self.database_search_text.trim().is_empty() {
@@ -4202,28 +4452,28 @@ impl super::Tabular {
             let mut items_tree = std::mem::take(&mut self.items_tree);
 
             let query_files_to_open = self.render_tree(ui, &mut items_tree, false);
-            
+
             for (filename, content, file_path, context_connection_id) in query_files_to_open {
-                 if file_path.is_empty() {
-                     // Custom View or similar: Use the context connection ID if available
-                     let _ = crate::editor::create_new_tab_with_connection_and_database(
+                if file_path.is_empty() {
+                    // Custom View or similar: Use the context connection ID if available
+                    let _ = crate::editor::create_new_tab_with_connection_and_database(
                         self,
                         filename,
                         content,
                         context_connection_id,
-                        None // Database name is usually baked into the query or will be selected
-                     );
-                     
-                     // Auto-execute if it's a Custom View (implied by having a connection ID context)
-                     if context_connection_id.is_some()
-                        && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                            tab.should_run_on_open = true;
-                        }
-                 } else if let Err(err) = crate::sidebar_query::open_query_file(self, &file_path) {
-                     log::error!("Failed to open query file: {}", err);
-                 }
-            }
+                        None, // Database name is usually baked into the query or will be selected
+                    );
 
+                    // Auto-execute if it's a Custom View (implied by having a connection ID context)
+                    if context_connection_id.is_some()
+                        && let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                    {
+                        tab.should_run_on_open = true;
+                    }
+                } else if let Err(err) = crate::sidebar_query::open_query_file(self, &file_path) {
+                    log::error!("Failed to open query file: {}", err);
+                }
+            }
 
             // Check if tree was refreshed inside render_tree
             if self.items_tree.is_empty() {

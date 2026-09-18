@@ -8,7 +8,8 @@ impl super::Tabular {
         // Drop this job from its sequential-batch group (if any); the group
         // entry disappears once every member has reported a result.
         if let Some(pos) = self
-            .jobs.batches
+            .jobs
+            .batches
             .iter()
             .position(|(ids, _)| ids.contains(&message.job_id))
         {
@@ -102,7 +103,10 @@ impl super::Tabular {
             // Auto-switch to Data tab to show results
             self.table_bottom_view = models::structs::TableBottomView::Data;
         } else {
-            let error_msg = message.error.clone().unwrap_or_else(|| "Unknown error".to_string());
+            let error_msg = message
+                .error
+                .clone()
+                .unwrap_or_else(|| "Unknown error".to_string());
             self.query_message = format!("Error: {}", error_msg);
             self.query_message_is_error = true;
             // Keep Data view active in bottom panel
@@ -128,7 +132,13 @@ impl super::Tabular {
         // cukup ada dua salinan: di daftar result dan di tampilan aktif.
         let rows = std::mem::take(&mut message.rows);
         let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) else {
-            editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), rows)), message.column_metadata.clone());
+            editor::process_query_result(
+                self,
+                &message.query,
+                message.connection_id,
+                Some((message.headers.clone(), rows)),
+                message.column_metadata.clone(),
+            );
             self.query_execution_in_progress = false;
             self.extend_query_icon_hold();
             return;
@@ -156,7 +166,13 @@ impl super::Tabular {
 
         if new_index == 0 {
             active_tab.active_result_index = 0;
-            editor::process_query_result(self, &message.query, message.connection_id, Some((message.headers.clone(), rows)), message.column_metadata.clone());
+            editor::process_query_result(
+                self,
+                &message.query,
+                message.connection_id,
+                Some((message.headers.clone(), rows)),
+                message.column_metadata.clone(),
+            );
         } else if message.success {
             // Save query to history for multi-statement execution results (new_index > 0)
             sidebar_history::save_query_to_history(self, &message.query, message.connection_id);
@@ -360,7 +376,9 @@ impl super::Tabular {
 
         let job_id = self.jobs.allocate_id();
         let result = connection::prepare_query_job(self, connection_id, sql.clone(), job_id)
-            .and_then(|job| connection::spawn_query_job(self, job, self.query_result_sender.clone()));
+            .and_then(|job| {
+                connection::spawn_query_job(self, job, self.query_result_sender.clone())
+            });
         match result {
             Ok(handle) => {
                 self.jobs.active.insert(
@@ -402,17 +420,24 @@ impl super::Tabular {
             self.spawn_callback_job(connection_id, sql, callback);
         } else {
             connection::ensure_background_pool_creation(self, connection_id);
-            self.jobs.deferred_callbacks.push(super::DeferredCallbackQuery {
-                connection_id,
-                sql,
-                callback,
-                queued_at: std::time::Instant::now(),
-            });
+            self.jobs
+                .deferred_callbacks
+                .push(super::DeferredCallbackQuery {
+                    connection_id,
+                    sql,
+                    callback,
+                    queued_at: std::time::Instant::now(),
+                });
             self.query_execution_in_progress = true;
         }
     }
 
-    fn spawn_callback_job(&mut self, connection_id: i64, sql: String, callback: super::QueryCallback) {
+    fn spawn_callback_job(
+        &mut self,
+        connection_id: i64,
+        sql: String,
+        callback: super::QueryCallback,
+    ) {
         let job_id = self.jobs.allocate_id();
         let result = connection::prepare_query_job(self, connection_id, sql.clone(), job_id)
             .and_then(|mut job| {
@@ -492,12 +517,14 @@ impl super::Tabular {
         };
         for job_id in job_ids {
             let pid = self
-                .jobs.backend_pids
+                .jobs
+                .backend_pids
                 .lock()
                 .ok()
                 .and_then(|m| m.get(job_id).copied());
             let pool = self
-                .jobs.active
+                .jobs
+                .active
                 .get(job_id)
                 .and_then(|status| self.connection_pools.get(&status.connection_id).cloned());
             if let (Some(pid), Some(pool)) = (pid, pool) {
@@ -511,7 +538,8 @@ impl super::Tabular {
 
         let mut server_side_ids = vec![job_id];
         if let Some((ids, _)) = self
-            .jobs.batches
+            .jobs
+            .batches
             .iter()
             .find(|(ids, _)| ids.contains(&job_id))
         {
@@ -520,7 +548,8 @@ impl super::Tabular {
         self.cancel_queries_on_server(&server_side_ids);
 
         let preview_text = self
-            .jobs.active
+            .jobs
+            .active
             .get(&job_id)
             .map(|status| status.query_preview.replace('\n', " "));
 
@@ -533,7 +562,8 @@ impl super::Tabular {
         // A sequential batch runs on one task: cancelling any member job
         // aborts the entire batch and cleans up the sibling statements.
         if let Some(pos) = self
-            .jobs.batches
+            .jobs
+            .batches
             .iter()
             .position(|(ids, _)| ids.contains(&job_id))
         {
@@ -544,7 +574,8 @@ impl super::Tabular {
                 if member != job_id {
                     self.jobs.active.remove(&member);
                     self.jobs.handles.remove(&member);
-                    self.jobs.cancelled
+                    self.jobs
+                        .cancelled
                         .insert(member, std::time::Instant::now());
                 }
             }
@@ -554,7 +585,8 @@ impl super::Tabular {
         let was_paginated = self.jobs.paginated.remove(&job_id);
 
         if had_status || was_paginated || cancelled {
-            self.jobs.cancelled
+            self.jobs
+                .cancelled
                 .insert(job_id, std::time::Instant::now());
 
             if self.jobs.active.is_empty() {
@@ -569,7 +601,8 @@ impl super::Tabular {
                     } else {
                         preview
                     };
-                    self.toasts.info(format!("Query cancelled: {}", truncated.trim()));
+                    self.toasts
+                        .info(format!("Query cancelled: {}", truncated.trim()));
                 } else {
                     self.toasts.info("Query cancelled.");
                 }
@@ -596,7 +629,8 @@ impl super::Tabular {
     pub fn prune_cancelled_jobs(&mut self) {
         let now = std::time::Instant::now();
         let ttl = std::time::Duration::from_secs(30);
-        self.jobs.cancelled
+        self.jobs
+            .cancelled
             .retain(|_, timestamp| now.duration_since(*timestamp) < ttl);
     }
     pub(crate) fn extend_query_icon_hold(&mut self) {
@@ -618,7 +652,9 @@ pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -
     let duration_ms = message.duration.as_millis();
     let count = match message.affected_rows {
         Some(n) => format!("{} row(s) affected", n),
-        None if message.truncated => format!("first {} row(s) returned (truncated)", message.rows.len()),
+        None if message.truncated => {
+            format!("first {} row(s) returned (truncated)", message.rows.len())
+        }
         None => format!("{} row(s) returned", message.rows.len()),
     };
     format!(

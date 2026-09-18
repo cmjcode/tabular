@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::models;
+use eframe::egui;
 use log::debug;
 
 impl super::Tabular {
@@ -241,10 +241,11 @@ impl super::Tabular {
             table_search_results.sort_by(|a, b| b.0.total_cmp(&a.0));
             let table_search_results = table_search_results.into_iter().map(|(_, row)| row);
 
-            let mut column_search_results: Vec<(f32, (String, String, String, String))> = all_columns
-                .into_iter()
-                .filter_map(|row| query.score(&row.2).map(|score| (score, row)))
-                .collect();
+            let mut column_search_results: Vec<(f32, (String, String, String, String))> =
+                all_columns
+                    .into_iter()
+                    .filter_map(|row| query.score(&row.2).map(|score| (score, row)))
+                    .collect();
             column_search_results.sort_by(|a, b| b.0.total_cmp(&a.0));
             let column_search_results = column_search_results.into_iter().map(|(_, row)| row);
 
@@ -572,7 +573,8 @@ impl super::Tabular {
                 // Entire line is a comment
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
-                    byte_range: egui::text::ByteIndex(line_start_offset)..egui::text::ByteIndex(line_start_offset + line.len()),
+                    byte_range: egui::text::ByteIndex(line_start_offset)
+                        ..egui::text::ByteIndex(line_start_offset + line.len()),
                     format: egui::TextFormat {
                         color: comment_color,
                         font_id: egui::FontId::monospace(14.0),
@@ -596,7 +598,8 @@ impl super::Tabular {
                         if absolute_word_start > line_pos {
                             job.sections.push(egui::text::LayoutSection {
                                 leading_space: 0.0,
-                                byte_range: egui::text::ByteIndex(line_pos)..egui::text::ByteIndex(absolute_word_start),
+                                byte_range: egui::text::ByteIndex(line_pos)
+                                    ..egui::text::ByteIndex(absolute_word_start),
                                 format: egui::TextFormat {
                                     color: text_color,
                                     font_id: egui::FontId::monospace(14.0),
@@ -631,7 +634,8 @@ impl super::Tabular {
                         // Add the word with appropriate color
                         job.sections.push(egui::text::LayoutSection {
                             leading_space: 0.0,
-                            byte_range: egui::text::ByteIndex(absolute_word_start)..egui::text::ByteIndex(absolute_word_end),
+                            byte_range: egui::text::ByteIndex(absolute_word_start)
+                                ..egui::text::ByteIndex(absolute_word_end),
                             format: egui::TextFormat {
                                 color: word_color,
                                 font_id: egui::FontId::monospace(14.0),
@@ -649,7 +653,8 @@ impl super::Tabular {
                 if line_pos < line_start_offset + line.len() {
                     job.sections.push(egui::text::LayoutSection {
                         leading_space: 0.0,
-                        byte_range: egui::text::ByteIndex(line_pos)..egui::text::ByteIndex(line_start_offset + line.len()),
+                        byte_range: egui::text::ByteIndex(line_pos)
+                            ..egui::text::ByteIndex(line_start_offset + line.len()),
                         format: egui::TextFormat {
                             color: text_color,
                             font_id: egui::FontId::monospace(14.0),
@@ -665,7 +670,8 @@ impl super::Tabular {
                 // Add the newline character
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: 0.0,
-                    byte_range: egui::text::ByteIndex(byte_offset)..egui::text::ByteIndex(byte_offset + 1),
+                    byte_range: egui::text::ByteIndex(byte_offset)
+                        ..egui::text::ByteIndex(byte_offset + 1),
                     format: egui::TextFormat {
                         color: text_color,
                         font_id: egui::FontId::monospace(14.0),
@@ -748,18 +754,28 @@ mod tests {
         let filtered = res.unwrap();
         assert_eq!(filtered.name, "ecommerce_db");
         assert!(filtered.is_expanded, "Database node must be auto-expanded");
-        assert_eq!(filtered.children.len(), 2, "Tables and Views folders must be preserved!");
+        assert_eq!(
+            filtered.children.len(),
+            2,
+            "Tables and Views folders must be preserved!"
+        );
 
         let tables = &filtered.children[0];
         assert_eq!(tables.name, "Tables");
-        assert!(tables.is_expanded, "Nested TablesFolder must be auto-expanded!");
+        assert!(
+            tables.is_expanded,
+            "Nested TablesFolder must be auto-expanded!"
+        );
         assert_eq!(tables.children.len(), 2);
         assert_eq!(tables.children[0].name, "users");
         assert_eq!(tables.children[1].name, "orders");
 
         let views = &filtered.children[1];
         assert_eq!(views.name, "Views");
-        assert!(views.is_expanded, "Nested ViewsFolder must be auto-expanded!");
+        assert!(
+            views.is_expanded,
+            "Nested ViewsFolder must be auto-expanded!"
+        );
         assert_eq!(views.children.len(), 1);
         assert_eq!(views.children[0].name, "active_users");
     }
@@ -791,13 +807,18 @@ mod tests {
 
         let f1 = &filtered.children[0];
         assert_eq!(f1.name, "Regional");
-        assert!(f1.is_expanded, "Subfolder must be auto-expanded recursively");
+        assert!(
+            f1.is_expanded,
+            "Subfolder must be auto-expanded recursively"
+        );
 
         let f2 = &f1.children[0];
         assert_eq!(f2.name, "Europe");
-        assert!(f2.is_expanded, "Nested subfolder must be auto-expanded recursively");
+        assert!(
+            f2.is_expanded,
+            "Nested subfolder must be auto-expanded recursively"
+        );
         assert_eq!(f2.children.len(), 1);
         assert_eq!(f2.children[0].name, "prod_db");
     }
 }
-

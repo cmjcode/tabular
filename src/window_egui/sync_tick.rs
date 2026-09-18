@@ -160,7 +160,8 @@ impl super::Tabular {
         {
             match result {
                 Ok((url, color_image)) => {
-                    self.avatar_texture = Some(ctx.load_texture("user_avatar", color_image, Default::default()));
+                    self.avatar_texture =
+                        Some(ctx.load_texture("user_avatar", color_image, Default::default()));
                     self.avatar_texture_url = Some(url);
                 }
                 Err(e) => {
@@ -729,7 +730,8 @@ impl super::Tabular {
                     info!("[sync] Refreshed {} teams", self.teams.len());
                     if let Some(pool) = self.db_pool.clone() {
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_teams_cache(pool.as_ref(), &teams).await;
+                            crate::sync::sync_teams_cache::save_teams_cache(pool.as_ref(), &teams)
+                                .await;
                         });
                     }
                 }
@@ -751,7 +753,11 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_clone = team.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_single_team_cache(pool.as_ref(), &t_clone).await;
+                            crate::sync::sync_teams_cache::save_single_team_cache(
+                                pool.as_ref(),
+                                &t_clone,
+                            )
+                            .await;
                         });
                     }
                     self.teams.push(team);
@@ -776,7 +782,8 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_id = team_id.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::delete_team_cache(pool.as_ref(), &t_id).await;
+                            crate::sync::sync_teams_cache::delete_team_cache(pool.as_ref(), &t_id)
+                                .await;
                         });
                     }
                 }
@@ -799,7 +806,12 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_id = team_id.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_team_members_cache(pool.as_ref(), &t_id, &members).await;
+                            crate::sync::sync_teams_cache::save_team_members_cache(
+                                pool.as_ref(),
+                                &t_id,
+                                &members,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -870,10 +882,17 @@ impl super::Tabular {
             match result {
                 Ok(folders) => {
                     self.shared_folders_cache = folders.clone();
-                    info!("[sync] Refreshed {} shared folders", self.shared_folders_cache.len());
+                    info!(
+                        "[sync] Refreshed {} shared folders",
+                        self.shared_folders_cache.len()
+                    );
                     if let Some(pool) = self.db_pool.clone() {
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_shared_folders_cache(pool.as_ref(), &folders).await;
+                            crate::sync::sync_teams_cache::save_shared_folders_cache(
+                                pool.as_ref(),
+                                &folders,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -921,12 +940,18 @@ impl super::Tabular {
                     return;
                 }
             };
-            let existing: std::collections::HashSet<(String, String)> =
-                remote.iter().map(|r| (r.name.clone(), r.folder_path.clone())).collect();
+            let existing: std::collections::HashSet<(String, String)> = remote
+                .iter()
+                .map(|r| (r.name.clone(), r.folder_path.clone()))
+                .collect();
 
             let mut pushed = 0usize;
             for conn in connections {
-                let folder_path = conn.folder.clone().filter(|f| !f.trim().is_empty()).unwrap_or_else(|| "/".to_string());
+                let folder_path = conn
+                    .folder
+                    .clone()
+                    .filter(|f| !f.trim().is_empty())
+                    .unwrap_or_else(|| "/".to_string());
                 if existing.contains(&(conn.name.clone(), folder_path.clone())) {
                     continue;
                 }
@@ -971,7 +996,10 @@ impl super::Tabular {
     /// `vault_sync::resolve_key_for_folder`. Rows this device can't decrypt
     /// yet (vault locked, Team key not granted, or pre-E2E legacy ciphertext)
     /// are skipped rather than guessed at.
-    fn merge_remote_connections(&mut self, remote_conns: Vec<crate::sync::api_client::RemoteConnection>) {
+    fn merge_remote_connections(
+        &mut self,
+        remote_conns: Vec<crate::sync::api_client::RemoteConnection>,
+    ) {
         let my_user_id = self.sync_account.as_ref().map(|a| a.user_id.clone());
         let token = self.sync_account.as_ref().map(|a| a.access_token.clone());
         let server = self.sync_server_url.clone();
@@ -989,7 +1017,10 @@ impl super::Tabular {
                 let vault = match &vault_opt {
                     Some(v) => v,
                     None => {
-                        info!("[sync] Vault locked — deferring connection decrypt for '{}' until unlocked", remote.name);
+                        info!(
+                            "[sync] Vault locked — deferring connection decrypt for '{}' until unlocked",
+                            remote.name
+                        );
                         continue;
                     }
                 };
@@ -1002,14 +1033,20 @@ impl super::Tabular {
                 ) {
                     Some(k) => k.clone(),
                     None => {
-                        info!("[sync] Skipping Team-shared connection '{}': Team key not unlocked yet", remote.name);
+                        info!(
+                            "[sync] Skipping Team-shared connection '{}': Team key not unlocked yet",
+                            remote.name
+                        );
                         continue;
                     }
                 };
                 match crate::sync::vault_crypto::decrypt_json(&key, &remote.encrypted_config) {
                     Ok(c) => c,
                     Err(e) => {
-                        warn!("[sync] Failed to decrypt connection '{}': {}", remote.name, e);
+                        warn!(
+                            "[sync] Failed to decrypt connection '{}': {}",
+                            remote.name, e
+                        );
                         continue;
                     }
                 }
@@ -1017,13 +1054,19 @@ impl super::Tabular {
                 // Legacy (pre-vault) row — best-effort decrypt with the old
                 // scheme(s), then queue a re-upload under the real vault key
                 // if vault is available so it migrates for good.
-                let plaintext = match (&my_user_id, crate::sync::legacy_crypto::legacy_decrypt_best_effort(
-                    &remote.encrypted_config,
-                    my_user_id.as_deref().unwrap_or(""),
-                )) {
+                let plaintext = match (
+                    &my_user_id,
+                    crate::sync::legacy_crypto::legacy_decrypt_best_effort(
+                        &remote.encrypted_config,
+                        my_user_id.as_deref().unwrap_or(""),
+                    ),
+                ) {
                     (Some(_), Some(p)) => p,
                     _ => {
-                        warn!("[sync] Could not decrypt legacy connection '{}' with any known scheme — skipping", remote.name);
+                        warn!(
+                            "[sync] Could not decrypt legacy connection '{}' with any known scheme — skipping",
+                            remote.name
+                        );
                         continue;
                     }
                 };
@@ -1036,7 +1079,9 @@ impl super::Tabular {
                                 &self.shared_folders_cache,
                                 "connection",
                                 &remote.folder_path,
-                            ).cloned().unwrap_or_else(|| vault.account_key.clone());
+                            )
+                            .cloned()
+                            .unwrap_or_else(|| vault.account_key.clone());
                             crate::sync::sync_connections::migrate_legacy_connection(
                                 remote.id.clone(),
                                 c.clone(),
@@ -1048,7 +1093,10 @@ impl super::Tabular {
                         c
                     }
                     Err(e) => {
-                        warn!("[sync] Legacy connection '{}' decrypted but wasn't valid JSON: {}", remote.name, e);
+                        warn!(
+                            "[sync] Legacy connection '{}' decrypted but wasn't valid JSON: {}",
+                            remote.name, e
+                        );
                         continue;
                     }
                 }
@@ -1066,7 +1114,8 @@ impl super::Tabular {
 
         if added > 0 {
             info!("[sync] Merged {} new connection(s) from server", added);
-            self.toasts.info(format!("Synced {} connection(s) from cloud", added));
+            self.toasts
+                .info(format!("Synced {} connection(s) from cloud", added));
             crate::sidebar_database::load_connections(self);
         }
     }
@@ -1082,7 +1131,8 @@ impl super::Tabular {
             if !unlocked.is_empty() {
                 info!("[sync] Unsealed {} Team vault key(s)", unlocked.len());
                 for (team_id, team_key) in unlocked {
-                    self.vault_team_keys.insert(team_id.clone(), team_key.clone());
+                    self.vault_team_keys
+                        .insert(team_id.clone(), team_key.clone());
 
                     let account = match &self.sync_account {
                         Some(a) => a.clone(),
@@ -1099,7 +1149,10 @@ impl super::Tabular {
                         )
                         .await
                         {
-                            warn!("[sync] Failed to grant pending Team {} key envelopes: {}", team_id, e);
+                            warn!(
+                                "[sync] Failed to grant pending Team {} key envelopes: {}",
+                                team_id, e
+                            );
                         }
                     });
                 }
@@ -1119,7 +1172,10 @@ impl super::Tabular {
                     self.sync_trigger_connections = true;
                     self.sync_trigger_http = true;
                 }
-                Err(e) => warn!("[sync] Failed to bootstrap Team {} vault key: {}", team_id, e),
+                Err(e) => warn!(
+                    "[sync] Failed to bootstrap Team {} vault key: {}",
+                    team_id, e
+                ),
             }
         }
     }
@@ -1152,7 +1208,13 @@ impl super::Tabular {
         self.vault_team_keys_receiver = Some(rx);
         crate::sync::spawn_async(async move {
             let client = crate::sync::api_client::ApiClient::new(&server);
-            let unlocked = crate::sync::vault_sync::unlock_all_team_keys(&client, &account.access_token, &vault, &missing).await;
+            let unlocked = crate::sync::vault_sync::unlock_all_team_keys(
+                &client,
+                &account.access_token,
+                &vault,
+                &missing,
+            )
+            .await;
             let _ = tx.send(unlocked);
         });
     }

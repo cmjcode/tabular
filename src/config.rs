@@ -77,7 +77,6 @@ impl std::str::FromStr for UiModePreference {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AiProvider {
     #[default]
@@ -176,7 +175,9 @@ impl AiProvider {
     }
     pub fn api_key_hint(self) -> &'static str {
         match self {
-            AiProvider::GitHub => "GitHub PAT (Settings → Developer settings → Personal access tokens)",
+            AiProvider::GitHub => {
+                "GitHub PAT (Settings → Developer settings → Personal access tokens)"
+            }
             AiProvider::OpenAI => "sk-… (platform.openai.com/api-keys)",
             AiProvider::Anthropic => "sk-ant-… (console.anthropic.com/settings/keys)",
             AiProvider::Groq => "gsk_… (console.groq.com/keys)",
@@ -372,6 +373,13 @@ pub struct AppPreferences {
     /// Buka kembali tab query dari sesi sebelumnya (termasuk draft yang belum disimpan).
     #[serde(default = "default_true")]
     pub restore_session: bool,
+    /// Lebar panel AI Assistant di sebelah kanan (pixel).
+    #[serde(default = "default_ai_panel_width")]
+    pub ai_panel_width: f32,
+}
+
+fn default_ai_panel_width() -> f32 {
+    350.0
 }
 
 fn default_redis_browser_auto_refresh_seconds() -> u32 {
@@ -418,6 +426,7 @@ impl Default for AppPreferences {
             query_timeout_secs: 0,
             max_result_rows: DEFAULT_MAX_RESULT_ROWS,
             restore_session: true,
+            ai_panel_width: default_ai_panel_width(),
         }
     }
 }
@@ -467,17 +476,21 @@ impl ConfigStore {
 
         log::debug!("Attempting to create/open database at: {}", url);
 
-        let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url) {
-            Ok(opts) => opts
-                .create_if_missing(true)
-                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-                .busy_timeout(std::time::Duration::from_secs(5)),
-            Err(e) => {
-                log::warn!("Invalid SQLite URL ({}), using JSON storage instead", e);
-                return Ok(Self { pool: None, use_json_fallback: true });
-            }
-        };
+        let connect_opts =
+            match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url) {
+                Ok(opts) => opts
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .busy_timeout(std::time::Duration::from_secs(5)),
+                Err(e) => {
+                    log::warn!("Invalid SQLite URL ({}), using JSON storage instead", e);
+                    return Ok(Self {
+                        pool: None,
+                        use_json_fallback: true,
+                    });
+                }
+            };
 
         match SqlitePoolOptions::new()
             .max_connections(1)
@@ -540,6 +553,7 @@ impl ConfigStore {
                 query_timeout_secs: 0,
                 max_result_rows: DEFAULT_MAX_RESULT_ROWS,
                 restore_session: true,
+                ai_panel_width: default_ai_panel_width(),
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -557,8 +571,16 @@ impl ConfigStore {
                         "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
                         "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
                         // Legacy migration: old boolean flags
-                        "is_dark_mode" => if v != "1" { prefs.theme = AppTheme::Light; },
-                        "is_light_soft" => if v == "1" { prefs.theme = AppTheme::LightSoft; },
+                        "is_dark_mode" => {
+                            if v != "1" {
+                                prefs.theme = AppTheme::Light;
+                            }
+                        }
+                        "is_light_soft" => {
+                            if v == "1" {
+                                prefs.theme = AppTheme::LightSoft;
+                            }
+                        }
                         "link_editor_theme" => prefs.link_editor_theme = v == "1",
                         "editor_theme" => prefs.editor_theme = v,
                         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
@@ -579,7 +601,9 @@ impl ConfigStore {
                             ai_key_rewrite = rewrite;
                         }
                         "ai_model" => prefs.ai_model = v,
-                        "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
+                        "ai_provider" => {
+                            prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI)
+                        }
                         "ai_base_url" => prefs.ai_base_url = v,
                         "ai_backend" => prefs.ai_backend = v.parse().unwrap_or(AiBackend::Api),
                         "ai_cli_kind" => {
@@ -591,7 +615,9 @@ impl ConfigStore {
                         "ai_cli_extra_args" => prefs.ai_cli_extra_args = v,
                         "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
                         "redis_browser_auto_refresh_seconds" => {
-                            prefs.redis_browser_auto_refresh_seconds = v.parse().unwrap_or(default_redis_browser_auto_refresh_seconds())
+                            prefs.redis_browser_auto_refresh_seconds = v
+                                .parse()
+                                .unwrap_or(default_redis_browser_auto_refresh_seconds())
                         }
                         "sync_server_url" => {
                             prefs.sync_server_url = if v.is_empty() { None } else { Some(v) }
@@ -601,6 +627,12 @@ impl ConfigStore {
                             prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS)
                         }
                         "restore_session" => prefs.restore_session = v == "1",
+                        "ai_panel_width" => {
+                            prefs.ai_panel_width = v
+                                .parse()
+                                .unwrap_or_else(|_| default_ai_panel_width())
+                                .clamp(280.0, 800.0);
+                        }
                         _ => {}
                     }
                 }
@@ -652,13 +684,15 @@ impl ConfigStore {
 
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let redis_browser_auto_refresh_seconds = prefs.redis_browser_auto_refresh_seconds.to_string();
+            let redis_browser_auto_refresh_seconds =
+                prefs.redis_browser_auto_refresh_seconds.to_string();
             // The key goes to the OS keychain; the row keeps only a sentinel.
             let ai_api_key_stored =
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
             let query_timeout_secs = prefs.query_timeout_secs.to_string();
             let max_result_rows = prefs.max_result_rows.to_string();
-            let entries: [(&str, &str); 26] = [
+            let ai_panel_width_str = prefs.ai_panel_width.to_string();
+            let entries: [(&str, &str); 27] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -700,16 +734,27 @@ impl ConfigStore {
                 ("ai_cli_extra_args", prefs.ai_cli_extra_args.as_str()),
                 (
                     "ai_cli_auto_apply_edits",
-                    if prefs.ai_cli_auto_apply_edits { "1" } else { "0" },
+                    if prefs.ai_cli_auto_apply_edits {
+                        "1"
+                    } else {
+                        "0"
+                    },
                 ),
-                ("redis_browser_auto_refresh_seconds", &redis_browser_auto_refresh_seconds),
+                (
+                    "redis_browser_auto_refresh_seconds",
+                    &redis_browser_auto_refresh_seconds,
+                ),
                 (
                     "sync_server_url",
                     prefs.sync_server_url.as_deref().unwrap_or(""),
                 ),
                 ("query_timeout_secs", &query_timeout_secs),
                 ("max_result_rows", &max_result_rows),
-                ("restore_session", if prefs.restore_session { "1" } else { "0" }),
+                (
+                    "restore_session",
+                    if prefs.restore_session { "1" } else { "0" },
+                ),
+                ("ai_panel_width", &ai_panel_width_str),
             ];
 
             for (k, v) in entries.iter() {
