@@ -28,8 +28,8 @@ pub const GROUP_COLORS: [egui::Color32; 20] = [
     egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
 ];
 
-pub const MIN_ZOOM: f32 = 0.25;
-pub const MAX_ZOOM: f32 = 2.0;
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 1.5;
 pub const DEFAULT_ZOOM: f32 = 1.0;
 
 /// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault, database).
@@ -202,6 +202,26 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 state.new_group_buffer.clear();
             }
         }
+        ui.separator();
+        if ui
+            .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
+            .clicked()
+        {
+            if state.prevent_overlap {
+                resolve_node_overlaps(&mut state.nodes, 20.0);
+            }
+            state.save_requested = true;
+        }
+        if ui.button("↔ Resolve Overlaps Now").clicked() {
+            ui.close();
+            resolve_node_overlaps(&mut state.nodes, 20.0);
+            state.save_requested = true;
+        }
+        if ui.button("⚡ Auto Arrange Diagram").clicked() {
+            ui.close();
+            perform_auto_layout(state);
+            state.save_requested = true;
+        }
     });
 
     // Zoom & Shortcut Input Handling
@@ -353,13 +373,32 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
         let group = &mut state.groups[idx];
 
+        let is_group_search_match = state.show_search
+            && state.search_groups
+            && !state.search_query.is_empty()
+            && group.title.to_lowercase().contains(&state.search_query.to_lowercase());
+
+        if is_group_search_match {
+            ui.painter().rect_filled(
+                group_rect.expand(6.0 * scale),
+                12.0 * scale,
+                egui::Color32::from_rgb(255, 0, 0).linear_multiply(0.35),
+            );
+        }
+
         // Draw Background
         ui.painter()
             .rect_filled(group_rect, 8.0 * scale, color.linear_multiply(0.1));
+        let border_color = if is_group_search_match {
+            egui::Color32::from_rgb(255, 0, 0)
+        } else {
+            color.linear_multiply(0.5)
+        };
+        let border_width = if is_group_search_match { 2.5 * scale } else { 1.0 * scale };
         ui.painter().rect_stroke(
             group_rect,
             8.0 * scale,
-            egui::Stroke::new(1.0 * scale, color.linear_multiply(0.5)),
+            egui::Stroke::new(border_width, border_color),
             egui::StrokeKind::Middle,
         );
 
@@ -367,8 +406,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         let title_rect =
             egui::Rect::from_min_size(group_rect.min, egui::vec2(group_rect.width(), 30.0 * scale));
 
+        let title_fill = if is_group_search_match {
+            egui::Color32::from_rgb(200, 30, 30)
+        } else {
+            color.linear_multiply(0.8)
+        };
         ui.painter()
-            .rect_filled(title_rect, 8.0 * scale, color.linear_multiply(0.8));
+            .rect_filled(title_rect, 8.0 * scale, title_fill);
 
         let is_renaming = state.renaming_group.as_deref() == Some(group_id);
 
@@ -617,14 +661,28 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Draw nodes
     let mut dragging_node_id = None;
     let mut drag_delta = egui::Vec2::ZERO;
+    let mut drag_stopped_node_id: Option<String> = None;
     let mut node_clicked = false;
     let mut column_clicked_request: Option<(String, String)> = None;
 
-    // For manual interaction:
+    // Snapshot nodes untuk deteksi tabrakan saat dragging
+    let nodes_snapshot = state.nodes.clone();
+
+    // For manual interaction & relation search:
     let selected_column = state.selected_column.clone();
+    let sel_col_is_pk = selected_column.as_ref().is_some_and(|(sel_table, sel_col)| {
+        state
+            .nodes
+            .iter()
+            .find(|n| &n.id == sel_table)
+            .and_then(|n| n.column_info(sel_col))
+            .is_some_and(|c| c.is_pk)
+    });
     let shift_down = ui.input(|i| i.modifiers.shift);
+    let ctrl_down = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd);
     let mut link_request: Option<VirtualRelation> = None;
     let mut remove_node_request: Option<String> = None;
+    let mut search_relations_for_column: Option<(String, String)> = None;
 
     let available_groups: Vec<(String, String, egui::Color32)> = state
         .groups
@@ -744,6 +802,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     }
                 }
             }
+            drag_stopped_node_id = Some(node.id.clone());
             state.dragging_node = None;
         }
 
@@ -757,22 +816,30 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         // Check if node matches search
         let is_search_match = if state.show_search && !state.search_query.is_empty() {
             let query = state.search_query.to_lowercase();
-            node.title.to_lowercase().contains(&query)
-                || node
-                    .columns
-                    .iter()
-                    .any(|c| c.to_lowercase().contains(&query))
+            (state.search_tables && node.title.to_lowercase().contains(&query))
+                || (state.search_columns
+                    && node
+                        .columns
+                        .iter()
+                        .any(|c| c.to_lowercase().contains(&query)))
         } else {
             false
         };
 
-        let is_glow = is_selected_edge_node || is_search_match;
+        // Deteksi apakah node yang sedang di-drag sedang bertabrakan dengan tabel lain
+        let is_colliding_drag = state.prevent_overlap
+            && state.dragging_node.as_deref() == Some(&node.id)
+            && check_single_node_collision(&nodes_snapshot, &node.id, 20.0);
+
+        let is_glow = is_selected_edge_node || is_search_match || is_colliding_drag;
 
         // Draw Shadow/Border
         if is_glow {
             // Glow effect
             let glow_color = if is_search_match {
                 egui::Color32::from_rgb(255, 0, 0) // Bright Red
+            } else if is_colliding_drag {
+                egui::Color32::from_rgb(255, 140, 0) // Warning Amber
             } else {
                 egui::Color32::from_rgb(255, 215, 0) // Gold
             };
@@ -795,6 +862,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         // Corrected rect_stroke args
         let border_color = if is_search_match {
             egui::Color32::from_rgb(255, 0, 0)
+        } else if is_colliding_drag {
+            egui::Color32::from_rgb(255, 140, 0)
         } else if is_selected_edge_node {
             egui::Color32::from_rgb(255, 215, 0)
         } else {
@@ -899,39 +968,147 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             );
 
             let col_id = ui.id().with("col").with(&node.id).with(col);
-            let response = ui.interact(col_rect, col_id, egui::Sense::click());
+            let mut response = ui.interact(col_rect, col_id, egui::Sense::click());
+
+            let is_selected_col = selected_column
+                .as_ref()
+                .is_some_and(|(t, c)| *t == node.id && c == col);
+
+            // Context menu saat klik kanan pada kolom
+            response.context_menu(|ui| {
+                ui.label(egui::RichText::new(format!("{}.{}", node.id, col)).strong());
+                if let Some(c_type) = info.map(|c| c.type_name.as_str()).filter(|t| !t.is_empty()) {
+                    ui.label(egui::RichText::new(format!("Type: {c_type}")).weak().small());
+                }
+                ui.separator();
+
+                if ui.button("🔍 Search relation").clicked() {
+                    ui.close();
+                    search_relations_for_column = Some((node.id.clone(), col.clone()));
+                }
+
+                ui.separator();
+                if is_selected_col {
+                    if ui.button("Deselect column").clicked() {
+                        ui.close();
+                        column_clicked_request = Some((String::new(), String::new()));
+                    }
+                } else if ui.button("🔗 Select for manual relation (Ctrl+Click)").clicked() {
+                    ui.close();
+                    column_clicked_request = Some((node.id.clone(), col.clone()));
+                }
+            });
+
+            // Tooltip interaktif saat ada kolom yang sedang dipilih dari tabel lain
+            if let Some((sel_table, sel_col)) = selected_column.as_ref() {
+                if *sel_table != node.id {
+                    response = response.on_hover_text(format!(
+                        "Ctrl+Click to link with {sel_table}.{sel_col}"
+                    ));
+                }
+            }
+
+            let is_link_target_hover = (ctrl_down || shift_down)
+                && response.hovered()
+                && selected_column
+                    .as_ref()
+                    .is_some_and(|(t, _)| *t != node.id);
+
             if response.clicked() {
-                // Shift+klik kolom di tabel lain = buat relasi manual dari
-                // kolom terpilih (child) ke kolom ini (parent).
+                let modifier_active = ctrl_down || shift_down;
                 match selected_column.as_ref() {
-                    Some((sel_table, sel_col)) if shift_down && *sel_table != node.id => {
-                        link_request = Some(VirtualRelation {
-                            child: sel_table.clone(),
-                            child_column: sel_col.clone(),
-                            parent: node.id.clone(),
-                            parent_column: col.clone(),
-                            origin: RelationOrigin::Manual,
-                        });
+                    // Ada kolom terpilih di tabel lain:
+                    Some((sel_table, sel_col)) if *sel_table != node.id => {
+                        if modifier_active {
+                            // Ctrl+klik kolom tabel kedua -> buat relasi manual!
+                            let this_is_pk = is_pk;
+                            let sel_is_pk = sel_col_is_pk;
+
+                            let (child_table, child_col, parent_table, parent_col) =
+                                if this_is_pk && !sel_is_pk {
+                                    (sel_table.clone(), sel_col.clone(), node.id.clone(), col.clone())
+                                } else if sel_is_pk && !this_is_pk {
+                                    (node.id.clone(), col.clone(), sel_table.clone(), sel_col.clone())
+                                } else {
+                                    (sel_table.clone(), sel_col.clone(), node.id.clone(), col.clone())
+                                };
+
+                            link_request = Some(VirtualRelation {
+                                child: child_table,
+                                child_column: child_col,
+                                parent: parent_table,
+                                parent_column: parent_col,
+                                origin: RelationOrigin::Manual,
+                            });
+                        } else {
+                            column_clicked_request = Some((node.id.clone(), col.clone()));
+                        }
+                    }
+                    // Kolom pada tabel yang sama:
+                    Some((sel_table, sel_col)) if *sel_table == node.id => {
+                        if sel_col == col && modifier_active {
+                            // Deselect saat Ctrl+klik kolom yang sama
+                            column_clicked_request = Some((String::new(), String::new()));
+                        } else {
+                            column_clicked_request = Some((node.id.clone(), col.clone()));
+                        }
                     }
                     _ => column_clicked_request = Some((node.id.clone(), col.clone())),
                 }
             }
 
-            let is_selected_col = selected_column
-                .as_ref()
-                .is_some_and(|(t, c)| *t == node.id && c == col);
+            let is_col_search_match = state.show_search
+                && state.search_columns
+                && !state.search_query.is_empty()
+                && col.to_lowercase().contains(&state.search_query.to_lowercase());
+
             if is_selected_col {
+                // Highlight jelas kolom sumber terpilih (emas dengan border)
                 ui.painter().rect_filled(
                     col_rect,
                     0.0,
-                    egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.25),
+                    egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.35),
+                );
+                ui.painter().rect_stroke(
+                    col_rect,
+                    0.0,
+                    egui::Stroke::new(1.5 * scale, egui::Color32::from_rgb(255, 215, 0)),
+                    egui::StrokeKind::Inside,
+                );
+            } else if is_link_target_hover {
+                // Highlight kolom target saat di-hover dengan Ctrl (cyan terang)
+                ui.painter().rect_filled(
+                    col_rect,
+                    0.0,
+                    egui::Color32::from_rgb(0, 200, 220).linear_multiply(0.25),
+                );
+                ui.painter().rect_stroke(
+                    col_rect,
+                    0.0,
+                    egui::Stroke::new(1.5 * scale, egui::Color32::from_rgb(0, 200, 220)),
+                    egui::StrokeKind::Inside,
+                );
+            } else if is_col_search_match {
+                // Highlight kolom pencarian (merah lembut dengan aksen)
+                ui.painter().rect_filled(
+                    col_rect,
+                    0.0,
+                    egui::Color32::from_rgb(255, 60, 60).linear_multiply(0.25),
+                );
+                ui.painter().rect_stroke(
+                    col_rect,
+                    0.0,
+                    egui::Stroke::new(1.0 * scale, egui::Color32::from_rgb(255, 80, 80)),
+                    egui::StrokeKind::Inside,
                 );
             } else if response.hovered() {
                 ui.painter()
                     .rect_filled(col_rect, 0.0, egui::Color32::from_white_alpha(10));
             }
 
-            let name_color = if is_pk {
+            let name_color = if is_col_search_match {
+                egui::Color32::WHITE
+            } else if is_pk {
                 egui::Color32::from_rgb(255, 215, 0)
             } else if is_fk {
                 egui::Color32::from_rgb(200, 200, 100)
@@ -1009,7 +1186,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     if let Some(req) = column_clicked_request {
-        state.selected_column = Some(req);
+        if req.0.is_empty() {
+            state.selected_column = None;
+        } else {
+            state.selected_column = Some(req);
+        }
     }
     if let Some(rel) = link_request {
         let label = format!(
@@ -1021,6 +1202,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             action = Some(DiagramAction::Info(label));
         }
         state.selected_column = None;
+    }
+    if let Some((table, column)) = search_relations_for_column {
+        let suggestions =
+            crate::diagram_relations::suggest_relations_for_column(state, &table, &column);
+        state.relation_suggestions = Some(suggestions.into_iter().map(|s| (s, true)).collect());
     }
     if let Some(id) = remove_node_request {
         state.nodes.retain(|n| n.id != id);
@@ -1044,10 +1230,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         node.pos += drag_delta / scale;
     }
 
-    // Floating Toolbar: Zoom & Navigasi, Grid, Relasi, Sync, Save, Import & Export.
+    if let Some(id) = drag_stopped_node_id {
+        if state.prevent_overlap {
+            resolve_dragged_node_overlap(&mut state.nodes, &id, 20.0);
+            state.save_requested = true;
+        }
+    }
+
+    // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Sync, Save, Import & Export.
     let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
-    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(820.0);
-    let toolbar_width = measured_width.max(820.0);
+    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(960.0);
+    let toolbar_width = measured_width.max(960.0);
     let toolbar_height = 36.0;
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
@@ -1105,7 +1298,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
                 ui.separator();
 
-                // --- 2. Grid Toggle ---
+                // --- 2. Grid & Anti-Overlap Toggles ---
                 if ui
                     .selectable_label(
                         state.show_grid,
@@ -1118,6 +1311,51 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     state.save_requested = true;
                 }
 
+                if ui
+                    .selectable_label(
+                        state.prevent_overlap,
+                        format!("{} No Overlap", egui_icons::icons::ICON_DASHBOARD.codepoint),
+                    )
+                    .on_hover_text("Prevent tables from overlapping (auto-separates on drop and drag)")
+                    .clicked()
+                {
+                    state.prevent_overlap = !state.prevent_overlap;
+                    if state.prevent_overlap {
+                        resolve_node_overlaps(&mut state.nodes, 20.0);
+                    }
+                    state.save_requested = true;
+                }
+
+                ui.separator();
+
+                // --- 3. Layout Menu ---
+                ui.menu_button(
+                    format!("{} Layout", egui_icons::icons::ICON_VIEW_MODULE.codepoint),
+                    |ui| {
+                        if ui
+                            .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
+                            .on_hover_text("When enabled, tables will not overlap when moved or organized")
+                            .clicked()
+                        {
+                            if state.prevent_overlap {
+                                resolve_node_overlaps(&mut state.nodes, 20.0);
+                            }
+                            state.save_requested = true;
+                        }
+                        ui.separator();
+                        if ui.button("⚡ Auto Arrange All (Smart Layout)").clicked() {
+                            ui.close();
+                            perform_auto_layout(state);
+                            state.save_requested = true;
+                        }
+                        if ui.button("↔ Resolve Overlaps Now").clicked() {
+                            ui.close();
+                            resolve_node_overlaps(&mut state.nodes, 20.0);
+                            state.save_requested = true;
+                        }
+                    },
+                );
+
                 ui.separator();
 
                 // --- 3. Relations & Database Sync ---
@@ -1129,6 +1367,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             let suggestions = crate::diagram_relations::suggest_relations(state);
                             state.relation_suggestions =
                                 Some(suggestions.into_iter().map(|s| (s, true)).collect());
+                        }
+                        if let Some((sel_table, sel_col)) = &state.selected_column {
+                            if ui
+                                .button(format!("Search relations for {sel_table}.{sel_col}…"))
+                                .clicked()
+                            {
+                                ui.close();
+                                let suggestions =
+                                    crate::diagram_relations::suggest_relations_for_column(
+                                        state, sel_table, sel_col,
+                                    );
+                                state.relation_suggestions =
+                                    Some(suggestions.into_iter().map(|s| (s, true)).collect());
+                            }
                         }
                         let removable = state
                             .virtual_relations
@@ -1154,7 +1406,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.separator();
                         ui.label(
                             egui::RichText::new(
-                                "Manual link: click a column, then Shift+click the column\nit refers to in another table. Select a dashed line and\npress Delete to remove it.",
+                                "Manual link: Ctrl+click a column, then Ctrl+click\nthe target column in another table.\nRight-click a column for automatic search.\nSelect a dashed line and press Delete to remove it.",
                             )
                             .weak()
                             .small(),
@@ -1245,9 +1497,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Render Search Box
     if state.show_search {
-        // Reduced size for tighter fit (equal active margins)
+        // Two-row card layout: search field + close button on row 1, filter checkboxes on row 2
         let search_rect =
-            egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(270.0, 40.0));
+            egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(295.0, 70.0));
 
         let card_fill = ui.visuals().window_fill;
         let card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
@@ -1256,43 +1508,132 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             .rect_stroke(search_rect, 6.0, card_stroke, egui::StrokeKind::Middle);
 
         ui.scope_builder(
-            egui::UiBuilder::new().max_rect(search_rect.shrink(5.0)),
+            egui::UiBuilder::new().max_rect(search_rect.shrink(6.0)),
             |ui| {
-                // Use left_to_right with Align::Center for vertical centering
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let response = crate::window_egui::style::render_search_field(
-                        ui,
-                        &mut state.search_query,
-                        "Search table / column…",
-                        220.0,
-                    );
+                ui.vertical(|ui| {
+                    let mut search_changed = false;
 
-                    // Auto-focus if empty (just opened or cleared)
-                    if state.search_query.is_empty() && !response.has_focus() {
-                        response.request_focus();
-                    }
+                    // Baris 1: Field pencarian + tombol tutup
+                    ui.horizontal(|ui| {
+                        let response = crate::window_egui::style::render_search_field(
+                            ui,
+                            &mut state.search_query,
+                            "Search diagram…",
+                            240.0,
+                        );
 
-                    if response.changed() {
+                        // Auto-focus if empty (just opened or cleared)
+                        if state.search_query.is_empty() && !response.has_focus() {
+                            response.request_focus();
+                        }
+
+                        if response.changed() {
+                            search_changed = true;
+                        }
+
+                        if ui.button("X").clicked() {
+                            state.show_search = false;
+                            state.search_query.clear();
+                        }
+                    });
+
+                    ui.add_space(2.0);
+
+                    // Baris 2: Checkbox filter (Table, Column, Group)
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let cb_tbl = ui
+                            .checkbox(&mut state.search_tables, "Table")
+                            .on_hover_text("Search table names");
+                        let cb_col = ui
+                            .checkbox(&mut state.search_columns, "Column")
+                            .on_hover_text("Search column names");
+                        let cb_grp = ui
+                            .checkbox(&mut state.search_groups, "Group")
+                            .on_hover_text("Search group container names");
+
+                        if cb_tbl.changed() || cb_col.changed() || cb_grp.changed() {
+                            search_changed = true;
+                        }
+                    });
+
+                    if search_changed {
                         let query = crate::search_match::SearchQuery::new(&state.search_query);
                         if !query.is_empty() {
-                            // Pilih node dengan skor tertinggi (nama tabel atau kolom);
-                            // bila seri, node pertama yang menang.
-                            let mut best: Option<(f32, &_)> = None;
-                            for node in &state.nodes {
-                                let score = query.best_score(
-                                    std::iter::once(node.title.as_str())
-                                        .chain(node.columns.iter().map(String::as_str)),
-                                );
-                                if let Some(score) = score
-                                    && best.is_none_or(|(best_score, _)| score > best_score)
-                                {
-                                    best = Some((score, node));
+                            // Hitung skor terbaik untuk node tabel / kolom
+                            let mut best_node: Option<(f32, egui::Pos2)> = None;
+                            if state.search_tables || state.search_columns {
+                                for node in &state.nodes {
+                                    let score = match (state.search_tables, state.search_columns) {
+                                        (true, true) => query.best_score(
+                                            std::iter::once(node.title.as_str())
+                                                .chain(node.columns.iter().map(String::as_str)),
+                                        ),
+                                        (true, false) => query.score(&node.title),
+                                        (false, true) => {
+                                            query.best_score(node.columns.iter().map(String::as_str))
+                                        }
+                                        (false, false) => None,
+                                    };
+                                    if let Some(score) = score
+                                        && best_node.is_none_or(|(best_score, _)| score > best_score)
+                                    {
+                                        let node_center = node.pos + node.size / 2.0;
+                                        best_node = Some((score, node_center));
+                                    }
                                 }
                             }
-                            let target_pan = best.map(|(_, node)| {
-                                let node_center = node.pos + node.size / 2.0;
+
+                            // Hitung skor terbaik untuk group container
+                            let mut best_group: Option<(f32, egui::Pos2)> = None;
+                            if state.search_groups {
+                                for group in &state.groups {
+                                    if let Some(score) = query.score(&group.title) {
+                                        if best_group.is_none_or(|(best_score, _)| score > best_score) {
+                                            let group_nodes: Vec<&DiagramNode> = state
+                                                .nodes
+                                                .iter()
+                                                .filter(|n| n.is_in_group(&group.id))
+                                                .collect();
+
+                                            let group_center = if !group_nodes.is_empty() {
+                                                let mut min_pos = group_nodes[0].pos;
+                                                let mut max_pos =
+                                                    group_nodes[0].pos + group_nodes[0].size;
+                                                for n in &group_nodes {
+                                                    min_pos = min_pos.min(n.pos);
+                                                    max_pos = max_pos.max(n.pos + n.size);
+                                                }
+                                                min_pos + (max_pos - min_pos) / 2.0
+                                            } else if let Some(pos) = group.manual_pos {
+                                                pos + egui::vec2(200.0, 150.0)
+                                            } else {
+                                                egui::Pos2::ZERO
+                                            };
+
+                                            best_group = Some((score, group_center));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Pilih kecocokan dengan skor tertinggi antara node atau group
+                            let best_match = match (best_node, best_group) {
+                                (Some(n), Some(g)) => {
+                                    if g.0 > n.0 {
+                                        Some(g.1)
+                                    } else {
+                                        Some(n.1)
+                                    }
+                                }
+                                (Some(n), None) => Some(n.1),
+                                (None, Some(g)) => Some(g.1),
+                                (None, None) => None,
+                            };
+
+                            let target_pan = best_match.map(|center| {
                                 let view_center = rect.size() / 2.0;
-                                view_center - node_center.to_vec2() * state.zoom
+                                view_center - center.to_vec2() * state.zoom
                             });
 
                             if let Some(pan) = target_pan {
@@ -1300,11 +1641,6 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                                 state.is_centered = true; // Ensure we don't auto-center back
                             }
                         }
-                    }
-
-                    if ui.button("X").clicked() {
-                        state.show_search = false;
-                        state.search_query.clear();
                     }
                 });
             },
@@ -1560,10 +1896,10 @@ fn render_relation_suggestions(
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(460.0)
+        .default_width(480.0)
         .show(ctx, |ui| {
             if suggestions.is_empty() {
-                ui.label("No new relations found. Columns such as `customer_id`, `id_customer` or a column that matches another table's primary key are detected automatically.");
+                ui.label("No relations found. Columns such as `customer_id`, `id_customer` or a column that matches another table's primary key are detected automatically.");
                 if ui.button("Close").clicked() {
                     close = true;
                 }
@@ -1575,18 +1911,75 @@ fn render_relation_suggestions(
                 )
                 .weak(),
             );
+
+            // Filter pencarian nama kolom atau tabel
+            let mut filter_text: String = ctx.data_mut(|d| {
+                d.get_temp(egui::Id::new("rel_suggest_filter")).unwrap_or_default()
+            });
+            ui.horizontal(|ui| {
+                ui.label("🔍 Filter:");
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut filter_text)
+                        .hint_text("Filter by table or column name..."),
+                );
+                if edit.changed() {
+                    ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("rel_suggest_filter"), filter_text.clone())
+                    });
+                }
+                if !filter_text.is_empty() && ui.small_button("✖").clicked() {
+                    filter_text.clear();
+                    ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("rel_suggest_filter"), String::new())
+                    });
+                }
+            });
+
+            let filter_lower = filter_text.trim().to_lowercase();
+
             ui.horizontal(|ui| {
                 if ui.small_button("Select all").clicked() {
-                    suggestions.iter_mut().for_each(|(_, on)| *on = true);
+                    for (s, on) in suggestions.iter_mut() {
+                        if filter_lower.is_empty()
+                            || s.relation.child.to_lowercase().contains(&filter_lower)
+                            || s.relation.child_column.to_lowercase().contains(&filter_lower)
+                            || s.relation.parent.to_lowercase().contains(&filter_lower)
+                            || s.relation.parent_column.to_lowercase().contains(&filter_lower)
+                            || s.reason.to_lowercase().contains(&filter_lower)
+                        {
+                            *on = true;
+                        }
+                    }
                 }
                 if ui.small_button("Select none").clicked() {
-                    suggestions.iter_mut().for_each(|(_, on)| *on = false);
+                    for (s, on) in suggestions.iter_mut() {
+                        if filter_lower.is_empty()
+                            || s.relation.child.to_lowercase().contains(&filter_lower)
+                            || s.relation.child_column.to_lowercase().contains(&filter_lower)
+                            || s.relation.parent.to_lowercase().contains(&filter_lower)
+                            || s.relation.parent_column.to_lowercase().contains(&filter_lower)
+                            || s.reason.to_lowercase().contains(&filter_lower)
+                        {
+                            *on = false;
+                        }
+                    }
                 }
             });
             ui.separator();
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                let mut displayed_count = 0;
                 for (s, on) in suggestions.iter_mut() {
                     let r = &s.relation;
+                    if !filter_lower.is_empty()
+                        && !r.child.to_lowercase().contains(&filter_lower)
+                        && !r.child_column.to_lowercase().contains(&filter_lower)
+                        && !r.parent.to_lowercase().contains(&filter_lower)
+                        && !r.parent_column.to_lowercase().contains(&filter_lower)
+                        && !s.reason.to_lowercase().contains(&filter_lower)
+                    {
+                        continue;
+                    }
+                    displayed_count += 1;
                     ui.horizontal(|ui| {
                         ui.checkbox(
                             on,
@@ -1598,6 +1991,13 @@ fn render_relation_suggestions(
                                 .small(),
                         );
                     });
+                }
+                if displayed_count == 0 && !filter_lower.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("No suggestions matching \"{filter_text}\""))
+                            .italics()
+                            .weak(),
+                    );
                 }
             });
             ui.separator();
@@ -1627,6 +2027,170 @@ fn render_relation_suggestions(
         state.relation_suggestions = Some(suggestions);
     }
     result
+}
+
+/// Cek apakah ada pasangan tabel yang saling tumpang tindih dalam batas padding.
+pub fn check_nodes_overlap(nodes: &[DiagramNode], padding: f32) -> bool {
+    let half_pad = padding.max(0.0) / 2.0;
+    for (i, node) in nodes.iter().enumerate() {
+        let rect_i = egui::Rect::from_min_size(node.pos, node.size).expand(half_pad);
+        for other_node in &nodes[(i + 1)..] {
+            let rect_j =
+                egui::Rect::from_min_size(other_node.pos, other_node.size).expand(half_pad);
+            let inter = rect_i.intersect(rect_j);
+            if inter.width() > 0.0 && inter.height() > 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Cek apakah tabel spesifik saat ini bertabrakan dengan tabel lain dalam diagram.
+pub fn check_single_node_collision(nodes: &[DiagramNode], node_id: &str, padding: f32) -> bool {
+    let Some(target) = nodes.iter().find(|n| n.id == node_id) else {
+        return false;
+    };
+    let half_pad = padding.max(0.0) / 2.0;
+    let target_rect = egui::Rect::from_min_size(target.pos, target.size).expand(half_pad);
+    for other in nodes.iter().filter(|n| n.id != node_id) {
+        let other_rect = egui::Rect::from_min_size(other.pos, other.size).expand(half_pad);
+        let inter = target_rect.intersect(other_rect);
+        if inter.width() > 0.0 && inter.height() > 0.0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Pisahkan semua tabel yang bertumpukan secara iteratif menggunakan AABB collision resolution.
+/// Menjamin tidak ada dua tabel yang tumpang tindih dengan jarak minimal `padding`.
+pub fn resolve_node_overlaps(nodes: &mut [DiagramNode], padding: f32) {
+    let node_count = nodes.len();
+    if node_count < 2 {
+        return;
+    }
+
+    let half_pad = padding.max(0.0) / 2.0;
+    let max_iterations = 40;
+
+    for _ in 0..max_iterations {
+        let mut any_collision = false;
+
+        for i in 0..node_count {
+            for j in (i + 1)..node_count {
+                let rect_i =
+                    egui::Rect::from_min_size(nodes[i].pos, nodes[i].size).expand(half_pad);
+                let rect_j =
+                    egui::Rect::from_min_size(nodes[j].pos, nodes[j].size).expand(half_pad);
+
+                let inter = rect_i.intersect(rect_j);
+                if inter.width() > 0.0 && inter.height() > 0.0 {
+                    any_collision = true;
+                    let overlap_w = inter.width();
+                    let overlap_h = inter.height();
+
+                    // Dorong pada sumbu irisan terkecil agar pergeseran seminimal mungkin
+                    let push = if overlap_w < overlap_h {
+                        let dir = if rect_i.center().x <= rect_j.center().x {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                        egui::vec2(dir * (overlap_w / 2.0 + 1.0), 0.0)
+                    } else {
+                        let dir = if rect_i.center().y <= rect_j.center().y {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                        egui::vec2(0.0, dir * (overlap_h / 2.0 + 1.0))
+                    };
+
+                    nodes[i].pos += push;
+                    nodes[j].pos -= push;
+                }
+            }
+        }
+
+        if !any_collision {
+            break;
+        }
+    }
+}
+
+/// Pisahkan tabel yang baru selesai digeser agar tidak tumpang tindih dengan tabel lain.
+/// Memprioritaskan posisi tabel lain tetap stabil di tempatnya.
+pub fn resolve_dragged_node_overlap(nodes: &mut [DiagramNode], dragged_id: &str, padding: f32) {
+    let half_pad = padding.max(0.0) / 2.0;
+    let max_single_passes = 25;
+
+    let Some(dragged_idx) = nodes.iter().position(|n| n.id == dragged_id) else {
+        return;
+    };
+
+    let mut still_colliding = false;
+    for _ in 0..max_single_passes {
+        let dragged_rect = egui::Rect::from_min_size(
+            nodes[dragged_idx].pos,
+            nodes[dragged_idx].size,
+        )
+        .expand(half_pad);
+
+        // Cari rintangan terdekat yang bertabrakan
+        let mut min_push: Option<egui::Vec2> = None;
+        let mut min_dist_sq = f32::MAX;
+
+        for (j, other) in nodes.iter().enumerate() {
+            if j == dragged_idx {
+                continue;
+            }
+            let other_rect = egui::Rect::from_min_size(other.pos, other.size).expand(half_pad);
+            let inter = dragged_rect.intersect(other_rect);
+            if inter.width() > 0.0 && inter.height() > 0.0 {
+                let overlap_w = inter.width();
+                let overlap_h = inter.height();
+
+                // Hitung vektor dorong untuk mengeluarkan dragged_node dari obstacle
+                let (dir_x, dist_x) = if dragged_rect.center().x <= other_rect.center().x {
+                    (-1.0, overlap_w + 1.0)
+                } else {
+                    (1.0, overlap_w + 1.0)
+                };
+                let (dir_y, dist_y) = if dragged_rect.center().y <= other_rect.center().y {
+                    (-1.0, overlap_h + 1.0)
+                } else {
+                    (1.0, overlap_h + 1.0)
+                };
+
+                let push = if dist_x < dist_y {
+                    egui::vec2(dir_x * dist_x, 0.0)
+                } else {
+                    egui::vec2(0.0, dir_y * dist_y)
+                };
+
+                let dist_sq = push.length_sq();
+                if dist_sq < min_dist_sq {
+                    min_dist_sq = dist_sq;
+                    min_push = Some(push);
+                }
+            }
+        }
+
+        if let Some(push) = min_push {
+            nodes[dragged_idx].pos += push;
+            still_colliding = true;
+        } else {
+            still_colliding = false;
+            break;
+        }
+    }
+
+    // Jika ruang sangat sempit dan dragged_node masih terjepit di antara beberapa tabel,
+    // jalankan relaksasi global untuk memberi ruang.
+    if still_colliding {
+        resolve_node_overlaps(nodes, padding);
+    }
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
@@ -1740,77 +2304,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
             }
         }
 
-        // 3b. Group Overlap Resolution (Push entire groups apart)
-        // Re-calculate group bounds every iteration as nodes move
-        let mut group_bounds: std::collections::HashMap<String, egui::Rect> =
-            std::collections::HashMap::new();
-
-        // Calculate bounds
-        for node in &state.nodes {
-            for gid in &node.group_ids {
-                let rect = egui::Rect::from_min_size(node.pos, node.size);
-                group_bounds
-                    .entry(gid.clone())
-                    .and_modify(|r| *r = r.union(rect))
-                    .or_insert(rect);
-            }
-        }
-
-        let group_ids: Vec<String> = group_bounds.keys().cloned().collect();
-        let group_padding = 40.0; // Margin between groups
-
-        for i in 0..group_ids.len() {
-            for j in (i + 1)..group_ids.len() {
-                let g1_id = &group_ids[i];
-                let g2_id = &group_ids[j];
-
-                // Do not repel groups if they legitimately share member tables
-                let shares_node = state
-                    .nodes
-                    .iter()
-                    .any(|n| n.is_in_group(g1_id) && n.is_in_group(g2_id));
-                if shares_node {
-                    continue;
-                }
-
-                if let (Some(r1), Some(r2)) = (group_bounds.get(g1_id), group_bounds.get(g2_id)) {
-                    let r1_padded = r1.expand(group_padding);
-                    let r2_padded = r2.expand(group_padding);
-
-                    let intersection = r1_padded.intersect(r2_padded);
-                    if intersection.width() > 0.0 && intersection.height() > 0.0 {
-                        let overlap_w = intersection.width();
-                        let overlap_h = intersection.height();
-
-                        // Push apart on axis of least overlap
-                        let push_vec = if overlap_w < overlap_h {
-                            if r1.center().x < r2.center().x {
-                                egui::vec2(-overlap_w, 0.0)
-                            } else {
-                                egui::vec2(overlap_w, 0.0)
-                            }
-                        } else if r1.center().y < r2.center().y {
-                            egui::vec2(0.0, -overlap_h)
-                        } else {
-                            egui::vec2(0.0, overlap_h)
-                        } * 0.1; // Gentle push per iteration
-
-                        // Apply to all nodes in group 1
-                        for (idx, node) in state.nodes.iter().enumerate() {
-                            if node.is_in_group(g1_id) {
-                                forces[idx] += push_vec * 5.0; // Stronger group push
-                            }
-                        }
-                        // Apply inverse to all nodes in group 2
-                        for (idx, node) in state.nodes.iter().enumerate() {
-                            if node.is_in_group(g2_id) {
-                                forces[idx] -= push_vec * 5.0;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Catatan: Group boleh tumpang tindih (groups are allowed to overlap),
+        // sehingga tidak ada tolakan paksa antar group bounds di sini.
 
         // 4. Center Gravity (Pull to 0,0) + Apply Forces
         for (node, force) in state.nodes.iter_mut().zip(forces.iter_mut()) {
@@ -1833,52 +2328,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
     }
 
     // STRICT COLLISION RESOLUTION (Post-Process)
-    // Run a few passes to strictly separate overlapping rectangles
-    let collision_iterations = 20;
-    for _ in 0..collision_iterations {
-        let mut resolved = true;
-        for i in 0..node_count {
-            for j in (i + 1)..node_count {
-                let rect_i = egui::Rect::from_min_size(state.nodes[i].pos, state.nodes[i].size);
-                let rect_j = egui::Rect::from_min_size(state.nodes[j].pos, state.nodes[j].size);
-
-                // Expand rects slightly for padding
-                let padding = 10.0;
-                let padded_i = rect_i.expand(padding);
-                let padded_j = rect_j.expand(padding);
-
-                let intersection = padded_i.intersect(padded_j); // Returns Rect, not Option
-                if intersection.width() > 0.0 && intersection.height() > 0.0 {
-                    resolved = false;
-                    let overlap_w = intersection.width();
-                    let overlap_h = intersection.height();
-
-                    // Push apart on the axis of least overlap
-                    let move_vec = if overlap_w < overlap_h {
-                        // Move X
-                        if rect_i.center().x < rect_j.center().x {
-                            egui::vec2(-overlap_w / 2.0 - 1.0, 0.0)
-                        } else {
-                            egui::vec2(overlap_w / 2.0 + 1.0, 0.0)
-                        }
-                    } else {
-                        // Move Y
-                        if rect_i.center().y < rect_j.center().y {
-                            egui::vec2(0.0, -overlap_h / 2.0 - 1.0)
-                        } else {
-                            egui::vec2(0.0, overlap_h / 2.0 + 1.0)
-                        }
-                    };
-
-                    state.nodes[i].pos += move_vec;
-                    state.nodes[j].pos -= move_vec;
-                }
-            }
-        }
-        if resolved {
-            break;
-        }
-    }
+    // Pastikan semua tabel terpisah sempurna dengan padding aman
+    resolve_node_overlaps(&mut state.nodes, 20.0);
 
     // Normalize coordinates to be positive and start at somewhat reasonable position
     let mut min_x = f32::MAX;
@@ -2248,6 +2699,150 @@ mod tests {
         // Expected pan = (400, 300) - (200, 150) * 1.0 = (200, 150)
         center_diagram(&mut state, egui::vec2(800.0, 600.0));
         assert_eq!(state.pan, egui::vec2(200.0, 150.0));
+    }
+
+    #[test]
+    fn test_check_nodes_overlap_detection() {
+        let node_a = crate::models::structs::DiagramNode {
+            id: "table_a".to_string(),
+            title: "table_a".to_string(),
+            pos: egui::pos2(100.0, 100.0),
+            size: egui::vec2(200.0, 100.0),
+            columns: vec!["id".to_string()],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: None,
+            column_meta: vec![],
+            detached: false,
+        };
+
+        // Node B bertumpukan langsung dengan Node A
+        let mut node_b = node_a.clone();
+        node_b.id = "table_b".to_string();
+        node_b.pos = egui::pos2(150.0, 120.0);
+
+        let nodes = vec![node_a.clone(), node_b];
+        assert!(check_nodes_overlap(&nodes, 20.0));
+        assert!(check_single_node_collision(&nodes, "table_a", 20.0));
+
+        // Node C berada jauh di posisi aman (tidak bertumpukan)
+        let mut node_c = node_a.clone();
+        node_c.id = "table_c".to_string();
+        node_c.pos = egui::pos2(500.0, 500.0);
+
+        let non_overlapping = vec![node_a, node_c];
+        assert!(!check_nodes_overlap(&non_overlapping, 20.0));
+        assert!(!check_single_node_collision(&non_overlapping, "table_a", 20.0));
+    }
+
+    #[test]
+    fn test_resolve_node_overlaps_separates_nodes() {
+        let node_a = crate::models::structs::DiagramNode {
+            id: "table_a".to_string(),
+            title: "table_a".to_string(),
+            pos: egui::pos2(100.0, 100.0),
+            size: egui::vec2(200.0, 100.0),
+            columns: vec!["id".to_string()],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: None,
+            column_meta: vec![],
+            detached: false,
+        };
+
+        let mut node_b = node_a.clone();
+        node_b.id = "table_b".to_string();
+        node_b.pos = egui::pos2(120.0, 110.0); // Sengaja tumpang tindih
+
+        let mut nodes = vec![node_a.clone(), node_b.clone()];
+        assert!(check_nodes_overlap(&nodes, 20.0));
+
+        // Jalankan resolusi tumpang tindih
+        resolve_node_overlaps(&mut nodes, 20.0);
+
+        // Setelah dipisahkan, tidak boleh lagi ada yang tumpang tindih
+        assert!(!check_nodes_overlap(&nodes, 20.0));
+    }
+
+    #[test]
+    fn test_resolve_dragged_node_overlap_leaves_stationary_node_in_place() {
+        let node_a = crate::models::structs::DiagramNode {
+            id: "table_a".to_string(),
+            title: "table_a".to_string(),
+            pos: egui::pos2(100.0, 100.0),
+            size: egui::vec2(200.0, 100.0),
+            columns: vec!["id".to_string()],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: None,
+            column_meta: vec![],
+            detached: false,
+        };
+
+        // Node B di-drop tepat menimpa Node A
+        let mut node_b = node_a.clone();
+        node_b.id = "table_b".to_string();
+        node_b.pos = egui::pos2(150.0, 100.0);
+
+        let mut nodes = vec![node_a.clone(), node_b];
+        assert!(check_nodes_overlap(&nodes, 20.0));
+
+        // Selesaikan overlap khusus untuk node_b yang di-drag
+        resolve_dragged_node_overlap(&mut nodes, "table_b", 20.0);
+
+        // table_a harus tetap stabil di posisi aslinya (100.0, 100.0)
+        assert_eq!(nodes[0].pos, egui::pos2(100.0, 100.0));
+
+        // Dan kedua tabel sudah tidak lagi tumpang tindih
+        assert!(!check_nodes_overlap(&nodes, 20.0));
+    }
+
+    #[test]
+    fn test_diagram_state_prevent_overlap_default() {
+        let state = DiagramState::default();
+        assert!(state.prevent_overlap);
+
+        // JSON tanpa properti prevent_overlap harus mendefaultkan ke true
+        let json_data = r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState = serde_json::from_str(json_data).expect("should deserialize");
+        assert!(deserialized.prevent_overlap);
+    }
+
+    #[test]
+    fn test_diagram_search_filter_flags() {
+        let mut state = DiagramState::default();
+        assert!(state.search_tables);
+        assert!(state.search_columns);
+        assert!(state.search_groups);
+
+        // JSON deserialization harus mendefaultkan search flags ke true
+        let json_data = r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState = serde_json::from_str(json_data).expect("should deserialize");
+        assert!(deserialized.search_tables);
+        assert!(deserialized.search_columns);
+        assert!(deserialized.search_groups);
+
+        // Uji fleksibilitas filter pencarian (bisa salah satu, kombinasi, atau semua)
+        let table_title = "users";
+        let col_name = "email";
+        let group_title = "Auth Group";
+        let q = "user";
+
+        state.search_tables = true;
+        state.search_columns = false;
+        state.search_groups = false;
+        assert!(state.search_tables && table_title.contains(q));
+        assert!(!(state.search_columns && col_name.contains("mail")));
+        assert!(!(state.search_groups && group_title.to_lowercase().contains("auth")));
+
+        state.search_tables = false;
+        state.search_columns = true;
+        assert!(!(state.search_tables && table_title.contains(q)));
+        assert!(state.search_columns && col_name.contains("mail"));
+
+        state.search_columns = false;
+        state.search_groups = true;
+        assert!(state.search_groups && group_title.to_lowercase().contains("auth"));
     }
 }
 

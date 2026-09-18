@@ -731,9 +731,18 @@ pub struct DiagramState {
     pub search_query: String,
     #[serde(skip)]
     pub show_search: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_tables: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_columns: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_groups: bool,
     /// Tampilkan grid latar.
     #[serde(default = "default_true")]
     pub show_grid: bool,
+    /// Mencegah tabel tumpang tindih (anti-overlap / collision avoidance).
+    #[serde(default = "default_true")]
+    pub prevent_overlap: bool,
     /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
     #[serde(default)]
     pub virtual_relations: Vec<VirtualRelation>,
@@ -764,7 +773,11 @@ impl Default for DiagramState {
             new_group_buffer: String::new(),
             search_query: String::new(),
             show_search: false,
+            search_tables: true,
+            search_columns: true,
+            search_groups: true,
             show_grid: true,
+            prevent_overlap: true,
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
