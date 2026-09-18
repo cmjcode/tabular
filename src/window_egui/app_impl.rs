@@ -1449,11 +1449,7 @@ impl Tabular {
                 .max_size(800.0)
                 .frame(
                     egui::Frame::default()
-                        .fill(if ctx.global_style().visuals.dark_mode {
-                            egui::Color32::from_rgb(22, 24, 34)
-                        } else {
-                            egui::Color32::from_rgb(240, 242, 252)
-                        })
+                        .fill(super::style::ai_panel_bg(ctx))
                         .inner_margin(egui::Margin::ZERO),
                 )
                 .show(root_ui, |ui| {

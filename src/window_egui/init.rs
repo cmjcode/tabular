@@ -592,6 +592,8 @@ impl super::Tabular {
             ai_live_edit_parser: None,
             ai_live_edit_active: None,
             ai_markdown_cache: egui_commonmark::CommonMarkCache::default(),
+            ai_schema_badge: None,
+            ai_confirm_clear_until: None,
             ai_api_key: String::new(),
             ai_model: String::new(),
             ai_provider: crate::config::AiProvider::OpenAI,
