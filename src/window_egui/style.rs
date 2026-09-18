@@ -16,6 +16,8 @@ pub fn dark_visuals() -> egui::Visuals {
     v.panel_fill = panel;
     v.faint_bg_color = egui::Color32::from_rgb(30, 32, 42);
     v.extreme_bg_color = egui::Color32::from_rgb(15, 16, 20);
+    // Latar semua text box; sedikit lebih terang dari panel agar terbaca sebagai field.
+    v.text_edit_bg_color = Some(egui::Color32::from_rgb(30, 31, 36));
 
     v.widgets.noninteractive.bg_fill = panel;
     v.widgets.noninteractive.weak_bg_fill = panel;
@@ -61,6 +63,7 @@ pub fn light_visuals() -> egui::Visuals {
     v.panel_fill = panel;
     v.faint_bg_color = egui::Color32::from_rgb(241, 245, 249);
     v.extreme_bg_color = egui::Color32::from_rgb(255, 255, 255);
+    v.text_edit_bg_color = Some(egui::Color32::from_rgb(255, 255, 255));
 
     v.widgets.noninteractive.bg_fill = panel;
     v.widgets.noninteractive.weak_bg_fill = panel;
@@ -105,6 +108,7 @@ pub fn light_soft_visuals() -> egui::Visuals {
     v.panel_fill = panel;
     v.faint_bg_color = egui::Color32::from_rgb(240, 237, 232);
     v.extreme_bg_color = egui::Color32::from_rgb(255, 252, 248);
+    v.text_edit_bg_color = Some(egui::Color32::from_rgb(255, 252, 248));
 
     v.widgets.noninteractive.bg_fill = panel;
     v.widgets.noninteractive.weak_bg_fill = panel;
@@ -245,7 +249,67 @@ pub fn btn_success_ctx<'a>(ctx: &egui::Context, text: impl Into<String>) -> egui
     .corner_radius(6.0)
 }
 
-/// Unified active/inactive tab component across the app (Sidebar, Workspace Header, Sub-views, Settings)
+// ── Token warna navigasi sidebar ─────────────────────────────────────────────
+// Satu palet abu netral (tanpa campuran abu kebiruan) supaya sidebar, tab,
+// segmented control, dan search box terasa satu keluarga dengan editor.
+
+/// Permukaan dasar sidebar.
+pub fn nav_surface(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(20, 20, 20)
+    } else {
+        egui::Color32::from_rgb(245, 245, 245)
+    }
+}
+
+/// Permukaan cekung: track segmented control & field pencarian.
+pub fn nav_track(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(30, 30, 30)
+    } else {
+        egui::Color32::from_rgb(233, 233, 235)
+    }
+}
+
+/// Permukaan terangkat: segmen aktif.
+pub fn nav_raised(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(52, 52, 54)
+    } else {
+        egui::Color32::from_rgb(255, 255, 255)
+    }
+}
+
+/// Garis pemisah / border tipis.
+pub fn nav_border(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(44, 44, 46)
+    } else {
+        egui::Color32::from_rgb(218, 218, 222)
+    }
+}
+
+/// Teks/ikon utama (aktif).
+pub fn nav_text_strong(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(236, 236, 238)
+    } else {
+        egui::Color32::from_rgb(24, 24, 27)
+    }
+}
+
+/// Teks/ikon sekunder (non-aktif, hint).
+pub fn nav_text_muted(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(140, 140, 146)
+    } else {
+        egui::Color32::from_rgb(113, 113, 122)
+    }
+}
+
+/// Tab level-1 (Sidebar, header Data/Structure/Query, sub-view Structure).
+/// Gaya underline murni: tanpa fill/border, hanya warna teks + garis aksen 2px
+/// pada tab aktif. Ini satu-satunya tempat aksen merah dipakai di navigasi.
 pub fn render_custom_tab(
     ui: &mut egui::Ui,
     title: &str,
@@ -254,178 +318,268 @@ pub fn render_custom_tab(
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
-        let is_dark = ui.visuals().dark_mode;
-        let is_hovered = response.hovered();
-
-        let tab_corner = egui::CornerRadius {
-            nw: 4,
-            ne: 4,
-            sw: 0,
-            se: 0,
-        };
-
-        // 1. Background Fill (clean elevated surface, no red box fill)
-        let bg_fill = if is_active {
-            if is_dark {
-                egui::Color32::from_rgb(40, 43, 56)
-            } else {
-                egui::Color32::from_rgb(255, 255, 255)
-            }
-        } else if is_hovered {
-            if is_dark {
-                egui::Color32::from_rgb(30, 33, 44)
-            } else {
-                egui::Color32::from_rgb(238, 242, 246)
-            }
+        let ctx = ui.ctx().clone();
+        let text_color = if is_active || response.hovered() {
+            nav_text_strong(&ctx)
         } else {
-            egui::Color32::TRANSPARENT
+            nav_text_muted(&ctx)
         };
 
-        ui.painter().rect_filled(rect, tab_corner, bg_fill);
+        let font_size = (size.y * 0.30).clamp(13.0, 15.0);
+        let font_id = egui::FontId::new(font_size, egui::FontFamily::Proportional);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(title.to_string(), font_id, text_color);
+        let text_pos = rect.center() - galley.size() / 2.0;
+        ui.painter().galley(text_pos, galley, text_color);
 
-        // 2. Subtle Neutral Border (no red box stroke surrounding tab)
-        let stroke_color = if is_active {
-            if is_dark {
-                egui::Color32::from_rgb(55, 60, 76)
-            } else {
-                egui::Color32::from_rgb(215, 222, 232)
-            }
-        } else if is_hovered {
-            if is_dark {
-                egui::Color32::from_rgb(45, 48, 62)
-            } else {
-                egui::Color32::from_rgb(225, 232, 240)
-            }
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-
-        if stroke_color != egui::Color32::TRANSPARENT {
-            ui.painter().rect_stroke(
-                rect,
-                tab_corner,
-                egui::Stroke::new(1.0, stroke_color),
-                egui::StrokeKind::Outside,
-            );
-        }
-
-        // 3. Bottom Red Line Accent (drawn only at the bottom edge for active tabs)
         if is_active {
-            let line_height = 3.0;
-            let bottom_accent_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.left(), rect.bottom() - line_height),
-                egui::vec2(rect.width(), line_height),
+            let line_height = 2.0;
+            let accent_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + 6.0, rect.bottom() - line_height),
+                egui::pos2(rect.right() - 6.0, rect.bottom()),
             );
             ui.painter()
-                .rect_filled(bottom_accent_rect, 0.0, theme_accent(ui.ctx()));
+                .rect_filled(accent_rect, 1.0, theme_accent(&ctx));
         }
-
-        // 4. Text
-        let text_color = if is_active {
-            if is_dark {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::from_rgb(15, 23, 42)
-            }
-        } else if is_hovered {
-            if is_dark {
-                egui::Color32::from_rgb(226, 232, 240)
-            } else {
-                egui::Color32::from_rgb(30, 41, 59)
-            }
-        } else {
-            if is_dark {
-                egui::Color32::from_rgb(150, 160, 175)
-            } else {
-                egui::Color32::from_rgb(100, 116, 139)
-            }
-        };
-
-        let tab_font_size = (size.y * 0.32).clamp(13.0, 16.0);
-        let font_id = egui::FontId::new(tab_font_size, egui::FontFamily::Proportional);
-
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            title,
-            font_id,
-            text_color,
-        );
     }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Text box standar untuk seluruh aplikasi (form, preferences, dialog).
+/// Frame digambar manual supaya tinggi, padding, radius, dan border fokus
+/// konsisten — `TextEdit` bawaan egui meng-hardcode margin (4,2) dan memakai
+/// `selection.stroke` (putih) sebagai border fokus.
+///
+/// `edit` diteruskan apa adanya, jadi `.password()`, `.hint_text()`, dll tetap
+/// bisa dipakai pemanggil. `width`: `f32::INFINITY` = isi seluruh lebar tersedia.
+/// `icon`: ikon opsional di sisi kiri (mis. ikon search).
+pub fn render_text_field(
+    ui: &mut egui::Ui,
+    edit: egui::TextEdit<'_>,
+    width: f32,
+    icon: Option<&str>,
+) -> egui::Response {
+    let visuals = ui.visuals().clone();
+    // Mode touch memakai interact_size yang lebih besar (lihat DeviceUiMetrics).
+    let is_touch = ui.spacing().interact_size.y >= 30.0;
+    let height = if is_touch { 40.0 } else { 30.0 };
+    let font_size = if is_touch { 15.5 } else { 13.0 };
+    let width = width.min(ui.available_width()).max(40.0);
+    let radius = visuals.widgets.inactive.corner_radius;
+    let muted = nav_text_muted(ui.ctx());
+
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    ui.painter().rect_filled(rect, radius, visuals.text_edit_bg_color());
+
+    let mut text_left = 9.0;
+    if let Some(icon) = icon {
+        let icon_galley = ui.painter().layout_no_wrap(
+            icon.to_string(),
+            egui::FontId::proportional(font_size + 3.0),
+            muted,
+        );
+        let icon_w = icon_galley.size().x;
+        ui.painter().galley(
+            egui::pos2(rect.left() + text_left, rect.center().y - icon_galley.size().y / 2.0),
+            icon_galley,
+            muted,
+        );
+        text_left += icon_w + 6.0;
+    }
+
+    let edit_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + text_left, rect.top()),
+        egui::pos2(rect.right() - 8.0, rect.bottom()),
+    );
+    let response = ui.put(
+        edit_rect,
+        edit.frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .desired_width(f32::INFINITY)
+            .vertical_align(egui::Align::Center)
+            .font(egui::FontId::proportional(font_size)),
+    );
+
+    let border = if response.has_focus() {
+        visuals.widgets.active.bg_stroke.color
+    } else if response.hovered() {
+        visuals.widgets.hovered.bg_stroke.color
+    } else {
+        visuals.widgets.inactive.bg_stroke.color
+    };
+    ui.painter()
+        .rect_stroke(rect, radius, egui::Stroke::new(1.0, border), egui::StrokeKind::Inside);
     response
 }
 
-/// Compact icon-only sub-tab used for secondary navigation nested inside a main tab
-/// (e.g. Connections/Queries/History inside "Database"). Deliberately flat — no
-/// elevated card background, no border, no rounded-top-corner shape — so its active
-/// state reads differently from `render_custom_tab` and the two levels don't get
-/// confused. Mirrors VS Code's flat, underline-accented secondary tabs.
-pub fn render_sidebar_subtab(
+/// Field pencarian/filter standar: `render_text_field` + ikon search.
+pub fn render_search_field(
     ui: &mut egui::Ui,
-    icon: &str,
-    is_active: bool,
-    size: egui::Vec2,
+    text: &mut String,
+    hint: &str,
+    width: f32,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let is_dark = ui.visuals().dark_mode;
-        let is_hovered = response.hovered();
+    let muted = nav_text_muted(ui.ctx());
+    render_text_field(
+        ui,
+        egui::TextEdit::singleline(text).hint_text(egui::RichText::new(hint).color(muted)),
+        width,
+        Some(egui_icons::icons::ICON_SEARCH.codepoint),
+    )
+}
 
-        // Soft, fully-rounded highlight (not a card) — only on hover/active.
-        if is_active || is_hovered {
-            let bg = if is_active {
-                if is_dark {
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 14)
-                }
-            } else if is_dark {
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
-            } else {
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 6)
-            };
-            ui.painter().rect_filled(rect, 4.0, bg);
+/// Satu item segmented control: (key, ikon, label).
+pub struct NavSegment<'a> {
+    pub key: &'a str,
+    pub icon: &'a str,
+    pub label: &'a str,
+}
+
+/// Segmented control untuk navigasi level-2 (mis. Connections/Queries/History).
+/// Sengaja netral (tanpa aksen merah) agar hierarkinya jelas di bawah tab level-1.
+///
+/// Label ditampilkan adaptif: bila lebar cukup semua segmen berlabel; bila sempit,
+/// hanya segmen aktif yang berlabel dan sisanya ikon saja (dengan tooltip).
+/// Mengembalikan key segmen yang diklik pada frame ini.
+pub fn render_segmented_nav<'a>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    segments: &[NavSegment<'a>],
+    selected: &str,
+    height: f32,
+) -> Option<&'a str> {
+    let n = segments.len();
+    if n == 0 {
+        return None;
+    }
+    let ctx = ui.ctx().clone();
+    let width = ui.available_width().max(40.0);
+    let (track_rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+
+    let track_pad = 3.0;
+    let seg_gap = 2.0;
+    let inner = track_rect.shrink(track_pad);
+    let inner_w = inner.width() - seg_gap * (n as f32 - 1.0);
+
+    let icon_font = egui::FontId::proportional((height * 0.46).clamp(15.0, 19.0));
+    let label_font = egui::FontId::proportional(if height >= 36.0 { 14.0 } else { 12.5 });
+    let icon_label_gap = 6.0;
+    let h_pad = 10.0;
+
+    // Ukur kebutuhan lebar tiap segmen jika memakai label.
+    let painter = ui.painter().clone();
+    let measure = |text: &str, font: &egui::FontId| {
+        painter
+            .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    let icon_w: Vec<f32> = segments.iter().map(|s| measure(s.icon, &icon_font)).collect();
+    let full_w: Vec<f32> = segments
+        .iter()
+        .zip(&icon_w)
+        .map(|(s, iw)| iw + icon_label_gap + measure(s.label, &label_font) + h_pad * 2.0)
+        .collect();
+    let max_full = full_w.iter().cloned().fold(0.0, f32::max);
+    let sum_full: f32 = full_w.iter().sum();
+
+    let active_idx = segments.iter().position(|s| s.key == selected);
+    let compact_min = 34.0;
+
+    // Tentukan lebar & visibilitas label per segmen.
+    let (widths, show_label): (Vec<f32>, Vec<bool>) = if max_full * n as f32 <= inner_w {
+        (vec![inner_w / n as f32; n], vec![true; n])
+    } else if sum_full <= inner_w {
+        let extra = (inner_w - sum_full) / n as f32;
+        (full_w.iter().map(|w| w + extra).collect(), vec![true; n])
+    } else if let Some(ai) = active_idx.filter(|&ai| {
+        n > 1 && full_w[ai] + compact_min * (n as f32 - 1.0) <= inner_w
+    }) {
+        let rest = (inner_w - full_w[ai]) / (n as f32 - 1.0);
+        (
+            (0..n).map(|i| if i == ai { full_w[ai] } else { rest }).collect(),
+            (0..n).map(|i| i == ai).collect(),
+        )
+    } else {
+        (vec![inner_w / n as f32; n], vec![false; n])
+    };
+
+    // Track.
+    painter.rect_filled(track_rect, 6.0, nav_track(&ctx));
+
+    let mut clicked = None;
+    let mut x = inner.left();
+    for (i, seg) in segments.iter().enumerate() {
+        let seg_rect = egui::Rect::from_min_size(
+            egui::pos2(x, inner.top()),
+            egui::vec2(widths[i], inner.height()),
+        );
+        x += widths[i] + seg_gap;
+
+        let mut resp = ui
+            .interact(
+                seg_rect,
+                egui::Id::new((id_salt, seg.key)),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if !show_label[i] {
+            resp = resp.on_hover_text(seg.label);
+        }
+        if resp.clicked() {
+            clicked = Some(seg.key);
         }
 
-        let icon_color = if is_active {
-            if is_dark {
-                egui::Color32::WHITE
-            } else {
-                egui::Color32::from_rgb(15, 23, 42)
-            }
-        } else if is_hovered {
-            if is_dark {
-                egui::Color32::from_rgb(210, 216, 226)
-            } else {
-                egui::Color32::from_rgb(50, 60, 75)
-            }
-        } else if is_dark {
-            egui::Color32::from_rgb(130, 138, 150)
-        } else {
-            egui::Color32::from_rgb(140, 148, 162)
-        };
-        let font_size = (size.y * 0.50).clamp(14.0, 18.0);
-        let font_id = egui::FontId::new(font_size, egui::FontFamily::Proportional);
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            font_id,
-            icon_color,
-        );
-
-        // Thin, short underline accent — distinct from the main tab's thicker,
-        // full-width bottom line.
+        let is_active = seg.key == selected;
         if is_active {
-            let underline_rect = egui::Rect::from_center_size(
-                egui::pos2(rect.center().x, rect.bottom() - 1.0),
-                egui::vec2(rect.width() * 0.5, 2.0),
+            painter.rect_filled(seg_rect, 4.0, nav_raised(&ctx));
+            painter.rect_stroke(
+                seg_rect,
+                4.0,
+                egui::Stroke::new(1.0, nav_border(&ctx)),
+                egui::StrokeKind::Inside,
             );
-            ui.painter()
-                .rect_filled(underline_rect, 1.0, theme_accent(ui.ctx()));
+        } else if resp.hovered() {
+            let hover = if ctx.global_style().visuals.dark_mode {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 10)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8)
+            };
+            painter.rect_filled(seg_rect, 4.0, hover);
+        }
+
+        let color = if is_active || resp.hovered() {
+            nav_text_strong(&ctx)
+        } else {
+            nav_text_muted(&ctx)
+        };
+
+        let icon_galley = painter.layout_no_wrap(seg.icon.to_string(), icon_font.clone(), color);
+        if show_label[i] {
+            let label_galley =
+                painter.layout_no_wrap(seg.label.to_string(), label_font.clone(), color);
+            let content_w = icon_galley.size().x + icon_label_gap + label_galley.size().x;
+            let left = seg_rect.center().x - content_w / 2.0;
+            let cy = seg_rect.center().y;
+            painter.galley(
+                egui::pos2(left, cy - icon_galley.size().y / 2.0),
+                icon_galley.clone(),
+                color,
+            );
+            painter.galley(
+                egui::pos2(
+                    left + icon_galley.size().x + icon_label_gap,
+                    cy - label_galley.size().y / 2.0,
+                ),
+                label_galley,
+                color,
+            );
+        } else {
+            painter.galley(seg_rect.center() - icon_galley.size() / 2.0, icon_galley, color);
         }
     }
-    response
+    clicked
 }
 
 pub fn theme_danger(ctx: &egui::Context) -> egui::Color32 {

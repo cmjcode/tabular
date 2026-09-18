@@ -18,21 +18,12 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     render_postman_import_dialog(app, ui);
 
     // ── Search box ────────────────────────────────────────────────────────
-    let search_bg = if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(30, 32, 42)
-    } else {
-        egui::Color32::from_rgb(235, 238, 243)
-    };
-    let available_width = ui.available_width() - 5.0;
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.add_sized(
-            [available_width, 24.0],
-            egui::TextEdit::singleline(&mut app.collection_search)
-                .hint_text("🔍 Filter requests…")
-                .background_color(search_bg),
-        );
-    });
+    crate::window_egui::style::render_search_field(
+        ui,
+        &mut app.collection_search,
+        "Filter requests…",
+        f32::INFINITY,
+    );
 
     let filter = app.collection_search.trim().to_lowercase();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());

@@ -192,13 +192,12 @@ fn render_url_bar(
         let total_right_w = send_save_code_w + send_save_code_w + send_save_code_w;
         let total_spacing = ui.spacing().item_spacing.x * 4.0;
         let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
-        let url_resp = ui.add_sized(
-            [url_w, bar_h],
+        let url_resp = crate::window_egui::style::render_text_field(
+            ui,
             egui::TextEdit::singleline(&mut state.url)
-                .hint_text("https://api.example.com/endpoint")
-                .desired_width(url_w)
-                .margin(egui::Margin::symmetric(8, 4))
-                .vertical_align(egui::Align::Center),
+                .hint_text("https://api.example.com/endpoint"),
+            url_w,
+            None,
         );
 
         // Pasting a full curl command directly into the URL field auto-converts
@@ -344,10 +343,12 @@ fn render_save_dialog(
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Request Name:").strong());
-                ui.add(
+                crate::window_egui::style::render_text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut state.save_dialog_name)
-                        .hint_text("e.g. Get User Profile")
-                        .desired_width(f32::INFINITY),
+                        .hint_text("e.g. Get User Profile"),
+                    f32::INFINITY,
+                    None,
                 );
                 ui.add_space(8.0);
 
@@ -963,22 +964,18 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
                 ui.checkbox(enabled, "")
             });
 
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(key)
-                    .desired_width(field_w)
-                    .hint_text("key")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
+            crate::window_egui::style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(key).hint_text("key"),
+                field_w,
+                None,
             );
 
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(value)
-                    .desired_width(field_w)
-                    .hint_text("value")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
+            crate::window_egui::style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(value).hint_text("value"),
+                field_w,
+                None,
             );
 
             let del_btn = egui::Button::new(
@@ -1020,12 +1017,6 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
 // ─── Auth panel ─────────────────────────────────────────────────────────────
 
 fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
-        ui.ctx(),
-        crate::config::UiModePreference::Auto,
-    );
-    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
-
     // Auth type selector
     ui.horizontal_wrapped(|ui| {
         ui.label("Type:");
@@ -1062,14 +1053,13 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         }
         HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
             ui.label("Token:");
-            ui.add_sized(
-                [ui.available_width(), row_h],
+            crate::window_egui::style::render_text_field(
+                ui,
                 egui::TextEdit::singleline(&mut state.bearer_token)
                     .hint_text("Bearer token or JWT string")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center)
                     .password(true),
+                f32::INFINITY,
+                None,
             );
         }
         HttpAuthType::BasicAuth => {
@@ -1078,25 +1068,23 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Username:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.basic_user)
-                            .hint_text("username")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
+                            .hint_text("username"),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 
                     ui.label("Password:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.basic_pass)
                             .hint_text("password")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
                             .password(true),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
                 });
@@ -1107,25 +1095,23 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Key Name:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.api_key_name)
-                            .hint_text("X-API-Key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
+                            .hint_text("X-API-Key"),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 
                     ui.label("Key Value:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.api_key_value)
                             .hint_text("your-api-key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
                             .password(true),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 

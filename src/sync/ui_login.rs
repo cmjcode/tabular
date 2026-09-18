@@ -181,10 +181,12 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     section(ui, "Server", |ui| {
         stacked(ui, "Sync server URL", None, |ui| {
-            let resp = ui.add(
+            let resp = style::render_text_field(
+                ui,
                 egui::TextEdit::singleline(&mut tabular.sync_server_url)
-                    .hint_text("https://api.tabular.id")
-                    .desired_width(f32::INFINITY),
+                    .hint_text("https://api.tabular.id"),
+                f32::INFINITY,
+                None,
             );
             if resp.lost_focus() || resp.changed() {
                 tabular.prefs_dirty = true;
@@ -689,10 +691,13 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.add_space(8.0);
                 ui.collapsing("🔗 Custom Image URL or Base64", |ui| {
                     ui.horizontal(|ui| {
-                        let avatar_edit = ui.add(
+                        let avatar_w = ui.available_width() - 10.0;
+                        let avatar_edit = style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_avatar_url_input)
-                                .hint_text("https://example.com/photo.png or data:image/...")
-                                .desired_width(ui.available_width() - 10.0),
+                                .hint_text("https://example.com/photo.png or data:image/..."),
+                            avatar_w,
+                            None,
                         );
                         if avatar_edit.changed() {
                             tabular.avatar_texture = None;
@@ -728,19 +733,23 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     .spacing([18.0, 14.0])
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new("Display Name:").strong().size(12.5));
-                        ui.add(
+                        style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_display_name_input)
-                                .hint_text("e.g. John Doe")
-                                .desired_width(field_w),
+                                .hint_text("e.g. John Doe"),
+                            field_w,
+                            None,
                         );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Username:").strong().size(12.5));
                         ui.vertical(|ui| {
-                            ui.add(
+                            style::render_text_field(
+                                ui,
                                 egui::TextEdit::singleline(&mut tabular.profile_username_input)
-                                    .hint_text("e.g. johndoe")
-                                    .desired_width(field_w),
+                                    .hint_text("e.g. johndoe"),
+                                field_w,
+                                None,
                             );
                             ui.label(
                                 egui::RichText::new("Used for team invites and mentions")
@@ -751,10 +760,12 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Phone Number:").strong().size(12.5));
-                        ui.add(
+                        style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_phone_input)
-                                .hint_text("e.g. +62 812 3456 7890")
-                                .desired_width(field_w),
+                                .hint_text("e.g. +62 812 3456 7890"),
+                            field_w,
+                            None,
                         );
                         ui.end_row();
 
@@ -998,12 +1009,16 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
 
             ui.label(format!("Type {} to confirm:", account.email));
             ui.add_space(4.0);
-            ui.add_enabled(
-                !in_progress,
-                egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
-                    .hint_text(account.email.clone())
-                    .desired_width(f32::INFINITY),
-            );
+            // Nonaktifkan input saat proses hapus akun sedang berjalan
+            ui.add_enabled_ui(!in_progress, |ui| {
+                style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
+                        .hint_text(account.email.clone()),
+                    f32::INFINITY,
+                    None,
+                );
+            });
 
             let confirmed = tabular.delete_account_confirm_input.trim() == account.email;
 

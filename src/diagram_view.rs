@@ -680,16 +680,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) {
         // Reduced size for tighter fit (equal active margins)
         let search_rect = egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(270.0, 40.0));
         
-        ui.painter().rect_filled(search_rect, 4.0, egui::Color32::from_rgb(30, 30, 35));
-        ui.painter().rect_stroke(search_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Middle);
+        let card_fill = ui.visuals().window_fill;
+        let card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        ui.painter().rect_filled(search_rect, 6.0, card_fill);
+        ui.painter().rect_stroke(search_rect, 6.0, card_stroke, egui::StrokeKind::Middle);
 
-        ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect.shrink(8.0)), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(search_rect.shrink(5.0)), |ui| {
              // Use left_to_right with Align::Center for vertical centering
              ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                 ui.visuals_mut().widgets.active.bg_fill = egui::Color32::from_rgb(50, 50, 55);
-                 let response = ui.add(egui::TextEdit::singleline(&mut state.search_query)
-                    .hint_text("Search table / column...")
-                    .desired_width(220.0)
+                 let response = crate::window_egui::style::render_search_field(
+                     ui,
+                     &mut state.search_query,
+                     "Search table / column…",
+                     220.0,
                  );
                  
                  // Auto-focus if empty (just opened or cleared)

@@ -1060,10 +1060,12 @@ impl Tabular {
 
         section(ui, "Storage Location", |ui| {
             stacked(ui, "Current location", None, |ui| {
+                // Tampilan read-only disamakan dengan style::render_text_field.
                 egui::Frame::new()
-                    .fill(ui.visuals().extreme_bg_color)
-                    .corner_radius(5.0)
-                    .inner_margin(egui::Margin::symmetric(8, 5))
+                    .fill(ui.visuals().text_edit_bg_color())
+                    .stroke(ui.visuals().widgets.inactive.bg_stroke)
+                    .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+                    .inner_margin(egui::Margin::symmetric(9, 7))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.add(
@@ -1080,10 +1082,13 @@ impl Tabular {
             stacked(ui, "New location", None, |ui| {
                 ui.horizontal(|ui| {
                     let browse_w = 96.0;
-                    ui.add(
+                    let field_w = ui.available_width() - browse_w - 8.0;
+                    style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut self.temp_data_directory)
-                            .desired_width(ui.available_width() - browse_w - 8.0)
                             .hint_text("/absolute/path/to/folder"),
+                        field_w,
+                        None,
                     );
                     let label = format!("{}  Browse", egui_icons::icons::ICON_FOLDER.codepoint);
                     if ui
@@ -1292,11 +1297,13 @@ impl Tabular {
                 Some("Stored locally and only sent to the chosen provider."),
                 |ui| {
                     let hint_text = self.ai_provider.api_key_hint();
-                    let resp = ui.add(
+                    let resp = style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
                             .password(true)
-                            .desired_width(240.0)
                             .hint_text(hint_text),
+                        240.0,
+                        None,
                     );
                     if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                         self.ai_api_key = self.ai_settings_api_key_input.clone();
@@ -1323,10 +1330,12 @@ impl Tabular {
 
         section(ui, "Model", |ui| {
             row(ui, "Model", None, |ui| {
-                let resp = ui.add(
+                let resp = style::render_text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut self.ai_settings_model_input)
-                        .desired_width(200.0)
                         .hint_text(self.ai_provider.default_model()),
+                    200.0,
+                    None,
                 );
                 if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                     self.ai_model = self.ai_settings_model_input.clone();
@@ -1365,10 +1374,13 @@ impl Tabular {
                     } else {
                         default_url
                     };
-                    let resp = ui.add(
+                    let field_w = ui.available_width() - buttons_w;
+                    let resp = style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
-                            .desired_width(ui.available_width() - buttons_w)
                             .hint_text(hint_url),
+                        field_w,
+                        None,
                     );
                     if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                         self.ai_base_url = self.ai_settings_base_url_input.clone();

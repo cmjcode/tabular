@@ -822,10 +822,11 @@ fn render_navigation_and_filters(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut state.search_text)
-                    .hint_text(format!("{} Search PID, user, db, query...", egui_icons::icons::ICON_SEARCH.codepoint))
-                    .desired_width(220.0),
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut state.search_text,
+                "Search PID, user, db, query…",
+                220.0,
             );
         });
     });

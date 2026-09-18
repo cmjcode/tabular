@@ -245,10 +245,11 @@ pub fn render_redis_browser(
                     }
                 });
 
-            ui.add(
-                egui::TextEdit::singleline(&mut state.filter_text)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Filter by key name or pattern"),
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut state.filter_text,
+                "Filter by key name or pattern",
+                f32::INFINITY,
             );
         });
 

@@ -265,10 +265,11 @@ impl Tabular {
                 } else {
                     format!("{default_bin} (found in PATH)")
                 };
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input)
-                        .desired_width(220.0)
-                        .hint_text(hint_text),
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input).hint_text(hint_text),
+                    220.0,
+                    None,
                 );
                 if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                     self.ai_cli_bin = self.ai_settings_cli_bin_input.trim().to_string();
@@ -305,10 +306,11 @@ impl Tabular {
              (…-low/-medium/-high); the effort setting is then ignored.",
         );
         row(ui, "Model", model_hint, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input)
-                    .desired_width(220.0)
-                    .hint_text("(CLI default)"),
+            let resp = style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input).hint_text("(CLI default)"),
+                220.0,
+                None,
             );
             if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                 self.ai_cli_model = self.ai_settings_cli_model_input.trim().to_string();
@@ -375,10 +377,11 @@ impl Tabular {
                     CliAgentKind::GeminiCli => "e.g. --approval-mode yolo",
                     CliAgentKind::Custom => "e.g. chat --model {model} {prompt}",
                 };
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input)
-                        .desired_width(220.0)
-                        .hint_text(hint_text),
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input).hint_text(hint_text),
+                    220.0,
+                    None,
                 );
                 if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                     self.ai_cli_extra_args =

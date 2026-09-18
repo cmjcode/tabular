@@ -387,38 +387,12 @@ fn render_catalog_tab(
         ui.spacing_mut().item_spacing.x = 8.0;
 
         // Search box with icon
-        let search_frame = egui::Frame::new()
-            .fill(if dark {
-                egui::Color32::from_rgb(22, 24, 30)
-            } else {
-                egui::Color32::from_rgb(244, 247, 251)
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                if dark {
-                    egui::Color32::from_rgb(46, 50, 60)
-                } else {
-                    egui::Color32::from_rgb(215, 220, 230)
-                },
-            ))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::symmetric(8, 4));
-
-        search_frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(egui_icons::icons::ICON_SEARCH.codepoint)
-                        .size(13.0)
-                        .color(egui::Color32::GRAY),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.search_query)
-                        .hint_text("Search plugins by name, tag, or description...")
-                        .desired_width(260.0)
-                        .frame(egui::Frame::NONE),
-                );
-            });
-        });
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.search_query,
+            "Search plugins by name, tag, or description…",
+            300.0,
+        );
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Category:").small().weak());

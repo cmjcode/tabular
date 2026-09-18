@@ -209,8 +209,11 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
 
                     // Filename input
                     ui.label("Enter filename:");
-                    let filename_resp = ui.add(
+                    let filename_resp = crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut tabular.save_filename).cursor_at_end(false),
+                        f32::INFINITY,
+                        None,
                     );
                     if filename_resp.clicked() || filename_resp.gained_focus() {
                         filename_resp.request_focus();
@@ -273,10 +276,11 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                 ui.add_space(4.0);
                 egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Index name");
-                    let name_resp = ui.add(
-                        egui::TextEdit::singleline(&mut working.index_name)
-                            .desired_width(360.0)
-                            .cursor_at_end(false)
+                    let name_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut working.index_name).cursor_at_end(false),
+                        360.0,
+                        None,
                     );
                     if name_resp.clicked() || name_resp.gained_focus() {
                         name_resp.request_focus();
@@ -285,10 +289,11 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                     ui.end_row();
 
                     ui.label("Columns");
-                    let cols_resp = ui.add(
-                        egui::TextEdit::singleline(&mut working.columns)
-                            .desired_width(360.0)
-                            .cursor_at_end(false)
+                    let cols_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut working.columns).cursor_at_end(false),
+                        360.0,
+                        None,
                     );
                     if cols_resp.clicked() || cols_resp.gained_focus() {
                         cols_resp.request_focus();
@@ -791,11 +796,14 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                         }
                                         _ => {
                                             let db_field_width = ui.available_width();
-                                            let db_response = ui.add_sized(
-                                                [db_field_width, 0.0],
-                                                egui::TextEdit::singleline(&mut target_text)
-                                                    .cursor_at_end(false),
-                                            );
+                                            let db_response =
+                                                crate::window_egui::style::render_text_field(
+                                                    ui,
+                                                    egui::TextEdit::singleline(&mut target_text)
+                                                        .cursor_at_end(false),
+                                                    db_field_width,
+                                                    None,
+                                                );
                                             if db_response.clicked() || db_response.gained_focus() {
                                                 db_response.request_focus();
                                                 ui.ctx().request_repaint();
@@ -1639,10 +1647,12 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                 }
                                 ui.add_space(16.0);
                                 ui.label(egui::RichText::new("NULL representation:").color(muted));
-                                ui.add(
+                                crate::window_egui::style::render_text_field(
+                                    ui,
                                     egui::TextEdit::singleline(&mut state.null_value)
-                                        .desired_width(110.0)
                                         .hint_text("e.g. NULL or \\N"),
+                                    110.0,
+                                    None,
                                 );
                             });
                         });
@@ -2082,10 +2092,11 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                     .show(ui, |ui| {
                         for (param_name, val) in &mut tabular.parameter_inputs {
                             ui.label(egui::RichText::new(param_name.as_str()).monospace().strong());
-                            ui.add(
-                                egui::TextEdit::singleline(val)
-                                    .hint_text("Masukkan nilai...")
-                                    .desired_width(260.0),
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(val).hint_text("Masukkan nilai..."),
+                                260.0,
+                                None,
                             );
                             ui.end_row();
                         }

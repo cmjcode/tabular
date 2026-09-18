@@ -598,10 +598,11 @@ fn render_tab_json(
             }
 
             ui.separator();
-            ui.add(
-                egui::TextEdit::singleline(&mut state.json_search_query)
-                    .hint_text("🔍 Search keys / values...")
-                    .desired_width(180.0),
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut state.json_search_query,
+                "Search keys / values…",
+                180.0,
             );
             if !state.json_search_query.is_empty() && ui.button("✖").clicked() {
                 state.json_search_query.clear();
@@ -1171,10 +1172,11 @@ fn render_tab_raw_text(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
-        ui.add(
-            egui::TextEdit::singleline(&mut state.text_search_query)
-                .hint_text("🔍 Find in text...")
-                .desired_width(200.0),
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.text_search_query,
+            "Find in text…",
+            200.0,
         );
         if !state.text_search_query.is_empty() && ui.button("✖").clicked() {
             state.text_search_query.clear();

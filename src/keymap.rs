@@ -377,10 +377,12 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                ui.add(
+                crate::window_egui::style::render_text_field(
+                    ui,
                     egui::TextEdit::singleline(&mut tabular.shortcuts_filter)
-                        .hint_text("action or key")
-                        .desired_width(220.0),
+                        .hint_text("action or key"),
+                    220.0,
+                    None,
                 );
             });
             ui.label(

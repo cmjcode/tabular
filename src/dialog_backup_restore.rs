@@ -247,10 +247,13 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .as_ref()
                                         .map_or(String::new(), |p| p.to_string_lossy().to_string());
 
-                                    let resp = ui.add(
+                                    let path_w = ui.available_width() - 95.0;
+                                    let resp = crate::window_egui::style::render_text_field(
+                                        ui,
                                         egui::TextEdit::singleline(&mut path_str)
-                                            .desired_width(ui.available_width() - 95.0)
                                             .hint_text("Choose target backup file path..."),
+                                        path_w,
+                                        None,
                                     );
                                     if resp.changed() {
                                         state.target_file = Some(PathBuf::from(path_str));
@@ -391,10 +394,12 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .default_open(false)
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::TextEdit::singleline(&mut state.table_search_query)
-                                                        .hint_text("🔍 Filter table list...")
-                                                        .desired_width(ui.available_width() - 140.0),
+                                                let field_width = ui.available_width() - 140.0;
+                                                crate::window_egui::style::render_search_field(
+                                                    ui,
+                                                    &mut state.table_search_query,
+                                                    "Filter table list…",
+                                                    field_width,
                                                 );
 
                                                 if ui.button("Select All").clicked() {
@@ -609,12 +614,13 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .as_ref()
                                         .map_or(String::new(), |p| p.to_string_lossy().to_string());
 
-                                    let resp = ui.add(
+                                    let path_w = ui.available_width() - 95.0;
+                                    let resp = crate::window_egui::style::render_text_field(
+                                        ui,
                                         egui::TextEdit::singleline(&mut path_str)
-                                            .desired_width(ui.available_width() - 95.0)
-                                            .hint_text(
-                                                "Select .sql, .sql.gz, .dump, .tar or .sqlite file...",
-                                            ),
+                                            .hint_text("Select .sql, .sql.gz, .dump, .tar or .sqlite file..."),
+                                        path_w,
+                                        None,
                                     );
                                     if resp.changed() {
                                         state.source_file = Some(PathBuf::from(path_str));

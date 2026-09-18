@@ -267,11 +267,11 @@ fn render_graph_canvas_and_inspector(
 ) {
     // Toolbar: Search filter, zoom buttons, reset
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("🔍").size(12.0));
-        ui.add(
-            egui::TextEdit::singleline(&mut state.search_query)
-                .hint_text("Search table, index, or operation...")
-                .desired_width(220.0),
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.search_query,
+            "Search table, index, or operation…",
+            220.0,
         );
 
         ui.separator();
