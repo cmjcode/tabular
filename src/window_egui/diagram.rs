@@ -156,6 +156,167 @@ impl super::Tabular {
             DiagramAction::Info(msg) => self.toasts.success(msg),
             DiagramAction::Error(msg) => self.toasts.error(msg),
             DiagramAction::SaveToVault => self.save_diagram_to_vault(conn_id, db_name, state),
+            DiagramAction::SaveToDatabase => self.save_diagram_to_db(conn_id, db_name, state),
+            DiagramAction::LoadFromDatabase => {
+                self.load_diagram_from_db_and_apply(conn_id, db_name)
+            }
+        }
+    }
+
+    /// Simpan diagram ke tabel `diagram_by_tabular` di database target dan cache lokal.
+    pub fn save_diagram_to_db(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+    ) {
+        let Some(cid) = conn_id else {
+            self.toasts.error("No active connection for diagram save");
+            return;
+        };
+        let db = db_name.unwrap_or_else(|| "default".to_string());
+
+        // Simpan juga ke cache disk lokal segera
+        self.save_diagram(cid, &db, state);
+
+        let pool_opt = self.connection_pools.get(&cid).cloned().or_else(|| {
+            self.shared_connection_pools
+                .lock()
+                .ok()
+                .and_then(|p| p.get(&cid).cloned())
+        });
+
+        let Some(pool) = pool_opt else {
+            self.toasts
+                .error("Database connection pool not ready. Reconnect and try again.");
+            return;
+        };
+
+        let Some(rt) = self.runtime.clone() else {
+            self.toasts.error("Tokio runtime unavailable");
+            return;
+        };
+
+        let state_clone = state.clone();
+        let db_clone = db.clone();
+
+        let save_res = rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                crate::diagram_storage::save_diagram_to_database(
+                    &pool,
+                    &db_clone,
+                    &state_clone,
+                    None,
+                    None,
+                ),
+            )
+            .await
+        });
+
+        match save_res {
+            Ok(Ok(())) => {
+                self.toasts
+                    .success("Diagram saved to table 'diagram_by_tabular' in database");
+            }
+            Ok(Err(e)) => {
+                log::error!("[DIAGRAM_DB] Failed to save diagram to database: {e}");
+                self.toasts.error(format!("Save to database failed: {e}"));
+            }
+            Err(_) => {
+                log::error!("[DIAGRAM_DB] Save diagram to database timed out");
+                self.toasts.error("Save to database timed out (10s)");
+            }
+        }
+    }
+
+    /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
+    pub fn load_diagram_from_db_and_apply(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+    ) {
+        let Some(cid) = conn_id else {
+            self.toasts.error("No active connection for diagram load");
+            return;
+        };
+        let db = db_name.unwrap_or_else(|| "default".to_string());
+
+        let pool_opt = self.connection_pools.get(&cid).cloned().or_else(|| {
+            self.shared_connection_pools
+                .lock()
+                .ok()
+                .and_then(|p| p.get(&cid).cloned())
+        });
+
+        let Some(pool) = pool_opt else {
+            self.toasts
+                .error("Database connection pool not ready. Reconnect and try again.");
+            return;
+        };
+
+        let Some(rt) = self.runtime.clone() else {
+            self.toasts.error("Tokio runtime unavailable");
+            return;
+        };
+
+        let db_clone = db.clone();
+        let load_res = rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                crate::diagram_storage::load_diagram_from_database(&pool, &db_clone, None),
+            )
+            .await
+        });
+
+        match load_res {
+            Ok(Ok(Some(loaded_state))) => {
+                let mut state_to_cache = None;
+                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
+                    && let Some(current_state) = &mut tab.diagram_state
+                {
+                    current_state.groups = loaded_state.groups;
+                    current_state.virtual_relations = loaded_state.virtual_relations;
+                    current_state.pan = loaded_state.pan;
+                    current_state.zoom = loaded_state.zoom;
+                    current_state.show_grid = loaded_state.show_grid;
+
+                    for node in &mut current_state.nodes {
+                        if let Some(ln) = loaded_state.nodes.iter().find(|n| n.id == node.id) {
+                            node.pos = ln.pos;
+                            node.size = ln.size;
+                            node.group_ids = ln.group_ids.clone();
+                            node.group_id = ln.group_id.clone();
+                            node.detached = ln.detached;
+                        }
+                    }
+
+                    for ln in loaded_state.nodes {
+                        if ln.detached && !current_state.nodes.iter().any(|n| n.id == ln.id) {
+                            current_state.nodes.push(ln);
+                        }
+                    }
+
+                    state_to_cache = Some(current_state.clone());
+                }
+
+                if let Some(st) = state_to_cache {
+                    self.save_diagram(cid, &db, &st);
+                }
+                self.toasts
+                    .success("Diagram loaded from table 'diagram_by_tabular'");
+            }
+            Ok(Ok(None)) => {
+                self.toasts
+                    .warning("Table 'diagram_by_tabular' not found or empty in database");
+            }
+            Ok(Err(e)) => {
+                log::error!("[DIAGRAM_DB] Failed to load diagram from database: {e}");
+                self.toasts.error(format!("Load from database failed: {e}"));
+            }
+            Err(_) => {
+                self.toasts.error("Load from database timed out (10s)");
+            }
         }
     }
 

@@ -488,6 +488,7 @@ impl super::Tabular {
             // 1. Fetch Foreign Keys (blocking for now, MVP)
             let mut fks = Vec::new();
             let mut columns_map = std::collections::HashMap::new();
+            let mut db_diagram_state: Option<models::structs::DiagramState> = None;
             if let Some(rt) = self.runtime.clone() {
                 // Ensure pool exists
                 rt.block_on(async {
@@ -496,6 +497,17 @@ impl super::Tabular {
 
                     // Fetch all columns for diagram (all supported engines)
                     if let Some(pool_enum) = self.connection_pools.get(&conn_id).cloned() {
+                        // Cek apakah tabel diagram_by_tabular ada di database dan muat state darinya
+                        if let Ok(Some(loaded)) =
+                            crate::diagram_storage::load_diagram_from_database(&pool_enum, &db_name, None).await
+                        {
+                            log::info!(
+                                "[DIAGRAM_DB] Successfully loaded shared diagram state from table `diagram_by_tabular` in database '{}'",
+                                db_name
+                            );
+                            db_diagram_state = Some(loaded);
+                        }
+
                         match pool_enum {
                             models::enums::DatabasePool::MySQL(p) => {
                                 if let Ok(cols) =
@@ -567,7 +579,10 @@ impl super::Tabular {
             }
 
             // 2. Initialize Diagram State
-            let mut state = self.load_diagram(conn_id, &db_name).unwrap_or_default();
+            let loaded_from_db = db_diagram_state.is_some();
+            let mut state = db_diagram_state
+                .or_else(|| self.load_diagram(conn_id, &db_name))
+                .unwrap_or_default();
 
             // Populate nodes (tables)
             let mut table_names = std::collections::HashSet::new();
@@ -748,9 +763,15 @@ impl super::Tabular {
 
             // 4. Attach Diagram State to the new active tab
             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                tab.diagram_state = Some(state);
+                tab.diagram_state = Some(state.clone());
             }
             self.table_bottom_view = models::structs::TableBottomView::Query;
+            if loaded_from_db {
+                self.save_diagram(conn_id, &db_name, &state);
+                self.toasts.info(format!(
+                    "Diagram loaded from table `diagram_by_tabular` in {db_name}"
+                ));
+            }
         }
 
         for (conn_id, db_name, table_name) in generate_ddl_requests {

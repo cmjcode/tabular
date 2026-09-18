@@ -23,6 +23,7 @@ pub mod data_table;
 pub mod dba_monitor;
 pub mod diagram_mermaid;
 pub mod diagram_relations;
+pub mod diagram_storage;
 pub mod diagram_view;
 pub mod dialog;
 pub mod dialog_backup_restore;
