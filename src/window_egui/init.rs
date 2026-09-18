@@ -1446,13 +1446,12 @@ impl super::Tabular {
                                 });
 
                                 if let Some(conn) = conn_opt {
-                                    let cols = crate::connection::fetch_columns_from_database(
-                                        connection_id,
-                                        &database_name,
-                                        &table_name,
-                                        &conn,
-                                    );
-                                    let (idxs, parts) = rt.block_on(async {
+                                    let (cols_detail, idxs, parts) = rt.block_on(async {
+                                        let col_fut = crate::data_table::fetch_column_details_standalone_async(
+                                            &conn,
+                                            &database_name,
+                                            &table_name,
+                                        );
                                         let idx_fut = crate::data_table::fetch_index_details_standalone_async(
                                             &conn,
                                             &database_name,
@@ -1463,12 +1462,24 @@ impl super::Tabular {
                                             &database_name,
                                             &table_name,
                                         );
-                                        (idx_fut.await, part_fut.await)
+                                        (col_fut.await, idx_fut.await, part_fut.await)
                                     });
 
+                                    let cols: Option<Vec<(String, String)>> = if !cols_detail.is_empty() {
+                                        Some(cols_detail.iter().map(|c| (c.name.clone(), c.data_type.clone())).collect())
+                                    } else {
+                                        crate::connection::fetch_columns_from_database(
+                                            connection_id,
+                                            &database_name,
+                                            &table_name,
+                                            &conn,
+                                        )
+                                    };
+
                                     debug!(
-                                        "[WORKER] FetchTableStructure finished: {} cols, {} idxs for {}/{}",
+                                        "[WORKER] FetchTableStructure finished: {} cols ({} detailed), {} idxs for {}/{}",
                                         cols.as_ref().map(|c| c.len()).unwrap_or(0),
+                                        cols_detail.len(),
                                         idxs.len(),
                                         database_name,
                                         table_name
@@ -1480,6 +1491,7 @@ impl super::Tabular {
                                             database_name,
                                             table_name,
                                             columns: cols,
+                                            columns_detail: if !cols_detail.is_empty() { Some(cols_detail) } else { None },
                                             indexes: Some(idxs),
                                             partitions: Some(parts),
                                         },

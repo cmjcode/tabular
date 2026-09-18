@@ -611,6 +611,10 @@ pub struct DiagramNode {
     /// yang belum mendukung; `columns` tetap sumber urutan nama kolom.
     #[serde(default)]
     pub column_meta: Vec<DiagramColumn>,
+    /// Tabel yang tidak ada di database (mis. hasil impor Mermaid). Tidak
+    /// dibuang saat diagram disinkronkan ulang dengan skema database.
+    #[serde(default)]
+    pub detached: bool,
 }
 
 impl DiagramNode {
@@ -645,6 +649,29 @@ pub struct DiagramEdge {
     pub label: String,
 }
 
+/// Asal relasi yang tidak berasal dari foreign key database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationOrigin {
+    /// Disarankan dari kemiripan nama kolom lalu diterima user.
+    Inferred,
+    /// Dibuat manual (Shift+klik kolom).
+    Manual,
+    /// Berasal dari impor Mermaid.
+    Imported,
+}
+
+/// Relasi `child.child_column -> parent.parent_column` tanpa FK di database.
+/// Disimpan di file diagram, jadi tetap ada saat diagram dibuka ulang.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualRelation {
+    pub child: String,
+    pub child_column: String,
+    pub parent: String,
+    pub parent_column: String,
+    pub origin: RelationOrigin,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagramState {
     pub nodes: Vec<DiagramNode>,
@@ -676,6 +703,17 @@ pub struct DiagramState {
     pub search_query: String,
     #[serde(skip)]
     pub show_search: bool,
+    /// Tampilkan grid latar.
+    #[serde(default = "default_true")]
+    pub show_grid: bool,
+    /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
+    #[serde(default)]
+    pub virtual_relations: Vec<VirtualRelation>,
+    #[serde(skip)]
+    pub selected_virtual: Option<usize>,
+    /// Jendela saran relasi yang sedang terbuka: (saran, dicentang).
+    #[serde(skip)]
+    pub relation_suggestions: Option<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>,
 }
 
 impl Default for DiagramState {
@@ -698,6 +736,10 @@ impl Default for DiagramState {
             new_group_buffer: String::new(),
             search_query: String::new(),
             show_search: false,
+            show_grid: true,
+            virtual_relations: Vec::new(),
+            selected_virtual: None,
+            relation_suggestions: None,
         }
     }
 }
@@ -1104,6 +1146,7 @@ pub struct ColumnStructInfo {
     pub nullable: Option<bool>,
     pub default_value: Option<String>,
     pub extra: Option<String>,
+    pub comment: Option<String>,
 }
 
 // Simplified index info shown in Structure -> Indexes

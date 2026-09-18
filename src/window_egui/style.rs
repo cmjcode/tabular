@@ -1518,4 +1518,11 @@ pub fn extra_info_color(extra: &str, is_dark: bool) -> egui::Color32 {
     }
 }
 
-
+/// Mengembalikan warna untuk deskripsi/komentar kolom
+pub fn column_description_color(is_dark: bool) -> egui::Color32 {
+    if is_dark {
+        egui::Color32::from_rgb(203, 213, 225) // Slate-300
+    } else {
+        egui::Color32::from_rgb(71, 85, 105) // Slate-600
+    }
+}

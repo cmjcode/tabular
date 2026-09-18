@@ -647,7 +647,14 @@ impl super::Tabular {
 
             // Sync Nodes
             // 1. Remove nodes that no longer exist
-            state.nodes.retain(|n| table_names.contains(&n.id));
+            //    Tabel `detached` (hasil impor, tidak ada di database) tetap
+            //    dipertahankan. Bila daftar tabel kosong (fetch gagal), jangan
+            //    buang apa pun supaya layout tersimpan tidak hilang.
+            if !table_names.is_empty() {
+                state
+                    .nodes
+                    .retain(|n| n.detached || table_names.contains(&n.id));
+            }
 
             // 2. Identify new nodes
             let existing_node_ids: std::collections::HashSet<String> =
@@ -681,6 +688,7 @@ impl super::Tabular {
                     foreign_keys: Vec::new(),
                     group_id: None,
                     column_meta: Vec::new(),
+                    detached: false,
                 };
                 // Assign group
                 let prefix = get_prefix(&table);
@@ -692,7 +700,13 @@ impl super::Tabular {
 
             // Refresh kolom + metadata semua node (node baru maupun tersimpan),
             // termasuk FK supaya perubahan skema ikut terbawa.
+            //    Node `detached` dibiarkan apa adanya, kecuali tabelnya kini ada
+            //    di database (menjadi tabel biasa).
             for node in &mut state.nodes {
+                if !table_names.contains(&node.id) {
+                    continue;
+                }
+                node.detached = false;
                 if let Some(cols) = columns_map.get(&node.id) {
                     node.columns = cols.iter().map(|c| c.name.clone()).collect();
                     node.column_meta = cols.clone();
@@ -703,6 +717,12 @@ impl super::Tabular {
                     .cloned()
                     .collect();
             }
+            // Relasi virtual ke tabel yang sudah tidak ada ikut dibuang.
+            let node_ids: std::collections::HashSet<String> =
+                state.nodes.iter().map(|n| n.id.clone()).collect();
+            state
+                .virtual_relations
+                .retain(|r| node_ids.contains(&r.child) && node_ids.contains(&r.parent));
 
             // Apply Layout ONLY if it was fresh init (no saved state used)
             if is_init {

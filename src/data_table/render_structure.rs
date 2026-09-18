@@ -1177,9 +1177,10 @@ pub(crate) fn render_structure_columns_editor(
         "nullable",
         "default",
         "extra",
+        "description",
     ];
     if tabular.structure_col_widths.len() != headers.len() {
-        tabular.structure_col_widths = vec![40.0, 180.0, 160.0, 90.0, 160.0, 120.0];
+        tabular.structure_col_widths = vec![40.0, 180.0, 160.0, 90.0, 140.0, 110.0, 200.0];
     }
     let mut widths = tabular.structure_col_widths.clone();
     for w in widths.iter_mut() {
@@ -1247,6 +1248,7 @@ pub(crate) fn render_structure_columns_editor(
                         col.nullable.map(|b| if b {"YES"} else {"NO"}).unwrap_or("?").to_string(),
                         col.default_value.clone().unwrap_or_default(),
                         col.extra.clone().unwrap_or_default(),
+                        col.comment.clone().unwrap_or_default(),
                     ];
                     // Defer selected cell border so it paints last for this row
                     let mut selected_cell_rect: Option<egui::Rect> = None;
@@ -1401,6 +1403,32 @@ pub(crate) fn render_structure_columns_editor(
                                         val,
                                         egui::FontId::proportional(13.0),
                                         extra_col,
+                                    );
+                                }
+                            }
+                            6 => {
+                                // description
+                                if val.is_empty() {
+                                    let muted = if dark {
+                                        egui::Color32::from_rgb(100, 116, 139)
+                                    } else {
+                                        egui::Color32::from_rgb(148, 163, 184)
+                                    };
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        "-",
+                                        egui::FontId::proportional(13.0),
+                                        muted,
+                                    );
+                                } else {
+                                    let desc_col = crate::window_egui::style::column_description_color(dark);
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(6.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        val,
+                                        egui::FontId::proportional(12.5),
+                                        desc_col,
                                     );
                                 }
                             }

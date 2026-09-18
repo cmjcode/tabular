@@ -160,6 +160,7 @@ impl SchemaDescription {
                     child_column: fk.column.clone(),
                     parent: fk.references_table.clone(),
                     parent_column: fk.references_column.clone(),
+                    inferred: false,
                 });
             }
         }
