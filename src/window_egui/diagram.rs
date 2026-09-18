@@ -129,20 +129,82 @@ impl super::Tabular {
         }
     }
     pub fn save_diagram(&self, conn_id: i64, db_name: &str, state: &models::structs::DiagramState) {
-        if let Some(path) = self.get_diagram_path(conn_id, db_name) {
-            match std::fs::File::create(&path) {
-                Ok(file) => {
-                    let writer = std::io::BufWriter::new(file);
-                    if let Err(e) = serde_json::to_writer_pretty(writer, state) {
-                        log::error!("Failed to serialize diagram state: {}", e);
-                    } else {
-                        log::debug!("Diagram layout saved to {:?}", path);
-                    }
+        let Some(path) = self.get_diagram_path(conn_id, db_name) else {
+            return;
+        };
+        // Tulis atomik supaya layout lama tidak rusak bila app crash saat menyimpan.
+        let result = serde_json::to_vec_pretty(state)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                crate::diagram_view::write_atomic(&path, &bytes).map_err(|e| e.to_string())
+            });
+        match result {
+            Ok(()) => log::debug!("Diagram layout saved to {:?}", path),
+            Err(e) => log::error!("Failed to save diagram {:?}: {}", path, e),
+        }
+    }
+    /// Jalankan aksi toolbar diagram yang butuh state aplikasi.
+    pub fn handle_diagram_action(
+        &mut self,
+        action: crate::diagram_view::DiagramAction,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+    ) {
+        use crate::diagram_view::DiagramAction;
+        match action {
+            DiagramAction::Info(msg) => self.toasts.success(msg),
+            DiagramAction::Error(msg) => self.toasts.error(msg),
+            DiagramAction::SaveToVault => self.save_diagram_to_vault(conn_id, db_name, state),
+        }
+    }
+
+    /// Simpan skema diagram sebagai catatan Mermaid di vault Obsidian, supaya
+    /// agent AI bisa me-recall-nya lewat `search_notes` / `read_note`.
+    fn save_diagram_to_vault(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+    ) {
+        let Some(root) = self.obsidian_root() else {
+            self.toasts.warning(
+                "Enable an Obsidian vault in Settings > AI Assistant > Memory to save diagrams as AI memory",
+            );
+            return;
+        };
+        let conn_name = conn_id
+            .and_then(|id| self.connections.iter().find(|c| c.id == Some(id)))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Connection".to_string());
+        let db = db_name.unwrap_or_else(|| "default".to_string());
+
+        let model = crate::diagram_mermaid::ErModel::from_diagram(state);
+        let body = crate::diagram_mermaid::schema_note_markdown(
+            &format!("Schema: {db} ({conn_name})"),
+            &model,
+        );
+        let result = crate::obsidian::save_schema_note(
+            &root,
+            &format!("{conn_name} - {db}"),
+            &body,
+            &[("connection", &conn_name), ("database", &db)],
+        );
+        match result {
+            Ok(path) => {
+                log::info!("[OBSIDIAN] saved schema note: {path}");
+                self.toasts.success(format!("Schema saved to vault: {path}"));
+                if self.ai_obsidian_index_receiver.is_none() {
+                    self.start_obsidian_index();
                 }
-                Err(e) => log::error!("Failed to create diagram file {:?}: {}", path, e),
+            }
+            Err(e) => {
+                log::warn!("[OBSIDIAN] schema note save failed: {e}");
+                self.toasts.error(format!("Save to vault failed: {e}"));
             }
         }
     }
+
     pub fn load_diagram(
         &self,
         conn_id: i64,

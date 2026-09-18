@@ -234,22 +234,42 @@ pub(crate) async fn fetch_postgres_foreign_keys(
     Ok(keys)
 }
 
-/// Fetch all columns for every user table: table_name → [col1, col2, …]
+/// Fetch all columns for every user table: table_name → [kolom + tipe/PK/nullable]
 pub(crate) async fn fetch_postgres_columns(
     pool: &PgPool,
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+) -> Result<std::collections::HashMap<String, Vec<models::structs::DiagramColumn>>, sqlx::Error> {
     let query = r#"
-        SELECT table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog','information_schema')
-        ORDER BY table_name, ordinal_position
+        SELECT c.table_name::text AS table_name,
+               c.column_name::text AS column_name,
+               c.udt_name::text AS type_name,
+               (c.is_nullable = 'YES') AS nullable,
+               EXISTS (
+                   SELECT 1
+                   FROM information_schema.table_constraints tc
+                   JOIN information_schema.key_column_usage k
+                     ON k.constraint_name = tc.constraint_name
+                    AND k.table_schema = tc.table_schema
+                    AND k.table_name = tc.table_name
+                   WHERE tc.constraint_type = 'PRIMARY KEY'
+                     AND tc.table_schema = c.table_schema
+                     AND tc.table_name = c.table_name
+                     AND k.column_name = c.column_name
+               ) AS is_pk
+        FROM information_schema.columns c
+        WHERE c.table_schema NOT IN ('pg_catalog','information_schema')
+        ORDER BY c.table_name, c.ordinal_position
     "#;
     let rows = sqlx::query(query).fetch_all(pool).await?;
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<models::structs::DiagramColumn>> =
+        std::collections::HashMap::new();
     for row in rows {
         let tbl: String = row.try_get("table_name").unwrap_or_default();
-        let col: String = row.try_get("column_name").unwrap_or_default();
-        map.entry(tbl).or_default().push(col);
+        map.entry(tbl).or_default().push(models::structs::DiagramColumn {
+            name: row.try_get("column_name").unwrap_or_default(),
+            type_name: row.try_get("type_name").unwrap_or_default(),
+            nullable: row.try_get("nullable").unwrap_or(true),
+            is_pk: row.try_get("is_pk").unwrap_or(false),
+        });
     }
     Ok(map)
 }

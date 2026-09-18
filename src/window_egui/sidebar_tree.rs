@@ -622,16 +622,7 @@ impl super::Tabular {
             let mut existing_group_ids: std::collections::HashSet<String> =
                 state.groups.iter().map(|g| g.id.clone()).collect();
 
-            // Simple color palette generator
-            let colors = [
-                eframe::egui::Color32::from_rgb(100, 149, 237), // Cornflower Blue
-                eframe::egui::Color32::from_rgb(60, 179, 113),  // Medium Sea Green
-                eframe::egui::Color32::from_rgb(255, 0, 0),     // Indian Red
-                eframe::egui::Color32::from_rgb(218, 165, 32),  // Goldenrod
-                eframe::egui::Color32::from_rgb(147, 112, 219), // Medium Purple
-                eframe::egui::Color32::from_rgb(70, 130, 180),  // Steel Blue
-                eframe::egui::Color32::from_rgb(255, 127, 80),  // Coral
-            ];
+            let colors = crate::diagram_view::GROUP_COLORS;
             let mut color_idx = 0;
 
             for (prefix, tables) in groups_map {
@@ -685,13 +676,11 @@ impl super::Tabular {
                     title: table.clone(),
                     pos: eframe::egui::pos2(x, y),
                     size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
-                    columns: columns_map.get(&table).cloned().unwrap_or_default(),
-                    foreign_keys: fks
-                        .iter()
-                        .filter(|fk| fk.table_name == table)
-                        .cloned()
-                        .collect(),
+                    // Kolom, metadata, dan FK diisi di loop refresh di bawah.
+                    columns: Vec::new(),
+                    foreign_keys: Vec::new(),
                     group_id: None,
+                    column_meta: Vec::new(),
                 };
                 // Assign group
                 let prefix = get_prefix(&table);
@@ -701,11 +690,18 @@ impl super::Tabular {
                 state.nodes.push(node);
             }
 
-            // Refresh columns for existing nodes too (in case of schema change)
+            // Refresh kolom + metadata semua node (node baru maupun tersimpan),
+            // termasuk FK supaya perubahan skema ikut terbawa.
             for node in &mut state.nodes {
                 if let Some(cols) = columns_map.get(&node.id) {
-                    node.columns = cols.clone();
+                    node.columns = cols.iter().map(|c| c.name.clone()).collect();
+                    node.column_meta = cols.clone();
                 }
+                node.foreign_keys = fks
+                    .iter()
+                    .filter(|fk| fk.table_name == node.id)
+                    .cloned()
+                    .collect();
             }
 
             // Apply Layout ONLY if it was fresh init (no saved state used)

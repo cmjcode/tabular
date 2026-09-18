@@ -575,6 +575,77 @@ pub fn save_memory_note(
     Err(format!("too many notes named `{name}`"))
 }
 
+/// Subfolder catatan skema hasil generate, di dalam [`MEMORY_FOLDER`].
+pub const SCHEMA_FOLDER: &str = "Schemas";
+/// Penanda frontmatter catatan skema; hanya file bertanda ini yang boleh ditimpa.
+const SCHEMA_MARKER: &str = "source: tabular-schema";
+
+/// Simpan atau perbarui catatan skema di
+/// `<vault>/Tabular Memory/Schemas/<judul>.md` dan kembalikan path relatifnya.
+///
+/// Berbeda dengan [`save_memory_note`], file lama ditimpa supaya skema tetap
+/// mutakhir, tetapi hanya bila file itu juga hasil generate Tabular (ada
+/// [`SCHEMA_MARKER`] di frontmatter). Catatan buatan user dengan nama sama
+/// tidak disentuh; akhiran ` 2`, ` 3`, ... dipakai sebagai gantinya.
+pub fn save_schema_note(
+    root: &Path,
+    title: &str,
+    body: &str,
+    properties: &[(&str, &str)],
+) -> Result<String, String> {
+    if !root.is_dir() {
+        return Err(format!("vault folder not found: {}", root.display()));
+    }
+    if body.len() as u64 > MAX_NOTE_BYTES {
+        return Err("schema note is too large".to_string());
+    }
+    let name = slugify_title(title);
+    if name.is_empty() {
+        return Err("schema note needs a title".to_string());
+    }
+    let dir = root.join(MEMORY_FOLDER).join(SCHEMA_FOLDER);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create `{MEMORY_FOLDER}/{SCHEMA_FOLDER}`: {e}"))?;
+
+    let mut front = format!("---\n{SCHEMA_MARKER}\n");
+    for (key, value) in properties {
+        front.push_str(&format!("{key}: \"{}\"\n", value.replace('"', "'")));
+    }
+    front.push_str(&format!(
+        "updated: {}\ntags: [tabular-memory, tabular-schema]\n---\n\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M")
+    ));
+    let contents = format!("{front}{}\n", body.trim_end());
+
+    for attempt in 1..=99 {
+        let file_name = if attempt == 1 {
+            format!("{name}.md")
+        } else {
+            format!("{name} {attempt}.md")
+        };
+        let path = dir.join(&file_name);
+        if path.exists() {
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            if !is_schema_note(&existing) {
+                continue;
+            }
+        }
+        std::fs::write(&path, contents.as_bytes())
+            .map_err(|e| format!("cannot write schema note: {e}"))?;
+        return Ok(format!("{MEMORY_FOLDER}/{SCHEMA_FOLDER}/{file_name}"));
+    }
+    Err(format!("too many notes named `{name}`"))
+}
+
+/// Catatan diawali frontmatter yang memuat [`SCHEMA_MARKER`].
+fn is_schema_note(raw: &str) -> bool {
+    let Some(rest) = raw.strip_prefix("---") else {
+        return false;
+    };
+    let front = rest.split("\n---").next().unwrap_or("");
+    front.lines().any(|l| l.trim() == SCHEMA_MARKER)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -606,6 +677,28 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn schema_note_overwrites_only_its_own_file() {
+        let vault = TempVault::new("schema-note");
+        let props = [("connection", "Shop \"prod\""), ("database", "shop")];
+        let first = save_schema_note(&vault.0, "Shop - shop", "v1", &props).unwrap();
+        assert_eq!(first, "Tabular Memory/Schemas/Shop - shop.md");
+        let second = save_schema_note(&vault.0, "Shop - shop", "v2", &props).unwrap();
+        assert_eq!(second, first);
+        let text = std::fs::read_to_string(vault.0.join(&first)).unwrap();
+        assert!(text.starts_with("---\nsource: tabular-schema\nconnection: \"Shop 'prod'\"\n"));
+        assert!(text.trim_end().ends_with("v2"));
+
+        // Catatan user dengan nama sama tidak pernah ditimpa.
+        vault.write("Tabular Memory/Schemas/Mine.md", "# my own notes\n");
+        let saved = save_schema_note(&vault.0, "Mine", "generated", &props).unwrap();
+        assert_eq!(saved, "Tabular Memory/Schemas/Mine 2.md");
+        assert_eq!(
+            std::fs::read_to_string(vault.0.join("Tabular Memory/Schemas/Mine.md")).unwrap(),
+            "# my own notes\n"
+        );
     }
 
     #[test]

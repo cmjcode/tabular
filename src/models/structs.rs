@@ -607,6 +607,35 @@ pub struct DiagramNode {
     pub columns: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>, // FKs originating from this table
     pub group_id: Option<String>,
+    /// Tipe/PK/nullable per kolom. Kosong untuk file diagram lama atau engine
+    /// yang belum mendukung; `columns` tetap sumber urutan nama kolom.
+    #[serde(default)]
+    pub column_meta: Vec<DiagramColumn>,
+}
+
+impl DiagramNode {
+    /// Metadata kolom berdasarkan nama, bila tersedia.
+    pub fn column_info(&self, name: &str) -> Option<&DiagramColumn> {
+        self.column_meta.iter().find(|c| c.name == name)
+    }
+
+    /// Kolom ini sumber foreign key dari tabel ini.
+    pub fn is_fk_column(&self, name: &str) -> bool {
+        self.foreign_keys
+            .iter()
+            .any(|fk| fk.column_name == name && fk.table_name == self.id)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagramColumn {
+    pub name: String,
+    #[serde(default)]
+    pub type_name: String,
+    #[serde(default)]
+    pub is_pk: bool,
+    #[serde(default = "default_true")]
+    pub nullable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

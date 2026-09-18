@@ -119,6 +119,54 @@ pub struct TableDescription {
     pub foreign_keys: Vec<ForeignKeyDescription>,
 }
 
+/// Skema sebagai Mermaid `erDiagram`: ringkas untuk context agent dan bisa
+/// langsung ditulis ke catatan Obsidian lewat `save_note`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaDiagram {
+    pub connection_id: i64,
+    pub database: String,
+    pub total_tables: usize,
+    pub shown_tables: usize,
+    pub ranked_by_relevance: bool,
+    pub mermaid: String,
+    pub note: Option<String>,
+}
+
+impl SchemaDescription {
+    /// Model ER netral dari hasil describe; FK ke tabel di luar daftar tetap
+    /// ditulis supaya agent tahu relasi keluar.
+    pub fn to_er_model(&self) -> crate::diagram_mermaid::ErModel {
+        use crate::diagram_mermaid::{ErColumn, ErEntity, ErModel, ErRelation};
+        let mut model = ErModel::default();
+        for table in &self.tables {
+            model.entities.push(ErEntity {
+                name: table.name.clone(),
+                columns: table
+                    .columns
+                    .iter()
+                    .map(|c| ErColumn {
+                        name: c.name.clone(),
+                        type_name: c.data_type.clone(),
+                        is_pk: c.primary_key,
+                        is_fk: table.foreign_keys.iter().any(|fk| fk.column == c.name),
+                        nullable: None,
+                    })
+                    .collect(),
+                group: None,
+            });
+            for fk in &table.foreign_keys {
+                model.relations.push(ErRelation {
+                    child: table.name.clone(),
+                    child_column: fk.column.clone(),
+                    parent: fk.references_table.clone(),
+                    parent_column: fk.references_column.clone(),
+                });
+            }
+        }
+        model
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaDescription {
     pub connection_id: i64,
@@ -557,6 +605,42 @@ impl HeadlessSession {
         })
     }
 
+    /// Seperti [`Self::describe_schema`], tetapi dikembalikan sebagai Mermaid
+    /// `erDiagram` (lebih hemat token dan siap disimpan sebagai memory).
+    pub async fn schema_diagram(
+        &self,
+        id: i64,
+        database: Option<&str>,
+        question: Option<&str>,
+        max_tables: Option<usize>,
+        max_columns: Option<usize>,
+        relations_only: bool,
+    ) -> Result<SchemaDiagram, AgentError> {
+        let schema = self.describe_schema(id, database, question, max_tables).await?;
+        let mermaid = schema.to_er_model().to_mermaid(crate::diagram_mermaid::MermaidOptions {
+            max_columns: max_columns.map(|m| m.max(1)),
+            relations_only,
+        });
+        let mut note = schema.note.clone();
+        if schema.total_tables > schema.shown_tables {
+            note.get_or_insert_with(String::new).push_str(&format!(
+                "{}showing {} of {} tables; pass `question` or a larger max_tables for others",
+                if schema.note.is_some() { "; " } else { "" },
+                schema.shown_tables,
+                schema.total_tables
+            ));
+        }
+        Ok(SchemaDiagram {
+            connection_id: schema.connection_id,
+            database: schema.database,
+            total_tables: schema.total_tables,
+            shown_tables: schema.shown_tables,
+            ranked_by_relevance: schema.ranked_by_relevance,
+            mermaid,
+            note,
+        })
+    }
+
     async fn rank_tables(
         &self,
         id: i64,
@@ -979,6 +1063,37 @@ pub fn truncate_result(result: &mut AgentQueryResult, max_rows: usize, limits: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_description_converts_to_mermaid() {
+        let schema = SchemaDescription {
+            connection_id: 1,
+            database: "shop".into(),
+            total_tables: 1,
+            shown_tables: 1,
+            ranked_by_relevance: false,
+            tables: vec![TableDescription {
+                name: "orders".into(),
+                kind: "table".into(),
+                columns: vec![
+                    ColumnDescription { name: "id".into(), data_type: "integer".into(), primary_key: true },
+                    ColumnDescription { name: "customer_id".into(), data_type: "integer".into(), primary_key: false },
+                ],
+                foreign_keys: vec![ForeignKeyDescription {
+                    column: "customer_id".into(),
+                    references_table: "customers".into(),
+                    references_column: "id".into(),
+                }],
+            }],
+            ddl: String::new(),
+            note: None,
+        };
+        let text = schema.to_er_model().to_mermaid(Default::default());
+        assert!(text.contains("integer id PK"));
+        assert!(text.contains("integer customer_id FK"));
+        // Tabel referensi di luar daftar tetap muncul lewat relasi.
+        assert!(text.contains("customers ||--o{ orders : \"customer_id -> id\""));
+    }
 
     fn sample(rows: usize, cell_len: usize) -> AgentQueryResult {
         AgentQueryResult {
