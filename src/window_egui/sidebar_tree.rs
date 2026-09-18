@@ -693,6 +693,12 @@ impl super::Tabular {
                 let x = (hash % 800) as f32 + 100.0;
                 let y = ((hash / 800) % 600) as f32 + 100.0;
 
+                let conn_name = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(conn_id))
+                    .map(|c| c.name.clone());
+
                 let mut node = models::structs::DiagramNode {
                     id: table.clone(),
                     title: table.clone(),
@@ -705,6 +711,9 @@ impl super::Tabular {
                     group_id: None,
                     column_meta: Vec::new(),
                     detached: false,
+                    database_name: Some(db_name.clone()),
+                    connection_id: Some(conn_id),
+                    connection_name: conn_name.clone(),
                 };
                 // Assign group
                 let prefix = get_prefix(&table);
@@ -721,6 +730,10 @@ impl super::Tabular {
             //    Node `detached` dibiarkan apa adanya, kecuali tabelnya kini ada
             //    di database (menjadi tabel biasa).
             for node in &mut state.nodes {
+                if node.database_name.is_none() {
+                    node.database_name = Some(db_name.clone());
+                    node.connection_id = Some(conn_id);
+                }
                 if !table_names.contains(&node.id) {
                     continue;
                 }

@@ -235,6 +235,68 @@ impl ApiClient {
         Ok(())
     }
 
+    // ── Diagrams ─────────────────────────────────────────────────────────────
+
+    pub async fn list_diagrams(&self, token: &str) -> anyhow::Result<Vec<RemoteDiagram>> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/diagrams"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteDiagram>>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn create_diagram(
+        &self,
+        token: &str,
+        req: &CreateDiagramReq,
+    ) -> anyhow::Result<RemoteDiagram> {
+        let resp = self
+            .http
+            .post(self.url("/api/v1/diagrams"))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteDiagram>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn update_diagram(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateDiagramReq,
+    ) -> anyhow::Result<RemoteDiagram> {
+        let resp = self
+            .http
+            .put(self.url(&format!("/api/v1/diagrams/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteDiagram>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_diagram(&self, token: &str, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/diagrams/{}", id)))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     // ── HTTP Requests ────────────────────────────────────────────────────────
 
     pub async fn list_http_requests(&self, token: &str) -> anyhow::Result<Vec<RemoteHttpRequest>> {
@@ -957,6 +1019,43 @@ pub struct UpdateQueryReq {
     pub folder_path: Option<String>,
     pub query_text: Option<String>,
     pub connection_name: Option<String>,
+    pub client_checksum: Option<String>,
+    pub crypto_version: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteDiagram {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub folder_path: String,
+    pub encrypted_data: String,
+    pub client_checksum: Option<String>,
+    #[serde(default = "default_crypto_version")]
+    pub crypto_version: i32,
+    pub updated_at: String,
+    #[serde(default)]
+    pub access: String,
+}
+
+fn default_crypto_version() -> i32 {
+    1
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateDiagramReq {
+    pub name: String,
+    pub folder_path: Option<String>,
+    pub encrypted_data: String,
+    pub client_checksum: Option<String>,
+    pub crypto_version: i32,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct UpdateDiagramReq {
+    pub name: Option<String>,
+    pub folder_path: Option<String>,
+    pub encrypted_data: Option<String>,
     pub client_checksum: Option<String>,
     pub crypto_version: Option<i32>,
 }

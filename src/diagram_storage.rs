@@ -427,6 +427,9 @@ mod tests {
             group_id: Some("group_auth".to_string()),
             column_meta: vec![],
             detached: false,
+            database_name: Some("main".to_string()),
+            connection_id: Some(1),
+            connection_name: Some("Local SQLite".to_string()),
         });
 
         // 4. Save to database
