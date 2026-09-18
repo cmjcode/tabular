@@ -106,3 +106,38 @@ CI machine with its own connections.
 - The read-only classifier is conservative by design; a stored procedure that only reads is
   still refused because `CALL` may write.
 - On iOS the server is not compiled (no stdio, not permitted by the App Store).
+
+## Using a CLI agent inside Tabular
+
+The AI Assistant panel (Cmd+Shift+A) can run an installed coding agent instead of
+calling an HTTP API. Pick **Settings → AI Assistant → Backend → CLI Agent** and
+choose the tool:
+
+| Agent | Binary | How the Tabular MCP server reaches it | Conversation continuity |
+|---|---|---|---|
+| Antigravity | `agy` | Global config — press **Register** (runs `agy mcp add tabular -- <tabular> mcp`) | `--conversation <id>` |
+| Claude Code | `claude` | Per request via `--mcp-config` + `--strict-mcp-config`, only `mcp__tabular` tools allowed | `--resume <session>` |
+| Gemini CLI | `gemini` | Global config — press **Register** (`gemini mcp add tabular <tabular> mcp`) | none (each turn is a new session) |
+| Custom | any | Register manually with `tabular mcp --print-config` | `{session}` placeholder |
+
+The agent runs in print mode with `--output-format stream-json`, permission
+prompts disabled, and an empty working directory under Tabular's data folder
+(`agent-workspace/`). Database access still goes through the read‑only tools
+described above, so the agent can inspect data and schemas but cannot write.
+
+### Live edit protocol
+
+The system prompt asks the agent to put SQL meant for the editor in a fenced
+block whose info string names the target tab:
+
+~~~text
+```sql tabular:tab=12 mode=replace
+SELECT id, email FROM users ORDER BY created_at DESC LIMIT 10
+```
+~~~
+
+`tab_id` values come from the "Open editor tabs" section of the prompt (the
+active tab plus any attached tabs). `mode` is `replace` (default), `append`, or
+`selection`. Tabular applies the block to that tab while the answer streams;
+each edit gets a **Revert** button, and with live edit turned off an **Apply**
+button instead. Plain ```` ```sql ```` blocks are only shown in the chat.

@@ -106,6 +106,8 @@ fn print_config() {
     );
     eprintln!();
     eprintln!("Claude Code:  claude mcp add tabular -- \"{exe}\" mcp");
+    eprintln!("Antigravity:  agy mcp add tabular -- \"{exe}\" mcp");
+    eprintln!("Gemini CLI:   gemini mcp add tabular \"{exe}\" mcp");
     eprintln!("Cursor:       paste the JSON above into ~/.cursor/mcp.json");
     eprintln!(
         "Codex CLI:    add [mcp_servers.tabular] command = \"{exe}\" args = [\"mcp\"] to ~/.codex/config.toml"

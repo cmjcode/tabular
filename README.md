@@ -134,9 +134,14 @@ Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
 
 
 ### AI Assistant (Cmd+Shift+A)
-Context‑aware AI assistant integrated directly into the query editor.
-- Supported providers: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, and **Custom OpenAI‑compatible** endpoints.
-- Automatically injects active schema (tables + columns) as context.
+Context‑aware AI chat integrated directly into the query editor.
+- Two backends (Settings → AI Assistant):
+  - **HTTP API** with your own key: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, or any **OpenAI‑compatible** endpoint.
+  - **CLI agent** — reuse a coding agent already installed and logged in on your machine, no API key needed: **Antigravity (`agy`)**, **Claude Code (`claude`)**, **Gemini CLI (`gemini`)**, or a custom command. Output is streamed live; conversations continue across turns.
+- With a CLI agent, the agent can inspect your databases through Tabular's own read‑only MCP server (`tabular mcp`): Claude Code gets it per request, `agy`/`gemini` register it once with the **Register** button.
+- **Editor context**: the active tab (and its selection) is always sent; attach any other open SQL tabs with **+ Attach tab**.
+- **Live edit**: when the agent writes a query for a tab it lands in that tab while streaming; every edit has **Revert**, and live edit can be turned off in favour of an **Apply** button.
+- Automatically injects the relevant schema (tables + columns, vector‑ranked) as context.
 
 ### Redis Browser
 Dedicated visual key explorer for Redis connections.

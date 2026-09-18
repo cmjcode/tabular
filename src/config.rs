@@ -198,6 +198,122 @@ impl std::str::FromStr for AiProvider {
     }
 }
 
+/// Cara panel AI Assistant menjangkau model: lewat HTTP API langsung
+/// (perilaku lama, butuh API key) atau lewat CLI agent lokal seperti
+/// Antigravity (`agy`) / Claude Code yang sudah login di mesin user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AiBackend {
+    #[default]
+    Api,
+    Cli,
+}
+
+impl AiBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AiBackend::Api => "API",
+            AiBackend::Cli => "CLI",
+        }
+    }
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AiBackend::Api => "HTTP API (API key)",
+            AiBackend::Cli => "CLI Agent (agy / Claude Code / …)",
+        }
+    }
+}
+
+impl std::str::FromStr for AiBackend {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLI" => AiBackend::Cli,
+            _ => AiBackend::Api,
+        })
+    }
+}
+
+/// Jenis CLI agent yang dipakai bila [`AiBackend::Cli`]. Menentukan argumen
+/// baris perintah dan parser output stream-json (lihat `agent::harness`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CliAgentKind {
+    #[default]
+    Antigravity,
+    ClaudeCode,
+    GeminiCli,
+    Custom,
+}
+
+impl CliAgentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "AGY",
+            CliAgentKind::ClaudeCode => "CLAUDE",
+            CliAgentKind::GeminiCli => "GEMINI",
+            CliAgentKind::Custom => "CUSTOM",
+        }
+    }
+    pub fn display_name(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "Antigravity (agy)",
+            CliAgentKind::ClaudeCode => "Claude Code (claude)",
+            CliAgentKind::GeminiCli => "Gemini CLI (gemini)",
+            CliAgentKind::Custom => "Custom command",
+        }
+    }
+    /// Nama binary yang dicari di PATH bila user tidak mengisi path manual.
+    pub fn default_binary(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "agy",
+            CliAgentKind::ClaudeCode => "claude",
+            CliAgentKind::GeminiCli => "gemini",
+            CliAgentKind::Custom => "",
+        }
+    }
+    /// Model kosong berarti biarkan CLI memakai default akunnya sendiri.
+    pub fn preset_models(self) -> &'static [&'static str] {
+        match self {
+            CliAgentKind::Antigravity => &[
+                "gemini-3.8-flash-medium",
+                "gemini-3.8-flash-high",
+                "gemini-3.1-pro-high",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6-thinking",
+            ],
+            CliAgentKind::ClaudeCode => &["sonnet", "opus", "haiku"],
+            CliAgentKind::GeminiCli => &["gemini-2.5-pro", "gemini-2.5-flash"],
+            CliAgentKind::Custom => &[],
+        }
+    }
+    /// Apakah CLI menerima flag `--effort`.
+    pub fn supports_effort(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::ClaudeCode)
+    }
+    /// Apakah percakapan bisa dilanjutkan lewat id sesi (`--conversation` /
+    /// `--resume`). Gemini CLI hanya menerima index sesi, jadi tiap giliran
+    /// dikirim sebagai percakapan baru.
+    pub fn supports_resume(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::ClaudeCode)
+    }
+    /// Apakah MCP server Tabular harus didaftarkan di konfigurasi global CLI
+    /// (tidak bisa dikirim per-invocation seperti `claude --mcp-config`).
+    pub fn needs_global_mcp_registration(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::GeminiCli)
+    }
+}
+
+impl std::str::FromStr for CliAgentKind {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLAUDE" => CliAgentKind::ClaudeCode,
+            "GEMINI" => CliAgentKind::GeminiCli,
+            "CUSTOM" => CliAgentKind::Custom,
+            _ => CliAgentKind::Antigravity,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -224,6 +340,25 @@ pub struct AppPreferences {
     pub ai_provider: AiProvider,
     #[serde(default)]
     pub ai_base_url: String,
+    /// Backend panel AI: HTTP API (default) atau CLI agent lokal.
+    #[serde(default)]
+    pub ai_backend: AiBackend,
+    #[serde(default)]
+    pub ai_cli_kind: CliAgentKind,
+    /// Path binary CLI; kosong berarti cari `CliAgentKind::default_binary()` di PATH.
+    #[serde(default)]
+    pub ai_cli_bin: String,
+    #[serde(default)]
+    pub ai_cli_model: String,
+    /// `low` | `medium` | `high`; kosong berarti default CLI.
+    #[serde(default)]
+    pub ai_cli_effort: String,
+    /// Argumen tambahan (dipisah spasi, mendukung kutip) yang ditambahkan apa adanya.
+    #[serde(default)]
+    pub ai_cli_extra_args: String,
+    /// Tulis blok `sql tabular:tab=…` dari agent langsung ke editor saat streaming.
+    #[serde(default = "default_true")]
+    pub ai_cli_auto_apply_edits: bool,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
@@ -271,6 +406,13 @@ impl Default for AppPreferences {
             ai_model: String::new(),
             ai_provider: AiProvider::OpenAI,
             ai_base_url: String::new(),
+            ai_backend: AiBackend::Api,
+            ai_cli_kind: CliAgentKind::Antigravity,
+            ai_cli_bin: String::new(),
+            ai_cli_model: String::new(),
+            ai_cli_effort: String::new(),
+            ai_cli_extra_args: String::new(),
+            ai_cli_auto_apply_edits: true,
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
             query_timeout_secs: 0,
@@ -385,6 +527,13 @@ impl ConfigStore {
                 ai_model: String::new(),
                 ai_provider: AiProvider::OpenAI,
                 ai_base_url: String::new(),
+                ai_backend: AiBackend::Api,
+                ai_cli_kind: CliAgentKind::Antigravity,
+                ai_cli_bin: String::new(),
+                ai_cli_model: String::new(),
+                ai_cli_effort: String::new(),
+                ai_cli_extra_args: String::new(),
+                ai_cli_auto_apply_edits: true,
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
@@ -432,6 +581,15 @@ impl ConfigStore {
                         "ai_model" => prefs.ai_model = v,
                         "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
                         "ai_base_url" => prefs.ai_base_url = v,
+                        "ai_backend" => prefs.ai_backend = v.parse().unwrap_or(AiBackend::Api),
+                        "ai_cli_kind" => {
+                            prefs.ai_cli_kind = v.parse().unwrap_or(CliAgentKind::Antigravity)
+                        }
+                        "ai_cli_bin" => prefs.ai_cli_bin = v,
+                        "ai_cli_model" => prefs.ai_cli_model = v,
+                        "ai_cli_effort" => prefs.ai_cli_effort = v,
+                        "ai_cli_extra_args" => prefs.ai_cli_extra_args = v,
+                        "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
                         "redis_browser_auto_refresh_seconds" => {
                             prefs.redis_browser_auto_refresh_seconds = v.parse().unwrap_or(default_redis_browser_auto_refresh_seconds())
                         }
@@ -500,7 +658,7 @@ impl ConfigStore {
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
             let query_timeout_secs = prefs.query_timeout_secs.to_string();
             let max_result_rows = prefs.max_result_rows.to_string();
-            let entries: [(&str, &str); 19] = [
+            let entries: [(&str, &str); 26] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -534,6 +692,16 @@ impl ConfigStore {
                 ("ai_model", prefs.ai_model.as_str()),
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
+                ("ai_backend", prefs.ai_backend.as_str()),
+                ("ai_cli_kind", prefs.ai_cli_kind.as_str()),
+                ("ai_cli_bin", prefs.ai_cli_bin.as_str()),
+                ("ai_cli_model", prefs.ai_cli_model.as_str()),
+                ("ai_cli_effort", prefs.ai_cli_effort.as_str()),
+                ("ai_cli_extra_args", prefs.ai_cli_extra_args.as_str()),
+                (
+                    "ai_cli_auto_apply_edits",
+                    if prefs.ai_cli_auto_apply_edits { "1" } else { "0" },
+                ),
                 ("redis_browser_auto_refresh_seconds", &redis_browser_auto_refresh_seconds),
                 (
                     "sync_server_url",

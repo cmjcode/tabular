@@ -75,6 +75,16 @@ impl super::Tabular {
             prefs.ai_model.clone()
         };
         self.ai_settings_base_url_input = prefs.ai_base_url.clone();
+        self.ai_backend = prefs.ai_backend;
+        self.ai_cli_kind = prefs.ai_cli_kind;
+        self.ai_cli_bin = prefs.ai_cli_bin.clone();
+        self.ai_cli_model = prefs.ai_cli_model.clone();
+        self.ai_cli_effort = prefs.ai_cli_effort.clone();
+        self.ai_cli_extra_args = prefs.ai_cli_extra_args.clone();
+        self.ai_cli_auto_apply_edits = prefs.ai_cli_auto_apply_edits;
+        self.ai_settings_cli_bin_input = prefs.ai_cli_bin.clone();
+        self.ai_settings_cli_model_input = prefs.ai_cli_model.clone();
+        self.ai_settings_cli_extra_args_input = prefs.ai_cli_extra_args.clone();
         if let Some(url) = prefs.sync_server_url.clone()
             && !url.trim().is_empty() {
                 self.sync_server_url = url;
@@ -566,17 +576,38 @@ impl super::Tabular {
             // AI Assistant
             show_ai_panel: false,
             ai_input: String::new(),
-            ai_suggestion: String::new(),
             ai_is_loading: false,
             ai_error: None,
-            ai_suggestion_receiver: None,
+            ai_chat: Vec::new(),
+            ai_stream_receiver: None,
+            ai_cancel: None,
+            ai_session_id: None,
+            ai_attached_tab_ids: Vec::new(),
+            ai_live_edit_parser: None,
+            ai_live_edit_active: None,
+            ai_markdown_cache: egui_commonmark::CommonMarkCache::default(),
             ai_api_key: String::new(),
             ai_model: String::new(),
             ai_provider: crate::config::AiProvider::OpenAI,
             ai_base_url: String::new(),
+            ai_backend: crate::config::AiBackend::Api,
+            ai_cli_kind: crate::config::CliAgentKind::Antigravity,
+            ai_cli_bin: String::new(),
+            ai_cli_model: String::new(),
+            ai_cli_effort: String::new(),
+            ai_cli_extra_args: String::new(),
+            ai_cli_auto_apply_edits: true,
             ai_settings_api_key_input: String::new(),
             ai_settings_model_input: String::new(),
             ai_settings_base_url_input: String::new(),
+            ai_settings_cli_bin_input: String::new(),
+            ai_settings_cli_model_input: String::new(),
+            ai_settings_cli_extra_args_input: String::new(),
+            ai_cli_test_receiver: None,
+            ai_cli_test_result: None,
+            ai_cli_mcp_registered: None,
+            ai_cli_mcp_receiver: None,
+            ai_cli_mcp_message: None,
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
