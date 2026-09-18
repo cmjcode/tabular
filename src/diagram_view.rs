@@ -224,8 +224,24 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
     });
 
+    // Cek apakah pengguna sedang fokus mengetik teks di widget lain
+    let typing = ui.ctx().egui_wants_keyboard_input() || ui.memory(|m| m.focused().is_some());
+    let space_held = !typing && ui.input(|i| i.key_down(egui::Key::Space));
+
     // Zoom & Shortcut Input Handling
     ui.input_mut(|i| {
+        // Toggle Hand Tool (H) & Switch to Select (V / Esc)
+        if !typing {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                state.hand_tool = !state.hand_tool;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::V)
+                || (!state.show_search && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                state.hand_tool = false;
+            }
+        }
+
         // Zoom In (Cmd + / Cmd =)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals)
@@ -271,6 +287,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
         }
     });
+
+    let is_hand_mode = state.hand_tool || space_held;
 
     // Handle Initial Centering
     if !state.is_centered && !state.nodes.is_empty() {
@@ -376,7 +394,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         let is_group_search_match = state.show_search
             && state.search_groups
             && !state.search_query.is_empty()
-            && group.title.to_lowercase().contains(&state.search_query.to_lowercase());
+            && group
+                .title
+                .to_lowercase()
+                .contains(&state.search_query.to_lowercase());
 
         if is_group_search_match {
             ui.painter().rect_filled(
@@ -394,7 +415,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         } else {
             color.linear_multiply(0.5)
         };
-        let border_width = if is_group_search_match { 2.5 * scale } else { 1.0 * scale };
+        let border_width = if is_group_search_match {
+            2.5 * scale
+        } else {
+            1.0 * scale
+        };
         ui.painter().rect_stroke(
             group_rect,
             8.0 * scale,
@@ -445,18 +470,24 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
             // Interaction
             let interact_rect = title_rect;
+            let group_sense = if is_hand_mode {
+                egui::Sense::hover()
+            } else {
+                egui::Sense::click_and_drag()
+            };
             let response = ui.interact(
                 interact_rect,
                 ui.id().with("group_header").with(idx),
-                egui::Sense::click_and_drag(),
+                group_sense,
             );
 
-            if response.dragged() {
+            if !is_hand_mode && response.dragged() {
                 let delta = response.drag_delta() / scale;
                 group_drag_delta = Some((group_id.clone(), delta));
             }
 
-            response.context_menu(|ui| {
+            if !is_hand_mode {
+                response.context_menu(|ui| {
                 if ui.button("Rename Container").clicked() {
                     ui.close();
                     _group_rename_request = Some((idx, group_id.clone()));
@@ -497,7 +528,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             });
                         });
                 });
-            });
+                });
+            }
         }
     }
 
@@ -533,7 +565,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Draw edges (relationships)
     let mut clicked_edge = None;
     let _pointer_pos = ui.input(|i| i.pointer.interact_pos());
-    let pointer_down = ui.input(|i| i.pointer.primary_clicked());
+    let pointer_down = !is_hand_mode && ui.input(|i| i.pointer.primary_clicked());
 
     // Background interaction to clear selection
     if ui.input(|i| i.pointer.primary_clicked()) && !ui.ui_contains_pointer() {
@@ -626,7 +658,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
 
             if is_hovered {
-                if pointer_down {
+                if !is_hand_mode && pointer_down {
                     clicked_edge = Some((edge.source.clone(), edge.target.clone()));
                 }
                 if !is_selected {
@@ -650,7 +682,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let virtual_clicked = draw_virtual_relations(ui, state, rect, &to_screen, pointer_down);
     let edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
     if let Some(edge) = clicked_edge {
-        state.selected_edge = Some(edge);
+        if !is_hand_mode {
+            state.selected_edge = Some(edge);
+        }
     } else if pointer_down {
         // If clicked but not on any edge, check if we clicked a node later.
         // If not node either, we clear.
@@ -670,14 +704,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // For manual interaction & relation search:
     let selected_column = state.selected_column.clone();
-    let sel_col_is_pk = selected_column.as_ref().is_some_and(|(sel_table, sel_col)| {
-        state
-            .nodes
-            .iter()
-            .find(|n| &n.id == sel_table)
-            .and_then(|n| n.column_info(sel_col))
-            .is_some_and(|c| c.is_pk)
-    });
+    let sel_col_is_pk = selected_column
+        .as_ref()
+        .is_some_and(|(sel_table, sel_col)| {
+            state
+                .nodes
+                .iter()
+                .find(|n| &n.id == sel_table)
+                .and_then(|n| n.column_info(sel_col))
+                .is_some_and(|c| c.is_pk)
+        });
     let shift_down = ui.input(|i| i.modifiers.shift);
     let ctrl_down = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd);
     let mut link_request: Option<VirtualRelation> = None;
@@ -713,15 +749,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
         // Interact
         let node_id = ui.id().with("node").with(&node.id);
-        let node_response = ui.interact(node_rect, node_id, egui::Sense::click_and_drag());
+        let node_sense = if is_hand_mode {
+            egui::Sense::hover()
+        } else {
+            egui::Sense::click_and_drag()
+        };
+        let node_response = ui.interact(node_rect, node_id, node_sense);
 
-        if node_response.clicked() {
+        if !is_hand_mode && node_response.clicked() {
             node_clicked = true;
         }
 
         let mut toggle_group: Option<(String, bool)> = None;
         let mut new_group_for_node = false;
-        node_response.context_menu(|ui| {
+        if !is_hand_mode {
+            node_response.context_menu(|ui| {
             ui.label(egui::RichText::new(&node.title).strong());
             ui.separator();
 
@@ -767,7 +809,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 new_group_for_node = true;
                 ui.close();
             }
-        });
+            });
+        }
 
         if let Some((gid, add)) = toggle_group {
             if add {
@@ -782,13 +825,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             add_group_at_pos = Some(node.pos + egui::vec2(node.size.x + 20.0, 0.0));
         }
 
-        if node_response.dragged() {
+        if !is_hand_mode && node_response.dragged() {
             dragging_node_id = Some(node.id.clone());
             drag_delta = node_response.drag_delta();
 
             // Track globally for drop detection
             state.dragging_node = Some(node.id.clone());
-        } else if node_response.drag_stopped() {
+        } else if !is_hand_mode && node_response.drag_stopped() {
             let shift_held = ui.input(|i| i.modifiers.shift);
             if shift_held {
                 // Check drop target
@@ -968,17 +1011,27 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             );
 
             let col_id = ui.id().with("col").with(&node.id).with(col);
-            let mut response = ui.interact(col_rect, col_id, egui::Sense::click());
+            let col_sense = if is_hand_mode {
+                egui::Sense::hover()
+            } else {
+                egui::Sense::click()
+            };
+            let mut response = ui.interact(col_rect, col_id, col_sense);
 
             let is_selected_col = selected_column
                 .as_ref()
                 .is_some_and(|(t, c)| *t == node.id && c == col);
 
-            // Context menu saat klik kanan pada kolom
-            response.context_menu(|ui| {
+            if !is_hand_mode {
+                // Context menu saat klik kanan pada kolom
+                response.context_menu(|ui| {
                 ui.label(egui::RichText::new(format!("{}.{}", node.id, col)).strong());
                 if let Some(c_type) = info.map(|c| c.type_name.as_str()).filter(|t| !t.is_empty()) {
-                    ui.label(egui::RichText::new(format!("Type: {c_type}")).weak().small());
+                    ui.label(
+                        egui::RichText::new(format!("Type: {c_type}"))
+                            .weak()
+                            .small(),
+                    );
                 }
                 ui.separator();
 
@@ -993,28 +1046,29 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.close();
                         column_clicked_request = Some((String::new(), String::new()));
                     }
-                } else if ui.button("🔗 Select for manual relation (Ctrl+Click)").clicked() {
+                } else if ui
+                    .button("🔗 Select for manual relation (Ctrl+Click)")
+                    .clicked()
+                {
                     ui.close();
                     column_clicked_request = Some((node.id.clone(), col.clone()));
                 }
-            });
+                });
+            }
 
             // Tooltip interaktif saat ada kolom yang sedang dipilih dari tabel lain
             if let Some((sel_table, sel_col)) = selected_column.as_ref() {
                 if *sel_table != node.id {
-                    response = response.on_hover_text(format!(
-                        "Ctrl+Click to link with {sel_table}.{sel_col}"
-                    ));
+                    response = response
+                        .on_hover_text(format!("Ctrl+Click to link with {sel_table}.{sel_col}"));
                 }
             }
 
             let is_link_target_hover = (ctrl_down || shift_down)
                 && response.hovered()
-                && selected_column
-                    .as_ref()
-                    .is_some_and(|(t, _)| *t != node.id);
+                && selected_column.as_ref().is_some_and(|(t, _)| *t != node.id);
 
-            if response.clicked() {
+            if !is_hand_mode && response.clicked() {
                 let modifier_active = ctrl_down || shift_down;
                 match selected_column.as_ref() {
                     // Ada kolom terpilih di tabel lain:
@@ -1026,11 +1080,26 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
                             let (child_table, child_col, parent_table, parent_col) =
                                 if this_is_pk && !sel_is_pk {
-                                    (sel_table.clone(), sel_col.clone(), node.id.clone(), col.clone())
+                                    (
+                                        sel_table.clone(),
+                                        sel_col.clone(),
+                                        node.id.clone(),
+                                        col.clone(),
+                                    )
                                 } else if sel_is_pk && !this_is_pk {
-                                    (node.id.clone(), col.clone(), sel_table.clone(), sel_col.clone())
+                                    (
+                                        node.id.clone(),
+                                        col.clone(),
+                                        sel_table.clone(),
+                                        sel_col.clone(),
+                                    )
                                 } else {
-                                    (sel_table.clone(), sel_col.clone(), node.id.clone(), col.clone())
+                                    (
+                                        sel_table.clone(),
+                                        sel_col.clone(),
+                                        node.id.clone(),
+                                        col.clone(),
+                                    )
                                 };
 
                             link_request = Some(VirtualRelation {
@@ -1060,7 +1129,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             let is_col_search_match = state.show_search
                 && state.search_columns
                 && !state.search_query.is_empty()
-                && col.to_lowercase().contains(&state.search_query.to_lowercase());
+                && col
+                    .to_lowercase()
+                    .contains(&state.search_query.to_lowercase());
 
             if is_selected_col {
                 // Highlight jelas kolom sumber terpilih (emas dengan border)
@@ -1168,7 +1239,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Clear selection if clicked on background (and not on an edge or node)
     // We check `response` from the beginning of the function (passed down? no it was `ui.interact(rect...)`)
     // We need to check if the main rect was clicked, and ensure no edge/node was clicked.
-    if ui.input(|i| i.pointer.primary_clicked())
+    if !is_hand_mode
+        && ui.input(|i| i.pointer.primary_clicked())
         && !node_clicked
         && !edge_was_clicked
         && column_clicked_request.is_none()
@@ -1206,6 +1278,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some((table, column)) = search_relations_for_column {
         let suggestions =
             crate::diagram_relations::suggest_relations_for_column(state, &table, &column);
+        state.relation_suggestions_title = Some(format!("{table}.{column}"));
+        state.relation_column_search_query = column.clone();
         state.relation_suggestions = Some(suggestions.into_iter().map(|s| (s, true)).collect());
     }
     if let Some(id) = remove_node_request {
@@ -1296,6 +1370,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     center_diagram(state, rect.size());
                 }
 
+                if ui
+                    .selectable_label(
+                        is_hand_mode,
+                        format!("{} Hand", egui_icons::icons::ICON_PAN_TOOL.codepoint),
+                    )
+                    .on_hover_text("Hand Tool (H or hold Space)\nClick and drag anywhere to pan diagram navigation")
+                    .clicked()
+                {
+                    state.hand_tool = !state.hand_tool;
+                }
+
                 ui.separator();
 
                 // --- 2. Grid & Anti-Overlap Toggles ---
@@ -1362,11 +1447,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui.menu_button(
                     format!("{} Relations", egui_icons::icons::ICON_LINK.codepoint),
                     |ui| {
-                        if ui.button("Suggest from similar column names…").clicked() {
+                        if ui.button("🔍 Suggest from all similar columns…").clicked() {
                             ui.close();
                             let suggestions = crate::diagram_relations::suggest_relations(state);
+                            state.relation_suggestions_title = Some("all tables".to_string());
+                            state.relation_column_search_query.clear();
                             state.relation_suggestions =
                                 Some(suggestions.into_iter().map(|s| (s, true)).collect());
+                        }
+                        if ui.button("🔎 Search relations by column name…").clicked() {
+                            ui.close();
+                            state.relation_suggestions_title = Some("Search by column name".to_string());
+                            state.relation_column_search_query.clear();
+                            state.relation_suggestions = Some(Vec::new());
                         }
                         if let Some((sel_table, sel_col)) = &state.selected_column {
                             if ui
@@ -1378,6 +1471,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                                     crate::diagram_relations::suggest_relations_for_column(
                                         state, sel_table, sel_col,
                                     );
+                                state.relation_suggestions_title =
+                                    Some(format!("{sel_table}.{sel_col}"));
+                                state.relation_column_search_query = sel_col.clone();
                                 state.relation_suggestions =
                                     Some(suggestions.into_iter().map(|s| (s, true)).collect());
                             }
@@ -1570,13 +1666,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                                                 .chain(node.columns.iter().map(String::as_str)),
                                         ),
                                         (true, false) => query.score(&node.title),
-                                        (false, true) => {
-                                            query.best_score(node.columns.iter().map(String::as_str))
-                                        }
+                                        (false, true) => query
+                                            .best_score(node.columns.iter().map(String::as_str)),
                                         (false, false) => None,
                                     };
                                     if let Some(score) = score
-                                        && best_node.is_none_or(|(best_score, _)| score > best_score)
+                                        && best_node
+                                            .is_none_or(|(best_score, _)| score > best_score)
                                     {
                                         let node_center = node.pos + node.size / 2.0;
                                         best_node = Some((score, node_center));
@@ -1589,7 +1685,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             if state.search_groups {
                                 for group in &state.groups {
                                     if let Some(score) = query.score(&group.title) {
-                                        if best_group.is_none_or(|(best_score, _)| score > best_score) {
+                                        if best_group
+                                            .is_none_or(|(best_score, _)| score > best_score)
+                                        {
                                             let group_nodes: Vec<&DiagramNode> = state
                                                 .nodes
                                                 .iter()
@@ -1706,6 +1804,26 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         action = Some(a);
     }
 
+    // Atur kursor mouse untuk mode Hand Tool
+    if is_hand_mode {
+        let pointer_down = ui.input(|i| i.pointer.primary_down() || i.pointer.middle_down());
+        if response.dragged() || (pointer_down && ui.rect_contains_pointer(rect)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
+            let in_canvas = rect.contains(hover_pos);
+            let in_toolbar = toolbar_rect.contains(hover_pos);
+            let in_search = state.show_search
+                && egui::Rect::from_min_size(
+                    rect.min + egui::vec2(20.0, 20.0),
+                    egui::vec2(295.0, 70.0),
+                )
+                .contains(hover_pos);
+            if in_canvas && !in_toolbar && !in_search {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        }
+    }
+
     action
 }
 
@@ -1760,6 +1878,19 @@ fn remove_virtual(state: &mut DiagramState, idx: usize) {
     state.selected_virtual = None;
 }
 
+/// Jarak terdekat dari titik `p` ke ruas garis lurus antara `a` dan `b`.
+fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= 1e-4 {
+        return p.distance(a);
+    }
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj = egui::pos2(a.x + t * dx, a.y + t * dy);
+    p.distance(proj)
+}
+
 /// Gambar relasi virtual sebagai garis putus-putus dari baris kolom child ke
 /// baris kolom parent. Mengembalikan `true` bila salah satunya diklik.
 fn draw_virtual_relations(
@@ -1812,13 +1943,28 @@ fn draw_virtual_relations(
             egui::Color32::TRANSPARENT,
             egui::Stroke::NONE,
         );
-        let points: Vec<egui::Pos2> = (0..=24).map(|i| bezier.sample(i as f32 / 24.0)).collect();
+        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
 
-        let hovered = !over_node
+        let btn_size = egui::vec2(20.0, 20.0);
+        let dist = (end - start).length();
+        let offset = 28.0f32.min(dist * 0.35).max(14.0);
+        let child_btn_pos = start + egui::vec2(dir * offset, 0.0);
+        let parent_btn_pos = end - egui::vec2(dir * offset, 0.0);
+        let child_btn_rect = egui::Rect::from_center_size(child_btn_pos, btn_size);
+        let parent_btn_rect = egui::Rect::from_center_size(parent_btn_pos, btn_size);
+
+        let is_btn_hover = hover.is_some_and(|p| {
+            child_btn_rect.expand(2.0).contains(p) || parent_btn_rect.expand(2.0).contains(p)
+        });
+        let is_line_hover = !over_node
             && hover.is_some_and(|p| {
-                egui::Rect::from_points(&points).expand(8.0).contains(p)
-                    && points.iter().any(|q| q.distance(p) < 8.0)
+                egui::Rect::from_points(&points).expand(14.0).contains(p)
+                    && points
+                        .windows(2)
+                        .any(|w| dist_to_segment(p, w[0], w[1]) < 12.0)
             });
+        let hovered = is_btn_hover || is_line_hover;
+
         if hovered && pointer_down {
             clicked = Some(idx);
         }
@@ -1854,18 +2000,35 @@ fn draw_virtual_relations(
             ui.painter().text(
                 mid - egui::vec2(0.0, 10.0),
                 egui::Align2::CENTER_BOTTOM,
-                format!("{} → {} ({origin})", rel.child_column, rel.parent_column),
+                format!("{} x {} ({origin})", rel.child_column, rel.parent_column),
                 egui::FontId::proportional(11.0),
                 color,
             );
-            if selected {
-                let btn = egui::Rect::from_center_size(
-                    mid + egui::vec2(0.0, 12.0),
-                    egui::vec2(64.0, 20.0),
-                );
-                if ui.put(btn, egui::Button::new("Remove").small()).clicked() {
-                    remove = Some(idx);
-                }
+
+            // Dua tombol tong sampah untuk menghapus relasi: dekat kolom child dan parent
+            let make_del_btn = |ui: &egui::Ui| {
+                egui::Button::new(
+                    egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(240, 80, 80)),
+                )
+                .fill(ui.visuals().window_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(240, 80, 80).linear_multiply(0.7),
+                ))
+                .corner_radius(4.0)
+            };
+
+            let child_res = ui
+                .put(child_btn_rect, make_del_btn(ui))
+                .on_hover_text("Remove relation");
+            let parent_res = ui
+                .put(parent_btn_rect, make_del_btn(ui))
+                .on_hover_text("Remove relation");
+
+            if child_res.clicked() || parent_res.clicked() {
+                remove = Some(idx);
             }
         }
     }
@@ -1892,94 +2055,130 @@ fn render_relation_suggestions(
     let mut close = false;
     let mut result = None;
 
-    egui::Window::new("Suggested relations")
+    // Cache saran awal (sebelum user mengetik kolom pencarian baru)
+    let base_id = egui::Id::new("rel_suggest_base");
+    if state.relation_column_search_query.is_empty() {
+        ctx.data_mut(|d| {
+            if d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id)
+                .is_none()
+            {
+                d.insert_temp(base_id, suggestions.clone());
+            }
+        });
+    }
+
+    let window_title = if let Some(t) = &state.relation_suggestions_title {
+        format!("Suggested relations for {t}")
+    } else {
+        "Suggested relations".to_string()
+    };
+
+    egui::Window::new(window_title)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(480.0)
+        .default_width(520.0)
         .show(ctx, |ui| {
+            if let Some(t) = &state.relation_suggestions_title {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Target: {t} — search or filter similar columns below:"
+                    ))
+                    .strong(),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new(
+                        "Based on column names, similarity, and types. Accepted relations are saved with the diagram and shown as dashed lines.",
+                    )
+                    .weak(),
+                );
+            }
+
+            // Input pencarian kolom dinamis
+            let mut search_triggered = false;
+            ui.horizontal(|ui| {
+                ui.label("🔍 Search column:");
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut state.relation_column_search_query)
+                        .hint_text("Enter column name to search (e.g. user_id, imei)...")
+                        .desired_width(280.0),
+                );
+                if edit.changed() {
+                    search_triggered = true;
+                }
+                if !state.relation_column_search_query.is_empty() && ui.small_button("✖").clicked() {
+                    state.relation_column_search_query.clear();
+                    search_triggered = true;
+                }
+            });
+
+            if search_triggered {
+                let trimmed = state.relation_column_search_query.trim();
+                if trimmed.is_empty() {
+                    if let Some(base) = ctx.data(|d| {
+                        d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
+                            base_id,
+                        )
+                    }) {
+                        suggestions = base;
+                    }
+                } else {
+                    let found = crate::diagram_relations::suggest_relations_by_column_search(
+                        state, trimmed,
+                    );
+                    suggestions = found.into_iter().map(|s| (s, true)).collect();
+                }
+            }
+
+            let is_searching = !state.relation_column_search_query.trim().is_empty();
+
             if suggestions.is_empty() {
-                ui.label("No relations found. Columns such as `customer_id`, `id_customer` or a column that matches another table's primary key are detected automatically.");
+                ui.add_space(8.0);
+                if is_searching {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "No relations found matching column \"{}\"",
+                            state.relation_column_search_query.trim()
+                        ))
+                        .italics()
+                        .weak(),
+                    );
+                } else {
+                    ui.label("No automatic relations found. Enter a column name above to search across the diagram.");
+                }
+                ui.add_space(8.0);
                 if ui.button("Close").clicked() {
                     close = true;
                 }
                 return;
             }
-            ui.label(
-                egui::RichText::new(
-                    "Based on column names and types. Accepted relations are saved with the diagram and shown as dashed lines.",
-                )
-                .weak(),
-            );
 
-            // Filter pencarian nama kolom atau tabel
-            let mut filter_text: String = ctx.data_mut(|d| {
-                d.get_temp(egui::Id::new("rel_suggest_filter")).unwrap_or_default()
-            });
-            ui.horizontal(|ui| {
-                ui.label("🔍 Filter:");
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut filter_text)
-                        .hint_text("Filter by table or column name..."),
-                );
-                if edit.changed() {
-                    ctx.data_mut(|d| {
-                        d.insert_temp(egui::Id::new("rel_suggest_filter"), filter_text.clone())
-                    });
-                }
-                if !filter_text.is_empty() && ui.small_button("✖").clicked() {
-                    filter_text.clear();
-                    ctx.data_mut(|d| {
-                        d.insert_temp(egui::Id::new("rel_suggest_filter"), String::new())
-                    });
-                }
-            });
-
-            let filter_lower = filter_text.trim().to_lowercase();
-
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.small_button("Select all").clicked() {
-                    for (s, on) in suggestions.iter_mut() {
-                        if filter_lower.is_empty()
-                            || s.relation.child.to_lowercase().contains(&filter_lower)
-                            || s.relation.child_column.to_lowercase().contains(&filter_lower)
-                            || s.relation.parent.to_lowercase().contains(&filter_lower)
-                            || s.relation.parent_column.to_lowercase().contains(&filter_lower)
-                            || s.reason.to_lowercase().contains(&filter_lower)
-                        {
-                            *on = true;
-                        }
+                    for (_, on) in suggestions.iter_mut() {
+                        *on = true;
                     }
                 }
                 if ui.small_button("Select none").clicked() {
-                    for (s, on) in suggestions.iter_mut() {
-                        if filter_lower.is_empty()
-                            || s.relation.child.to_lowercase().contains(&filter_lower)
-                            || s.relation.child_column.to_lowercase().contains(&filter_lower)
-                            || s.relation.parent.to_lowercase().contains(&filter_lower)
-                            || s.relation.parent_column.to_lowercase().contains(&filter_lower)
-                            || s.reason.to_lowercase().contains(&filter_lower)
-                        {
-                            *on = false;
-                        }
+                    for (_, on) in suggestions.iter_mut() {
+                        *on = false;
                     }
                 }
+                let total = suggestions.len();
+                let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+                ui.label(
+                    egui::RichText::new(format!("{chosen} of {total} selected"))
+                        .weak()
+                        .small(),
+                );
             });
+
             ui.separator();
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                let mut displayed_count = 0;
                 for (s, on) in suggestions.iter_mut() {
                     let r = &s.relation;
-                    if !filter_lower.is_empty()
-                        && !r.child.to_lowercase().contains(&filter_lower)
-                        && !r.child_column.to_lowercase().contains(&filter_lower)
-                        && !r.parent.to_lowercase().contains(&filter_lower)
-                        && !r.parent_column.to_lowercase().contains(&filter_lower)
-                        && !s.reason.to_lowercase().contains(&filter_lower)
-                    {
-                        continue;
-                    }
-                    displayed_count += 1;
                     ui.horizontal(|ui| {
                         ui.checkbox(
                             on,
@@ -1992,14 +2191,8 @@ fn render_relation_suggestions(
                         );
                     });
                 }
-                if displayed_count == 0 && !filter_lower.is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!("No suggestions matching \"{filter_text}\""))
-                            .italics()
-                            .weak(),
-                    );
-                }
             });
+
             ui.separator();
             let chosen = suggestions.iter().filter(|(_, on)| *on).count();
             ui.horizontal(|ui| {
@@ -2025,6 +2218,12 @@ fn render_relation_suggestions(
 
     if open && !close {
         state.relation_suggestions = Some(suggestions);
+    } else {
+        ctx.data_mut(|d| {
+            d.remove::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id);
+        });
+        state.relation_column_search_query.clear();
+        state.relation_suggestions_title = None;
     }
     result
 }
@@ -2131,11 +2330,9 @@ pub fn resolve_dragged_node_overlap(nodes: &mut [DiagramNode], dragged_id: &str,
 
     let mut still_colliding = false;
     for _ in 0..max_single_passes {
-        let dragged_rect = egui::Rect::from_min_size(
-            nodes[dragged_idx].pos,
-            nodes[dragged_idx].size,
-        )
-        .expand(half_pad);
+        let dragged_rect =
+            egui::Rect::from_min_size(nodes[dragged_idx].pos, nodes[dragged_idx].size)
+                .expand(half_pad);
 
         // Cari rintangan terdekat yang bertabrakan
         let mut min_push: Option<egui::Vec2> = None;
@@ -2732,7 +2929,11 @@ mod tests {
 
         let non_overlapping = vec![node_a, node_c];
         assert!(!check_nodes_overlap(&non_overlapping, 20.0));
-        assert!(!check_single_node_collision(&non_overlapping, "table_a", 20.0));
+        assert!(!check_single_node_collision(
+            &non_overlapping,
+            "table_a",
+            20.0
+        ));
     }
 
     #[test]
@@ -2803,8 +3004,10 @@ mod tests {
         assert!(state.prevent_overlap);
 
         // JSON tanpa properti prevent_overlap harus mendefaultkan ke true
-        let json_data = r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
-        let deserialized: DiagramState = serde_json::from_str(json_data).expect("should deserialize");
+        let json_data =
+            r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState =
+            serde_json::from_str(json_data).expect("should deserialize");
         assert!(deserialized.prevent_overlap);
     }
 
@@ -2816,8 +3019,10 @@ mod tests {
         assert!(state.search_groups);
 
         // JSON deserialization harus mendefaultkan search flags ke true
-        let json_data = r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
-        let deserialized: DiagramState = serde_json::from_str(json_data).expect("should deserialize");
+        let json_data =
+            r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState =
+            serde_json::from_str(json_data).expect("should deserialize");
         assert!(deserialized.search_tables);
         assert!(deserialized.search_columns);
         assert!(deserialized.search_groups);
@@ -2844,5 +3049,21 @@ mod tests {
         state.search_groups = true;
         assert!(state.search_groups && group_title.to_lowercase().contains("auth"));
     }
-}
 
+    #[test]
+    fn test_diagram_hand_tool_toggle() {
+        let mut state = DiagramState::default();
+        assert!(!state.hand_tool);
+
+        // Toggle hand tool aktif
+        state.hand_tool = true;
+        assert!(state.hand_tool);
+
+        // Deserialisasi JSON tidak terpengaruh oleh hand_tool (karena skip)
+        let json_data =
+            r#"{"nodes":[],"edges":[],"groups":[],"pan":[0.0,0.0],"zoom":1.0,"is_centered":false}"#;
+        let deserialized: DiagramState =
+            serde_json::from_str(json_data).expect("should deserialize");
+        assert!(!deserialized.hand_tool);
+    }
+}
