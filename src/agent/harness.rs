@@ -21,6 +21,23 @@ use crate::config::CliAgentKind;
 /// Nama MCP server Tabular di konfigurasi CLI (`mcp__tabular__*` di Claude Code).
 pub const MCP_SERVER_NAME: &str = "tabular";
 
+/// Pesan untuk build Mac App Store, tempat backend CLI tidak bisa dipakai.
+pub const SANDBOX_UNAVAILABLE_MESSAGE: &str = "CLI agents are not available in the Mac App Store version of Tabular: the App Sandbox does not allow running tools installed on your Mac. Use the HTTP API backend, or install the direct-download version of Tabular.";
+
+/// Apakah proses berjalan di dalam App Sandbox macOS (build Mac App Store).
+///
+/// Di sandbox, proses anak mewarisi sandbox yang sama: binary di `~/.local/bin`
+/// tidak bisa dieksekusi, `HOME` dialihkan ke container sehingga sesi login
+/// CLI tidak terlihat, dan konfigurasi MCP global tidak bisa ditulis. macOS
+/// mengisi `APP_SANDBOX_CONTAINER_ID` untuk setiap proses yang di-sandbox.
+pub fn is_app_sandboxed() -> bool {
+    sandboxed_from_env(std::env::var_os("APP_SANDBOX_CONTAINER_ID").as_deref())
+}
+
+fn sandboxed_from_env(container_id: Option<&std::ffi::OsStr>) -> bool {
+    cfg!(target_os = "macos") && container_id.is_some_and(|v| !v.is_empty())
+}
+
 /// Konfigurasi CLI yang disalin dari preferensi user.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CliAgentConfig {
@@ -793,6 +810,9 @@ pub fn spawn_stream(
     cfg: &CliAgentConfig,
     req: AgentRequest,
 ) -> Result<(mpsc::Receiver<AgentEvent>, CancelHandle), String> {
+    if is_app_sandboxed() {
+        return Err(SANDBOX_UNAVAILABLE_MESSAGE.to_string());
+    }
     let bin_name = cfg.effective_bin();
     if bin_name.is_empty() {
         return Err("No CLI command configured. Open Settings → AI Assistant.".to_string());
@@ -1291,6 +1311,17 @@ mod tests {
         assert!(mcp_list_mentions_tabular("  tabular  stdio  enabled"));
         assert!(!mcp_list_mentions_tabular("No MCP servers configured."));
         assert!(!mcp_list_mentions_tabular("other: npx something"));
+    }
+
+    #[test]
+    fn sandbox_detection_from_env_value() {
+        use std::ffi::OsStr;
+        assert!(!sandboxed_from_env(None));
+        assert!(!sandboxed_from_env(Some(OsStr::new(""))));
+        assert_eq!(
+            sandboxed_from_env(Some(OsStr::new("id.tabular.database"))),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]
