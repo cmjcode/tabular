@@ -28,9 +28,15 @@ pub const GROUP_COLORS: [egui::Color32; 20] = [
     egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
 ];
 
-/// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault).
+pub const MIN_ZOOM: f32 = 0.25;
+pub const MAX_ZOOM: f32 = 2.0;
+pub const DEFAULT_ZOOM: f32 = 1.0;
+
+/// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault, database).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagramAction {
+    /// Simpan diagram (ke disk lokal dan otomatis ke Obsidian vault bila aktif).
+    Save,
     /// Simpan skema sebagai catatan Mermaid di vault Obsidian.
     SaveToVault,
     /// Simpan seluruh state diagram ke tabel `diagram_by_tabular` di database target.
@@ -142,6 +148,29 @@ fn import_mermaid(state: &mut DiagramState) -> Option<DiagramAction> {
     })
 }
 
+/// Pusatkan posisi semua node diagram ke tengah area tampilan (viewport).
+pub fn center_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
+    if state.nodes.is_empty() {
+        state.pan = egui::Vec2::ZERO;
+        return;
+    }
+
+    // Hitung bounding box dari seluruh node tabel
+    let mut min_pos = state.nodes[0].pos;
+    let mut max_pos = state.nodes[0].pos + state.nodes[0].size;
+
+    for node in &state.nodes {
+        min_pos = min_pos.min(node.pos);
+        max_pos = max_pos.max(node.pos + node.size);
+    }
+
+    let content_center = min_pos + (max_pos - min_pos) / 2.0;
+    let view_center = view_size / 2.0;
+
+    // Geser pan agar titik tengah konten tepat di tengah viewport
+    state.pan = view_center - content_center.to_vec2() * state.zoom;
+}
+
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
     let mut action: Option<DiagramAction> = None;
     let rect = ui.available_rect_before_wrap();
@@ -175,32 +204,43 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
     });
 
-    // Zoom with Ctrl/Cmd + Scroll or Keys
+    // Zoom & Shortcut Input Handling
     ui.input_mut(|i| {
-        // Zoom In
+        // Zoom In (Cmd + / Cmd =)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals)
         {
-            state.zoom *= 1.1;
+            state.zoom = (state.zoom * 1.15).min(MAX_ZOOM);
         }
-        // Zoom Out
+        // Zoom Out (Cmd -)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus) {
-            state.zoom /= 1.1;
+            state.zoom = (state.zoom / 1.15).max(MIN_ZOOM);
+        }
+        // Reset Zoom (Cmd 0)
+        if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
+            state.zoom = DEFAULT_ZOOM;
         }
 
-        // Mouse Wheel Zoom
+        // Mouse Wheel Zoom / Trackpad scroll (damped to prevent runaway zooming)
         let scroll_delta = i.smooth_scroll_delta.y;
         if scroll_delta != 0.0 {
-            let zoom_factor = 1.0 + scroll_delta * 0.001;
+            let zoom_factor = (1.0 + scroll_delta * 0.001).clamp(0.85, 1.15);
             state.zoom *= zoom_factor;
         }
 
-        // Clamp zoom
-        state.zoom = state.zoom.clamp(0.1, 5.0);
+        // Trackpad pinch gesture
+        let zoom_delta = i.zoom_delta();
+        if zoom_delta != 1.0 {
+            state.zoom *= zoom_delta;
+        }
+
+        // Clamp zoom strictly within bounded range [0.25, 2.0]
+        state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
 
         // Save Shortcut (Cmd + S)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             state.save_requested = true;
+            action = Some(DiagramAction::Save);
         }
 
         // Search Shortcut (Cmd + F)
@@ -214,20 +254,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Handle Initial Centering
     if !state.is_centered && !state.nodes.is_empty() {
-        // Calculate bounding box of nodes
-        let mut min_pos = state.nodes[0].pos;
-        let mut max_pos = state.nodes[0].pos + state.nodes[0].size;
-
-        for node in &state.nodes {
-            min_pos = min_pos.min(node.pos);
-            max_pos = max_pos.max(node.pos + node.size);
-        }
-
-        let content_center = min_pos + (max_pos - min_pos) / 2.0;
-        let view_center = rect.size() / 2.0;
-
-        // Calculate target pan to align content_center with view_center
-        state.pan = view_center - content_center.to_vec2() * state.zoom;
+        center_diagram(state, rect.size());
         state.is_centered = true;
     }
 
@@ -1017,120 +1044,204 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         node.pos += drag_delta / scale;
     }
 
-    // Toolbar kanan atas: Export / Import, Save to Vault, dan Database Sync.
-    let toolbar_width = 620.0;
+    // Floating Toolbar: Zoom & Navigasi, Grid, Relasi, Sync, Save, Import & Export.
+    let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
+    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(820.0);
+    let toolbar_width = measured_width.max(820.0);
+    let toolbar_height = 36.0;
     let toolbar_rect = egui::Rect::from_min_size(
-        rect.right_top() + egui::vec2(-toolbar_width, 4.0),
-        egui::vec2(toolbar_width, 32.0),
+        rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
+        egui::vec2(toolbar_width, toolbar_height),
     );
-    let accent = egui::Color32::from_rgb(255, 100, 100);
-    let label = |text: &str| egui::RichText::new(text).color(accent);
 
-    ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(20.0);
-            if ui
-                .add(egui::Button::new(label("Save to Vault")).frame(false))
-                .on_hover_text("Save the schema as a Mermaid note in your Obsidian vault (AI memory)")
-                .clicked()
-            {
-                action = Some(DiagramAction::SaveToVault);
-            }
-            ui.add_space(10.0);
-            ui.menu_button(label("Database Sync"), |ui| {
-                if ui.button("Save to Database (diagram_by_tabular)").clicked() {
-                    ui.close();
-                    action = Some(DiagramAction::SaveToDatabase);
-                }
-                if ui.button("Load from Database (diagram_by_tabular)").clicked() {
-                    ui.close();
-                    action = Some(DiagramAction::LoadFromDatabase);
-                }
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(
-                        "Saves custom groups, virtual relations, and node layout\ninto table `diagram_by_tabular` in this database\nfor team & multi-device sync.",
-                    )
-                    .weak()
-                    .small(),
-                );
-            });
-            ui.add_space(10.0);
-            ui.menu_button(label("Relations"), |ui| {
-                if ui.button("Suggest from similar column names…").clicked() {
-                    ui.close();
-                    let suggestions = crate::diagram_relations::suggest_relations(state);
-                    state.relation_suggestions =
-                        Some(suggestions.into_iter().map(|s| (s, true)).collect());
-                }
-                let removable = state
-                    .virtual_relations
-                    .iter()
-                    .filter(|r| r.origin != RelationOrigin::Imported)
-                    .count();
+    let card_fill = ui.visuals().window_fill;
+    let card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    ui.painter().rect_filled(toolbar_rect, 6.0, card_fill);
+    ui.painter()
+        .rect_stroke(toolbar_rect, 6.0, card_stroke, egui::StrokeKind::Middle);
+
+    let toolbar_res = ui.scope_builder(
+        egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0)),
+        |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(5.0, 0.0);
+
+                // --- 1. Zoom & Navigasi ---
                 if ui
-                    .add_enabled(
-                        removable > 0,
-                        egui::Button::new(format!("Remove suggested & manual relations ({removable})")),
+                    .button(egui_icons::icons::ICON_REMOVE.codepoint)
+                    .on_hover_text("Zoom Out (Cmd -)")
+                    .clicked()
+                {
+                    state.zoom = (state.zoom / 1.15).max(MIN_ZOOM);
+                }
+
+                let zoom_text = format!("{:.0}%", state.zoom * 100.0);
+                if ui
+                    .button(egui::RichText::new(zoom_text).monospace().size(11.5))
+                    .on_hover_text("Reset Zoom to 100% (Cmd 0)")
+                    .clicked()
+                {
+                    state.zoom = DEFAULT_ZOOM;
+                }
+
+                if ui
+                    .button(egui_icons::icons::ICON_ADD.codepoint)
+                    .on_hover_text("Zoom In (Cmd +)")
+                    .clicked()
+                {
+                    state.zoom = (state.zoom * 1.15).min(MAX_ZOOM);
+                }
+
+                if ui
+                    .button(format!(
+                        "{} Center",
+                        egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint
+                    ))
+                    .on_hover_text("Move diagram to center of view")
+                    .clicked()
+                {
+                    center_diagram(state, rect.size());
+                }
+
+                ui.separator();
+
+                // --- 2. Grid Toggle ---
+                if ui
+                    .selectable_label(
+                        state.show_grid,
+                        format!("{} Grid", egui_icons::icons::ICON_GRID_ON.codepoint),
+                    )
+                    .on_hover_text("Show or hide the background grid")
+                    .clicked()
+                {
+                    state.show_grid = !state.show_grid;
+                    state.save_requested = true;
+                }
+
+                ui.separator();
+
+                // --- 3. Relations & Database Sync ---
+                ui.menu_button(
+                    format!("{} Relations", egui_icons::icons::ICON_LINK.codepoint),
+                    |ui| {
+                        if ui.button("Suggest from similar column names…").clicked() {
+                            ui.close();
+                            let suggestions = crate::diagram_relations::suggest_relations(state);
+                            state.relation_suggestions =
+                                Some(suggestions.into_iter().map(|s| (s, true)).collect());
+                        }
+                        let removable = state
+                            .virtual_relations
+                            .iter()
+                            .filter(|r| r.origin != RelationOrigin::Imported)
+                            .count();
+                        if ui
+                            .add_enabled(
+                                removable > 0,
+                                egui::Button::new(format!(
+                                    "Remove suggested & manual relations ({removable})"
+                                )),
+                            )
+                            .clicked()
+                        {
+                            ui.close();
+                            state
+                                .virtual_relations
+                                .retain(|r| r.origin == RelationOrigin::Imported);
+                            state.selected_virtual = None;
+                            state.save_requested = true;
+                        }
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(
+                                "Manual link: click a column, then Shift+click the column\nit refers to in another table. Select a dashed line and\npress Delete to remove it.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    },
+                );
+
+                ui.menu_button(
+                    format!("{} Sync", egui_icons::icons::ICON_SYNC.codepoint),
+                    |ui| {
+                        if ui.button("Save to Database (diagram_by_tabular)").clicked() {
+                            ui.close();
+                            action = Some(DiagramAction::SaveToDatabase);
+                        }
+                        if ui.button("Load from Database (diagram_by_tabular)").clicked() {
+                            ui.close();
+                            action = Some(DiagramAction::LoadFromDatabase);
+                        }
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(
+                                "Saves custom groups, virtual relations, and node layout\ninto table `diagram_by_tabular` in this database\nfor team & multi-device sync.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    },
+                );
+
+                ui.separator();
+
+                // --- 4. File / Persistence (Save, Import, Export) ---
+                if ui
+                    .button(format!("{} Save", egui_icons::icons::ICON_SAVE.codepoint))
+                    .on_hover_text(
+                        "Save diagram layout (Cmd S) - default saves to Obsidian vault if enabled",
                     )
                     .clicked()
                 {
-                    ui.close();
-                    state
-                        .virtual_relations
-                        .retain(|r| r.origin == RelationOrigin::Imported);
-                    state.selected_virtual = None;
                     state.save_requested = true;
+                    action = Some(DiagramAction::Save);
                 }
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(
-                        "Manual link: click a column, then Shift+click the column\nit refers to in another table. Select a dashed line and\npress Delete to remove it.",
-                    )
-                    .weak()
-                    .small(),
+
+                ui.menu_button(
+                    format!("{} Import", egui_icons::icons::ICON_UPLOAD.codepoint),
+                    |ui| {
+                        if ui.button("Diagram layout (JSON)…").clicked() {
+                            ui.close();
+                            action = import_json(state);
+                        }
+                        if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
+                            ui.close();
+                            action = import_mermaid(state);
+                        }
+                    },
+                );
+
+                ui.menu_button(
+                    format!("{} Export", egui_icons::icons::ICON_DOWNLOAD.codepoint),
+                    |ui| {
+                        if ui.button("Diagram layout (JSON)…").clicked() {
+                            ui.close();
+                            action = export_json(state);
+                        }
+                        if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
+                            ui.close();
+                            action = export_mermaid(state);
+                        }
+                        if ui.button("Copy Mermaid to clipboard").clicked() {
+                            ui.close();
+                            let text = crate::diagram_mermaid::ErModel::from_diagram(state)
+                                .to_mermaid(Default::default());
+                            ui.ctx().copy_text(text);
+                            action = Some(DiagramAction::Info(
+                                "Mermaid copied to clipboard".to_string(),
+                            ));
+                        }
+                    },
                 );
             });
-            ui.add_space(10.0);
-            if ui
-                .selectable_label(state.show_grid, label("Grid"))
-                .on_hover_text("Show or hide the background grid")
-                .clicked()
-            {
-                state.show_grid = !state.show_grid;
-                state.save_requested = true;
-            }
-            ui.add_space(10.0);
-            ui.menu_button(label("Import"), |ui| {
-                if ui.button("Diagram layout (JSON)…").clicked() {
-                    ui.close();
-                    action = import_json(state);
-                }
-                if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
-                    ui.close();
-                    action = import_mermaid(state);
-                }
-            });
-            ui.add_space(10.0);
-            ui.menu_button(label("Export"), |ui| {
-                if ui.button("Diagram layout (JSON)…").clicked() {
-                    ui.close();
-                    action = export_json(state);
-                }
-                if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
-                    ui.close();
-                    action = export_mermaid(state);
-                }
-                if ui.button("Copy Mermaid to clipboard").clicked() {
-                    ui.close();
-                    let text = crate::diagram_mermaid::ErModel::from_diagram(state)
-                        .to_mermaid(Default::default());
-                    ui.ctx().copy_text(text);
-                    action = Some(DiagramAction::Info("Mermaid copied to clipboard".to_string()));
-                }
-            });
-        });
-    });
+        },
+    );
+
+    let actual_content_width = toolbar_res.response.rect.width() + 20.0;
+    if (actual_content_width - measured_width).abs() > 4.0 {
+        ui.data_mut(|d| d.insert_temp(toolbar_id, actual_content_width));
+    }
 
     // Render Search Box
     if state.show_search {
@@ -2097,4 +2208,46 @@ mod tests {
         assert_eq!(node.total_cost, 2.50);
         assert_eq!(node.plan_rows, 100);
     }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn test_zoom_constants() {
+        assert!(MIN_ZOOM > 0.0);
+        assert!(MAX_ZOOM > MIN_ZOOM);
+        assert!(DEFAULT_ZOOM >= MIN_ZOOM && DEFAULT_ZOOM <= MAX_ZOOM);
+    }
+
+    #[test]
+    fn test_center_diagram_empty() {
+        let mut state = DiagramState {
+            pan: egui::vec2(100.0, 50.0),
+            ..Default::default()
+        };
+        center_diagram(&mut state, egui::vec2(800.0, 600.0));
+        assert_eq!(state.pan, egui::Vec2::ZERO);
+    }
+
+    #[test]
+    fn test_center_diagram_with_nodes() {
+        let mut state = DiagramState::default();
+        state.nodes.push(crate::models::structs::DiagramNode {
+            id: "table_a".to_string(),
+            title: "users".to_string(),
+            pos: egui::pos2(100.0, 100.0),
+            size: egui::vec2(200.0, 100.0),
+            columns: vec!["id".to_string()],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: None,
+            column_meta: vec![],
+            detached: false,
+        });
+
+        // Bounding box: min (100, 100), max (300, 200), center (200, 150)
+        // Viewport size: (800, 600), view center: (400, 300)
+        // Expected pan = (400, 300) - (200, 150) * 1.0 = (200, 150)
+        center_diagram(&mut state, egui::vec2(800.0, 600.0));
+        assert_eq!(state.pan, egui::vec2(200.0, 150.0));
+    }
 }
+
