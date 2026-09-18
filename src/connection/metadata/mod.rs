@@ -6,7 +6,8 @@
 //   ddl         – fetch_view_definition, fetch_procedure_definition,
 //                 get_foreign_keys, fetch_table_definition
 
-mod cache;
+// `pub(crate)` agar lapisan headless `crate::agent` bisa memuat ulang cache skema.
+pub(crate) mod cache;
 mod databases;
 mod columns;
 mod ddl;

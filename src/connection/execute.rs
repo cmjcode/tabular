@@ -260,7 +260,9 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
     }
 }
 
-async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
+/// Jalankan satu job query sampai selesai. Dipakai GUI (via `spawn_query_job`)
+/// dan lapisan headless `crate::agent`.
+pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let start = job.started_at;
     let tab_id = job.tab_id;
     let connection_id = job.options.connection_id;
