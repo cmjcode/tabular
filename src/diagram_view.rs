@@ -33,6 +33,10 @@ pub const GROUP_COLORS: [egui::Color32; 20] = [
 pub enum DiagramAction {
     /// Simpan skema sebagai catatan Mermaid di vault Obsidian.
     SaveToVault,
+    /// Simpan seluruh state diagram ke tabel `diagram_by_tabular` di database target.
+    SaveToDatabase,
+    /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
+    LoadFromDatabase,
     Info(String),
     Error(String),
 }
@@ -1013,8 +1017,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         node.pos += drag_delta / scale;
     }
 
-    // Toolbar kanan atas: Export / Import (JSON & Mermaid) dan Save to Vault.
-    let toolbar_width = 480.0;
+    // Toolbar kanan atas: Export / Import, Save to Vault, dan Database Sync.
+    let toolbar_width = 620.0;
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_top() + egui::vec2(-toolbar_width, 4.0),
         egui::vec2(toolbar_width, 32.0),
@@ -1032,6 +1036,25 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             {
                 action = Some(DiagramAction::SaveToVault);
             }
+            ui.add_space(10.0);
+            ui.menu_button(label("Database Sync"), |ui| {
+                if ui.button("Save to Database (diagram_by_tabular)").clicked() {
+                    ui.close();
+                    action = Some(DiagramAction::SaveToDatabase);
+                }
+                if ui.button("Load from Database (diagram_by_tabular)").clicked() {
+                    ui.close();
+                    action = Some(DiagramAction::LoadFromDatabase);
+                }
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(
+                        "Saves custom groups, virtual relations, and node layout\ninto table `diagram_by_tabular` in this database\nfor team & multi-device sync.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            });
             ui.add_space(10.0);
             ui.menu_button(label("Relations"), |ui| {
                 if ui.button("Suggest from similar column names…").clicked() {
