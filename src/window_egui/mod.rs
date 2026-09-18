@@ -12,6 +12,7 @@ use crate::{
 
 
 pub mod app_impl;
+mod ai_cli_settings;
 pub mod connection_mgr;
 pub mod diagram;
 pub mod init;
@@ -579,19 +580,45 @@ pub struct Tabular {
     // --- AI Assistant ---
     pub show_ai_panel: bool,
     pub ai_input: String,
-    pub ai_suggestion: String,
     pub ai_is_loading: bool,
     pub ai_error: Option<String>,
-    pub ai_suggestion_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    // Transkrip chat + giliran yang sedang berjalan (lihat editor::render_ai_panel)
+    pub ai_chat: Vec<models::structs::AiChatMessage>,
+    pub ai_stream_receiver: Option<std::sync::mpsc::Receiver<crate::agent::harness::AgentEvent>>,
+    pub ai_cancel: Option<crate::agent::harness::CancelHandle>,
+    /// Id sesi CLI untuk melanjutkan percakapan (agy --conversation / claude --resume)
+    pub ai_session_id: Option<String>,
+    /// Tab lain yang dilampirkan sebagai konteks (QueryTab::id); tab aktif selalu ikut
+    pub ai_attached_tab_ids: Vec<usize>,
+    pub ai_live_edit_parser: Option<crate::agent::live_edit::LiveEditParser>,
+    pub ai_live_edit_active: Option<models::structs::ActiveLiveEdit>,
+    pub ai_markdown_cache: egui_commonmark::CommonMarkCache,
     // Persisted AI settings (mirrored from prefs for fast read during rendering)
     pub ai_api_key: String,
     pub ai_model: String,
     pub ai_provider: crate::config::AiProvider,
     pub ai_base_url: String,
+    pub ai_backend: crate::config::AiBackend,
+    pub ai_cli_kind: crate::config::CliAgentKind,
+    pub ai_cli_bin: String,
+    pub ai_cli_model: String,
+    pub ai_cli_effort: String,
+    pub ai_cli_extra_args: String,
+    pub ai_cli_auto_apply_edits: bool,
     // Temp buffers for settings UI
     pub ai_settings_api_key_input: String,
     pub ai_settings_model_input: String,
     pub ai_settings_base_url_input: String,
+    pub ai_settings_cli_bin_input: String,
+    pub ai_settings_cli_model_input: String,
+    pub ai_settings_cli_extra_args_input: String,
+    // Hasil "Test" dan pemeriksaan registrasi MCP di settings (dijalankan di thread)
+    pub ai_cli_test_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    pub ai_cli_test_result: Option<Result<String, String>>,
+    /// None = belum diperiksa; Some(true) = MCP Tabular terdaftar di CLI global
+    pub ai_cli_mcp_registered: Option<bool>,
+    pub ai_cli_mcp_receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
+    pub ai_cli_mcp_message: Option<String>,
     // Inline --AI ... -- block processing
     pub ai_inline_processed: std::collections::HashSet<u64>,
     // (block_hash, placeholder_start, placeholder_end, rx)

@@ -301,3 +301,465 @@ pub fn sql_system_prompt_with_schema(schema: &str) -> String {
 pub fn sql_system_prompt() -> String {
     sql_system_prompt_with_schema("")
 }
+
+// ─── Backend terpadu (HTTP API / CLI agent) ──────────────────────────────────
+
+use crate::agent::harness::{self, AgentEvent, AgentRequest, CancelHandle, CliAgentConfig};
+use crate::agent::live_edit;
+use crate::config::{AiBackend, CliAgentKind};
+use crate::models::structs::{AiChatMessage, AiChatRole, QueryTab};
+use crate::window_egui::Tabular;
+
+/// Snapshot konfigurasi backend dari state UI; aman dipindahkan ke thread.
+#[derive(Debug, Clone)]
+pub struct ChatBackend {
+    pub backend: AiBackend,
+    pub provider: AiProvider,
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    pub cli: CliAgentConfig,
+    /// Agent punya akses ke MCP server Tabular (menentukan isi system prompt).
+    pub mcp_available: bool,
+}
+
+impl ChatBackend {
+    /// Backend ini melanjutkan percakapan lewat id sesi CLI; selain itu
+    /// riwayat chat harus disisipkan ulang ke prompt.
+    pub fn keeps_history_natively(&self) -> bool {
+        self.backend == AiBackend::Cli && self.cli.kind.supports_resume()
+    }
+}
+
+pub fn chat_backend(tabular: &Tabular) -> ChatBackend {
+    let cli = CliAgentConfig {
+        kind: tabular.ai_cli_kind,
+        bin: tabular.ai_cli_bin.clone(),
+        model: tabular.ai_cli_model.clone(),
+        effort: tabular.ai_cli_effort.clone(),
+        extra_args: tabular.ai_cli_extra_args.clone(),
+    };
+    let mcp_available = tabular.ai_backend == AiBackend::Cli
+        && match tabular.ai_cli_kind {
+            // Konfigurasi MCP dikirim per-invocation lewat --mcp-config.
+            CliAgentKind::ClaudeCode => true,
+            CliAgentKind::Custom => false,
+            _ => tabular.ai_cli_mcp_registered == Some(true),
+        };
+    ChatBackend {
+        backend: tabular.ai_backend,
+        provider: tabular.ai_provider,
+        api_key: tabular.ai_api_key.clone(),
+        model: tabular.ai_model.clone(),
+        base_url: tabular.ai_base_url.clone(),
+        cli,
+        mcp_available,
+    }
+}
+
+/// Label singkat backend aktif untuk header panel.
+pub fn backend_label(tabular: &Tabular) -> String {
+    match tabular.ai_backend {
+        AiBackend::Api => tabular.ai_provider.display_name().to_string(),
+        AiBackend::Cli => {
+            let bin = CliAgentConfig {
+                kind: tabular.ai_cli_kind,
+                bin: tabular.ai_cli_bin.clone(),
+                ..Default::default()
+            }
+            .effective_bin();
+            let bin_name = std::path::Path::new(&bin)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or(bin);
+            if tabular.ai_cli_model.trim().is_empty() {
+                bin_name
+            } else {
+                format!("{bin_name} · {}", tabular.ai_cli_model.trim())
+            }
+        }
+    }
+}
+
+/// Pemeriksaan murah (tanpa menyentuh filesystem) apakah backend bisa dipakai.
+pub fn backend_ready(tabular: &Tabular) -> Result<(), String> {
+    match tabular.ai_backend {
+        AiBackend::Api => {
+            if tabular.ai_api_key.is_empty() {
+                Err("No API key configured. Open Settings → AI Assistant to add one, or switch to a CLI agent.".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        AiBackend::Cli => {
+            if tabular.ai_cli_kind == CliAgentKind::Custom && tabular.ai_cli_bin.trim().is_empty() {
+                Err("No CLI command configured. Open Settings → AI Assistant.".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Mulai satu giliran percakapan. Mode API dibungkus supaya UI hanya perlu
+/// satu jalur event; `CancelHandle` hanya ada untuk proses CLI.
+pub fn start_chat(
+    cfg: &ChatBackend,
+    system_prompt: String,
+    user_prompt: String,
+    session_id: Option<String>,
+) -> Result<(mpsc::Receiver<AgentEvent>, Option<CancelHandle>), String> {
+    match cfg.backend {
+        AiBackend::Api => {
+            let rx = request_ai_suggestion(
+                cfg.provider,
+                cfg.api_key.clone(),
+                cfg.model.clone(),
+                cfg.base_url.clone(),
+                system_prompt,
+                user_prompt,
+            );
+            let (tx, out_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let ev = match rx.recv() {
+                    Ok(Ok(text)) => {
+                        let _ = tx.send(AgentEvent::TextDelta(text.clone()));
+                        AgentEvent::Done { text, usage: None }
+                    }
+                    Ok(Err(e)) => AgentEvent::Error(e),
+                    Err(_) => AgentEvent::Error("AI request channel closed".to_string()),
+                };
+                let _ = tx.send(ev);
+            });
+            Ok((out_rx, None))
+        }
+        AiBackend::Cli => {
+            let mcp_config = if cfg.cli.kind == CliAgentKind::ClaudeCode {
+                Some(harness::write_mcp_config_file()?)
+            } else {
+                None
+            };
+            let req = AgentRequest {
+                system_prompt,
+                user_prompt,
+                session_id: if cfg.cli.kind.supports_resume() { session_id } else { None },
+                cwd: harness::agent_workspace_dir(),
+                mcp_config,
+            };
+            let (rx, handle) = harness::spawn_stream(&cfg.cli, req)?;
+            Ok((rx, Some(handle)))
+        }
+    }
+}
+
+/// Untuk pemakai yang hanya butuh teks akhir (blok inline `--AI … --`).
+pub fn request_text(
+    cfg: &ChatBackend,
+    system_prompt: String,
+    user_prompt: String,
+) -> mpsc::Receiver<Result<String, String>> {
+    let (tx, rx) = mpsc::channel();
+    match start_chat(cfg, system_prompt, user_prompt, None) {
+        Ok((events, _handle)) => {
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                loop {
+                    match events.recv() {
+                        Ok(AgentEvent::TextDelta(d)) => text.push_str(&d),
+                        Ok(AgentEvent::Done { text: full, .. }) => {
+                            let _ = tx.send(Ok(if text.is_empty() { full } else { text }));
+                            return;
+                        }
+                        Ok(AgentEvent::Error(e)) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                        Ok(_) => {}
+                        Err(_) => {
+                            let _ = tx.send(Err("AI backend stopped without a reply".to_string()));
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(Err(e));
+        }
+    }
+    rx
+}
+
+// ─── Konteks editor ──────────────────────────────────────────────────────────
+
+/// Batas isi per tab dan total konteks yang dikirim ke model (byte).
+pub const MAX_TAB_CONTEXT_BYTES: usize = 16_000;
+pub const MAX_TOTAL_CONTEXT_BYTES: usize = 60_000;
+
+/// Tab yang berisi SQL (bukan HTTP client, Redis browser, diagram, DBA, dll.).
+pub fn is_sql_tab(tab: &QueryTab) -> bool {
+    tab.http_client_state.is_none()
+        && tab.redis_browser_state.is_none()
+        && tab.dba_monitor_state.is_none()
+        && tab.user_manager_state.is_none()
+        && tab.diagram_state.is_none()
+}
+
+fn truncate_utf8(s: &str, max: usize) -> (&str, bool) {
+    if s.len() <= max {
+        return (s, false);
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], true)
+}
+
+fn describe_connection(tabular: &Tabular, conn_id: Option<i64>) -> String {
+    match conn_id.and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id))) {
+        Some(c) => format!(
+            "\"{}\" (connection_id={}, {:?})",
+            c.name,
+            c.id.unwrap_or_default(),
+            c.connection_type
+        ),
+        None => "(no connection selected)".to_string(),
+    }
+}
+
+/// Id tab yang benar-benar dikirim: tab aktif selalu pertama, lalu lampiran
+/// yang masih terbuka dan berisi SQL.
+pub fn context_tab_ids(tabular: &Tabular) -> Vec<usize> {
+    let mut ids = Vec::new();
+    if let Some(active) = tabular.query_tabs.get(tabular.active_tab_index)
+        && is_sql_tab(active)
+    {
+        ids.push(active.id);
+    }
+    for id in &tabular.ai_attached_tab_ids {
+        if ids.contains(id) {
+            continue;
+        }
+        if tabular.query_tabs.iter().any(|t| t.id == *id && is_sql_tab(t)) {
+            ids.push(*id);
+        }
+    }
+    ids
+}
+
+/// Susun bagian "Open editor tabs" untuk prompt: judul, `tab_id`, koneksi,
+/// database, isi (dibatasi), dan seleksi aktif.
+pub fn build_editor_context(tabular: &Tabular) -> String {
+    let ids = context_tab_ids(tabular);
+    if ids.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Open editor tabs\n");
+    let mut total = 0usize;
+    for id in ids {
+        let Some((idx, tab)) = tabular.query_tabs.iter().enumerate().find(|(_, t)| t.id == id) else {
+            continue;
+        };
+        let is_active = idx == tabular.active_tab_index;
+        let content: &str = if is_active { &tabular.editor.text } else { &tab.content };
+        let conn_id = tab.connection_id.or(if is_active { tabular.current_connection_id } else { None });
+        let db = tab.database_name.clone().unwrap_or_default();
+
+        let mut section = format!(
+            "\n### Tab \"{}\" (tab_id={}{})\n",
+            tab.title,
+            tab.id,
+            if is_active { ", ACTIVE" } else { "" }
+        );
+        section.push_str(&format!(
+            "Connection: {}; database: {}\n",
+            describe_connection(tabular, conn_id),
+            if db.is_empty() { "(default)" } else { db.as_str() }
+        ));
+        let (body, truncated) = truncate_utf8(content, MAX_TAB_CONTEXT_BYTES);
+        if body.trim().is_empty() {
+            section.push_str("(empty)\n");
+        } else {
+            section.push_str(&format!("```sql\n{body}\n```\n"));
+            if truncated {
+                section.push_str("(content truncated)\n");
+            }
+        }
+        if is_active
+            && tabular.selection_start < tabular.selection_end
+            && tabular.selection_end <= tabular.editor.text.len()
+            && tabular.editor.text.is_char_boundary(tabular.selection_start)
+            && tabular.editor.text.is_char_boundary(tabular.selection_end)
+        {
+            let sel = &tabular.editor.text[tabular.selection_start..tabular.selection_end];
+            let (sel, _) = truncate_utf8(sel, MAX_TAB_CONTEXT_BYTES);
+            section.push_str(&format!("Selected text in this tab:\n```sql\n{sel}\n```\n"));
+        }
+
+        if total + section.len() > MAX_TOTAL_CONTEXT_BYTES {
+            out.push_str("\n(more tabs omitted: context limit reached)\n");
+            break;
+        }
+        total += section.len();
+        out.push_str(&section);
+    }
+    out
+}
+
+/// Ringkasan riwayat chat untuk backend tanpa sesi (API / Gemini): beberapa
+/// giliran terakhir, dibatasi `max_bytes`.
+pub fn history_prefix(chat: &[AiChatMessage], max_bytes: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for msg in chat.iter().rev() {
+        if msg.streaming || msg.text.trim().is_empty() {
+            continue;
+        }
+        let role = match msg.role {
+            AiChatRole::User => "User",
+            AiChatRole::Assistant => "Assistant",
+        };
+        let (text, _) = truncate_utf8(msg.text.trim(), 4_000);
+        let entry = format!("{role}: {text}");
+        if used + entry.len() > max_bytes {
+            break;
+        }
+        used += entry.len();
+        parts.push(entry);
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    parts.reverse();
+    format!("## Conversation so far\n{}\n\n", parts.join("\n\n"))
+}
+
+/// System prompt lengkap: instruksi SQL + skema + (bila ada) akses MCP +
+/// protokol live edit.
+pub fn system_prompt_for(cfg: &ChatBackend, schema: &str) -> String {
+    let mut s = sql_system_prompt_with_schema(schema);
+    if cfg.mcp_available {
+        s.push_str(
+            "\n\n## Database access\n\
+             You have an MCP server named `tabular` with tools: list_connections, list_databases, \
+             describe_schema(connection_id, question), run_query(connection_id, sql, database?), \
+             explain_query, check_sql_safety and format_sql. Queries are read-only and results are \
+             truncated, so add LIMIT. Use the `connection_id` values given in the context below; \
+             when the answer depends on real data or on schema details that are not in the context, \
+             verify with these tools before answering instead of guessing. Never ask the user to run \
+             a SELECT for you.",
+        );
+    }
+    s.push_str("\n\n");
+    s.push_str(live_edit::PROTOCOL_INSTRUCTIONS);
+    s
+}
+
+/// Susun (system, user) prompt untuk satu giliran chat dari state UI.
+pub fn build_chat_prompts(tabular: &Tabular, cfg: &ChatBackend, user_text: &str) -> (String, String) {
+    let editor_context = build_editor_context(tabular);
+    let retrieval_query = format!("{user_text} {}", editor_context.chars().take(4_000).collect::<String>());
+    let schema = build_schema_context_for_prompt(tabular, &retrieval_query, 30);
+    let system = system_prompt_for(cfg, &schema);
+
+    let mut user = String::new();
+    if !cfg.keeps_history_natively() {
+        user.push_str(&history_prefix(&tabular.ai_chat, 12_000));
+    }
+    if !editor_context.is_empty() {
+        user.push_str(&editor_context);
+        user.push('\n');
+    }
+    user.push_str("## Request\n");
+    user.push_str(user_text.trim());
+    (system, user)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_respects_char_boundaries() {
+        let (s, t) = truncate_utf8("héllo", 2);
+        assert_eq!(s, "h");
+        assert!(t);
+        let (s, t) = truncate_utf8("abc", 10);
+        assert_eq!(s, "abc");
+        assert!(!t);
+    }
+
+    #[test]
+    fn history_prefix_keeps_recent_turns_in_order() {
+        let mk = |role, text: &str| AiChatMessage {
+            role,
+            text: text.to_string(),
+            ..Default::default()
+        };
+        let chat = vec![
+            mk(AiChatRole::User, "first"),
+            mk(AiChatRole::Assistant, "reply one"),
+            mk(AiChatRole::User, "second"),
+        ];
+        let h = history_prefix(&chat, 10_000);
+        assert!(h.starts_with("## Conversation so far\nUser: first"));
+        assert!(h.contains("Assistant: reply one\n\nUser: second"));
+        // Batas kecil hanya menyisakan giliran terakhir.
+        let h = history_prefix(&chat, 20);
+        assert_eq!(h, "## Conversation so far\nUser: second\n\n");
+        assert_eq!(history_prefix(&[], 100), "");
+    }
+
+    /// End-to-end dengan `agy` sungguhan: model harus mengikuti protokol live
+    /// edit (`sql tabular:tab=7`). Jalankan dengan
+    /// `cargo test --lib -- --ignored real_agy`.
+    #[test]
+    #[ignore]
+    fn real_agy_follows_live_edit_protocol() {
+        use crate::agent::live_edit::{LiveEditEvent, LiveEditParser};
+
+        let cfg = ChatBackend {
+            backend: AiBackend::Cli,
+            provider: AiProvider::OpenAI,
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+            cli: CliAgentConfig {
+                kind: CliAgentKind::Antigravity,
+                model: "gemini-3.8-flash-low".into(),
+                effort: "low".into(),
+                ..Default::default()
+            },
+            mcp_available: false,
+        };
+        let system = system_prompt_for(&cfg, "-- Table: users\nCREATE TABLE users (\n  id INT,\n  email TEXT,\n  created_at TIMESTAMP\n);\n");
+        let user = "## Open editor tabs\n\n### Tab \"Query 1\" (tab_id=7, ACTIVE)\nConnection: \"local\" (connection_id=1, PostgreSQL); database: app\n```sql\nSELECT * FROM users\n```\n\n## Request\nRewrite the query in this tab to return only id and email of the 10 most recent users.".to_string();
+        let (rx, _handle) = start_chat(&cfg, system, user, None).expect("start_chat");
+
+        let mut parser = LiveEditParser::default();
+        let mut events = Vec::new();
+        let mut full = String::new();
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(120)) {
+                Ok(AgentEvent::TextDelta(d)) => {
+                    full.push_str(&d);
+                    events.extend(parser.feed(&d));
+                }
+                Ok(AgentEvent::Done { .. }) => break,
+                Ok(AgentEvent::Error(e)) => panic!("agent error: {e}"),
+                Ok(_) => {}
+                Err(e) => panic!("timeout/closed: {e}"),
+            }
+        }
+        events.extend(parser.finish());
+        eprintln!("--- model output ---\n{full}\n--- events ---\n{events:#?}");
+        let end = events.iter().find_map(|e| match e {
+            LiveEditEvent::End { tab_id: 7, body, .. } => Some(body.clone()),
+            _ => None,
+        });
+        let body = end.expect("model did not emit a live-edit block for tab 7");
+        let lower = body.to_ascii_lowercase();
+        assert!(lower.contains("select") && lower.contains("email") && lower.contains("limit 10"), "body: {body}");
+    }
+}

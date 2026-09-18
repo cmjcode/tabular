@@ -759,6 +759,49 @@ pub struct QueryTab {
     pub is_pinned: bool,
 }
 
+// ─── AI Assistant chat ──────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AiChatRole {
+    #[default]
+    User,
+    Assistant,
+}
+
+/// Satu gelembung di transkrip panel AI.
+#[derive(Clone, Debug, Default)]
+pub struct AiChatMessage {
+    pub role: AiChatRole,
+    /// Markdown mentah dari model (blok live edit ikut tampil di sini).
+    pub text: String,
+    /// Masih menerima delta dari backend.
+    pub streaming: bool,
+    /// Nama tool yang dipanggil agent, untuk indikator aktivitas.
+    pub tool_activity: Vec<String>,
+    /// Edit editor yang dihasilkan pesan ini (Apply / Revert).
+    pub edits: Vec<crate::agent::live_edit::LiveEditRecord>,
+    pub error: Option<String>,
+    /// Ringkasan token/biaya dari backend, bila ada.
+    pub usage: Option<String>,
+}
+
+/// Blok live edit yang sedang di-stream ke sebuah tab.
+#[derive(Clone, Debug)]
+pub struct ActiveLiveEdit {
+    pub tab_id: usize,
+    pub tab_title: String,
+    pub mode: crate::agent::live_edit::LiveEditMode,
+    /// Isi tab saat blok dimulai (untuk Revert dan mode selection/append).
+    pub original: String,
+    /// Seleksi (byte) saat blok dimulai; hanya berarti untuk tab aktif.
+    pub selection: (usize, usize),
+    /// Isi terakhir yang kami tulis; bila tab berubah di luar itu, edit dibatalkan.
+    pub last_applied: String,
+    /// Edit tidak lagi ditulis ke tab (auto-apply mati, tab hilang, atau diubah user).
+    pub aborted: bool,
+    pub note: Option<String>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProcessInfo {
     pub pid: i64,

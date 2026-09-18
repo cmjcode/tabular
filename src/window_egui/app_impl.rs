@@ -571,6 +571,9 @@ impl Tabular {
                                 ui.label(egui::RichText::new("Press Cmd+Shift+A in the editor to toggle the AI panel.").size(11.0).color(egui::Color32::from_gray(130)));
                                 ui.add_space(8.0);
 
+                                self.render_ai_backend_settings(ui);
+
+                                if self.ai_backend == crate::config::AiBackend::Api {
                                 // Provider selection
                                 ui.label("AI Provider:");
                                 ui.horizontal_wrapped(|ui| {
@@ -728,6 +731,7 @@ impl Tabular {
                                     let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
                                     ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
                                 }
+                                } // AiBackend::Api
                             }
                             PrefTab::Sync => {
                                 crate::sync::ui_login::render_sync_panel(self, ui);
@@ -4517,7 +4521,7 @@ impl Tabular {
 
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
-    fn try_save_prefs(&mut self) {
+    pub(crate) fn try_save_prefs(&mut self) {
         if self.prefs_dirty {
             if let (Some(store), Some(rt)) = (self.config_store.as_ref(), self.runtime.as_ref()) {
                 let prefs = crate::config::AppPreferences {
@@ -4550,6 +4554,13 @@ impl Tabular {
                     ai_model: self.ai_model.clone(),
                     ai_provider: self.ai_provider,
                     ai_base_url: self.ai_base_url.clone(),
+                    ai_backend: self.ai_backend,
+                    ai_cli_kind: self.ai_cli_kind,
+                    ai_cli_bin: self.ai_cli_bin.clone(),
+                    ai_cli_model: self.ai_cli_model.clone(),
+                    ai_cli_effort: self.ai_cli_effort.clone(),
+                    ai_cli_extra_args: self.ai_cli_extra_args.clone(),
+                    ai_cli_auto_apply_edits: self.ai_cli_auto_apply_edits,
                     redis_browser_auto_refresh_seconds: self.redis_browser_auto_refresh_default_seconds.max(1),
                     sync_server_url: Some(self.sync_server_url.clone()),
                     ui_mode: self.ui_mode,

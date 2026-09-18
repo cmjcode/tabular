@@ -4319,8 +4319,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
         // TRIGGER: only when user just pressed Enter (completing the closing --)
-        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty()
+        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && crate::ai_assistant::backend_ready(tabular).is_ok()
             && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
+                let backend = crate::ai_assistant::chat_backend(tabular);
                 let schema_context = crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
                 let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
 
@@ -4341,14 +4342,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     tab.is_modified = true;
                 }
 
-                let rx = crate::ai_assistant::request_ai_suggestion(
-                    tabular.ai_provider,
-                    tabular.ai_api_key.clone(),
-                    tabular.ai_model.clone(),
-                    tabular.ai_base_url.clone(),
-                    system,
-                    prompt,
-                );
+                let rx = crate::ai_assistant::request_text(&backend, system, prompt);
                 tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
                 request_scroll_to_cursor = true;
                 ui.ctx().request_repaint();
@@ -4751,37 +4745,668 @@ fn format_ai_response_as_sql(text: &str) -> String {
 }
 
 // ─── AI Assistant Panel ───────────────────────────────────────────────────────
+//
+// Panel chat di sisi kanan. Backend (HTTP API atau CLI agent) dipilih di
+// Settings; panel hanya mem-poll `AgentEvent` dan menerapkan blok live edit
+// (`sql tabular:tab=…`) ke tab editor saat streaming.
 
-pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    // Poll for pending AI response
-    if tabular.ai_is_loading
-        && let Some(rx) = &tabular.ai_suggestion_receiver {
-            if let Ok(result) = rx.try_recv() {
-                tabular.ai_is_loading = false;
-                tabular.ai_suggestion_receiver = None;
-                match result {
-                    Ok(text) => {
-                        tabular.ai_suggestion = text;
-                        tabular.ai_error = None;
+/// Aksi yang dikumpulkan saat menggambar transkrip dan dijalankan setelahnya,
+/// karena transkrip dipinjam selama render.
+enum AiPanelAction {
+    Copy(String),
+    InsertAtCursor(String),
+    ApplyEdit(usize, usize),
+    RevertEdit(usize, usize),
+}
+
+fn ai_tab_index_by_id(tabular: &window_egui::Tabular, id: usize) -> Option<usize> {
+    tabular.query_tabs.iter().position(|t| t.id == id)
+}
+
+fn ai_current_tab_text(tabular: &window_egui::Tabular, idx: usize) -> String {
+    if idx == tabular.active_tab_index {
+        tabular.editor.text.clone()
+    } else {
+        tabular
+            .query_tabs
+            .get(idx)
+            .map(|t| t.content.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Tulis isi baru ke tab; bila tab itu aktif, buffer editor ikut diperbarui.
+/// `record_undo` = true memakai `set_text` (satu entri undo); false menulis
+/// langsung tanpa entri undo (dipakai saat streaming supaya undo stack tidak
+/// penuh oleh potongan-potongan kecil).
+fn ai_write_tab_content(
+    tabular: &mut window_egui::Tabular,
+    tab_index: usize,
+    new_text: String,
+    record_undo: bool,
+) {
+    if tab_index == tabular.active_tab_index {
+        if record_undo {
+            tabular.editor.set_text(new_text.clone());
+        } else {
+            tabular.editor.text = new_text.clone();
+            tabular.editor.mark_text_modified();
+        }
+        let end = tabular.editor.text.len();
+        tabular.cursor_position = end;
+        tabular.selection_start = end;
+        tabular.selection_end = end;
+        tabular.highlight_cache.clear();
+        tabular.last_highlight_hash = None;
+        tabular.sql_semantic_snapshot = None;
+    }
+    if let Some(tab) = tabular.query_tabs.get_mut(tab_index) {
+        tab.content = new_text;
+        tab.is_modified = true;
+    }
+}
+
+fn ai_handle_live_edit_event(
+    tabular: &mut window_egui::Tabular,
+    ev: crate::agent::live_edit::LiveEditEvent,
+) {
+    use crate::agent::live_edit::{LiveEditEvent, LiveEditMode, LiveEditRecord, compose};
+    use crate::models::structs::ActiveLiveEdit;
+
+    match ev {
+        LiveEditEvent::Begin { tab_id, mode } => {
+            let idx = ai_tab_index_by_id(tabular, tab_id)
+                .filter(|&i| crate::ai_assistant::is_sql_tab(&tabular.query_tabs[i]));
+            let active = match idx {
+                Some(i) => {
+                    let is_active = i == tabular.active_tab_index;
+                    let original = ai_current_tab_text(tabular, i);
+                    let selection = if is_active {
+                        (tabular.selection_start, tabular.selection_end)
+                    } else {
+                        (0, 0)
+                    };
+                    let mut mode = mode;
+                    let mut note = None;
+                    if mode == LiveEditMode::Selection && (!is_active || selection.0 >= selection.1) {
+                        mode = LiveEditMode::Replace;
+                        note = Some("No selection in that tab; the whole tab was replaced instead.".to_string());
                     }
-                    Err(e) => {
-                        tabular.ai_error = Some(e);
+                    let auto = tabular.ai_cli_auto_apply_edits;
+                    if !auto {
+                        note = Some("Live edit is off; press Apply to write it into the tab.".to_string());
+                    }
+                    ActiveLiveEdit {
+                        tab_id,
+                        tab_title: tabular.query_tabs[i].title.clone(),
+                        mode,
+                        original: original.clone(),
+                        selection,
+                        last_applied: original,
+                        aborted: !auto,
+                        note,
                     }
                 }
-                ui.ctx().request_repaint();
-            } else {
-                // Still loading — keep repainting so spinner animates
-                ui.ctx().request_repaint();
+                None => ActiveLiveEdit {
+                    tab_id,
+                    tab_title: format!("tab {tab_id}"),
+                    mode,
+                    original: String::new(),
+                    selection: (0, 0),
+                    last_applied: String::new(),
+                    aborted: true,
+                    note: Some("Tab not found or not a SQL tab.".to_string()),
+                },
+            };
+            tabular.ai_live_edit_active = Some(active);
+        }
+        LiveEditEvent::Progress { tab_id, body } => {
+            let Some(mut active) = tabular.ai_live_edit_active.take() else {
+                return;
+            };
+            if active.tab_id == tab_id && !active.aborted {
+                match ai_tab_index_by_id(tabular, tab_id) {
+                    Some(idx) => {
+                        if ai_current_tab_text(tabular, idx) != active.last_applied {
+                            active.aborted = true;
+                            active.note = Some(
+                                "Stopped writing: the tab was edited while the agent was streaming.".to_string(),
+                            );
+                            tabular.toasts.warning(format!(
+                                "AI edit to \"{}\" paused: tab changed during streaming",
+                                active.tab_title
+                            ));
+                        } else {
+                            let new_text = compose(active.mode, &active.original, active.selection, &body);
+                            ai_write_tab_content(tabular, idx, new_text.clone(), false);
+                            active.last_applied = new_text;
+                        }
+                    }
+                    None => {
+                        active.aborted = true;
+                        active.note = Some("Tab was closed while the agent was writing.".to_string());
+                    }
+                }
             }
+            tabular.ai_live_edit_active = Some(active);
+        }
+        LiveEditEvent::End { tab_id, body, .. } => {
+            let Some(active) = tabular.ai_live_edit_active.take() else {
+                return;
+            };
+            let final_text = compose(active.mode, &active.original, active.selection, &body);
+            let mut applied = false;
+            if !active.aborted
+                && let Some(idx) = ai_tab_index_by_id(tabular, tab_id)
+                && ai_current_tab_text(tabular, idx) == active.last_applied
+            {
+                // Kembalikan dulu ke isi awal secara diam-diam supaya seluruh
+                // edit tercatat sebagai satu entri undo.
+                if idx == tabular.active_tab_index {
+                    tabular.editor.text = active.original.clone();
+                    tabular.editor.mark_text_modified();
+                }
+                ai_write_tab_content(tabular, idx, final_text.clone(), true);
+                applied = true;
+            }
+            let record = LiveEditRecord {
+                tab_id,
+                tab_title: active.tab_title,
+                mode: active.mode,
+                original: active.original,
+                applied_text: final_text,
+                applied,
+                reverted: false,
+                note: active.note,
+            };
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.edits.push(record);
+            }
+        }
+    }
+}
+
+fn ai_feed_live_edit(tabular: &mut window_egui::Tabular, delta: &str) {
+    let Some(mut parser) = tabular.ai_live_edit_parser.take() else {
+        return;
+    };
+    let events = parser.feed(delta);
+    tabular.ai_live_edit_parser = Some(parser);
+    for ev in events {
+        ai_handle_live_edit_event(tabular, ev);
+    }
+}
+
+/// Terapkan satu event backend. Mengembalikan `true` bila giliran selesai.
+fn ai_handle_agent_event(
+    tabular: &mut window_egui::Tabular,
+    ev: crate::agent::harness::AgentEvent,
+) -> bool {
+    use crate::agent::harness::AgentEvent;
+    match ev {
+        AgentEvent::Session(id) => {
+            tabular.ai_session_id = Some(id);
+            false
+        }
+        AgentEvent::TextDelta(delta) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.text.push_str(&delta);
+            }
+            ai_feed_live_edit(tabular, &delta);
+            false
+        }
+        AgentEvent::ToolUse(name) => {
+            if let Some(msg) = tabular.ai_chat.last_mut()
+                && msg.tool_activity.last() != Some(&name)
+            {
+                msg.tool_activity.push(name);
+            }
+            false
+        }
+        AgentEvent::Done { text, usage } => {
+            let mut late_text: Option<String> = None;
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                if msg.text.trim().is_empty() && !text.trim().is_empty() {
+                    msg.text = text.clone();
+                    late_text = Some(text);
+                }
+                msg.usage = usage;
+                msg.streaming = false;
+            }
+            if let Some(t) = late_text {
+                ai_feed_live_edit(tabular, &t);
+            }
+            true
+        }
+        AgentEvent::Error(e) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.error = Some(e);
+                msg.streaming = false;
+            }
+            true
+        }
+    }
+}
+
+fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
+    if let Some(mut parser) = tabular.ai_live_edit_parser.take() {
+        for ev in parser.finish() {
+            ai_handle_live_edit_event(tabular, ev);
+        }
+    }
+    tabular.ai_live_edit_active = None;
+    tabular.ai_cancel = None;
+    tabular.ai_stream_receiver = None;
+    tabular.ai_is_loading = false;
+    if let Some(msg) = tabular.ai_chat.last_mut() {
+        msg.streaming = false;
+    }
+}
+
+fn ai_poll_stream(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let Some(rx) = tabular.ai_stream_receiver.take() else {
+        return;
+    };
+    let mut finished = false;
+    loop {
+        match rx.try_recv() {
+            Ok(ev) => {
+                if ai_handle_agent_event(tabular, ev) {
+                    finished = true;
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(msg) = tabular.ai_chat.last_mut()
+                    && msg.streaming
+                {
+                    msg.error
+                        .get_or_insert_with(|| "The AI backend stopped unexpectedly.".to_string());
+                }
+                finished = true;
+                break;
+            }
+        }
+    }
+    if finished {
+        ai_finish_turn(tabular);
+    } else {
+        tabular.ai_stream_receiver = Some(rx);
+        ctx.request_repaint_after(std::time::Duration::from_millis(40));
+    }
+}
+
+fn ai_send_message(tabular: &mut window_egui::Tabular) {
+    use crate::models::structs::{AiChatMessage, AiChatRole};
+
+    let text = tabular.ai_input.trim().to_string();
+    if text.is_empty() || tabular.ai_stream_receiver.is_some() {
+        return;
+    }
+    if let Err(e) = crate::ai_assistant::backend_ready(tabular) {
+        tabular.ai_error = Some(e);
+        return;
+    }
+    let cfg = crate::ai_assistant::chat_backend(tabular);
+    let (system, user) = crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text);
+
+    tabular.ai_chat.push(AiChatMessage {
+        role: AiChatRole::User,
+        text,
+        ..Default::default()
+    });
+    tabular.ai_chat.push(AiChatMessage {
+        role: AiChatRole::Assistant,
+        streaming: true,
+        ..Default::default()
+    });
+    tabular.ai_input.clear();
+    tabular.ai_error = None;
+
+    match crate::ai_assistant::start_chat(&cfg, system, user, tabular.ai_session_id.clone()) {
+        Ok((rx, cancel)) => {
+            tabular.ai_stream_receiver = Some(rx);
+            tabular.ai_cancel = cancel;
+            tabular.ai_is_loading = true;
+            tabular.ai_live_edit_parser = Some(crate::agent::live_edit::LiveEditParser::default());
+            tabular.ai_live_edit_active = None;
+        }
+        Err(e) => {
+            log::warn!("[AGENT] failed to start chat turn: {e}");
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.streaming = false;
+                msg.error = Some(e);
+            }
+        }
+    }
+}
+
+fn ai_stop_turn(tabular: &mut window_egui::Tabular) {
+    if let Some(cancel) = &tabular.ai_cancel {
+        // Thread pembaca akan mengirim Error("Stopped by user.") lalu selesai.
+        cancel.cancel();
+    } else if tabular.ai_stream_receiver.is_some() {
+        if let Some(msg) = tabular.ai_chat.last_mut()
+            && msg.streaming
+        {
+            msg.error = Some("Stopped by user.".to_string());
+        }
+        ai_finish_turn(tabular);
+    }
+}
+
+fn ai_new_chat(tabular: &mut window_egui::Tabular) {
+    ai_stop_turn(tabular);
+    tabular.ai_chat.clear();
+    tabular.ai_session_id = None;
+    tabular.ai_error = None;
+}
+
+/// Ambil semua blok ```sql dari jawaban (termasuk blok live edit); bila tidak
+/// ada, kembalikan teks apa adanya.
+fn ai_extract_sql_blocks(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !in_block && trimmed.starts_with("```") {
+            let info = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
+            if info.is_empty() || info.starts_with("sql") || info.contains("tabular:tab=") {
+                in_block = true;
+            }
+            continue;
+        }
+        if in_block && trimmed == "```" {
+            in_block = false;
+            if !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            continue;
+        }
+        if in_block {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    let out = out.trim_end().to_string();
+    if out.is_empty() {
+        text.trim().to_string()
+    } else {
+        out
+    }
+}
+
+fn ai_apply_edit_record(tabular: &mut window_egui::Tabular, msg_idx: usize, edit_idx: usize, revert: bool) {
+    let Some(rec) = tabular
+        .ai_chat
+        .get(msg_idx)
+        .and_then(|m| m.edits.get(edit_idx))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(idx) = ai_tab_index_by_id(tabular, rec.tab_id) else {
+        tabular.toasts.error(format!("Tab \"{}\" is no longer open", rec.tab_title));
+        return;
+    };
+    let new_text = if revert { rec.original.clone() } else { rec.applied_text.clone() };
+    ai_write_tab_content(tabular, idx, new_text, true);
+    if let Some(r) = tabular
+        .ai_chat
+        .get_mut(msg_idx)
+        .and_then(|m| m.edits.get_mut(edit_idx))
+    {
+        r.applied = !revert;
+        r.reverted = revert;
+    }
+    if revert {
+        tabular.toasts.info(format!("Reverted AI edit in \"{}\"", rec.tab_title));
+    } else {
+        tabular.toasts.success(format!("Applied AI edit to \"{}\"", rec.tab_title));
+    }
+}
+
+fn ai_render_transcript(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut egui::Ui,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    use crate::models::structs::AiChatRole;
+
+    let dark = ui.visuals().dark_mode;
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    let muted = crate::window_egui::style::theme_muted_text(ui.ctx());
+    let user_bg = if dark {
+        egui::Color32::from_rgb(40, 44, 62)
+    } else {
+        egui::Color32::from_rgb(228, 232, 250)
+    };
+    let asst_bg = if dark {
+        egui::Color32::from_rgb(32, 34, 44)
+    } else {
+        egui::Color32::from_rgb(250, 250, 255)
+    };
+
+    let chat = std::mem::take(&mut tabular.ai_chat);
+    let mut cache = std::mem::take(&mut tabular.ai_markdown_cache);
+
+    if chat.is_empty() {
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("Ask about your SQL, your schema, or tell the agent to write a query into a tab.")
+                    .size(12.0)
+                    .color(muted),
+            );
+            ui.label(
+                egui::RichText::new("The active tab is always sent as context; attach more tabs below.")
+                    .size(11.0)
+                    .color(muted),
+            );
+        });
     }
 
-    let no_api_key = tabular.ai_api_key.is_empty();
+    for (mi, msg) in chat.iter().enumerate() {
+        let is_user = msg.role == AiChatRole::User;
+        egui::Frame::new()
+            .fill(if is_user { user_bg } else { asst_bg })
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(if is_user { "You" } else { "Assistant" })
+                            .size(11.0)
+                            .strong()
+                            .color(if is_user { muted } else { accent }),
+                    );
+                    if !msg.tool_activity.is_empty() {
+                        let shown: Vec<&str> = msg
+                            .tool_activity
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .map(|s| s.trim_start_matches("mcp__tabular__"))
+                            .collect();
+                        ui.label(
+                            egui::RichText::new(format!("🔧 {}", shown.join(", ")))
+                                .size(10.0)
+                                .color(muted),
+                        )
+                        .on_hover_text(format!("Tools used:\n{}", msg.tool_activity.join("\n")));
+                    }
+                    if msg.streaming {
+                        ui.spinner();
+                    }
+                });
+
+                if is_user {
+                    ui.add(egui::Label::new(egui::RichText::new(&msg.text).size(12.5)).wrap());
+                } else if !msg.text.is_empty() {
+                    egui_commonmark::CommonMarkViewer::new()
+                        .max_image_width(Some(320))
+                        .show(ui, &mut cache, &msg.text);
+                } else if msg.streaming {
+                    ui.label(egui::RichText::new("Thinking…").size(11.0).color(muted));
+                }
+
+                if let Some(err) = &msg.error {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Error: {err}"))
+                                .size(11.5)
+                                .color(egui::Color32::from_rgb(255, 90, 90)),
+                        )
+                        .wrap(),
+                    );
+                }
+
+                for (ei, rec) in msg.edits.iter().enumerate() {
+                    ui.horizontal_wrapped(|ui| {
+                        let status = if rec.reverted {
+                            "reverted"
+                        } else if rec.applied {
+                            "applied"
+                        } else {
+                            "not applied"
+                        };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "📝 {} · {} · {status}",
+                                rec.tab_title,
+                                rec.mode.label()
+                            ))
+                            .size(11.0)
+                            .color(if rec.applied && !rec.reverted {
+                                crate::window_egui::style::theme_success(ui.ctx())
+                            } else {
+                                muted
+                            }),
+                        )
+                        .on_hover_text(rec.note.clone().unwrap_or_default());
+                        if !rec.applied || rec.reverted {
+                            if ui.small_button("Apply").clicked() {
+                                actions.push(AiPanelAction::ApplyEdit(mi, ei));
+                            }
+                        } else if ui.small_button("Revert").clicked() {
+                            actions.push(AiPanelAction::RevertEdit(mi, ei));
+                        }
+                    });
+                    if let Some(note) = &rec.note {
+                        ui.label(egui::RichText::new(note).size(10.5).color(muted));
+                    }
+                }
+
+                if !is_user && !msg.streaming && !msg.text.trim().is_empty() {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("📋 Copy").clicked() {
+                            actions.push(AiPanelAction::Copy(msg.text.clone()));
+                        }
+                        if ui
+                            .small_button("⬆ Insert SQL at cursor")
+                            .on_hover_text("Insert the SQL code blocks of this answer at the cursor of the active tab")
+                            .clicked()
+                        {
+                            actions.push(AiPanelAction::InsertAtCursor(ai_extract_sql_blocks(&msg.text)));
+                        }
+                        if let Some(usage) = &msg.usage {
+                            ui.label(egui::RichText::new(usage).size(10.0).color(muted));
+                        }
+                    });
+                }
+            });
+        ui.add_space(6.0);
+    }
+
+    tabular.ai_chat = chat;
+    tabular.ai_markdown_cache = cache;
+}
+
+fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    let muted = crate::window_egui::style::theme_muted_text(ui.ctx());
+    let active_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
+    let mut remove: Option<usize> = None;
+    let mut toggles: Vec<(usize, bool)> = Vec::new();
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Context:").size(11.0).color(muted));
+        match tabular.query_tabs.get(tabular.active_tab_index) {
+            Some(active) if crate::ai_assistant::is_sql_tab(active) => {
+                ui.label(egui::RichText::new(format!("📄 {}", active.title)).size(11.0))
+                    .on_hover_text("Active tab — always included (with the current selection, if any)");
+            }
+            _ => {
+                ui.label(egui::RichText::new("(active tab is not a SQL tab)").size(11.0).color(muted));
+            }
+        }
+        for id in &tabular.ai_attached_tab_ids {
+            if Some(*id) == active_id {
+                continue;
+            }
+            if let Some(tab) = tabular.query_tabs.iter().find(|t| t.id == *id) {
+                if ui
+                    .small_button(egui::RichText::new(format!("📎 {} ✕", tab.title)).size(11.0))
+                    .on_hover_text("Remove this tab from the context")
+                    .clicked()
+                {
+                    remove = Some(*id);
+                }
+            } else {
+                // Tab sudah ditutup; bersihkan diam-diam.
+                remove = Some(*id);
+            }
+        }
+        ui.menu_button(egui::RichText::new("+ Attach tab").size(11.0), |ui| {
+            let mut any = false;
+            for tab in tabular.query_tabs.iter() {
+                if Some(tab.id) == active_id || !crate::ai_assistant::is_sql_tab(tab) {
+                    continue;
+                }
+                any = true;
+                let mut checked = tabular.ai_attached_tab_ids.contains(&tab.id);
+                if ui.checkbox(&mut checked, &tab.title).changed() {
+                    toggles.push((tab.id, checked));
+                }
+            }
+            if !any {
+                ui.label(egui::RichText::new("No other SQL tabs open").size(11.0).color(muted));
+            }
+        });
+    });
+
+    if let Some(id) = remove {
+        tabular.ai_attached_tab_ids.retain(|t| *t != id);
+    }
+    for (id, checked) in toggles {
+        if checked {
+            if !tabular.ai_attached_tab_ids.contains(&id) {
+                tabular.ai_attached_tab_ids.push(id);
+            }
+        } else {
+            tabular.ai_attached_tab_ids.retain(|t| *t != id);
+        }
+    }
+}
+
+pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    use crate::config::AiBackend;
+
+    ai_poll_stream(tabular, ui.ctx());
+    tabular.ensure_ai_mcp_check();
+    tabular.poll_ai_cli_background(ui.ctx());
+
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    let muted = crate::window_egui::style::theme_muted_text(ui.ctx());
     let panel_bg = if ui.visuals().dark_mode {
         egui::Color32::from_rgb(28, 30, 40)
     } else {
         egui::Color32::from_rgb(242, 244, 255)
     };
+    let ready = crate::ai_assistant::backend_ready(tabular);
+    let busy = tabular.ai_stream_receiver.is_some();
+    let mut actions: Vec<AiPanelAction> = Vec::new();
 
     egui::Frame::new()
         .fill(panel_bg)
@@ -4796,12 +5421,19 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                         .color(accent)
                         .size(13.0),
                 );
-                let provider_label = tabular.ai_provider.display_name();
                 ui.label(
-                    egui::RichText::new(format!("({provider_label})"))
+                    egui::RichText::new(format!("({})", crate::ai_assistant::backend_label(tabular)))
                         .size(11.0)
-                        .color(crate::window_egui::style::theme_muted_text(ui.ctx())),
-                );
+                        .color(muted),
+                )
+                .on_hover_text(match tabular.ai_backend {
+                    AiBackend::Api => "Backend: HTTP API".to_string(),
+                    AiBackend::Cli => format!(
+                        "Backend: CLI agent ({}). Live edit: {}",
+                        tabular.ai_cli_kind.display_name(),
+                        if tabular.ai_cli_auto_apply_edits { "on" } else { "off" }
+                    ),
+                });
                 // Schema context indicator
                 let schema_preview = crate::ai_assistant::build_schema_context(tabular, 30);
                 if schema_preview.is_empty() {
@@ -4819,7 +5451,7 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                             .size(10.0)
                             .color(crate::window_egui::style::theme_success(ui.ctx())),
                     ).on_hover_text(format!("Schema context will be sent with every prompt:\n\n{}", &schema_preview.chars().take(600).collect::<String>()));
-                };
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button(egui_icons::icons::ICON_CLOSE.codepoint).on_hover_text("Close panel (Cmd+Shift+A)").clicked() {
                         tabular.show_ai_panel = false;
@@ -4828,174 +5460,137 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                         tabular.show_settings_window = true;
                         tabular.settings_active_pref_tab = crate::window_egui::PrefTab::AiAssistant;
                     }
+                    if !tabular.ai_chat.is_empty()
+                        && ui.small_button("🗑").on_hover_text("New chat (clears the conversation)").clicked()
+                    {
+                        ai_new_chat(tabular);
+                    }
                 });
             });
 
-            if no_api_key {
+            if let Err(e) = &ready {
                 ui.label(
-                    egui::RichText::new("⚠ No API key configured. Open Settings → AI Assistant to add one.")
+                    egui::RichText::new(format!("⚠ {e}"))
                         .color(crate::window_egui::style::theme_warning(ui.ctx()))
                         .size(12.0),
                 );
                 return;
             }
 
+            // Peringatan MCP untuk CLI yang butuh registrasi global.
+            if tabular.ai_backend == AiBackend::Cli
+                && tabular.ai_cli_kind.needs_global_mcp_registration()
+                && tabular.ai_cli_mcp_registered == Some(false)
+            {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new("⚠ Tabular MCP server is not registered in this CLI — the agent cannot query your database.")
+                            .size(11.0)
+                            .color(crate::window_egui::style::theme_warning(ui.ctx())),
+                    );
+                    if ui.small_button("Register").on_hover_text("Runs `<cli> mcp add tabular …`").clicked() {
+                        tabular.start_ai_mcp_register();
+                    }
+                });
+            }
+
+            ui.add_space(4.0);
+
+            // Transkrip
+            let input_area_height = 150.0;
+            let transcript_height = (ui.available_height() - input_area_height).max(120.0);
+            egui::ScrollArea::vertical()
+                .id_salt("ai_chat_scroll")
+                .max_height(transcript_height)
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ai_render_transcript(tabular, ui, &mut actions);
+                });
+
+            ui.add_space(4.0);
+            ai_render_context_row(tabular, ui);
             ui.add_space(4.0);
 
             // Prompt input
-            ui.label(egui::RichText::new("Prompt:").size(12.0));
             let input_resp = ui.add(
                 egui::TextEdit::multiline(&mut tabular.ai_input)
                     .desired_rows(3)
-                    .hint_text("Ask something about SQL, databases, or your current query…")
+                    .hint_text("Ask something, or: \"rewrite the query in this tab to use a CTE\" (Cmd+Enter to send)")
                     .font(egui::TextStyle::Body)
                     .desired_width(f32::INFINITY),
             );
 
-            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let can_send = !tabular.ai_input.trim().is_empty() && !tabular.ai_is_loading;
+                let can_send = !tabular.ai_input.trim().is_empty() && !busy;
                 let send_btn = ui.add_enabled(
                     can_send,
                     egui::Button::new(egui::RichText::new("Send ↵").color(egui::Color32::WHITE))
-                        .fill(if can_send { accent } else { crate::window_egui::style::theme_muted_text(ui.ctx()) }),
+                        .fill(if can_send { accent } else { muted }),
                 );
                 let send_via_enter = input_resp.has_focus()
                     && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-
                 if (send_btn.clicked() || send_via_enter) && can_send {
-                    let context_sql = if tabular.selection_start < tabular.selection_end
-                        && tabular.selection_end <= tabular.editor.text.len()
-                    {
-                        tabular.editor.text[tabular.selection_start..tabular.selection_end]
-                            .to_string()
-                    } else {
-                        // Provide up to 2000 chars of editor context if no selection
-                        let t = &tabular.editor.text;
-                        if t.len() > 2000 {
-                            t[..2000].to_string()
-                        } else {
-                            t.clone()
-                        }
-                    };
-
-                    // Prompt + SQL aktif dipakai untuk memilih tabel yang relevan.
-                    let retrieval_query = format!("{} {context_sql}", tabular.ai_input);
-                    let schema_context =
-                        crate::ai_assistant::build_schema_context_for_prompt(tabular, &retrieval_query, 30);
-                    let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
-                    let user = if context_sql.is_empty() {
-                        tabular.ai_input.clone()
-                    } else {
-                        format!(
-                            "Current SQL context:\n```sql\n{context_sql}\n```\n\n{}",
-                            tabular.ai_input
-                        )
-                    };
-
-                    let rx = crate::ai_assistant::request_ai_suggestion(
-                        tabular.ai_provider,
-                        tabular.ai_api_key.clone(),
-                        tabular.ai_model.clone(),
-                        tabular.ai_base_url.clone(),
-                        system,
-                        user,
-                    );
-                    tabular.ai_suggestion_receiver = Some(rx);
-                    tabular.ai_is_loading = true;
-                    tabular.ai_suggestion.clear();
-                    tabular.ai_error = None;
+                    ai_send_message(tabular);
                     ui.ctx().request_repaint();
                 }
-
-                if tabular.ai_is_loading {
+                if busy {
+                    if ui.button("⏹ Stop").clicked() {
+                        ai_stop_turn(tabular);
+                    }
                     ui.spinner();
+                    ui.label(egui::RichText::new("Working…").size(11.0).color(muted));
+                }
+                if let Some(err) = &tabular.ai_error {
                     ui.label(
-                        egui::RichText::new("Thinking…")
+                        egui::RichText::new(err)
                             .size(11.0)
-                            .color(egui::Color32::from_gray(160)),
+                            .color(egui::Color32::from_rgb(255, 90, 90)),
                     );
                 }
-
-                if (!tabular.ai_suggestion.is_empty() || tabular.ai_error.is_some())
-                    && ui.small_button("🗑 Clear").clicked() {
-                        tabular.ai_suggestion.clear();
-                        tabular.ai_error = None;
-                }
             });
-
-            // Error display
-            if let Some(ref err) = tabular.ai_error.clone() {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!("Error: {err}"))
-                        .color(egui::Color32::from_rgb(255, 80, 80))
-                        .size(12.0),
-                );
-            }
-
-            // Response display
-            if !tabular.ai_suggestion.is_empty() {
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Response:").size(12.0).strong());
-
-                egui::ScrollArea::vertical()
-                    .id_salt("ai_response_scroll")
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut tabular.ai_suggestion.clone())
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace)
-                                .interactive(false),
-                        );
-                    });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("📋 Copy").clicked() {
-                        ui.ctx().copy_text(tabular.ai_suggestion.clone());
-                    }
-                    if ui.button("⬆ Insert at cursor").clicked() {
-                        let insert_text = tabular.ai_suggestion.clone();
-                        let pos = tabular.cursor_position.min(tabular.editor.text.len());
-                        tabular.editor.text.insert_str(pos, &insert_text);
-                        let new_cursor = pos + insert_text.len();
-                        tabular.cursor_position = new_cursor;
-                        tabular.selection_start = new_cursor;
-                        tabular.selection_end = new_cursor;
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.content = tabular.editor.text.clone();
-                            tab.is_modified = true;
-                        }
-                        ui.ctx().request_repaint();
-                    }
-                    if ui.button("📝 Replace selection").on_hover_text(
-                        "Replace the currently selected text with this response"
-                    ).clicked() && tabular.selection_start < tabular.selection_end {
-                        let insert_text = tabular.ai_suggestion.clone();
-                        let s = tabular.selection_start;
-                        let e = tabular.selection_end.min(tabular.editor.text.len());
-                        tabular.editor.text.replace_range(s..e, &insert_text);
-                        let new_cursor = s + insert_text.len();
-                        tabular.cursor_position = new_cursor;
-                        tabular.selection_start = new_cursor;
-                        tabular.selection_end = new_cursor;
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.content = tabular.editor.text.clone();
-                            tab.is_modified = true;
-                        }
-                        ui.ctx().request_repaint();
-                    }
-                });
-            }
         });
+
+    for action in actions {
+        match action {
+            AiPanelAction::Copy(text) => ui.ctx().copy_text(text),
+            AiPanelAction::InsertAtCursor(text) => {
+                let pos = tabular.cursor_position.min(tabular.editor.text.len());
+                let pos = (0..=pos).rev().find(|&i| tabular.editor.text.is_char_boundary(i)).unwrap_or(0);
+                tabular.editor.text.insert_str(pos, &text);
+                let new_cursor = pos + text.len();
+                tabular.cursor_position = new_cursor;
+                tabular.selection_start = new_cursor;
+                tabular.selection_end = new_cursor;
+                tabular.editor.mark_text_modified();
+                tabular.highlight_cache.clear();
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
+                }
+                ui.ctx().request_repaint();
+            }
+            AiPanelAction::ApplyEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, false),
+            AiPanelAction::RevertEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, true),
+        }
+    }
 
     ui.add_space(4.0);
 }
 
+#[cfg(test)]
+mod ai_panel_tests {
+    use super::ai_extract_sql_blocks;
+
+    #[test]
+    fn extracts_sql_fences_including_live_edit_blocks() {
+        let text = "Here:\n```sql tabular:tab=3 mode=replace\nSELECT 1;\n```\nand\n```sql\nSELECT 2;\n```\n";
+        assert_eq!(ai_extract_sql_blocks(text), "SELECT 1;\n\nSELECT 2;");
+        assert_eq!(ai_extract_sql_blocks("no code here"), "no code here");
+        let other = "```python\nprint(1)\n```";
+        assert_eq!(ai_extract_sql_blocks(other), other);
+    }
+}
 
 /// Preserves caret and selection where possible.
 pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
