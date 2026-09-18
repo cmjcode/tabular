@@ -225,20 +225,25 @@ pub fn render_vault_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
         VaultStage::Locked => render_unlock_form(tabular, ui),
         VaultStage::UseRecovery => render_recovery_unlock_form(tabular, ui),
         VaultStage::Unlocked => {
+            let msg = format!(
+                "{} Vault unlocked. Sync is end-to-end encrypted.",
+                egui_icons::icons::ICON_CHECK.codepoint
+            );
             crate::window_egui::preferences::status(
                 ui,
                 crate::window_egui::preferences::Tone::Success,
-                "✓ Vault unlocked. Sync is end-to-end encrypted.",
+                msg,
             );
         }
     }
 
     if let Some(err) = tabular.vault_error.clone() {
         ui.add_space(4.0);
+        let err_msg = format!("{} {}", egui_icons::icons::ICON_CLOSE.codepoint, err);
         crate::window_egui::preferences::status(
             ui,
             crate::window_egui::preferences::Tone::Danger,
-            format!("✗ {}", err),
+            err_msg,
         );
     }
 }

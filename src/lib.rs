@@ -216,12 +216,28 @@ pub fn run() -> Result<(), eframe::Error> {
         config::AppTheme::Light | config::AppTheme::LightSoft => egui::SystemTheme::Light,
     };
 
+    // `egui_icons::initialize` hanya mendaftarkan font ikon ke family Proportional,
+    // jadi teks dengan family Monospace (mis. badge shortcut) menampilkan ikon sebagai
+    // kotak pengganti. Daftarkan sendiri supaya kedua family terlayani. Prioritas
+    // Lowest menjaga font teks utama tetap dipakai lebih dulu.
+    fn initialize_icon_fonts(ctx: &egui::Context) {
+        use egui::epaint::text::{FontPriority, InsertFontFamily};
+
+        for mut insert in [egui_icons::font_insert(), egui_icons::font_insert_mdi()] {
+            insert.families.push(InsertFontFamily {
+                family: egui::FontFamily::Monospace,
+                priority: FontPriority::Lowest,
+            });
+            ctx.add_font(insert);
+        }
+    }
+
     eframe::run_native(
         "Tabular",
         options,
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
-            egui_icons::initialize(&cc.egui_ctx);
+            initialize_icon_fonts(&cc.egui_ctx);
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();

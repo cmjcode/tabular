@@ -118,14 +118,31 @@ impl Shortcut {
     }
 
     /// Teks yang ditampilkan ke user sesuai konvensi platform.
+    ///
+    /// Simbol modifier macOS diambil dari font ikon (Material Design Icons) karena
+    /// ⌥ tidak ada di font teks bawaan egui dan ⇧ hanya ada di salah satu family —
+    /// keduanya akan tampil sebagai kotak pengganti. Memakai satu font untuk ketiga
+    /// modifier juga membuat bentuknya konsisten.
     pub fn display(self) -> String {
         let key = self.key.symbol_or_name();
         if cfg!(any(target_os = "macos", target_os = "ios")) {
             format!(
                 "{}{}{}{}",
-                if self.alt { "⌥" } else { "" },
-                if self.shift { "⇧" } else { "" },
-                if self.command { "⌘" } else { "" },
+                if self.alt {
+                    egui_icons::icons::MDI_APPLE_KEYBOARD_OPTION.codepoint
+                } else {
+                    ""
+                },
+                if self.shift {
+                    egui_icons::icons::MDI_APPLE_KEYBOARD_SHIFT.codepoint
+                } else {
+                    ""
+                },
+                if self.command {
+                    egui_icons::icons::MDI_APPLE_KEYBOARD_COMMAND.codepoint
+                } else {
+                    ""
+                },
                 key
             )
         } else {
@@ -318,6 +335,147 @@ pub fn consume(ctx: &egui::Context, keymap: &Keymap, action: Action) -> bool {
     })
 }
 
+/// Lebar tetap window Keyboard Shortcuts.
+const SHORTCUTS_WINDOW_W: f32 = 580.0;
+/// Lebar kolom tetap pada tabel shortcut supaya setiap baris sejajar.
+const SHORTCUT_COL_W: f32 = 150.0;
+const ACTION_COL_W: f32 = 56.0;
+const ICON_BTN_W: f32 = 24.0;
+const ROW_H: f32 = 26.0;
+
+/// Judul kategori (Query, Editor, …) dengan garis pemisah tipis di bawahnya.
+fn render_category_header(ui: &mut egui::Ui, category: &str, is_first: bool) {
+    ui.add_space(if is_first { 2.0 } else { 16.0 });
+    ui.label(
+        egui::RichText::new(category.to_uppercase())
+            .size(10.5)
+            .strong()
+            .extra_letter_spacing(0.9)
+            .color(crate::window_egui::style::theme_muted_text(ui.ctx())),
+    );
+    ui.add_space(4.0);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    let line = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    ui.painter().rect_filled(rect, 0.0, line);
+    ui.add_space(6.0);
+}
+
+/// Tombol ikon kecil pada kolom aksi. Memakai font ikon secara eksplisit agar
+/// glyph-nya tidak jatuh ke karakter pengganti.
+fn row_icon_button(
+    ui: &mut egui::Ui,
+    icon: egui_icons::MaterialIcon,
+    tooltip: &str,
+) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            icon.rich_text()
+                .size(15.0)
+                .color(ui.visuals().weak_text_color()),
+        )
+        // Rata (tanpa kotak) saat diam, tapi tetap memberi umpan balik saat hover.
+        .frame_when_inactive(false)
+        .corner_radius(5.0)
+        .min_size(egui::vec2(ICON_BTN_W, ROW_H)),
+    )
+    .on_hover_text(tooltip)
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Data satu baris shortcut; dipisah dari state agar rendering tidak meminjam `Tabular`.
+struct ShortcutRow<'a> {
+    label: &'a str,
+    shortcut_text: &'a str,
+    is_recording: bool,
+    has_conflict: bool,
+    is_default: bool,
+    has_binding: bool,
+}
+
+enum RowAction {
+    Record,
+    Reset,
+    Clear,
+}
+
+fn render_shortcut_row(ui: &mut egui::Ui, row: &ShortcutRow<'_>) -> Option<RowAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        // 2× item_spacing (20) + kelonggaran 8px agar baris tidak pernah melebihi
+        // lebar yang tersedia (overflow kecil pun membuat kartu melebar).
+        let label_w = (ui.available_width() - SHORTCUT_COL_W - ACTION_COL_W - 28.0).max(100.0);
+
+        // Nama aksi rata kiri dengan lebar tetap supaya kolom shortcut sejajar.
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_w, ROW_H),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(label_w);
+                ui.add(egui::Label::new(row.label).truncate());
+            },
+        );
+
+        let button_text = if row.is_recording {
+            "Press keys…"
+        } else if row.shortcut_text.is_empty() {
+            "Unassigned"
+        } else {
+            row.shortcut_text
+        };
+        // Pakai `.family()`, bukan `.monospace()`: `Style::override_font_id` global
+        // menimpa text style sehingga simbol modifier (⇧/⌥) jadi kotak kosong.
+        let mut text = egui::RichText::new(button_text)
+            .family(egui::FontFamily::Monospace)
+            .size(12.5);
+        if row.has_conflict {
+            text = text.color(crate::window_egui::style::theme_danger(ui.ctx()));
+        } else if !row.has_binding && !row.is_recording {
+            text = text.color(ui.visuals().weak_text_color());
+        }
+        let response = ui.add_sized(
+            egui::vec2(SHORTCUT_COL_W, ROW_H),
+            egui::Button::new(text).truncate(),
+        );
+        let response = if row.has_conflict {
+            response.on_hover_text("This shortcut is also bound to another action")
+        } else {
+            response.on_hover_text("Click to record a new shortcut")
+        };
+        if response.clicked() {
+            action = Some(RowAction::Record);
+        }
+
+        // Kolom aksi lebar tetap; slot yang tidak terpakai tetap dipesan agar ikon sejajar.
+        ui.allocate_ui_with_layout(
+            egui::vec2(ACTION_COL_W, ROW_H),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(ACTION_COL_W);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if row.has_binding {
+                    if row_icon_button(ui, egui_icons::icons::ICON_CLOSE, "Remove shortcut")
+                        .clicked()
+                    {
+                        action = Some(RowAction::Clear);
+                    }
+                } else {
+                    ui.allocate_space(egui::vec2(ICON_BTN_W, ROW_H));
+                }
+                if row.is_default {
+                    ui.allocate_space(egui::vec2(ICON_BTN_W, ROW_H));
+                } else if row_icon_button(ui, egui_icons::icons::ICON_RESTORE, "Reset to default")
+                    .clicked()
+                {
+                    action = Some(RowAction::Reset);
+                }
+            },
+        );
+    });
+    action
+}
+
 /// Jendela daftar shortcut yang bisa dicari dan diubah.
 pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &egui::Context) {
     if !tabular.show_shortcuts_window {
@@ -377,26 +535,27 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
         .title_bar(false)
         .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
-        .resizable(true)
-        .default_width(540.0)
-        .default_height(480.0)
+        // Lebar dikunci: konten memakai `available_width()`, sehingga window yang
+        // bebas melebar akan tumbuh terus tiap frame (umpan balik lebar).
+        .resizable([false, true])
+        .default_width(SHORTCUTS_WINDOW_W)
+        .min_width(SHORTCUTS_WINDOW_W)
+        .max_width(SHORTCUTS_WINDOW_W)
+        .default_height(520.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             crate::window_egui::style::render_modal_header(ui, "Keyboard Shortcuts", &mut close);
-            ui.add_space(8.0);
+            ui.add_space(10.0);
 
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Search:");
-                    crate::window_egui::style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut tabular.shortcuts_filter)
-                            .hint_text("action or key"),
-                        220.0,
-                        None,
-                    );
-                });
-                ui.add_space(4.0);
+                ui.set_width(ui.available_width());
+                crate::window_egui::style::render_search_field(
+                    ui,
+                    &mut tabular.shortcuts_filter,
+                    "Search action or key",
+                    f32::INFINITY,
+                );
+                ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
                         "Click a shortcut to record a new one (Esc cancels). Saved to keybindings.json in the data directory.",
@@ -406,7 +565,7 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                 );
             });
 
-            ui.add_space(8.0);
+            ui.add_space(10.0);
 
             let filter = tabular.shortcuts_filter.to_lowercase();
             let mut record = None;
@@ -414,12 +573,14 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
             let mut clear = None;
 
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 let avail_h = (ui.available_height() - 16.0).max(200.0);
                 egui::ScrollArea::vertical()
                     .max_height(avail_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let mut current_category = "";
+                        let mut matches = 0usize;
                         for spec in ACTIONS {
                             let shortcuts = tabular.keymap.shortcuts(spec.action);
                             let shortcut_text = shortcuts
@@ -433,48 +594,40 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                             {
                                 continue;
                             }
+                            matches += 1;
                             if spec.category != current_category {
+                                render_category_header(
+                                    ui,
+                                    spec.category,
+                                    current_category.is_empty(),
+                                );
                                 current_category = spec.category;
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new(spec.category).strong());
                             }
-                            ui.horizontal(|ui| {
-                                ui.add_sized([230.0, 20.0], egui::Label::new(spec.label));
-                                let is_recording = tabular.keymap.recording == Some(spec.action);
-                                let button_text = if is_recording {
-                                    "Press keys…".to_string()
-                                } else if shortcut_text.is_empty() {
-                                    "Unassigned".to_string()
-                                } else {
-                                    shortcut_text.clone()
-                                };
-                                let has_conflict = shortcuts
-                                    .iter()
-                                    .any(|s| !tabular.keymap.conflicts_with(spec.action, *s).is_empty());
-                                let mut text = egui::RichText::new(button_text).monospace();
-                                if has_conflict {
-                                    text = text.color(crate::window_egui::style::theme_danger(ui.ctx()));
-                                }
-                                let response = ui.add_sized([160.0, 20.0], egui::Button::new(text));
-                                let response = if has_conflict {
-                                    response.on_hover_text("This shortcut is also bound to another action")
-                                } else {
-                                    response
-                                };
-                                if response.clicked() {
-                                    record = Some(spec.action);
-                                }
-                                if shortcuts != default_shortcuts(spec).as_slice()
-                                    && ui.small_button("Reset").clicked()
-                                {
-                                    reset = Some(spec.action);
-                                }
-                                if !shortcuts.is_empty()
-                                    && ui.small_button("✕").on_hover_text("Remove shortcut").clicked()
-                                {
-                                    clear = Some(spec.action);
-                                }
+                            let row = ShortcutRow {
+                                label: spec.label,
+                                shortcut_text: &shortcut_text,
+                                is_recording: tabular.keymap.recording == Some(spec.action),
+                                has_conflict: shortcuts.iter().any(|s| {
+                                    !tabular.keymap.conflicts_with(spec.action, *s).is_empty()
+                                }),
+                                is_default: shortcuts == default_shortcuts(spec).as_slice(),
+                                has_binding: !shortcuts.is_empty(),
+                            };
+                            match render_shortcut_row(ui, &row) {
+                                Some(RowAction::Record) => record = Some(spec.action),
+                                Some(RowAction::Reset) => reset = Some(spec.action),
+                                Some(RowAction::Clear) => clear = Some(spec.action),
+                                None => {}
+                            }
+                        }
+                        if matches == 0 {
+                            ui.add_space(24.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    egui::RichText::new("No shortcut matches your search").weak(),
+                                );
                             });
+                            ui.add_space(24.0);
                         }
                     });
             });

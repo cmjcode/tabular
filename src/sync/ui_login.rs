@@ -244,16 +244,20 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
             );
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                if ui.add(style::btn_secondary("🔗  Connections")).clicked() {
+                let conn_btn = format!("{}  Connections", egui_icons::icons::ICON_LINK.codepoint);
+                if ui.add(style::btn_secondary(&conn_btn)).clicked() {
                     tabular.sync_trigger_connections = true;
                 }
-                if ui.add(style::btn_secondary("📜  History")).clicked() {
+                let hist_btn = format!("{}  History", egui_icons::icons::ICON_HISTORY.codepoint);
+                if ui.add(style::btn_secondary(&hist_btn)).clicked() {
                     tabular.sync_trigger_history = true;
                 }
-                if ui.add(style::btn_secondary("💾  Queries")).clicked() {
+                let queries_btn = format!("{}  Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint);
+                if ui.add(style::btn_secondary(&queries_btn)).clicked() {
                     tabular.sync_trigger_queries = true;
                 }
-                if ui.add(style::btn_secondary("🌐  HTTP Requests")).clicked() {
+                let http_btn = format!("{}  HTTP Requests", egui_icons::icons::ICON_HTTP.codepoint);
+                if ui.add(style::btn_secondary(&http_btn)).clicked() {
                     tabular.sync_trigger_http = true;
                 }
             });
@@ -377,15 +381,13 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_enabled_ui(!saving, |ui| {
+                                let save_label = if saving {
+                                    format!("{}  Saving…", egui_icons::icons::ICON_SAVE.codepoint)
+                                } else {
+                                    format!("{}  Save Changes", egui_icons::icons::ICON_SAVE.codepoint)
+                                };
                                 if ui
-                                    .add(style::btn_primary_ctx(
-                                        ui.ctx(),
-                                        if saving {
-                                            "💾  Saving…"
-                                        } else {
-                                            "💾  Save Changes"
-                                        },
-                                    ))
+                                    .add(style::btn_primary_ctx(ui.ctx(), &save_label))
                                     .clicked()
                                 {
                                     save_profile(tabular);
@@ -492,9 +494,11 @@ fn render_account_tab_bar(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
+        let profile_label = format!("{}  Profile & Info", egui_icons::icons::ICON_PERSON.codepoint);
+        let security_label = format!("{}  Security & Privacy", egui_icons::icons::ICON_SHIELD.codepoint);
         let tabs = [
-            (AccountDialogTab::Profile, "👤  Profile & Info"),
-            (AccountDialogTab::Security, "🛡️  Security & Privacy"),
+            (AccountDialogTab::Profile, profile_label),
+            (AccountDialogTab::Security, security_label),
         ];
 
         for (tab, label) in tabs {
@@ -593,39 +597,150 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    // Left: Avatar with quick photo actions
+                    // Left: Avatar with hover-to-change overlay
                     ui.vertical(|ui| {
-                        draw_circular_avatar(
-                            ui,
+                        let avatar_size = 72.0;
+                        let (rect, resp) = ui.allocate_exact_size(
+                            egui::vec2(avatar_size, avatar_size),
+                            egui::Sense::click(),
+                        );
+                        let center = rect.center();
+                        let radius = avatar_size / 2.0;
+
+                        // Gambar avatar utama
+                        paint_circular_avatar(
+                            ui.painter(),
                             tabular,
-                            72.0,
+                            center,
+                            radius,
                             &account.email,
                             if tabular.profile_display_name_input.is_empty() {
                                 account.display_name.as_deref()
                             } else {
                                 Some(&tabular.profile_display_name_input)
                             },
+                            false,
+                            dark,
                         );
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    style::btn_secondary("📁 Change")
-                                        .min_size(egui::vec2(60.0, 24.0)),
-                                )
-                                .on_hover_text("Choose an image from your computer")
-                                .clicked()
-                            {
-                                choose_avatar_file(tabular);
-                            }
-                            if !tabular.profile_avatar_url_input.is_empty() {
-                                if ui.button("🗑").on_hover_text("Remove photo").clicked() {
-                                    tabular.profile_avatar_url_input.clear();
-                                    tabular.avatar_texture = None;
-                                    tabular.avatar_texture_url = None;
+
+                        // Hover overlay: lingkaran semi-transparan dengan teks "Change"
+                        if resp.hovered() || tabular.show_avatar_change_menu {
+                            // Overlay gelap semi-transparan
+                            let overlay_color = egui::Color32::from_black_alpha(150);
+                            ui.painter().circle_filled(center, radius, overlay_color);
+
+                            // Border highlight saat hover
+                            ui.painter().circle_stroke(
+                                center,
+                                radius - 0.5,
+                                egui::Stroke::new(2.0, style::theme_accent(ui.ctx())),
+                            );
+
+                            // Icon kamera dan teks "Change" di tengah / bawah
+                            ui.painter().text(
+                                center - egui::vec2(0.0, 7.0),
+                                egui::Align2::CENTER_CENTER,
+                                egui_icons::icons::ICON_PHOTO_CAMERA.codepoint,
+                                egui::FontId::proportional(20.0),
+                                egui::Color32::WHITE,
+                            );
+                            ui.painter().text(
+                                center + egui::vec2(0.0, 13.0),
+                                egui::Align2::CENTER_CENTER,
+                                "Change",
+                                egui::FontId::proportional(10.5),
+                                egui::Color32::from_white_alpha(230),
+                            );
+                        }
+
+                        let resp = resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Change profile photo");
+
+                        // Klik avatar → toggle popup menu
+                        if resp.clicked() {
+                            tabular.show_avatar_change_menu = !tabular.show_avatar_change_menu;
+                        }
+
+                        // Popup menu di bawah avatar
+                        let popup_id = ui.id().with("avatar_change_popup");
+                        if tabular.show_avatar_change_menu {
+                            let popup_pos = rect.left_bottom() + egui::vec2(0.0, 4.0);
+                            let popup_area = egui::Area::new(popup_id)
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(popup_pos)
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::new()
+                                        .fill(if dark {
+                                            egui::Color32::from_rgb(36, 38, 48)
+                                        } else {
+                                            egui::Color32::from_rgb(255, 255, 255)
+                                        })
+                                        .stroke(egui::Stroke::new(
+                                            1.0,
+                                            if dark {
+                                                egui::Color32::from_rgb(60, 65, 80)
+                                            } else {
+                                                egui::Color32::from_rgb(200, 205, 215)
+                                            },
+                                        ))
+                                        .corner_radius(egui::CornerRadius::same(8))
+                                        .inner_margin(egui::Margin::same(4))
+                                        .shadow(egui::Shadow {
+                                            offset: [0, 4],
+                                            blur: 12,
+                                            spread: 2,
+                                            color: egui::Color32::from_black_alpha(40),
+                                        })
+                                        .show(ui, |ui| {
+                                            ui.set_min_width(140.0);
+                                            // Opsi 1: Upload Image
+                                            let upload_label = format!(
+                                                "{}  Upload Image",
+                                                egui_icons::icons::ICON_UPLOAD_FILE.codepoint
+                                            );
+                                            let upload_resp = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(upload_label).size(12.5),
+                                                )
+                                                .min_size(egui::vec2(140.0, 28.0))
+                                                .frame(false),
+                                            );
+                                            if upload_resp.clicked() {
+                                                tabular.show_avatar_change_menu = false;
+                                                tabular.show_avatar_url_input = false;
+                                                choose_avatar_file(tabular);
+                                            }
+
+                                            // Opsi 2: Enter URL
+                                            let url_label = format!(
+                                                "{}  Image URL",
+                                                egui_icons::icons::ICON_LINK.codepoint
+                                            );
+                                            let url_resp = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(url_label).size(12.5),
+                                                )
+                                                .min_size(egui::vec2(140.0, 28.0))
+                                                .frame(false),
+                                            );
+                                            if url_resp.clicked() {
+                                                tabular.show_avatar_change_menu = false;
+                                                tabular.show_avatar_url_input =
+                                                    !tabular.show_avatar_url_input;
+                                            }
+                                        });
+                                });
+
+                            // Klik di luar popup dan avatar → tutup
+                            if ui.input(|i| i.pointer.any_click()) {
+                                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                    if !rect.contains(pos) && !popup_area.response.rect.contains(pos) {
+                                        tabular.show_avatar_change_menu = false;
+                                    }
                                 }
                             }
-                        });
+                        }
                     });
 
                     ui.add_space(16.0);
@@ -659,13 +774,17 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             } else {
                                 egui::Color32::from_rgb(16, 130, 60)
                             };
+                            let verified_label = format!(
+                                "{} Verified",
+                                egui_icons::icons::ICON_VERIFIED.codepoint
+                            );
                             egui::Frame::new()
                                 .fill(badge_bg)
                                 .corner_radius(egui::CornerRadius::same(10))
                                 .inner_margin(egui::Margin::symmetric(8, 2))
                                 .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new("✓ Verified")
+                                        egui::RichText::new(verified_label)
                                             .color(badge_fg)
                                             .size(11.0)
                                             .strong(),
@@ -700,9 +819,13 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                     .size(11.5)
                                     .color(ui.visuals().weak_text_color()),
                             );
+                            let copy_label = format!(
+                                "{} Copy",
+                                egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                            );
                             if ui
                                 .add(
-                                    egui::Button::new(egui::RichText::new("📋 Copy").size(10.5))
+                                    egui::Button::new(egui::RichText::new(copy_label).size(10.5))
                                         .small(),
                                 )
                                 .clicked()
@@ -714,11 +837,15 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     });
                 });
 
-                // Collapsible Image URL input
-                ui.add_space(8.0);
-                ui.collapsing("🔗 Custom Image URL or Base64", |ui| {
+                // Inline Image URL input (muncul saat user pilih "Image URL" dari popup)
+                if tabular.show_avatar_url_input {
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let avatar_w = ui.available_width() - 10.0;
+                        ui.label(
+                            egui::RichText::new(egui_icons::icons::ICON_LINK.codepoint)
+                                .size(13.0),
+                        );
+                        let avatar_w = ui.available_width() - 40.0;
                         let avatar_edit = style::render_text_field(
                             ui,
                             egui::TextEdit::singleline(&mut tabular.profile_avatar_url_input)
@@ -730,8 +857,22 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             tabular.avatar_texture = None;
                             tabular.avatar_texture_url = None;
                         }
+                        // Tombol untuk menutup input URL
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(egui_icons::icons::ICON_CLOSE.codepoint)
+                                        .size(12.0),
+                                )
+                                .small(),
+                            )
+                            .on_hover_text("Close URL input")
+                            .clicked()
+                        {
+                            tabular.show_avatar_url_input = false;
+                        }
                     });
-                });
+                }
             });
 
         ui.add_space(14.0);
@@ -803,8 +944,12 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.label(egui::RichText::new("Email Address:").strong().size(12.5));
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&account.email).size(12.5));
+                            let lock_label = format!(
+                                "{} Linked to account",
+                                egui_icons::icons::ICON_LOCK.codepoint
+                            );
                             ui.label(
-                                egui::RichText::new("🔒 Linked to account")
+                                egui::RichText::new(lock_label)
                                     .size(11.0)
                                     .color(ui.visuals().weak_text_color()),
                             );
@@ -850,8 +995,12 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Active Session").strong().size(14.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let signout_label = format!(
+                            "{}  Sign Out",
+                            egui_icons::icons::ICON_LOGOUT.codepoint
+                        );
                         if ui
-                            .add(style::btn_danger_ctx(ui.ctx(), "🚪  Sign Out"))
+                            .add(style::btn_danger_ctx(ui.ctx(), &signout_label))
                             .clicked()
                         {
                             do_logout(tabular);
@@ -884,15 +1033,20 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    let block_icon = egui_icons::icons::ICON_BLOCK.codepoint;
                     let count_text = if tabular.blocked_users.is_empty() {
-                        "🚫 Blocked Users".to_string()
+                        format!("{} Blocked Users", block_icon)
                     } else {
-                        format!("🚫 Blocked Users ({})", tabular.blocked_users.len())
+                        format!("{} Blocked Users ({})", block_icon, tabular.blocked_users.len())
                     };
                     ui.label(egui::RichText::new(count_text).strong().size(14.0));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(style::btn_secondary("🔄 Refresh")).clicked() {
+                        let refresh_label = format!(
+                            "{} Refresh",
+                            egui_icons::icons::ICON_REFRESH.codepoint
+                        );
+                        if ui.add(style::btn_secondary(&refresh_label)).clicked() {
                             refresh_blocked_users(tabular);
                         }
                     });
@@ -952,8 +1106,9 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
+                let danger_title = format!("{} Danger Zone", egui_icons::icons::ICON_WARNING.codepoint);
                 ui.label(
-                    egui::RichText::new("⚠️ Danger Zone")
+                    egui::RichText::new(danger_title)
                         .strong()
                         .size(14.0)
                         .color(egui::Color32::from_rgb(220, 70, 70)),
@@ -969,7 +1124,11 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     .color(ui.visuals().weak_text_color()),
                 );
                 ui.add_space(10.0);
-                if ui.add(style::btn_danger_ctx(ui.ctx(), "🗑  Delete Account")).clicked() {
+                let del_account_label = format!(
+                    "{}  Delete Account",
+                    egui_icons::icons::ICON_DELETE.codepoint
+                );
+                if ui.add(style::btn_danger_ctx(ui.ctx(), &del_account_label)).clicked() {
                     tabular.show_delete_account_dialog = true;
                     tabular.delete_account_confirm_input.clear();
                     tabular.delete_account_error = None;
@@ -1017,8 +1176,12 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
             ui.add_space(8.0);
 
             style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                let modal_warn = format!(
+                    "{}  This permanently deletes your Tabular account",
+                    egui_icons::icons::ICON_WARNING.codepoint
+                );
                 ui.label(
-                    egui::RichText::new("⚠  This permanently deletes your Tabular account")
+                    egui::RichText::new(modal_warn)
                         .strong()
                         .color(egui::Color32::from_rgb(220, 90, 90)),
                 );
@@ -1177,9 +1340,13 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .wrap(),
         );
         ui.add_space(3.0);
+        let note_text = format!(
+            "{} Note: An account is completely optional. Tabular is offline-first and fully functional without login.",
+            egui_icons::icons::ICON_LIGHTBULB.codepoint
+        );
         ui.add(
             egui::Label::new(
-                egui::RichText::new("💡 Note: An account is completely optional. Tabular is offline-first and fully functional without login.")
+                egui::RichText::new(note_text)
                     .size(11.0)
                     .color(ui.visuals().weak_text_color()),
             )
@@ -1244,7 +1411,11 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("🌐 Opening browser... Complete sign-in in your browser.");
+                let browser_msg = format!(
+                    "{} Opening browser... Complete sign-in in your browser.",
+                    egui_icons::icons::ICON_OPEN_IN_BROWSER.codepoint
+                );
+                ui.label(browser_msg);
             });
             ui.add_space(4.0);
 
@@ -1264,7 +1435,11 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     ui.add(token_edit);
 
                     ui.add_space(4.0);
-                    if ui.add(style::btn_primary_ctx(ui.ctx(), "✅  Submit Token")).clicked() {
+                    let submit_label = format!(
+                        "{}  Submit Token",
+                        egui_icons::icons::ICON_CHECK.codepoint
+                    );
+                    if ui.add(style::btn_primary_ctx(ui.ctx(), &submit_label)).clicked() {
                         try_submit_token(tabular);
                     }
                 });
@@ -1281,13 +1456,18 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
         // Error display
         if let Some(err) = &tabular.sync_login_error.clone() {
             ui.add_space(4.0);
-            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("❌ {}", err));
+            let err_msg = format!("{} {}", egui_icons::icons::ICON_ERROR.codepoint, err);
+            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), err_msg);
         }
 
         ui.add_space(10.0);
+        let cred_note = format!(
+            "{} Your connection credentials remain encrypted locally before being sent to the server.",
+            egui_icons::icons::ICON_LOCK.codepoint
+        );
         ui.add(
             egui::Label::new(
-                egui::RichText::new("🔒 Your connection credentials remain encrypted locally before being sent to the server.")
+                egui::RichText::new(cred_note)
                     .size(11.0)
                     .color(ui.visuals().weak_text_color()),
             )

@@ -701,6 +701,10 @@ pub struct Tabular {
     pub profile_display_name_input: String,
     /// Editable buffer for the Avatar URL field in Account / Profile dialog
     pub profile_avatar_url_input: String,
+    /// Apakah popup menu "Upload / URL" untuk avatar sedang tampil
+    pub show_avatar_change_menu: bool,
+    /// Apakah inline URL input untuk avatar sedang tampil
+    pub show_avatar_url_input: bool,
     /// Editable buffer for the Username field in Settings → Sync & Account
     pub profile_username_input: String,
     /// Editable buffer for the Phone field in Settings → Sync & Account
