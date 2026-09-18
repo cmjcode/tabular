@@ -8,6 +8,10 @@ use std::sync::mpsc;
 use eframe::egui;
 
 use super::Tabular;
+use super::preferences::{
+    Tone, callout, divider, hint, quick_pick, row, section, status, toggle_row,
+};
+use super::style;
 use crate::agent::harness::{self, CliAgentConfig};
 use crate::config::{AiBackend, CliAgentKind};
 
@@ -56,7 +60,8 @@ impl Tabular {
         let cfg = self.ai_cli_config();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = harness::register_mcp(&cfg).and_then(|_| harness::check_mcp_registered(&cfg));
+            let result =
+                harness::register_mcp(&cfg).and_then(|_| harness::check_mcp_registered(&cfg));
             let _ = tx.send(result);
         });
         self.ai_cli_mcp_registered = None;
@@ -109,7 +114,8 @@ impl Tabular {
                     ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.ai_cli_test_result = Some(Err("Test thread stopped unexpectedly.".to_string()));
+                    self.ai_cli_test_result =
+                        Some(Err("Test thread stopped unexpectedly.".to_string()));
                     self.ai_cli_test_receiver = None;
                 }
             }
@@ -122,114 +128,135 @@ impl Tabular {
     }
 
     /// Bagian atas tab AI Assistant: pemilihan backend dan, untuk CLI, semua
-    /// pengaturannya. Pengaturan API yang lama digambar oleh pemanggil bila
-    /// backend = API.
+    /// pengaturannya. Pengaturan API digambar oleh pemanggil bila backend = API.
     pub(crate) fn render_ai_backend_settings(&mut self, ui: &mut egui::Ui) {
         self.poll_ai_cli_background(ui.ctx());
-        let muted = egui::Color32::from_gray(130);
 
-        ui.label("Backend:");
-        ui.horizontal_wrapped(|ui| {
-            let mut backend = self.ai_backend;
-            ui.radio_value(&mut backend, AiBackend::Api, AiBackend::Api.display_name());
-            if !IS_MOBILE {
-                // Di build App Store tetap ditampilkan (nonaktif) supaya user tahu
-                // fitur ini ada di versi download langsung.
-                let resp = ui
-                    .add_enabled(
-                        cli_backend_available(),
-                        egui::RadioButton::new(backend == AiBackend::Cli, AiBackend::Cli.display_name()),
-                    )
-                    .on_disabled_hover_text(harness::SANDBOX_UNAVAILABLE_MESSAGE);
-                if resp.clicked() {
-                    backend = AiBackend::Cli;
+        section(ui, "Backend", |ui| {
+            row(
+                ui,
+                "Backend",
+                Some(
+                    "CLI agents use the login of a tool already installed on this machine (no API key) \
+                     and can inspect your databases through Tabular's built-in MCP server.",
+                ),
+                |ui| {
+                    let mut backend = self.ai_backend;
+                    ui.radio_value(&mut backend, AiBackend::Api, AiBackend::Api.display_name());
+                    if !IS_MOBILE {
+                        // Di build App Store tetap ditampilkan (nonaktif) supaya user tahu
+                        // fitur ini ada di versi download langsung.
+                        let resp = ui
+                            .add_enabled(
+                                cli_backend_available(),
+                                egui::RadioButton::new(
+                                    backend == AiBackend::Cli,
+                                    AiBackend::Cli.display_name(),
+                                ),
+                            )
+                            .on_disabled_hover_text(harness::SANDBOX_UNAVAILABLE_MESSAGE);
+                        if resp.clicked() {
+                            backend = AiBackend::Cli;
+                        }
+                    }
+                    if backend != self.ai_backend {
+                        self.ai_backend = backend;
+                        self.ai_cli_mcp_registered = None;
+                        self.save_ai_prefs();
+                    }
+                },
+            );
+            if !IS_MOBILE && harness::is_app_sandboxed() {
+                ui.add_space(4.0);
+                callout(ui, Tone::Warning, |ui| {
+                    status(ui, Tone::Warning, harness::SANDBOX_UNAVAILABLE_MESSAGE);
+                });
+                // Preferensi CLI yang terbawa dari build lain: kembalikan ke API
+                // supaya pengaturan provider di bawah langsung tampil.
+                if self.ai_backend == AiBackend::Cli {
+                    self.ai_backend = AiBackend::Api;
+                    self.save_ai_prefs();
                 }
             }
-            if backend != self.ai_backend {
-                self.ai_backend = backend;
-                self.ai_cli_mcp_registered = None;
-                self.save_ai_prefs();
-            }
         });
-        ui.label(
-            egui::RichText::new(
-                "CLI agents use the login of a tool already installed on this machine (no API key) \
-                 and can inspect your databases through Tabular's built-in MCP server.",
-            )
-            .size(11.0)
-            .color(muted),
-        );
-        if !IS_MOBILE && harness::is_app_sandboxed() {
-            ui.label(
-                egui::RichText::new(format!("ℹ {}", harness::SANDBOX_UNAVAILABLE_MESSAGE))
-                    .size(11.0)
-                    .color(egui::Color32::from_rgb(220, 160, 30)),
-            );
-            // Preferensi CLI yang terbawa dari build lain: kembalikan ke API
-            // supaya pengaturan provider di bawah langsung tampil.
-            if self.ai_backend == AiBackend::Cli {
-                self.ai_backend = AiBackend::Api;
-                self.save_ai_prefs();
-            }
-        }
-        ui.add_space(6.0);
 
         if self.ai_backend != AiBackend::Cli {
             return;
         }
 
-        // ── Jenis CLI ───────────────────────────────────────────────────
-        ui.label("CLI agent:");
-        ui.horizontal_wrapped(|ui| {
-            let mut kind = self.ai_cli_kind;
-            for k in [
-                CliAgentKind::Antigravity,
-                CliAgentKind::ClaudeCode,
-                CliAgentKind::GeminiCli,
-                CliAgentKind::Custom,
-            ] {
-                ui.radio_value(&mut kind, k, k.display_name());
-            }
-            if kind != self.ai_cli_kind {
-                self.ai_cli_kind = kind;
-                self.ai_cli_bin.clear();
-                self.ai_settings_cli_bin_input.clear();
-                self.ai_cli_model.clear();
-                self.ai_settings_cli_model_input.clear();
-                self.ai_cli_effort.clear();
-                self.ai_cli_extra_args.clear();
-                self.ai_settings_cli_extra_args_input.clear();
-                self.ai_cli_mcp_registered = None;
-                self.ai_cli_mcp_message = None;
-                self.ai_cli_test_result = None;
-                self.ai_session_id = None;
-                self.save_ai_prefs();
-            }
+        section(ui, "CLI Agent", |ui| self.render_ai_cli_agent_rows(ui));
+        section(ui, "Database Access", |ui| {
+            self.render_ai_cli_mcp_status(ui)
         });
-        ui.add_space(6.0);
+        section(ui, "Connection Test", |ui| self.render_ai_cli_test(ui));
+    }
+
+    fn render_ai_cli_agent_rows(&mut self, ui: &mut egui::Ui) {
+        // ── Jenis CLI ───────────────────────────────────────────────────
+        row(ui, "Agent", None, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut kind = self.ai_cli_kind;
+                for k in [
+                    CliAgentKind::Antigravity,
+                    CliAgentKind::ClaudeCode,
+                    CliAgentKind::GeminiCli,
+                    CliAgentKind::Custom,
+                ] {
+                    ui.radio_value(&mut kind, k, k.display_name());
+                }
+                if kind != self.ai_cli_kind {
+                    self.ai_cli_kind = kind;
+                    self.ai_cli_bin.clear();
+                    self.ai_settings_cli_bin_input.clear();
+                    self.ai_cli_model.clear();
+                    self.ai_settings_cli_model_input.clear();
+                    self.ai_cli_effort.clear();
+                    self.ai_cli_extra_args.clear();
+                    self.ai_settings_cli_extra_args_input.clear();
+                    self.ai_cli_mcp_registered = None;
+                    self.ai_cli_mcp_message = None;
+                    self.ai_cli_test_result = None;
+                    self.ai_session_id = None;
+                    self.save_ai_prefs();
+                }
+            });
+        });
+        divider(ui);
 
         // ── Binary ──────────────────────────────────────────────────────
+        let is_custom = self.ai_cli_kind == CliAgentKind::Custom;
         let default_bin = self.ai_cli_kind.default_binary();
-        ui.label(if self.ai_cli_kind == CliAgentKind::Custom { "Command:" } else { "Command / path:" });
-        ui.horizontal(|ui| {
-            let hint = if default_bin.is_empty() {
-                "path to your CLI".to_string()
+        let bin_hint = is_custom.then_some(
+            "The command is run with the arguments below; use {prompt}, {system}, {model} and \
+             {session} as placeholders. Output is read as plain text.",
+        );
+        row(
+            ui,
+            if is_custom {
+                "Command"
             } else {
-                format!("{default_bin} (found in PATH)")
-            };
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input)
-                    .desired_width(300.0)
-                    .hint_text(hint),
-            );
-            if resp.lost_focus() || ui.button("Apply").clicked() {
-                self.ai_cli_bin = self.ai_settings_cli_bin_input.trim().to_string();
-                self.ai_cli_mcp_registered = None;
-                self.save_ai_prefs();
-            }
-            if !default_bin.is_empty()
+                "Command / path"
+            },
+            bin_hint,
+            |ui| {
+                let hint_text = if default_bin.is_empty() {
+                    "path to your CLI".to_string()
+                } else {
+                    format!("{default_bin} (found in PATH)")
+                };
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input)
+                        .desired_width(220.0)
+                        .hint_text(hint_text),
+                );
+                if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                    self.ai_cli_bin = self.ai_settings_cli_bin_input.trim().to_string();
+                    self.ai_cli_mcp_registered = None;
+                    self.save_ai_prefs();
+                }
+                if !default_bin.is_empty()
                 && ui
-                    .small_button("Detect")
+                    .add(style::btn_secondary("Detect"))
                     .on_hover_text("Search PATH and common install locations (~/.local/bin, Homebrew, npm, …)")
                     .clicked()
             {
@@ -242,73 +269,62 @@ impl Tabular {
                         self.toasts.success(format!("Found {}", path.display()));
                     }
                     None => {
-                        self.toasts.error(format!("`{default_bin}` not found. Install it or enter its full path."));
+                        self.toasts
+                            .error(format!("`{default_bin}` not found. Install it or enter its full path."));
                     }
                 }
             }
-        });
-        if self.ai_cli_kind == CliAgentKind::Custom {
-            ui.label(
-                egui::RichText::new(
-                    "Custom: the command is run with the extra arguments below; use {prompt}, {system}, \
-                     {model} and {session} as placeholders. Output is read as plain text.",
-                )
-                .size(11.0)
-                .color(muted),
-            );
-        }
-        ui.add_space(6.0);
+            },
+        );
+        divider(ui);
 
         // ── Model ───────────────────────────────────────────────────────
-        ui.label("Model:");
-        ui.horizontal(|ui| {
+        let model_hint = (self.ai_cli_kind == CliAgentKind::Antigravity).then_some(
+            "Run `agy models` for the full list. Gemini models carry their effort level in the name \
+             (…-low/-medium/-high); the effort setting is then ignored.",
+        );
+        row(ui, "Model", model_hint, |ui| {
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input)
                     .desired_width(220.0)
                     .hint_text("(CLI default)"),
             );
-            if resp.lost_focus() || ui.button("Apply").clicked() {
+            if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
                 self.ai_cli_model = self.ai_settings_cli_model_input.trim().to_string();
                 self.save_ai_prefs();
             }
-            if ui.small_button("Default").on_hover_text("Let the CLI pick its own default model").clicked() {
+            if ui
+                .add(style::btn_secondary("Default"))
+                .on_hover_text("Let the CLI pick its own default model")
+                .clicked()
+            {
                 self.ai_settings_cli_model_input.clear();
                 self.ai_cli_model.clear();
                 self.save_ai_prefs();
             }
         });
-        let presets = self.ai_cli_kind.preset_models();
-        if !presets.is_empty() {
-            ui.label(egui::RichText::new("Quick pick:").size(11.0).color(muted));
-            ui.horizontal_wrapped(|ui| {
-                for &m in presets {
-                    let selected = self.ai_settings_cli_model_input == m;
-                    if ui.selectable_label(selected, egui::RichText::new(m).size(11.0).monospace()).clicked() {
-                        self.ai_settings_cli_model_input = m.to_string();
-                        self.ai_cli_model = m.to_string();
-                        self.save_ai_prefs();
-                    }
-                }
-            });
-            if self.ai_cli_kind == CliAgentKind::Antigravity {
-                ui.label(
-                    egui::RichText::new(
-                        "Run `agy models` in a terminal for the full list. Gemini models carry their effort level in the name (…-low/-medium/-high); the effort setting below is then ignored.",
-                    )
-                    .size(11.0)
-                    .color(muted),
-                );
-            }
+        if let Some(m) = quick_pick(
+            ui,
+            self.ai_cli_kind.preset_models(),
+            &self.ai_settings_cli_model_input,
+        ) {
+            self.ai_settings_cli_model_input = m.to_string();
+            self.ai_cli_model = m.to_string();
+            self.save_ai_prefs();
         }
-        ui.add_space(6.0);
 
         // ── Effort ──────────────────────────────────────────────────────
         if self.ai_cli_kind.supports_effort() {
-            ui.horizontal(|ui| {
-                ui.label("Reasoning effort:");
+            divider(ui);
+            row(ui, "Reasoning effort", None, |ui| {
                 let before = self.ai_cli_effort.clone();
                 egui::ComboBox::from_id_salt("ai_cli_effort")
-                    .selected_text(if before.is_empty() { "(default)" } else { before.as_str() })
+                    .selected_text(if before.is_empty() {
+                        "(default)"
+                    } else {
+                        before.as_str()
+                    })
+                    .width(140.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.ai_cli_effort, String::new(), "(default)");
                         for lvl in ["low", "medium", "high"] {
@@ -319,58 +335,72 @@ impl Tabular {
                     self.save_ai_prefs();
                 }
             });
-            ui.add_space(6.0);
         }
+        divider(ui);
 
         // ── Extra args ──────────────────────────────────────────────────
-        ui.label(if self.ai_cli_kind == CliAgentKind::Custom { "Arguments:" } else { "Extra arguments:" });
-        ui.horizontal(|ui| {
-            let hint = match self.ai_cli_kind {
-                CliAgentKind::Antigravity => "e.g. --sandbox",
-                CliAgentKind::ClaudeCode => "e.g. --max-turns 8",
-                CliAgentKind::GeminiCli => "e.g. --approval-mode yolo",
-                CliAgentKind::Custom => "e.g. chat --model {model} {prompt}",
-            };
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input)
-                    .desired_width(300.0)
-                    .hint_text(hint),
-            );
-            if resp.lost_focus() || ui.button("Apply").clicked() {
-                self.ai_cli_extra_args = self.ai_settings_cli_extra_args_input.trim().to_string();
-                self.save_ai_prefs();
-            }
-        });
-        ui.add_space(6.0);
+        row(
+            ui,
+            if is_custom {
+                "Arguments"
+            } else {
+                "Extra arguments"
+            },
+            None,
+            |ui| {
+                let hint_text = match self.ai_cli_kind {
+                    CliAgentKind::Antigravity => "e.g. --sandbox",
+                    CliAgentKind::ClaudeCode => "e.g. --max-turns 8",
+                    CliAgentKind::GeminiCli => "e.g. --approval-mode yolo",
+                    CliAgentKind::Custom => "e.g. chat --model {model} {prompt}",
+                };
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input)
+                        .desired_width(220.0)
+                        .hint_text(hint_text),
+                );
+                if resp.lost_focus() || ui.add(style::btn_secondary("Apply")).clicked() {
+                    self.ai_cli_extra_args =
+                        self.ai_settings_cli_extra_args_input.trim().to_string();
+                    self.save_ai_prefs();
+                }
+            },
+        );
+        divider(ui);
 
         // ── Live edit ───────────────────────────────────────────────────
-        if ui
-            .checkbox(
-                &mut self.ai_cli_auto_apply_edits,
-                "Live edit: write agent output marked for a tab straight into the SQL editor",
-            )
-            .on_hover_text("When off, each edit shows an Apply button in the chat instead. Every edit can be reverted.")
-            .changed()
-        {
+        if toggle_row(
+            ui,
+            &mut self.ai_cli_auto_apply_edits,
+            "Live edit",
+            Some(
+                "Write agent output marked for a tab straight into the SQL editor. When off, each edit \
+                 shows an Apply button in the chat instead. Every edit can be reverted.",
+            ),
+        ) {
             self.save_ai_prefs();
         }
-        ui.add_space(6.0);
+    }
 
-        // ── MCP status ──────────────────────────────────────────────────
-        ui.label("Database access (Tabular MCP server):");
+    fn render_ai_cli_mcp_status(&mut self, ui: &mut egui::Ui) {
+        hint(
+            ui,
+            "Tabular's MCP server gives the agent read-only access to your databases.",
+        );
+        ui.add_space(2.0);
         match self.ai_cli_kind {
             CliAgentKind::ClaudeCode => {
-                ui.label(
-                    egui::RichText::new("✓ Passed to Claude Code on every request (--mcp-config); only Tabular's read-only tools are allowed.")
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(0, 180, 80)),
+                status(
+                    ui,
+                    Tone::Success,
+                    "✓ Passed to Claude Code on every request (--mcp-config); only Tabular's read-only tools are allowed.",
                 );
             }
             CliAgentKind::Custom => {
-                ui.label(
-                    egui::RichText::new("Register it yourself with the snippet from `tabular mcp --print-config`.")
-                        .size(11.0)
-                        .color(muted),
+                status(
+                    ui,
+                    Tone::Muted,
+                    "Register it yourself with the snippet from `tabular mcp --print-config`.",
                 );
             }
             _ => {
@@ -379,23 +409,15 @@ impl Tabular {
                     match self.ai_cli_mcp_registered {
                         None => {
                             ui.spinner();
-                            ui.label(egui::RichText::new("Checking…").size(11.0).color(muted));
+                            hint(ui, "Checking…");
                         }
                         Some(true) => {
-                            ui.label(
-                                egui::RichText::new("✓ Registered in the CLI's global MCP config")
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(0, 180, 80)),
-                            );
+                            status(ui, Tone::Success, "✓ Registered in the CLI's global MCP config");
                         }
                         Some(false) => {
-                            ui.label(
-                                egui::RichText::new("⚠ Not registered — the agent cannot query your databases")
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(220, 160, 30)),
-                            );
+                            status(ui, Tone::Warning, "⚠ Not registered: the agent cannot query your databases");
                             if ui
-                                .button("Register")
+                                .add(style::btn_primary_ctx(ui.ctx(), "Register"))
                                 .on_hover_text(format!(
                                     "Runs `{} mcp add tabular -- {} mcp` (modifies the CLI's global config)",
                                     self.ai_cli_kind.default_binary(),
@@ -407,24 +429,24 @@ impl Tabular {
                             }
                         }
                     }
-                    if self.ai_cli_mcp_receiver.is_none() && ui.small_button("Re-check").clicked() {
+                    if self.ai_cli_mcp_receiver.is_none() && ui.add(style::btn_secondary("Re-check")).clicked() {
                         self.ai_cli_mcp_registered = None;
                         self.ai_cli_mcp_message = None;
                         self.ensure_ai_mcp_check();
                     }
                 });
                 if let Some(msg) = &self.ai_cli_mcp_message {
-                    ui.label(egui::RichText::new(msg).size(11.0).color(egui::Color32::from_rgb(255, 90, 90)));
+                    status(ui, Tone::Danger, msg.clone());
                 }
             }
         }
-        ui.add_space(6.0);
+    }
 
-        // ── Test ────────────────────────────────────────────────────────
+    fn render_ai_cli_test(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let testing = self.ai_cli_test_receiver.is_some();
             if ui
-                .add_enabled(!testing, egui::Button::new("Test connection"))
+                .add_enabled(!testing, style::btn_secondary("Test connection"))
                 .on_hover_text("Checks the binary, its version and sends a one-word prompt")
                 .clicked()
             {
@@ -432,30 +454,20 @@ impl Tabular {
             }
             if testing {
                 ui.spinner();
-                ui.label(egui::RichText::new("Running…").size(11.0).color(muted));
+                hint(ui, "Running…");
             }
         });
         match &self.ai_cli_test_result {
-            Some(Ok(msg)) => {
-                ui.label(egui::RichText::new(format!("✓ {msg}")).size(11.0).color(egui::Color32::from_rgb(0, 180, 80)));
-            }
-            Some(Err(msg)) => {
-                ui.label(egui::RichText::new(format!("✗ {msg}")).size(11.0).color(egui::Color32::from_rgb(255, 90, 90)));
-            }
+            Some(Ok(msg)) => status(ui, Tone::Success, format!("✓ {msg}")),
+            Some(Err(msg)) => status(ui, Tone::Danger, format!("✗ {msg}")),
             None => {}
         }
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(
-                "Note: the agent runs in headless mode with permission prompts disabled, inside an empty \
-                 working directory under Tabular's data folder. Database access goes through Tabular's \
-                 read-only MCP tools; write statements must still be run by you.",
-            )
-            .size(11.0)
-            .color(muted),
+        ui.add_space(2.0);
+        hint(
+            ui,
+            "The agent runs headless with permission prompts disabled, inside an empty working directory \
+             under Tabular's data folder. Database access goes through Tabular's read-only MCP tools; \
+             write statements must still be run by you.",
         );
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
     }
 }

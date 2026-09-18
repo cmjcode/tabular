@@ -6,11 +6,11 @@ use egui::text::{CCursor, CCursorRange};
 use log::{debug, info};
 use sqlformat::{QueryParams, format as sqlfmt};
 
+use crate::spreadsheet::SpreadsheetOperations;
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
     sidebar_history, sidebar_query, window_egui,
 };
-use crate::spreadsheet::SpreadsheetOperations;
 use std::borrow::Cow;
 use std::time::Instant;
 
@@ -142,7 +142,9 @@ pub(crate) fn open_dba_monitor_tab(
     initial_tab: models::enums::DbaMonitorTab,
 ) -> usize {
     let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
-    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let conn_name = conn
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "DB".to_string());
     let title = format!("⚡ Monitor: {}", conn_name);
 
     // If an existing monitor tab for this connection is already open, just switch to it
@@ -163,12 +165,7 @@ pub(crate) fn open_dba_monitor_tab(
         ..Default::default()
     };
 
-    let tab_id = create_new_tab_with_connection(
-        tabular,
-        title,
-        String::new(),
-        Some(conn_id),
-    );
+    let tab_id = create_new_tab_with_connection(tabular, title, String::new(), Some(conn_id));
 
     crate::connection::ensure_background_pool_creation(tabular, conn_id);
 
@@ -186,7 +183,9 @@ pub(crate) fn open_user_manager_tab(
     initial_tab: crate::user_manager::UserManagerTab,
 ) -> usize {
     let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
-    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let conn_name = conn
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "DB".to_string());
     let title = format!("👥 Users: {}", conn_name);
 
     // If an existing user manager tab for this connection is already open, just switch to it
@@ -207,12 +206,7 @@ pub(crate) fn open_user_manager_tab(
         ..Default::default()
     };
 
-    let tab_id = create_new_tab_with_connection(
-        tabular,
-        title,
-        String::new(),
-        Some(conn_id),
-    );
+    let tab_id = create_new_tab_with_connection(tabular, title, String::new(), Some(conn_id));
 
     crate::connection::ensure_background_pool_creation(tabular, conn_id);
 
@@ -222,7 +216,6 @@ pub(crate) fn open_user_manager_tab(
     }
     tab_id
 }
-
 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
@@ -301,7 +294,12 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     tabular.dragged_tab_index = None;
     let tab_count = tabular.query_tabs.len();
     if from == to || from >= tab_count || to >= tab_count {
-        log::debug!("[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})", from, to, tab_count);
+        log::debug!(
+            "[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})",
+            from,
+            to,
+            tab_count
+        );
         return;
     }
 
@@ -315,10 +313,16 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
     // If moved out of pinned region (>= pinned_count_before), unpin it.
     if !was_pinned && to < pinned_count_before {
         tab.is_pinned = true;
-        log::debug!("[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned", tab_title);
+        log::debug!(
+            "[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned",
+            tab_title
+        );
     } else if was_pinned && to >= pinned_count_before {
         tab.is_pinned = false;
-        log::debug!("[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned", tab_title);
+        log::debug!(
+            "[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned",
+            tab_title
+        );
     }
 
     tabular.query_tabs.insert(to, tab);
@@ -351,7 +355,11 @@ pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usiz
 pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
     let tab_count = tabular.query_tabs.len();
     if from >= tab_count {
-        log::debug!("[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})", from, tab_count);
+        log::debug!(
+            "[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})",
+            from,
+            tab_count
+        );
         tabular.dragged_tab_index = None;
         return;
     }
@@ -360,7 +368,12 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
     } else {
         insert_at.min(tab_count - 1)
     };
-    log::debug!("[TabEditor] reorder_tab: from {} to slot {} (computed target index {})", from, insert_at, to);
+    log::debug!(
+        "[TabEditor] reorder_tab: from {} to slot {} (computed target index {})",
+        from,
+        insert_at,
+        to
+    );
     move_tab(tabular, from, to);
 }
 
@@ -368,7 +381,10 @@ pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, inser
 pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        log::debug!("[TabEditor] pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!(
+            "[TabEditor] pin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = true;
@@ -385,7 +401,8 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         let prev_active = tabular.active_tab_index;
         if tabular.active_tab_index == tab_index {
             tabular.active_tab_index = first_unpinned;
-        } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index {
+        } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index
+        {
             tabular.active_tab_index += 1;
         }
         eprintln!(
@@ -412,7 +429,10 @@ pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        log::debug!("[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!(
+            "[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
         return;
     }
     tabular.query_tabs[tab_index].is_pinned = false;
@@ -463,11 +483,19 @@ pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
 pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
     if tab_index >= tabular.query_tabs.len() {
-        log::debug!("[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}", tab_index);
+        log::debug!(
+            "[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
         return;
     }
     let is_pinned = tabular.query_tabs[tab_index].is_pinned;
-    log::debug!("[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling", tab_index, tabular.query_tabs[tab_index].title, is_pinned);
+    log::debug!(
+        "[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling",
+        tab_index,
+        tabular.query_tabs[tab_index].title,
+        is_pinned
+    );
     if is_pinned {
         unpin_tab(tabular, tab_index);
     } else {
@@ -509,7 +537,9 @@ pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_in
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
-    if tabular.active_tab_index > tab_index && !tabular.query_tabs[tabular.active_tab_index].is_pinned {
+    if tabular.active_tab_index > tab_index
+        && !tabular.query_tabs[tabular.active_tab_index].is_pinned
+    {
         switch_to_tab(tabular, tab_index);
     }
     let mut i = tab_index + 1;
@@ -853,7 +883,6 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         }
 
         if let Some(path) = &tab.file_path {
-
             // File already exists, save directly
             let file_path = path.clone();
             std::fs::write(&file_path, &tab.content)
@@ -1191,16 +1220,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let editor_id = ui.make_persistent_id("sql_editor");
 
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
-    let trigger_format_sql = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FormatSql);
+    let trigger_format_sql =
+        crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FormatSql);
     if trigger_format_sql {
         reformat_current_sql(tabular, ui);
         request_scroll_to_cursor = true;
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
-    
+
     // Shortcut: Toggle Comment (Cmd/Ctrl + /)
-    let trigger_toggle_comment = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ToggleComment);
+    let trigger_toggle_comment = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ToggleComment,
+    );
     if trigger_toggle_comment {
         toggle_line_comment(tabular);
         request_scroll_to_cursor = true;
@@ -1209,7 +1243,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Toggle AI Panel (Cmd/Ctrl + Shift + A)
-    let trigger_toggle_ai = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ToggleAiPanel);
+    let trigger_toggle_ai = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ToggleAiPanel,
+    );
     if trigger_toggle_ai {
         tabular.show_ai_panel = !tabular.show_ai_panel;
         if tabular.show_ai_panel && tabular.ai_input.is_empty() {
@@ -1231,13 +1269,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Explain Query (Cmd/Ctrl + Shift + E)
-    let trigger_explain_query = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::ExplainQuery);
+    let trigger_explain_query = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ExplainQuery,
+    );
     if trigger_explain_query {
         let id = egui::Id::new("sql_editor");
         let mut direct_selected = String::new();
-        if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+        if let Some(range) =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+        {
             let to_byte_index = |s: &str, char_idx: usize| -> usize {
-                s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(char_idx).unwrap_or(s.len())
+                s.char_indices()
+                    .map(|(b, _)| b)
+                    .chain(std::iter::once(s.len()))
+                    .nth(char_idx)
+                    .unwrap_or(s.len())
             };
             let start_b = to_byte_index(&tabular.editor.text, range.start);
             let end_b = to_byte_index(&tabular.editor.text, range.end);
@@ -1282,19 +1330,25 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Find (Cmd/Ctrl + F)
-    let trigger_find = crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FindReplace);
+    let trigger_find = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::FindReplace,
+    );
     if trigger_find {
         tabular.advanced_editor.show_find_replace = true;
         tabular.advanced_editor.focus_find_input = true;
         if tabular.selection_start < tabular.selection_end
             && tabular.selection_end <= tabular.editor.text.len()
         {
-            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            let sel =
+                tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
             if !sel.contains('\n') && !sel.is_empty() {
                 tabular.advanced_editor.find_text = sel;
             }
             if tabular.advanced_editor.in_selection {
-                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                tabular.advanced_editor.selection_range =
+                    Some((tabular.selection_start, tabular.selection_end));
             }
         }
         ui.ctx().request_repaint();
@@ -1327,12 +1381,14 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         if tabular.selection_start < tabular.selection_end
             && tabular.selection_end <= tabular.editor.text.len()
         {
-            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            let sel =
+                tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
             if !sel.contains('\n') && !sel.is_empty() {
                 tabular.advanced_editor.find_text = sel;
             }
             if tabular.advanced_editor.in_selection {
-                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                tabular.advanced_editor.selection_range =
+                    Some((tabular.selection_start, tabular.selection_end));
             }
         }
         ui.ctx().request_repaint();
@@ -1648,8 +1704,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // VSCode-like word navigation & line operations (pre-TextEdit)
     // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
 
-
-
     // Helper: convert byte index -> char index for egui CCursor
     let to_char_index = |s: &str, byte_idx: usize| -> usize {
         let b = byte_idx.min(s.len());
@@ -1677,20 +1731,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let cursor = tabular.cursor_position;
             let text_len = tabular.editor.text.len();
             let safe_cursor = cursor.min(text_len);
-            
+
             // Check character valid for auto-close (at end, or before whitespace/closer)
             let next_char = tabular.editor.text[safe_cursor..].chars().next();
             // Allow auto-close if next char is whitespace/empty or closing punctuation
             let should_autoclose = match next_char {
                 None => true, // End of file
-                Some(c) => c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+                Some(c) => {
+                    c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+                }
             };
-            
+
             // Special Overtype case: cursor is before matching quote
             let is_overtype = if let Some(c) = next_char {
-                 c.to_string() == quote_char
+                c.to_string() == quote_char
             } else {
-                 false
+                false
             };
 
             let mut handled = false;
@@ -1706,8 +1762,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else if should_autoclose {
                 // Insert quote pair: quote + quote
                 let pair = format!("{}{}", quote_char, quote_char);
-                tabular.editor.apply_single_replace(safe_cursor..safe_cursor, &pair);
-                
+                tabular
+                    .editor
+                    .apply_single_replace(safe_cursor..safe_cursor, &pair);
+
                 // Move cursor between them
                 tabular.cursor_position += 1;
                 tabular.selection_start = tabular.cursor_position;
@@ -1719,17 +1777,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if handled {
                 // Sync egui state
                 let id = editor_id;
-                
+
                 // FORCE UPDATE of egui TextEdit state immediately
                 // We must update the internal state so TextEdit knows the cursor moved
                 if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
-                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-                     state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(ci))));
-                     state.store(ui.ctx(), id);
+                    let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(ci),
+                        )));
+                    state.store(ui.ctx(), id);
                 } else {
-                     // Fallback if state doesn't exist yet (first frame?)
-                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-                     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+                    // Fallback if state doesn't exist yet (first frame?)
+                    let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
                 }
 
                 // Consume the text event so TextEdit doesn't insert another quote
@@ -1737,24 +1799,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let mut consumed = false;
                     ri.events.retain(|e| {
                         if !consumed {
-                             match e {
+                            match e {
                                 egui::Event::Text(t) if t == &quote_char => {
                                     consumed = true;
                                     return false;
                                 }
                                 _ => {}
-                             }
+                            }
                         }
                         true
                     });
                 });
-                
+
                 // Mark modified
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                     tab.content = tabular.editor.text.clone();
-                     tab.is_modified = true;
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
                 } else {
-                     tabular.editor.mark_text_modified();
+                    tabular.editor.mark_text_modified();
                 }
 
                 ui.ctx().request_repaint();
@@ -3142,7 +3204,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Record text length before TextEdit renders (O(1)) — used in response.changed() to detect insertions
     let pre_text_len = tabular.editor.text.len();
 
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let metrics =
+        crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
     let effective_font_size = if metrics.is_touch && tabular.advanced_editor.font_size <= 14.0 {
         metrics.font_monospace_size.max(16.0)
     } else {
@@ -3241,7 +3304,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Right-click Context Menu on SQL Editor
     response.context_menu(|ui| {
-        if ui.button("🔍 Go to DDL / Structure (F12 / Cmd+B)").clicked() {
+        if ui
+            .button("🔍 Go to DDL / Structure (F12 / Cmd+B)")
+            .clicked()
+        {
             jump_to_definition_at_cursor(tabular);
             ui.close();
         }
@@ -3281,7 +3347,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let placed_row = &galley.rows[layout.row];
                 let row_min_y = galley_pos.y + placed_row.min_y();
                 let row_max_y = galley_pos.y + placed_row.max_y();
-                
+
                 let rect = egui::Rect::from_min_max(
                     egui::pos2(response.rect.left(), row_min_y),
                     egui::pos2(response.rect.right(), row_max_y),
@@ -3294,80 +3360,80 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Quick parse to find statement boundaries with robust comment handling
             // Only run if text is reasonably sized to avoid lags on huge files every frame
             let (start_byte, end_byte) = {
-               let mut stmt_start = 0;
-               let mut found_range = (0, text_len);
-               
-               let mut chars = text.char_indices().peekable();
-               let mut in_quote = None; // None, Some('\''), Some('"'), Some('`')
-               let mut in_line_comment = false;
-               let mut in_block_comment = false;
-               let mut found = false;
-               
-               while let Some((i, c)) = chars.next() {
-                   // 1. Handle String Literals
-                   if let Some(q) = in_quote {
-                       if c == '\\' {
-                           // Skip next char (escape)
-                           let _ = chars.next();
-                       } else if c == q {
-                           in_quote = None;
-                       }
-                       continue;
-                   }
+                let mut stmt_start = 0;
+                let mut found_range = (0, text_len);
 
-                   // 2. Handle Block Comments
-                   if in_block_comment && c == '*' {
+                let mut chars = text.char_indices().peekable();
+                let mut in_quote = None; // None, Some('\''), Some('"'), Some('`')
+                let mut in_line_comment = false;
+                let mut in_block_comment = false;
+                let mut found = false;
+
+                while let Some((i, c)) = chars.next() {
+                    // 1. Handle String Literals
+                    if let Some(q) = in_quote {
+                        if c == '\\' {
+                            // Skip next char (escape)
+                            let _ = chars.next();
+                        } else if c == q {
+                            in_quote = None;
+                        }
+                        continue;
+                    }
+
+                    // 2. Handle Block Comments
+                    if in_block_comment && c == '*' {
                         if let Some(&(_, '/')) = chars.peek() {
                             chars.next(); // consume '/'
                             in_block_comment = false;
                         }
-                       continue;
-                   }
+                        continue;
+                    }
 
-                   // 3. Handle Line Comments
-                   if in_line_comment {
-                       if c == '\n' || c == '\r' {
-                           in_line_comment = false;
-                       }
-                       continue;
-                   }
+                    // 3. Handle Line Comments
+                    if in_line_comment {
+                        if c == '\n' || c == '\r' {
+                            in_line_comment = false;
+                        }
+                        continue;
+                    }
 
-                   // 4. Normal Mode
-                   match c {
-                       '\'' | '"' | '`' => in_quote = Some(c),
-                       '-' => {
-                           if let Some(&(_, '-')) = chars.peek() {
-                               chars.next(); // consume second '-'
-                               in_line_comment = true;
-                           }
-                       }
-                       '#' => in_line_comment = true,
-                       '/' => {
-                           if let Some(&(_, '*')) = chars.peek() {
-                               chars.next(); // consume '*'
-                               in_block_comment = true;
-                           }
-                       }
-                       ';' => {
-                           // Statement ends here
-                           let stmt_end = i + 1; 
-                           if cur >= stmt_start && cur <= stmt_end {
-                               found_range = (stmt_start, stmt_end);
-                               found = true;
-                               break;
-                           }
-                           stmt_start = stmt_end;
-                       }
-                       _ => {}
-                   }
-               }
-               // Handle last statement if cursor is past the last semicolon
-               if !found && cur >= stmt_start {
-                   found_range = (stmt_start, text_len);
-               }
-               found_range
+                    // 4. Normal Mode
+                    match c {
+                        '\'' | '"' | '`' => in_quote = Some(c),
+                        '-' => {
+                            if let Some(&(_, '-')) = chars.peek() {
+                                chars.next(); // consume second '-'
+                                in_line_comment = true;
+                            }
+                        }
+                        '#' => in_line_comment = true,
+                        '/' => {
+                            if let Some(&(_, '*')) = chars.peek() {
+                                chars.next(); // consume '*'
+                                in_block_comment = true;
+                            }
+                        }
+                        ';' => {
+                            // Statement ends here
+                            let stmt_end = i + 1;
+                            if cur >= stmt_start && cur <= stmt_end {
+                                found_range = (stmt_start, stmt_end);
+                                found = true;
+                                break;
+                            }
+                            stmt_start = stmt_end;
+                        }
+                        _ => {}
+                    }
+                }
+                // Handle last statement if cursor is past the last semicolon
+                if !found && cur >= stmt_start {
+                    found_range = (stmt_start, text_len);
+                }
+                found_range
             };
-            
+
             let (raw_start, raw_end) = (start_byte, end_byte);
             // Trim leading whitespace so highlight starts at text
             let start_byte = text[raw_start..raw_end]
@@ -3383,29 +3449,29 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
             let start_cursor = CCursor::new(start_char_idx);
             let end_cursor = CCursor::new(end_char_idx);
-            
+
             let start_layout = galley.layout_from_cursor(start_cursor);
             let end_layout = galley.layout_from_cursor(end_cursor);
-            
+
             // Paint the block from start row to end row
             // We use min/max to be safe, though start should be <= end
             let first_row_idx = start_layout.row.min(galley.rows.len().saturating_sub(1));
             let last_row_idx = end_layout.row.min(galley.rows.len().saturating_sub(1));
 
             if first_row_idx < galley.rows.len() && last_row_idx < galley.rows.len() {
-                 let first_row = &galley.rows[first_row_idx];
-                 let last_row = &galley.rows[last_row_idx];
-                 
-                 let block_top = galley_pos.y + first_row.min_y();
-                 let block_bottom = galley_pos.y + last_row.max_y();
+                let first_row = &galley.rows[first_row_idx];
+                let last_row = &galley.rows[last_row_idx];
 
-                 let rect = egui::Rect::from_min_max(
-                     egui::pos2(response.rect.left(), block_top),
-                     egui::pos2(response.rect.right(), block_bottom),
-                 );
-                 
-                 let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
-                 ui.painter().rect_filled(rect, 0.0, col);
+                let block_top = galley_pos.y + first_row.min_y();
+                let block_bottom = galley_pos.y + last_row.max_y();
+
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.left(), block_top),
+                    egui::pos2(response.rect.right(), block_bottom),
+                );
+
+                let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+                ui.painter().rect_filled(rect, 0.0, col);
             }
         }
     }
@@ -3563,7 +3629,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let total_lines = tabular.editor.line_count().max(1);
         let editor_height = response.rect.height();
         let painter = ui.painter();
-        
+
         // Use galley to get actual line positions for perfect alignment
         let final_rect = egui::Rect::from_min_size(
             gutter_rect.min,
@@ -3576,7 +3642,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         for row in &galley.rows {
             // Use galley_pos to get the actual vertical position of each row
             let y = galley_pos.y + row.rect().min.y;
-            
+
             // Only render if within visible gutter area
             if y >= final_rect.top() && y <= final_rect.bottom() + 20.0 {
                 painter.text(
@@ -3587,7 +3653,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     ui.visuals().weak_text_color(),
                 );
             }
-            
+
             // Increment line number after rendering each row that ends with newline
             // This ensures wrapped lines show the same line number
             if row.ends_with_newline {
@@ -3639,15 +3705,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                                 if row_idx < galley.rows.len() {
                                     let placed_row = &galley.rows[row_idx];
                                     let row = &placed_row.row;
-                                    let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
-                                    let right_local = if row_idx == max_l.row { row.x_offset(max_l.column) } else { row.size.x };
+                                    let left_local = if row_idx == min_l.row {
+                                        row.x_offset(min_l.column)
+                                    } else {
+                                        0.0
+                                    };
+                                    let right_local = if row_idx == max_l.row {
+                                        row.x_offset(max_l.column)
+                                    } else {
+                                        row.size.x
+                                    };
                                     let row_top = galley_pos.y + placed_row.min_y();
                                     let row_bottom = galley_pos.y + placed_row.max_y();
                                     let left = galley_pos.x + placed_row.pos.x + left_local;
                                     let right = galley_pos.x + placed_row.pos.x + right_local;
-                                    let scope_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                                    let scope_rect = egui::Rect::from_min_max(
+                                        egui::pos2(left, row_top),
+                                        egui::pos2(right, row_bottom),
+                                    );
                                     if scope_rect.is_positive() {
-                                        match_painter.rect_filled(scope_rect, 1.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 30));
+                                        match_painter.rect_filled(
+                                            scope_rect,
+                                            1.0,
+                                            egui::Color32::from_rgba_unmultiplied(59, 130, 246, 30),
+                                        );
                                     }
                                 }
                             }
@@ -3680,11 +3761,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         if row_idx < galley.rows.len() {
                             let placed_row = &galley.rows[row_idx];
                             let row = &placed_row.row;
-                            let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
+                            let left_local = if row_idx == min_l.row {
+                                row.x_offset(min_l.column)
+                            } else {
+                                0.0
+                            };
                             let right_local = if row_idx == max_l.row {
                                 row.x_offset(max_l.column)
                             } else {
-                                let newline_size = if placed_row.ends_with_newline { row.height() / 2.0 } else { 0.0 };
+                                let newline_size = if placed_row.ends_with_newline {
+                                    row.height() / 2.0
+                                } else {
+                                    0.0
+                                };
                                 row.size.x + newline_size
                             };
 
@@ -3693,9 +3782,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let left = galley_pos.x + placed_row.pos.x + left_local;
                             let right = galley_pos.x + placed_row.pos.x + right_local;
 
-                            let h_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                            let h_rect = egui::Rect::from_min_max(
+                                egui::pos2(left, row_top),
+                                egui::pos2(right, row_bottom),
+                            );
                             if h_rect.is_positive() {
-                                match_painter.rect(h_rect, 2.0, fill_color, stroke, egui::StrokeKind::Outside);
+                                match_painter.rect(
+                                    h_rect,
+                                    2.0,
+                                    fill_color,
+                                    stroke,
+                                    egui::StrokeKind::Outside,
+                                );
                             }
                         }
                     }
@@ -4171,19 +4269,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Just inserted a newline? Force scroll to the new cursor position.
         if just_inserted_newline {
-             inserted_newline_this_frame = true;
-             request_scroll_to_cursor = true;
+            inserted_newline_this_frame = true;
+            request_scroll_to_cursor = true;
         }
         log::debug!(
             "edit: newline={} insertion={} cursor->{} sel {}..{}",
-            just_inserted_newline, is_insertion, post_cursor_b_for_diff,
-            post_sel_start_b, post_sel_end_b
+            just_inserted_newline,
+            is_insertion,
+            post_cursor_b_for_diff,
+            post_sel_start_b,
+            post_sel_end_b
         );
         // Apply multi-cursor editing only when there are truly multiple cursors
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
         if !multi_edit_pre_applied {
             let multi_len = tabular.multi_selection.len();
-            log::debug!("[multi] response.changed multi_len={} is_insertion={}", multi_len, is_insertion);
+            log::debug!(
+                "[multi] response.changed multi_len={} is_insertion={}",
+                multi_len,
+                is_insertion
+            );
             let multi_count = tabular.multi_selection.len();
             if multi_count > 1 {
                 let caret_positions_before = tabular.multi_selection.caret_positions();
@@ -4319,33 +4424,37 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
         // TRIGGER: only when user just pressed Enter (completing the closing --)
-        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && crate::ai_assistant::backend_ready(tabular).is_ok()
-            && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
-                let backend = crate::ai_assistant::chat_backend(tabular);
-                let schema_context = crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
-                let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
+        if just_inserted_newline
+            && tabular.ai_inline_receiver.is_none()
+            && crate::ai_assistant::backend_ready(tabular).is_ok()
+            && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular)
+        {
+            let backend = crate::ai_assistant::chat_backend(tabular);
+            let schema_context =
+                crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
+            let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
 
-                // Insert a loading placeholder at the current cursor position (new empty line after --)
-                let placeholder = "-- ✨ AI: Thinking...\n";
-                let cursor_pos = tabular.cursor_position.min(tabular.editor.text.len());
-                tabular.editor.text.insert_str(cursor_pos, placeholder);
-                let placeholder_start = cursor_pos;
-                let placeholder_end = cursor_pos + placeholder.len();
-                // Advance cursor past the placeholder
-                tabular.cursor_position = placeholder_end;
-                tabular.selection_start = placeholder_end;
-                tabular.selection_end = placeholder_end;
-                tabular.editor.mark_text_modified();
-                tabular.highlight_cache.clear();
-                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                    tab.content = tabular.editor.text.clone();
-                    tab.is_modified = true;
-                }
+            // Insert a loading placeholder at the current cursor position (new empty line after --)
+            let placeholder = "-- ✨ AI: Thinking...\n";
+            let cursor_pos = tabular.cursor_position.min(tabular.editor.text.len());
+            tabular.editor.text.insert_str(cursor_pos, placeholder);
+            let placeholder_start = cursor_pos;
+            let placeholder_end = cursor_pos + placeholder.len();
+            // Advance cursor past the placeholder
+            tabular.cursor_position = placeholder_end;
+            tabular.selection_start = placeholder_end;
+            tabular.selection_end = placeholder_end;
+            tabular.editor.mark_text_modified();
+            tabular.highlight_cache.clear();
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                tab.content = tabular.editor.text.clone();
+                tab.is_modified = true;
+            }
 
-                let rx = crate::ai_assistant::request_text(&backend, system, prompt);
-                tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
-                request_scroll_to_cursor = true;
-                ui.ctx().request_repaint();
+            let rx = crate::ai_assistant::request_text(&backend, system, prompt);
+            tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
+            request_scroll_to_cursor = true;
+            ui.ctx().request_repaint();
         }
 
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
@@ -4537,16 +4646,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // ── Inline AI block response polling ──────────────────────────────────────
     // Check if an in-flight inline AI request has a response ready and replace the placeholder.
     let inline_result = {
-        if let Some((block_hash, placeholder_start, placeholder_end, ref rx)) = tabular.ai_inline_receiver {
+        if let Some((block_hash, placeholder_start, placeholder_end, ref rx)) =
+            tabular.ai_inline_receiver
+        {
             match rx.try_recv() {
                 Ok(result) => Some((block_hash, placeholder_start, placeholder_end, result)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     ui.ctx().request_repaint();
                     None
                 }
-                Err(_) => {
-                    Some((block_hash, placeholder_start, placeholder_end, Err("Inline AI channel closed".to_string())))
-                }
+                Err(_) => Some((
+                    block_hash,
+                    placeholder_start,
+                    placeholder_end,
+                    Err("Inline AI channel closed".to_string()),
+                )),
             }
         } else {
             None
@@ -4561,7 +4675,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         };
         let start = placeholder_start.min(tabular.editor.text.len());
         let end = placeholder_end.min(tabular.editor.text.len());
-        tabular.editor.text.replace_range(start..end, &response_text);
+        tabular
+            .editor
+            .text
+            .replace_range(start..end, &response_text);
         let new_cursor = start + response_text.len();
         tabular.cursor_position = new_cursor;
         tabular.selection_start = new_cursor;
@@ -4605,13 +4722,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // but the galley visual layout thinks it's still on the old line or somewhere else.
         // We heuristically shift the target rect DOWN by one line height to ensure the scroll view accommodates the new line.
         if inserted_newline_this_frame {
-             caret_rect = caret_rect.translate(egui::vec2(0.0, line_height));
-             log::debug!("↵ Enter pressed: Shifting scroll target down by {}px to compensate for layout lag", line_height);
+            caret_rect = caret_rect.translate(egui::vec2(0.0, line_height));
+            log::debug!(
+                "↵ Enter pressed: Shifting scroll target down by {}px to compensate for layout lag",
+                line_height
+            );
         }
 
         // Using Align::Center usually gives better context than Bottom/Top which might auto-shrink weirdly
         ui.scroll_to_rect(caret_rect, None);
-        log::debug!("📜 Requesting scroll to {:?} (newline={})", caret_rect, inserted_newline_this_frame);
+        log::debug!(
+            "📜 Requesting scroll to {:?} (newline={})",
+            caret_rect,
+            inserted_newline_this_frame
+        );
     }
 
     // Render floating Find & Replace panel overlay
@@ -4640,7 +4764,10 @@ fn detect_ai_block_closed_by_enter(tabular: &window_egui::Tabular) -> Option<(u6
     let prev_nl = cursor - 1; // byte index of the '\n' we just inserted
     // Find the line before that '\n'
     let prev_line_end = prev_nl;
-    let prev_line_start = text[..prev_line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prev_line_start = text[..prev_line_end]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let prev_line = &text[prev_line_start..prev_line_end];
 
     // The closing marker must be exactly "--"
@@ -4828,13 +4955,19 @@ fn ai_handle_live_edit_event(
                     };
                     let mut mode = mode;
                     let mut note = None;
-                    if mode == LiveEditMode::Selection && (!is_active || selection.0 >= selection.1) {
+                    if mode == LiveEditMode::Selection && (!is_active || selection.0 >= selection.1)
+                    {
                         mode = LiveEditMode::Replace;
-                        note = Some("No selection in that tab; the whole tab was replaced instead.".to_string());
+                        note = Some(
+                            "No selection in that tab; the whole tab was replaced instead."
+                                .to_string(),
+                        );
                     }
                     let auto = tabular.ai_cli_auto_apply_edits;
                     if !auto {
-                        note = Some("Live edit is off; press Apply to write it into the tab.".to_string());
+                        note = Some(
+                            "Live edit is off; press Apply to write it into the tab.".to_string(),
+                        );
                     }
                     ActiveLiveEdit {
                         tab_id,
@@ -4877,14 +5010,16 @@ fn ai_handle_live_edit_event(
                                 active.tab_title
                             ));
                         } else {
-                            let new_text = compose(active.mode, &active.original, active.selection, &body);
+                            let new_text =
+                                compose(active.mode, &active.original, active.selection, &body);
                             ai_write_tab_content(tabular, idx, new_text.clone(), false);
                             active.last_applied = new_text;
                         }
                     }
                     None => {
                         active.aborted = true;
-                        active.note = Some("Tab was closed while the agent was writing.".to_string());
+                        active.note =
+                            Some("Tab was closed while the agent was writing.".to_string());
                     }
                 }
             }
@@ -5137,7 +5272,12 @@ fn ai_extract_sql_blocks(text: &str) -> String {
     }
 }
 
-fn ai_apply_edit_record(tabular: &mut window_egui::Tabular, msg_idx: usize, edit_idx: usize, revert: bool) {
+fn ai_apply_edit_record(
+    tabular: &mut window_egui::Tabular,
+    msg_idx: usize,
+    edit_idx: usize,
+    revert: bool,
+) {
     let Some(rec) = tabular
         .ai_chat
         .get(msg_idx)
@@ -5147,10 +5287,16 @@ fn ai_apply_edit_record(tabular: &mut window_egui::Tabular, msg_idx: usize, edit
         return;
     };
     let Some(idx) = ai_tab_index_by_id(tabular, rec.tab_id) else {
-        tabular.toasts.error(format!("Tab \"{}\" is no longer open", rec.tab_title));
+        tabular
+            .toasts
+            .error(format!("Tab \"{}\" is no longer open", rec.tab_title));
         return;
     };
-    let new_text = if revert { rec.original.clone() } else { rec.applied_text.clone() };
+    let new_text = if revert {
+        rec.original.clone()
+    } else {
+        rec.applied_text.clone()
+    };
     ai_write_tab_content(tabular, idx, new_text, true);
     if let Some(r) = tabular
         .ai_chat
@@ -5161,9 +5307,13 @@ fn ai_apply_edit_record(tabular: &mut window_egui::Tabular, msg_idx: usize, edit
         r.reverted = revert;
     }
     if revert {
-        tabular.toasts.info(format!("Reverted AI edit in \"{}\"", rec.tab_title));
+        tabular
+            .toasts
+            .info(format!("Reverted AI edit in \"{}\"", rec.tab_title));
     } else {
-        tabular.toasts.success(format!("Applied AI edit to \"{}\"", rec.tab_title));
+        tabular
+            .toasts
+            .success(format!("Applied AI edit to \"{}\"", rec.tab_title));
     }
 }
 
@@ -5194,15 +5344,21 @@ fn ai_render_transcript(
     if chat.is_empty() {
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
-            ui.label(
-                egui::RichText::new("Ask about your SQL, your schema, or tell the agent to write a query into a tab.")
-                    .size(12.0)
-                    .color(muted),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Ask about your SQL, your schema, or tell the agent to write a query into a tab.")
+                        .size(12.0)
+                        .color(muted),
+                )
+                .wrap(),
             );
-            ui.label(
-                egui::RichText::new("The active tab is always sent as context; attach more tabs below.")
-                    .size(11.0)
-                    .color(muted),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("The active tab is always sent as context; attach more tabs below.")
+                        .size(11.0)
+                        .color(muted),
+                )
+                .wrap(),
             );
         });
     }
@@ -5214,6 +5370,7 @@ fn ai_render_transcript(
             .corner_radius(egui::CornerRadius::same(6))
             .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(
@@ -5326,7 +5483,10 @@ fn ai_render_transcript(
 
 fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     let muted = crate::window_egui::style::theme_muted_text(ui.ctx());
-    let active_id = tabular.query_tabs.get(tabular.active_tab_index).map(|t| t.id);
+    let active_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
     let mut remove: Option<usize> = None;
     let mut toggles: Vec<(usize, bool)> = Vec::new();
 
@@ -5335,10 +5495,16 @@ fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) 
         match tabular.query_tabs.get(tabular.active_tab_index) {
             Some(active) if crate::ai_assistant::is_sql_tab(active) => {
                 ui.label(egui::RichText::new(format!("📄 {}", active.title)).size(11.0))
-                    .on_hover_text("Active tab — always included (with the current selection, if any)");
+                    .on_hover_text(
+                        "Active tab — always included (with the current selection, if any)",
+                    );
             }
             _ => {
-                ui.label(egui::RichText::new("(active tab is not a SQL tab)").size(11.0).color(muted));
+                ui.label(
+                    egui::RichText::new("(active tab is not a SQL tab)")
+                        .size(11.0)
+                        .color(muted),
+                );
             }
         }
         for id in &tabular.ai_attached_tab_ids {
@@ -5371,7 +5537,11 @@ fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) 
                 }
             }
             if !any {
-                ui.label(egui::RichText::new("No other SQL tabs open").size(11.0).color(muted));
+                ui.label(
+                    egui::RichText::new("No other SQL tabs open")
+                        .size(11.0)
+                        .color(muted),
+                );
             }
         });
     });
@@ -5393,6 +5563,9 @@ fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) 
 pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     use crate::config::AiBackend;
 
+    ui.set_min_width(ui.available_width().max(280.0));
+    ui.take_available_width();
+
     ai_poll_stream(tabular, ui.ctx());
     tabular.ensure_ai_mcp_check();
     tabular.poll_ai_cli_background(ui.ctx());
@@ -5413,6 +5586,8 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(if ui.visuals().dark_mode { 55 } else { 200 })))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width().max(280.0));
+            ui.take_available_width();
             // Header row
             ui.horizontal(|ui| {
                 ui.label(
@@ -5505,6 +5680,8 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width().max(280.0));
+                    ui.take_available_width();
                     ai_render_transcript(tabular, ui, &mut actions);
                 });
 
@@ -5556,7 +5733,10 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
             AiPanelAction::Copy(text) => ui.ctx().copy_text(text),
             AiPanelAction::InsertAtCursor(text) => {
                 let pos = tabular.cursor_position.min(tabular.editor.text.len());
-                let pos = (0..=pos).rev().find(|&i| tabular.editor.text.is_char_boundary(i)).unwrap_or(0);
+                let pos = (0..=pos)
+                    .rev()
+                    .find(|&i| tabular.editor.text.is_char_boundary(i))
+                    .unwrap_or(0);
                 tabular.editor.text.insert_str(pos, &text);
                 let new_cursor = pos + text.len();
                 tabular.cursor_position = new_cursor;
@@ -5589,6 +5769,108 @@ mod ai_panel_tests {
         assert_eq!(ai_extract_sql_blocks("no code here"), "no code here");
         let other = "```python\nprint(1)\n```";
         assert_eq!(ai_extract_sql_blocks(other), other);
+    }
+
+    #[test]
+    fn test_panel_width_behavior() {
+        let ctx = eframe::egui::Context::default();
+        let mut recorded_widths = Vec::new();
+        let mut cache = egui_commonmark::CommonMarkCache::default();
+
+        let mut chat: Vec<crate::models::structs::AiChatMessage> = Vec::new();
+
+        for frame_idx in 0..15 {
+            if frame_idx == 1 {
+                chat.push(crate::models::structs::AiChatMessage {
+                    role: crate::models::structs::AiChatRole::User,
+                    text: "how to clean database".to_string(),
+                    ..Default::default()
+                });
+                chat.push(crate::models::structs::AiChatMessage {
+                    role: crate::models::structs::AiChatRole::Assistant,
+                    text: "".to_string(),
+                    streaming: true,
+                    ..Default::default()
+                });
+            } else if frame_idx > 1 && frame_idx < 10 {
+                if let Some(msg) = chat.last_mut() {
+                    msg.text.push_str(" some token");
+                }
+            }
+
+            let mut out = ctx.run_ui(eframe::egui::RawInput::default(), |root_ui| {
+                // Left sidebar
+                eframe::egui::Panel::left("sidebar")
+                    .resizable(true)
+                    .default_size(340.0)
+                    .min_size(260.0)
+                    .max_size(600.0)
+                    .show(root_ui, |ui| {
+                        ui.allocate_exact_size(eframe::egui::vec2(ui.available_width(), 28.0), eframe::egui::Sense::hover());
+                    });
+
+                // Right panel
+                eframe::egui::Panel::right("ai_right_panel")
+                    .resizable(true)
+                    .default_size(350.0)
+                    .min_size(280.0)
+                    .max_size(600.0)
+                    .show(root_ui, |ui| {
+                        recorded_widths.push(ui.available_width());
+                        let panel_bg = eframe::egui::Color32::from_rgb(28, 30, 40);
+                        eframe::egui::Frame::new()
+                            .fill(panel_bg)
+                            .inner_margin(eframe::egui::Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("✨ AI Assistant");
+                                    ui.with_layout(eframe::egui::Layout::right_to_left(eframe::egui::Align::Center), |ui| {
+                                        let _ = ui.small_button("✕");
+                                    });
+                                });
+
+                                let transcript_height = 200.0;
+                                eframe::egui::ScrollArea::vertical()
+                                    .id_salt("ai_chat_scroll")
+                                    .max_height(transcript_height)
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(true)
+                                    .show(ui, |ui| {
+                                        if chat.is_empty() {
+                                            ui.label("Ask about your SQL, your schema, or tell the agent to write a query into a tab.");
+                                        } else {
+                                            for msg in &chat {
+                                                eframe::egui::Frame::new()
+                                                    .fill(eframe::egui::Color32::from_rgb(32, 34, 44))
+                                                    .show(ui, |ui| {
+                                                        ui.set_width(ui.available_width());
+                                                        if !msg.text.is_empty() {
+                                                            egui_commonmark::CommonMarkViewer::new()
+                                                                .max_image_width(Some(320))
+                                                                .show(ui, &mut cache, &msg.text);
+                                                        }
+                                                    });
+                                            }
+                                        }
+                                    });
+
+                                ui.add(
+                                    eframe::egui::TextEdit::multiline(&mut String::new())
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                    });
+
+                // Central panel
+                eframe::egui::CentralPanel::default().show(root_ui, |ui| {
+                    ui.label("central");
+                });
+            });
+            out.textures_delta.clear();
+        }
+        for w in &recorded_widths {
+            assert!(*w >= 280.0, "Panel width dropped below 280px: {}", w);
+        }
     }
 }
 
@@ -5688,9 +5970,7 @@ pub(crate) fn toggle_line_comment(tabular: &mut window_egui::Tabular) {
         return;
     }
 
-    tabular
-        .editor
-        .apply_single_replace(0..text_len, &new_text);
+    tabular.editor.apply_single_replace(0..text_len, &new_text);
 
     tabular.selection_start = new_start;
     tabular.selection_end = new_end;
@@ -5957,7 +6237,10 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
         return;
     }
 
-    let cur_idx = tabular.advanced_editor.current_match_index.min(matches.len() - 1);
+    let cur_idx = tabular
+        .advanced_editor
+        .current_match_index
+        .min(matches.len() - 1);
     let target = &matches[cur_idx];
 
     let replacement = if tabular.advanced_editor.use_regex {
@@ -5966,7 +6249,8 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
             .build()
         {
             let matched_slice = &tabular.editor.text[target.start..target.end];
-            re.replace(matched_slice, &tabular.advanced_editor.replace_text).to_string()
+            re.replace(matched_slice, &tabular.advanced_editor.replace_text)
+                .to_string()
         } else {
             tabular.advanced_editor.replace_text.clone()
         }
@@ -5993,7 +6277,8 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
         tabular.advanced_editor.use_regex,
         tabular.advanced_editor.in_selection,
         tabular.advanced_editor.selection_range,
-    ).unwrap_or_default();
+    )
+    .unwrap_or_default();
 
     tabular.advanced_editor.match_count = new_matches.len();
     if !new_matches.is_empty() {
@@ -6108,7 +6393,8 @@ pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
             tabular.advanced_editor.use_regex,
             tabular.advanced_editor.in_selection,
             tabular.advanced_editor.selection_range,
-        ).unwrap_or_default();
+        )
+        .unwrap_or_default();
         if !matches.is_empty() {
             let next_idx = (tabular.advanced_editor.current_match_index + 1) % matches.len();
             tabular.advanced_editor.current_match_index = next_idx;
@@ -6222,22 +6508,31 @@ pub(crate) fn render_find_replace_floating_panel(
                             egui_icons::icons::ICON_CHEVRON_RIGHT
                         };
                         let chevron_btn = egui::Button::new(
-                            chevron_icon.rich_text().size(13.0).color(ui.visuals().weak_text_color())
+                            chevron_icon
+                                .rich_text()
+                                .size(13.0)
+                                .color(ui.visuals().weak_text_color()),
                         )
                         .fill(egui::Color32::TRANSPARENT)
                         .stroke(egui::Stroke::NONE)
                         .min_size(egui::vec2(16.0, 20.0));
 
-                        if ui.add(chevron_btn).on_hover_text("Toggle Replace (Cmd+H)").clicked() {
-                            tabular.advanced_editor.show_replace_row = !tabular.advanced_editor.show_replace_row;
+                        if ui
+                            .add(chevron_btn)
+                            .on_hover_text("Toggle Replace (Cmd+H)")
+                            .clicked()
+                        {
+                            tabular.advanced_editor.show_replace_row =
+                                !tabular.advanced_editor.show_replace_row;
                         }
 
                         // Find Input Field
                         let find_input_id = ui.make_persistent_id("editor_find_input");
-                        let find_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text)
-                            .id(find_input_id)
-                            .hint_text("Find")
-                            .desired_width(150.0);
+                        let find_edit =
+                            egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text)
+                                .id(find_input_id)
+                                .hint_text("Find")
+                                .desired_width(150.0);
 
                         let find_resp = ui.add(find_edit);
 
@@ -6261,14 +6556,36 @@ pub(crate) fn render_find_replace_floating_panel(
                         }
 
                         // Toggle Buttons (Aa, \b, .*, ☵)
-                        render_toggle_button(ui, &mut tabular.advanced_editor.case_sensitive, "Aa", "Match Case (Alt+C)");
-                        render_toggle_button(ui, &mut tabular.advanced_editor.whole_word, "\\b", "Match Whole Word (Alt+W)");
-                        render_toggle_button(ui, &mut tabular.advanced_editor.use_regex, ".*", "Use Regular Expression (Alt+R)");
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.case_sensitive,
+                            "Aa",
+                            "Match Case (Alt+C)",
+                        );
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.whole_word,
+                            "\\b",
+                            "Match Whole Word (Alt+W)",
+                        );
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.use_regex,
+                            ".*",
+                            "Use Regular Expression (Alt+R)",
+                        );
 
-                        let in_sel_changed = render_toggle_button(ui, &mut tabular.advanced_editor.in_selection, "☵", "Find in Selection (Alt+L)").changed();
+                        let in_sel_changed = render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.in_selection,
+                            "☵",
+                            "Find in Selection (Alt+L)",
+                        )
+                        .changed();
                         if in_sel_changed && tabular.advanced_editor.in_selection {
                             if tabular.selection_start < tabular.selection_end {
-                                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                                tabular.advanced_editor.selection_range =
+                                    Some((tabular.selection_start, tabular.selection_end));
                             } else {
                                 tabular.advanced_editor.selection_range = None;
                             }
@@ -6276,7 +6593,9 @@ pub(crate) fn render_find_replace_floating_panel(
 
                         // Match Count or Status
                         let count_text = if tabular.advanced_editor.regex_error.is_some() {
-                            egui::RichText::new("⚠️ Regex error").size(11.0).color(egui::Color32::from_rgb(239, 68, 68))
+                            egui::RichText::new("⚠️ Regex error")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(239, 68, 68))
                         } else if tabular.advanced_editor.find_text.is_empty() {
                             egui::RichText::new("").size(11.0)
                         } else if tabular.advanced_editor.match_count > 0 {
@@ -6297,23 +6616,40 @@ pub(crate) fn render_find_replace_floating_panel(
                         }
 
                         // Previous / Next buttons
-                        let prev_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_UP.rich_text().size(13.0))
-                            .min_size(egui::vec2(22.0, 20.0));
-                        if ui.add(prev_btn).on_hover_text("Previous Match (Shift+Enter)").clicked() {
+                        let prev_btn = egui::Button::new(
+                            egui_icons::icons::ICON_KEYBOARD_ARROW_UP
+                                .rich_text()
+                                .size(13.0),
+                        )
+                        .min_size(egui::vec2(22.0, 20.0));
+                        if ui
+                            .add(prev_btn)
+                            .on_hover_text("Previous Match (Shift+Enter)")
+                            .clicked()
+                        {
                             find_prev_requested = true;
                         }
 
-                        let next_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_DOWN.rich_text().size(13.0))
-                            .min_size(egui::vec2(22.0, 20.0));
-                        if ui.add(next_btn).on_hover_text("Next Match (Enter)").clicked() {
+                        let next_btn = egui::Button::new(
+                            egui_icons::icons::ICON_KEYBOARD_ARROW_DOWN
+                                .rich_text()
+                                .size(13.0),
+                        )
+                        .min_size(egui::vec2(22.0, 20.0));
+                        if ui
+                            .add(next_btn)
+                            .on_hover_text("Next Match (Enter)")
+                            .clicked()
+                        {
                             find_next_requested = true;
                         }
 
                         // Close Button
-                        let close_btn = egui::Button::new(egui_icons::icons::ICON_CLOSE.rich_text().size(12.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE)
-                            .min_size(egui::vec2(20.0, 20.0));
+                        let close_btn =
+                            egui::Button::new(egui_icons::icons::ICON_CLOSE.rich_text().size(12.0))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
+                                .min_size(egui::vec2(20.0, 20.0));
                         if ui.add(close_btn).on_hover_text("Close (Escape)").clicked() {
                             close_requested = true;
                         }
@@ -6326,10 +6662,12 @@ pub(crate) fn render_find_replace_floating_panel(
                             ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
 
                             let replace_input_id = ui.make_persistent_id("editor_replace_input");
-                            let replace_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.replace_text)
-                                .id(replace_input_id)
-                                .hint_text("Replace")
-                                .desired_width(150.0);
+                            let replace_edit = egui::TextEdit::singleline(
+                                &mut tabular.advanced_editor.replace_text,
+                            )
+                            .id(replace_input_id)
+                            .hint_text("Replace")
+                            .desired_width(150.0);
 
                             let replace_resp = ui.add(replace_edit);
 
@@ -6349,15 +6687,21 @@ pub(crate) fn render_find_replace_floating_panel(
                             }
 
                             // Replace buttons
-                            let rep_btn = egui::Button::new(egui::RichText::new("Replace").size(11.0))
-                                .min_size(egui::vec2(58.0, 20.0));
+                            let rep_btn =
+                                egui::Button::new(egui::RichText::new("Replace").size(11.0))
+                                    .min_size(egui::vec2(58.0, 20.0));
                             if ui.add(rep_btn).on_hover_text("Replace (Enter)").clicked() {
                                 replace_current_requested = true;
                             }
 
-                            let rep_all_btn = egui::Button::new(egui::RichText::new("Replace All").size(11.0))
-                                .min_size(egui::vec2(76.0, 20.0));
-                            if ui.add(rep_all_btn).on_hover_text("Replace All (Alt+Enter)").clicked() {
+                            let rep_all_btn =
+                                egui::Button::new(egui::RichText::new("Replace All").size(11.0))
+                                    .min_size(egui::vec2(76.0, 20.0));
+                            if ui
+                                .add(rep_all_btn)
+                                .on_hover_text("Replace All (Alt+Enter)")
+                                .clicked()
+                            {
                                 replace_all_requested = true;
                             }
                         });
@@ -6530,7 +6874,11 @@ pub(crate) fn select_current_theme(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-    let progress = window_egui::style::render_modal_backdrop(ctx, "command_palette", tabular.show_command_palette);
+    let progress = window_egui::style::render_modal_backdrop(
+        ctx,
+        "command_palette",
+        tabular.show_command_palette,
+    );
     if progress <= 0.01 {
         return;
     }
@@ -6783,7 +7131,11 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
 pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str) {
     // Strip trailing shortcut hint (everything after first "  " sequence of spaces) for matching
     let cmd = command.trim_end();
-    let key = if let Some(pos) = cmd.find("  ") { cmd[..pos].trim() } else { cmd };
+    let key = if let Some(pos) = cmd.find("  ") {
+        cmd[..pos].trim()
+    } else {
+        cmd
+    };
 
     tabular.show_command_palette = false;
     tabular.command_palette_input.clear();
@@ -6864,7 +7216,8 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             );
         }
         "Data: Export SQL Inserts" => {
-            let db_type = tabular.current_connection_id
+            let db_type = tabular
+                .current_connection_id
                 .and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id)))
                 .map(|c| c.connection_type.clone());
             crate::export::export_to_sql_inserts(
@@ -6889,7 +7242,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         }
         "Data: Import CSV" => {
             if let Some(conn_id) = tabular.current_connection_id {
-                let db_type = tabular.connections.iter()
+                let db_type = tabular
+                    .connections
+                    .iter()
                     .find(|c| c.id == Some(conn_id))
                     .map(|c| c.connection_type.clone())
                     .unwrap_or(crate::models::enums::DatabaseType::MySQL);
@@ -6927,7 +7282,11 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             if let Some(conn_id) = tabular.current_connection_id {
                 open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::Processlist);
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_dba_monitor_tab(tabular, first_conn, models::enums::DbaMonitorTab::Processlist);
+                open_dba_monitor_tab(
+                    tabular,
+                    first_conn,
+                    models::enums::DbaMonitorTab::Processlist,
+                );
             }
         }
         "DBA: Deadlock & Lock Tree" => {
@@ -6941,14 +7300,26 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             if let Some(conn_id) = tabular.current_connection_id {
                 open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::Users);
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::Users);
+                open_user_manager_tab(
+                    tabular,
+                    first_conn,
+                    crate::user_manager::UserManagerTab::Users,
+                );
             }
         }
         "DBA: Create New User" => {
             if let Some(conn_id) = tabular.current_connection_id {
-                open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::CreateUser);
+                open_user_manager_tab(
+                    tabular,
+                    conn_id,
+                    crate::user_manager::UserManagerTab::CreateUser,
+                );
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::CreateUser);
+                open_user_manager_tab(
+                    tabular,
+                    first_conn,
+                    crate::user_manager::UserManagerTab::CreateUser,
+                );
             }
         }
         "Plugins: Extensibility & Wasm Automation" | "Plugins: Open Plugins Manager" => {
@@ -6988,7 +7359,11 @@ fn word_at_cursor(text: &str, pos: usize) -> Option<&str> {
         return None;
     }
     let start = (0..=p).rev().take_while(|&i| is_ident(bytes[i])).last()?;
-    let end = (p..len).take_while(|&i| is_ident(bytes[i])).last().map(|i| i + 1).unwrap_or(p + 1);
+    let end = (p..len)
+        .take_while(|&i| is_ident(bytes[i]))
+        .last()
+        .map(|i| i + 1)
+        .unwrap_or(p + 1);
     Some(&text[start..end])
 }
 
@@ -7019,7 +7394,9 @@ pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
     let word = match word_at_cursor(&text, cursor) {
         Some(w) => w.to_string(),
         None => {
-            tabular.toasts.info("Go to definition: no identifier at cursor");
+            tabular
+                .toasts
+                .info("Go to definition: no identifier at cursor");
             return;
         }
     };
@@ -7034,9 +7411,13 @@ pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
         tabular.current_table_name = node.name.clone();
         // Expand the tree to reveal the node
         expand_tree_to_table(&mut tabular.items_tree, &word);
-        tabular.toasts.info(format!("Go to definition: navigated to '{}'", word));
+        tabular
+            .toasts
+            .info(format!("Go to definition: navigated to '{}'", word));
     } else {
-        tabular.toasts.info(format!("Go to definition: '{}' not found in schema", word));
+        tabular
+            .toasts
+            .info(format!("Go to definition: '{}' not found in schema", word));
     }
 }
 
@@ -7108,7 +7489,9 @@ pub(crate) fn commit_rename_symbol(tabular: &mut window_egui::Tabular) {
     }
 
     tabular.editor.text = result;
-    tabular.toasts.info(format!("Renamed '{}' → '{}'", old, new));
+    tabular
+        .toasts
+        .info(format!("Renamed '{}' → '{}'", old, new));
 }
 
 /// Render the floating rename-symbol dialog.
@@ -7130,7 +7513,10 @@ pub(crate) fn render_rename_symbol_dialog(tabular: &mut window_egui::Tabular, ct
                 .inner_margin(egui::Margin::same(16))
                 .show(ui, |ui| {
                     ui.set_min_width(400.0);
-                    ui.label(egui::RichText::new(format!("Rename '{}'", tabular.rename_symbol_old)).strong());
+                    ui.label(
+                        egui::RichText::new(format!("Rename '{}'", tabular.rename_symbol_old))
+                            .strong(),
+                    );
                     ui.add_space(8.0);
                     let resp = ui.add_sized(
                         [380.0, 24.0],
@@ -7335,10 +7721,7 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
 /// Run the engine-appropriate EXPLAIN for the current statement
 /// (selection > statement at cursor > full editor text). The plan comes
 /// back through the normal result grid.
-pub(crate) fn explain_current_query(
-    tabular: &mut window_egui::Tabular,
-    selected_text: String,
-) {
+pub(crate) fn explain_current_query(tabular: &mut window_egui::Tabular, selected_text: String) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();
 
@@ -7374,7 +7757,9 @@ pub(crate) fn explain_current_query(
         .map(|c| c.connection_type.clone());
 
     let prefix = match connection_type {
-        Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ",
+        Some(crate::models::enums::DatabaseType::PostgreSQL) => {
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+        }
         Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
         Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
         Some(crate::models::enums::DatabaseType::MsSQL) => "SET STATISTICS XML ON; ",
@@ -7495,14 +7880,15 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
 
     // Safety Guard: Check for unsafe UPDATE or DELETE without WHERE clause
     if !tabular.show_unsafe_dml_dialog
-        && let Some(kind) = is_unsafe_dml_query(&query) {
-            tabular.show_unsafe_dml_dialog = true;
-            tabular.unsafe_dml_query = query;
-            tabular.unsafe_dml_type = kind.to_string();
-            tabular.query_execution_in_progress = false;
-            tabular.extend_query_icon_hold();
-            return;
-        }
+        && let Some(kind) = is_unsafe_dml_query(&query)
+    {
+        tabular.show_unsafe_dml_dialog = true;
+        tabular.unsafe_dml_query = query;
+        tabular.unsafe_dml_type = kind.to_string();
+        tabular.query_execution_in_progress = false;
+        tabular.extend_query_icon_hold();
+        return;
+    }
 
     // Parameter Prompt: Check if query contains parameter placeholders
     if !tabular.show_parameter_dialog {
@@ -7565,12 +7951,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
             .connections
             .iter()
             .find(|c| c.id == Some(connection_id))
-            .map(|c| {
-                matches!(
-                    c.connection_type,
-                    crate::models::enums::DatabaseType::MySQL
-                )
-            })
+            .map(|c| matches!(c.connection_type, crate::models::enums::DatabaseType::MySQL))
             .unwrap_or(false);
         let mut statements = connection::split_sql_statements(&query, hash_is_comment);
 
@@ -7580,7 +7961,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
         }
 
         tabular.query_execution_in_progress = true;
-        
+
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {
             log::debug!(
@@ -7603,7 +7984,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 "🔧 Pool not ready for {}, triggering background creation and queuing",
                 connection_id
             );
-            
+
             // Trigger creation (safe to call multiple times, handles dedup)
             crate::connection::ensure_background_pool_creation(tabular, connection_id);
 
@@ -7618,7 +7999,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
 
         debug!("=== EXECUTING {} QUERIES ===", statements.len());
         debug!("Connection ID: {}", connection_id);
-        
+
         // Manual-commit mode: route statements to the tab's dedicated session
         // connection so BEGIN/COMMIT and session state persist across runs.
         let tx_mode_active = tabular
@@ -7659,7 +8040,9 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                     tab.page_size = tabular.page_size;
                 }
 
-                debug!("🚀 Auto server-pagination enabled (simple SELECT). Executing first page...");
+                debug!(
+                    "🚀 Auto server-pagination enabled (simple SELECT). Executing first page..."
+                );
                 tabular.execute_paginated_query();
                 return;
             }
@@ -7677,8 +8060,11 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                     };
                     tabular.jobs.active.insert(job_id, status);
 
-                    match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
-                    {
+                    match connection::spawn_query_job(
+                        tabular,
+                        job,
+                        tabular.query_result_sender.clone(),
+                    ) {
                         Ok(handle) => {
                             tabular.jobs.handles.insert(job_id, handle);
                             tabular.current_table_name = "Running query…".to_string();
@@ -7726,7 +8112,12 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         for job_id in &job_ids {
                             tabular.jobs.active.remove(job_id);
                         }
-                        log::warn!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
+                        log::warn!(
+                            "Failed to prepare statement {}/{}: {:?}",
+                            idx + 1,
+                            total,
+                            err
+                        );
                         report_query_start_failure(tabular, &err);
                         return;
                     }
@@ -7738,15 +8129,16 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 return;
             }
 
-            match connection::spawn_query_job_batch(tabular, jobs, tabular.query_result_sender.clone())
-            {
+            match connection::spawn_query_job_batch(
+                tabular,
+                jobs,
+                tabular.query_result_sender.clone(),
+            ) {
                 Ok(handle) => {
                     // The whole batch runs on one task; cancelling any member
                     // job id aborts the entire batch (see cancel_active_query_job).
                     let last_id = *job_ids.last().expect("jobs not empty");
-                    tabular
-                        .jobs.batches
-                        .push((job_ids, handle.abort_handle()));
+                    tabular.jobs.batches.push((job_ids, handle.abort_handle()));
                     tabular.jobs.handles.insert(last_id, handle);
                     tabular.current_table_name = format!("Running {} queries…", total);
                 }
@@ -7776,7 +8168,9 @@ fn report_query_start_failure(
         E::UnsupportedDatabase => "this database type does not support running queries here",
     };
     log::warn!("Query could not be started: {:?}", err);
-    tabular.toasts.error(format!("Query could not be started: {}", reason));
+    tabular
+        .toasts
+        .error(format!("Query could not be started: {}", reason));
     if tabular.jobs.active.is_empty() {
         tabular.query_execution_in_progress = false;
         tabular.current_table_name.clear();
@@ -7824,7 +8218,9 @@ fn execute_statements_in_session(
         .get(tabular.active_tab_index)
         .and_then(|t| t.session.clone())
     else {
-        tabular.toasts.error("Cannot start a session connection for manual-commit mode".to_string());
+        tabular
+            .toasts
+            .error("Cannot start a session connection for manual-commit mode".to_string());
         tabular.query_execution_in_progress = false;
         return;
     };
@@ -7846,12 +8242,12 @@ fn execute_statements_in_session(
         };
         tabular.jobs.active.insert(job_id, status);
 
-        if !session.send(crate::connection::session::SessionCommand::Execute {
-            job_id,
-            sql: stmt,
-        }) {
+        if !session.send(crate::connection::session::SessionCommand::Execute { job_id, sql: stmt })
+        {
             tabular.jobs.active.remove(&job_id);
-            tabular.toasts.error("Session connection is gone; toggle manual commit off and on again".to_string());
+            tabular.toasts.error(
+                "Session connection is gone; toggle manual commit off and on again".to_string(),
+            );
             tabular.query_execution_in_progress = false;
             return;
         }
@@ -7988,16 +8384,28 @@ pub(crate) fn process_query_result(
             debug!("Skip saving to history karena hasil error");
         }
         // Detect EXPLAIN output JSON/XML/text and set active view to Explain
-        let first_cell = tabular.current_table_data.first().and_then(|r| r.first()).cloned().unwrap_or_default();
+        let first_cell = tabular
+            .current_table_data
+            .first()
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap_or_default();
         let all_text = if tabular.current_table_data.len() > 1 {
-            tabular.current_table_data.iter().map(|r| r.first().map(|s| s.as_str()).unwrap_or("")).collect::<Vec<_>>().join("\n")
+            tabular
+                .current_table_data
+                .iter()
+                .map(|r| r.first().map(|s| s.as_str()).unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             first_cell.clone()
         };
         let is_explain = query.trim_start().to_uppercase().starts_with("EXPLAIN")
             || query.to_uppercase().contains("STATISTICS XML")
             || query.to_uppercase().contains("SHOWPLAN_XML")
-            || tabular.current_table_headers.iter().any(|h| h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN"))
+            || tabular.current_table_headers.iter().any(|h| {
+                h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN")
+            })
             || first_cell.trim().starts_with('[')
             || first_cell.trim().starts_with('{')
             || first_cell.trim().contains("<ShowPlanXML")
@@ -8063,7 +8471,9 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
         return String::new();
     }
 
-    if let Some(stmt) = crate::query_tools::statement_parser::find_statement_at_cursor(text, cursor_pos) {
+    if let Some(stmt) =
+        crate::query_tools::statement_parser::find_statement_at_cursor(text, cursor_pos)
+    {
         return stmt.text;
     }
 
@@ -8100,7 +8510,11 @@ pub(crate) fn split_sql_statements_with_spans(text: &str) -> Vec<(usize, usize, 
 
     while i < len {
         let b = bytes[i];
-        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+        let next_b = if i + 1 < len {
+            Some(bytes[i + 1])
+        } else {
+            None
+        };
 
         if in_line_comment {
             if b == b'\n' {
@@ -8221,7 +8635,11 @@ pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
 
     while i < len {
         let b = bytes[i];
-        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+        let next_b = if i + 1 < len {
+            Some(bytes[i + 1])
+        } else {
+            None
+        };
 
         if in_line_comment {
             if b == b'\n' {
@@ -8378,13 +8796,19 @@ pub(crate) fn is_unsafe_dml_query(sql: &str) -> Option<&'static str> {
     let upper = trimmed.to_ascii_uppercase();
 
     if upper.starts_with("DELETE") {
-        if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
+        if !upper
+            .split_whitespace()
+            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
+        {
             return Some("DELETE");
         }
     } else if upper.starts_with("UPDATE")
-        && !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
-            return Some("UPDATE");
-        }
+        && !upper
+            .split_whitespace()
+            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
+    {
+        return Some("UPDATE");
+    }
     None
 }
 
@@ -8412,44 +8836,52 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     }
 
     // Prefer active selection if present; otherwise extract word at cursor
-    let raw_symbol = if tabular.selection_start < tabular.selection_end
-        && tabular.selection_end <= text_len
-    {
-        text[tabular.selection_start..tabular.selection_end].to_string()
-    } else {
-        let cursor = tabular.cursor_position.min(text_len);
-        let bytes = text.as_bytes();
-
-        let mut start = cursor;
-        while start > 0 {
-            let b = bytes[start - 1];
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
-                start -= 1;
-            } else {
-                break;
-            }
-        }
-        let mut end = cursor;
-        while end < bytes.len() {
-            let b = bytes[end];
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        if start < end {
-            text[start..end].to_string()
+    let raw_symbol =
+        if tabular.selection_start < tabular.selection_end && tabular.selection_end <= text_len {
+            text[tabular.selection_start..tabular.selection_end].to_string()
         } else {
-            String::new()
-        }
-    };
+            let cursor = tabular.cursor_position.min(text_len);
+            let bytes = text.as_bytes();
+
+            let mut start = cursor;
+            while start > 0 {
+                let b = bytes[start - 1];
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let mut end = cursor;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if start < end {
+                text[start..end].to_string()
+            } else {
+                String::new()
+            }
+        };
 
     let symbol = raw_symbol
         .split('.')
         .next_back()
         .unwrap_or(&raw_symbol)
-        .trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']' || c == '\'' || c == ';' || c == '(' || c == ')')
+        .trim_matches(|c| {
+            c == '"'
+                || c == '`'
+                || c == '['
+                || c == ']'
+                || c == '\''
+                || c == ';'
+                || c == '('
+                || c == ')'
+        })
         .trim();
 
     if symbol.is_empty() {
@@ -8472,11 +8904,13 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
         Some(cid) => {
             let mut found = None;
             for tt in &["BASE TABLE", "TABLE", "VIEW"] {
-                if let Some(tables) = crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt)
-                    && let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
-                        found = Some(m);
-                        break;
-                    }
+                if let Some(tables) =
+                    crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt)
+                    && let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol))
+                {
+                    found = Some(m);
+                    break;
+                }
             }
             if found.is_none() {
                 let all = crate::editor_autocomplete_new::get_all_tables(tabular);
@@ -8490,11 +8924,19 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     };
 
     let Some(target_table) = target_table else {
-        log::debug!("🔍 [Go-To-Definition] Symbol '{}' is not a known table/view, ignoring", symbol);
+        log::debug!(
+            "🔍 [Go-To-Definition] Symbol '{}' is not a known table/view, ignoring",
+            symbol
+        );
         return;
     };
 
-    log::info!("🔍 [Go-To-Definition] Opening DDL / Structure for table '{}' (cid: {:?}, db: '{}')", target_table, active_cid, active_db);
+    log::info!(
+        "🔍 [Go-To-Definition] Opening DDL / Structure for table '{}' (cid: {:?}, db: '{}')",
+        target_table,
+        active_cid,
+        active_db
+    );
 
     let tab_title = format!("Table: {}", target_table);
     let view_tab_title = format!("View: {}", target_table);
@@ -8513,7 +8955,11 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
             tab_title.clone(),
             query_content,
             active_cid,
-            if active_db.is_empty() { None } else { Some(active_db.clone()) },
+            if active_db.is_empty() {
+                None
+            } else {
+                Some(active_db.clone())
+            },
         );
     }
 
@@ -8522,7 +8968,11 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
         let formatted_name = format!(
             "Table: {} (Database: {})",
             target_table,
-            if active_db.is_empty() { "Unknown" } else { &active_db }
+            if active_db.is_empty() {
+                "Unknown"
+            } else {
+                &active_db
+            }
         );
         tab.result_table_name = formatted_name.clone();
         tabular.current_table_name = formatted_name;
@@ -8537,7 +8987,9 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     tabular.last_structure_target = None;
     data_table::load_structure_info_for_current_table(tabular);
 
-    tabular.toasts.info(format!("Opened Structure for table '{}'", target_table));
+    tabular
+        .toasts
+        .info(format!("Opened Structure for table '{}'", target_table));
 }
 
 #[cfg(test)]
@@ -8560,15 +9012,28 @@ mod tests {
     fn test_extract_query_parameters() {
         let sql = "SELECT * FROM users WHERE status = :status AND id = $1 AND name = ?;";
         let params = extract_query_parameters(sql);
-        assert_eq!(params, vec![":status".to_string(), "$1".to_string(), "? (Param 3)".to_string()]);
+        assert_eq!(
+            params,
+            vec![
+                ":status".to_string(),
+                "$1".to_string(),
+                "? (Param 3)".to_string()
+            ]
+        );
     }
 
     #[test]
     fn test_is_unsafe_dml_query() {
         assert_eq!(is_unsafe_dml_query("DELETE FROM users;"), Some("DELETE"));
-        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'inactive';"), Some("UPDATE"));
+        assert_eq!(
+            is_unsafe_dml_query("UPDATE users SET status = 'inactive';"),
+            Some("UPDATE")
+        );
         assert_eq!(is_unsafe_dml_query("DELETE FROM users WHERE id = 1;"), None);
-        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"), None);
+        assert_eq!(
+            is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"),
+            None
+        );
     }
 
     #[test]
@@ -8860,4 +9325,3 @@ mod tests {
         assert!(!tabular.query_tabs[1].is_pinned);
     }
 }
-

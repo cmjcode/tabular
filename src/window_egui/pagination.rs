@@ -1,6 +1,6 @@
-use log::{debug};
 use crate::spreadsheet::SpreadsheetOperations;
-use crate::{connection, models, data_table, driver_mssql};
+use crate::{connection, data_table, driver_mssql, models};
+use log::debug;
 
 impl super::Tabular {
     pub fn execute_paginated_query(&mut self) {
@@ -147,9 +147,7 @@ impl super::Tabular {
         // If base_query already contains a LIMIT clause, avoid appending another LIMIT/OFFSET
         let has_limit = {
             let upper = base_query.to_uppercase();
-            upper.contains(" LIMIT ")
-                || upper.ends_with(" LIMIT")
-                || upper.contains("\nLIMIT ")
+            upper.contains(" LIMIT ") || upper.ends_with(" LIMIT") || upper.contains("\nLIMIT ")
         };
 
         if has_limit {
@@ -271,11 +269,15 @@ impl super::Tabular {
             let still_same_query = tabular
                 .query_tabs
                 .get(tabular.active_tab_index)
-                .is_some_and(|t| t.id == tab_id && t.base_query.trim().trim_end_matches(';') == base_query);
+                .is_some_and(|t| {
+                    t.id == tab_id && t.base_query.trim().trim_end_matches(';') == base_query
+                });
             match count {
                 Some(total) if still_same_query => tabular.actual_total_rows = Some(total),
                 Some(_) => {}
-                None => tabular.toasts.error("Could not read the row count returned by the server"),
+                None => tabular
+                    .toasts
+                    .error("Could not read the row count returned by the server"),
             }
         });
     }
