@@ -11,9 +11,15 @@ use super::Tabular;
 use crate::agent::harness::{self, CliAgentConfig};
 use crate::config::{AiBackend, CliAgentKind};
 
-/// Backend CLI tidak tersedia di mobile: tidak ada binary agent yang bisa
-/// dijalankan, dan App Store melarang proses tambahan.
-const CLI_BACKEND_AVAILABLE: bool = !cfg!(any(target_os = "ios", target_os = "android"));
+/// Backend CLI tidak ada sama sekali di mobile: tidak ada binary agent yang
+/// bisa dijalankan.
+const IS_MOBILE: bool = cfg!(any(target_os = "ios", target_os = "android"));
+
+/// Backend CLI bisa dipakai: bukan mobile dan bukan build Mac App Store
+/// (App Sandbox, lihat [`harness::is_app_sandboxed`]).
+fn cli_backend_available() -> bool {
+    !IS_MOBILE && !harness::is_app_sandboxed()
+}
 
 impl Tabular {
     pub(crate) fn ai_cli_config(&self) -> CliAgentConfig {
@@ -29,7 +35,7 @@ impl Tabular {
     /// Mulai pemeriksaan "apakah MCP Tabular terdaftar di CLI" bila belum
     /// diketahui. Idempoten; hasilnya diambil oleh [`Self::poll_ai_cli_background`].
     pub(crate) fn ensure_ai_mcp_check(&mut self) {
-        if !CLI_BACKEND_AVAILABLE
+        if !cli_backend_available()
             || self.ai_backend != AiBackend::Cli
             || !self.ai_cli_kind.needs_global_mcp_registration()
             || self.ai_cli_mcp_registered.is_some()
@@ -126,8 +132,18 @@ impl Tabular {
         ui.horizontal_wrapped(|ui| {
             let mut backend = self.ai_backend;
             ui.radio_value(&mut backend, AiBackend::Api, AiBackend::Api.display_name());
-            if CLI_BACKEND_AVAILABLE {
-                ui.radio_value(&mut backend, AiBackend::Cli, AiBackend::Cli.display_name());
+            if !IS_MOBILE {
+                // Di build App Store tetap ditampilkan (nonaktif) supaya user tahu
+                // fitur ini ada di versi download langsung.
+                let resp = ui
+                    .add_enabled(
+                        cli_backend_available(),
+                        egui::RadioButton::new(backend == AiBackend::Cli, AiBackend::Cli.display_name()),
+                    )
+                    .on_disabled_hover_text(harness::SANDBOX_UNAVAILABLE_MESSAGE);
+                if resp.clicked() {
+                    backend = AiBackend::Cli;
+                }
             }
             if backend != self.ai_backend {
                 self.ai_backend = backend;
@@ -143,6 +159,19 @@ impl Tabular {
             .size(11.0)
             .color(muted),
         );
+        if !IS_MOBILE && harness::is_app_sandboxed() {
+            ui.label(
+                egui::RichText::new(format!("ℹ {}", harness::SANDBOX_UNAVAILABLE_MESSAGE))
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(220, 160, 30)),
+            );
+            // Preferensi CLI yang terbawa dari build lain: kembalikan ke API
+            // supaya pengaturan provider di bawah langsung tampil.
+            if self.ai_backend == AiBackend::Cli {
+                self.ai_backend = AiBackend::Api;
+                self.save_ai_prefs();
+            }
+        }
         ui.add_space(6.0);
 
         if self.ai_backend != AiBackend::Cli {

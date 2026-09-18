@@ -392,7 +392,10 @@ pub fn backend_ready(tabular: &Tabular) -> Result<(), String> {
             }
         }
         AiBackend::Cli => {
-            if tabular.ai_cli_kind == CliAgentKind::Custom && tabular.ai_cli_bin.trim().is_empty() {
+            // Preferensi bisa terbawa dari build download langsung ke build App Store.
+            if harness::is_app_sandboxed() {
+                Err(harness::SANDBOX_UNAVAILABLE_MESSAGE.to_string())
+            } else if tabular.ai_cli_kind == CliAgentKind::Custom && tabular.ai_cli_bin.trim().is_empty() {
                 Err("No CLI command configured. Open Settings → AI Assistant.".to_string())
             } else {
                 Ok(())
