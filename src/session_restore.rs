@@ -417,30 +417,39 @@ pub fn render_close_tab_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         Cancel,
     }
     let mut choice = None;
+    let mut close = false;
     crate::window_egui::style::render_modal_backdrop(ctx, "close_tab_confirm", true);
     egui::Window::new("Unsaved Changes")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(380.0)
         .show(ctx, |ui| {
-            if titles.len() == 1 {
-                ui.label(format!(
-                    "“{}” has changes that have not been saved.",
-                    titles[0]
-                ));
-            } else {
-                ui.label(format!(
-                    "{} tabs have changes that have not been saved:",
-                    titles.len()
-                ));
-                for title in titles.iter().take(8) {
-                    ui.label(egui::RichText::new(format!("• {}", title)).monospace());
+            crate::window_egui::style::render_modal_header(ui, "Unsaved Changes", &mut close);
+            ui.add_space(8.0);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                if titles.len() == 1 {
+                    ui.label(format!(
+                        "“{}” has changes that have not been saved.",
+                        titles[0]
+                    ));
+                } else {
+                    ui.label(format!(
+                        "{} tabs have changes that have not been saved:",
+                        titles.len()
+                    ));
+                    for title in titles.iter().take(8) {
+                        ui.label(egui::RichText::new(format!("• {}", title)).monospace());
+                    }
+                    if titles.len() > 8 {
+                        ui.label(format!("…and {} more", titles.len() - 8));
+                    }
                 }
-                if titles.len() > 8 {
-                    ui.label(format!("…and {} more", titles.len() - 8));
-                }
-            }
+            });
+
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -458,14 +467,13 @@ pub fn render_close_tab_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     {
                         choice = Some(Choice::Save);
                     }
-                    if ui.button("Cancel").clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        choice = Some(Choice::Cancel);
-                    }
                 });
             });
         });
+
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        choice = Some(Choice::Cancel);
+    }
 
     match choice {
         Some(Choice::Discard) => {
@@ -550,25 +558,33 @@ pub fn render_quit_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut cancel = false;
     crate::window_egui::style::render_modal_backdrop(ctx, "quit_confirm", true);
     egui::Window::new("Quit Tabular?")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(400.0)
         .show(ctx, |ui| {
-            if !open_transactions.is_empty() {
-                ui.label(
-                    egui::RichText::new("Uncommitted transactions will be rolled back:")
-                        .strong()
-                        .color(crate::window_egui::style::theme_danger(ctx)),
-                );
-                for title in &open_transactions {
-                    ui.label(egui::RichText::new(format!("• {}", title)).monospace());
+            crate::window_egui::style::render_modal_header(ui, "Quit Tabular?", &mut cancel);
+            ui.add_space(8.0);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                if !open_transactions.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Uncommitted transactions will be rolled back:")
+                            .strong()
+                            .color(crate::window_egui::style::theme_danger(ctx)),
+                    );
+                    for title in &open_transactions {
+                        ui.label(egui::RichText::new(format!("• {}", title)).monospace());
+                    }
+                    ui.add_space(6.0);
                 }
-                ui.add_space(6.0);
-            }
-            if unsaved {
-                ui.label("Some tabs have unsaved changes and session restore is turned off, so they will be lost.");
-            }
+                if unsaved {
+                    ui.label("Some tabs have unsaved changes and session restore is turned off, so they will be lost.");
+                }
+            });
+
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -579,12 +595,13 @@ pub fn render_quit_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if ui.add(quit_btn).clicked() {
                         quit = true;
                     }
-                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        cancel = true;
-                    }
                 });
             });
         });
+
+    if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
 
     if quit {
         tabular.show_quit_confirm = false;

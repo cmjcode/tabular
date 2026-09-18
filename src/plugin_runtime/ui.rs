@@ -345,7 +345,8 @@ pub fn render_plugin_modal(
         return;
     }
 
-    let mut open = state.is_open;
+    crate::window_egui::style::render_modal_backdrop(ctx, "plugin_modal_backdrop", state.is_open);
+
     let screen_rect = ctx.content_rect();
     let modal_width = (screen_rect.width() * 0.85).clamp(720.0, 1100.0);
     let modal_height = (screen_rect.height() * 0.85).clamp(540.0, 800.0);
@@ -355,12 +356,16 @@ pub fn render_plugin_modal(
         egui_icons::icons::MDI_PUZZLE.codepoint
     );
 
-    egui::Window::new(window_title)
-        .open(&mut open)
+    let mut close_dialog = false;
+    egui::Window::new(&window_title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(true)
         .default_size([modal_width, modal_height])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(ui, &window_title, &mut close_dialog);
+            ui.add_space(8.0);
             render_plugin_panel(
                 ui,
                 state,
@@ -375,7 +380,9 @@ pub fn render_plugin_modal(
             );
         });
 
-    state.is_open = open;
+    if close_dialog || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.is_open = false;
+    }
 }
 
 /// Renders the catalog tab listing available plugins

@@ -996,59 +996,72 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
     };
 
     let in_progress = tabular.delete_account_receiver.is_some();
+    let mut close = false;
+
+    style::render_modal_backdrop(
+        ctx,
+        "delete_account_backdrop",
+        tabular.show_delete_account_dialog,
+    );
 
     egui::Window::new("Delete Account")
+        .title_bar(false)
+        .frame(style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(440.0)
         .show(ctx, |ui| {
             ui.set_min_width(420.0);
-            ui.add_space(4.0);
-
-            ui.label(
-                egui::RichText::new("⚠  This permanently deletes your Tabular account")
-                    .strong()
-                    .color(egui::Color32::from_rgb(220, 90, 90)),
-            );
+            style::render_modal_header(ui, "Delete Account", &mut close);
             ui.add_space(8.0);
 
-            ui.label("The following is erased from the server and cannot be recovered:");
-            ui.add_space(4.0);
-            for line in [
-                "• Synced database connections",
-                "• Saved queries and query history",
-                "• Saved HTTP requests",
-                "• Vault keys — encrypted credentials become unrecoverable",
-                "• Teams you own, including for their other members",
-            ] {
-                ui.label(egui::RichText::new(line).size(12.0));
-            }
-
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(
-                    "Your databases themselves are untouched — this only removes what Tabular \
-                     stores for your account. Local data on this device is cleared too.",
-                )
-                .size(11.0)
-                .color(ui.visuals().weak_text_color()),
-            );
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            ui.label(format!("Type {} to confirm:", account.email));
-            ui.add_space(4.0);
-            // Nonaktifkan input saat proses hapus akun sedang berjalan
-            ui.add_enabled_ui(!in_progress, |ui| {
-                style::render_text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
-                        .hint_text(account.email.clone()),
-                    f32::INFINITY,
-                    None,
+            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("⚠  This permanently deletes your Tabular account")
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 90, 90)),
                 );
+                ui.add_space(6.0);
+
+                ui.label("The following is erased from the server and cannot be recovered:");
+                ui.add_space(4.0);
+                for line in [
+                    "• Synced database connections",
+                    "• Saved queries and query history",
+                    "• Saved HTTP requests",
+                    "• Vault keys — encrypted credentials become unrecoverable",
+                    "• Teams you own, including for their other members",
+                ] {
+                    ui.label(egui::RichText::new(line).size(12.0));
+                }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Your databases themselves are untouched — this only removes what Tabular \
+                         stores for your account. Local data on this device is cleared too.",
+                    )
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
+
+            ui.add_space(8.0);
+
+            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Type {} to confirm:", account.email));
+                ui.add_space(4.0);
+                // Nonaktifkan input saat proses hapus akun sedang berjalan
+                ui.add_enabled_ui(!in_progress, |ui| {
+                    style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
+                            .hint_text(account.email.clone()),
+                        f32::INFINITY,
+                        None,
+                    );
+                });
             });
 
             let confirmed = tabular.delete_account_confirm_input.trim() == account.email;
@@ -1060,14 +1073,6 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(!in_progress, |ui| {
-                    if ui.add(style::btn_secondary("Cancel")).clicked() {
-                        tabular.show_delete_account_dialog = false;
-                        tabular.delete_account_confirm_input.clear();
-                        tabular.delete_account_error = None;
-                    }
-                });
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(confirmed && !in_progress, |ui| {
                         let label = if in_progress {
@@ -1081,9 +1086,13 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
                     });
                 });
             });
-
-            ui.add_space(4.0);
         });
+
+    if close && !in_progress {
+        tabular.show_delete_account_dialog = false;
+        tabular.delete_account_confirm_input.clear();
+        tabular.delete_account_error = None;
+    }
 }
 
 /// Fire the DELETE and let `poll_delete_account_receiver` finish the teardown.

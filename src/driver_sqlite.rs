@@ -340,29 +340,7 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
 
        match pool {
               models::enums::DatabasePool::SQLite(sqlite_pool) => {
-              let query = match table_type {
-                     "table" => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                     "view" => "SELECT name FROM sqlite_master WHERE type='view'",
-                     _ => {
-                     debug!("Unsupported table type for SQLite: {}", table_type);
-                     return None;
-                     }
-              };
-
-              let result = sqlx::query_as::<_, (String,)>(query)
-                     .fetch_all(sqlite_pool.as_ref())
-                     .await;
-
-              match result {
-                     Ok(rows) => {
-                     let items: Vec<String> = rows.into_iter().map(|(name,)| name).collect();
-                     Some(items)
-                     },
-                     Err(e) => {
-                     debug!("Error querying SQLite {} from database: {}", table_type, e);
-                     None
-                     }
-              }
+                     list_sqlite_tables(&sqlite_pool, table_type).await
               },
               _ => {
               debug!("Wrong pool type for SQLite connection");
@@ -370,4 +348,31 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
               }
        }
        })
+}
+
+/// Daftar tabel / view SQLite lewat pool yang sudah ada. Aman dipanggil dari
+/// task async (tanpa runtime baru).
+pub(crate) async fn list_sqlite_tables(
+    sqlite_pool: &SqlitePool,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    let query = match table_type {
+        "table" => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        "view" => "SELECT name FROM sqlite_master WHERE type='view'",
+        _ => {
+            debug!("Unsupported table type for SQLite: {}", table_type);
+            return None;
+        }
+    };
+
+    match sqlx::query_as::<_, (String,)>(query)
+        .fetch_all(sqlite_pool)
+        .await
+    {
+        Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
+        Err(e) => {
+            debug!("Error querying SQLite {} from database: {}", table_type, e);
+            None
+        }
+    }
 }

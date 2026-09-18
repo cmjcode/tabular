@@ -3021,76 +3021,96 @@ fn render_modals(
         let mut close_modal = false;
         let mut submit_modal = false;
 
-        egui::Window::new("🔑 Change User Password")
+        crate::window_egui::style::render_modal_backdrop(ctx, "change_password_backdrop", true);
+
+        egui::Window::new("Change User Password")
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(380.0)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Change password for user: {}@{}",
-                    form.target_user, form.target_host
-                ));
-                ui.separator();
-                ui.add_space(6.0);
+                crate::window_egui::style::render_modal_header(
+                    ui,
+                    "Change User Password",
+                    &mut close_modal,
+                );
+                ui.add_space(8.0);
 
                 if let Some(err) = &form.validation_error {
                     render_status_banner(ui, err, true);
                     ui.add_space(6.0);
                 }
 
-                egui::Grid::new("change_pass_grid")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("New Password:");
-                        ui.horizontal(|ui| {
-                            let spacing = 6.0;
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.label(format!(
+                        "Change password for user: {}@{}",
+                        form.target_user, form.target_host
+                    ));
+                    ui.add_space(8.0);
+
+                    egui::Grid::new("change_pass_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("New Password:");
+                            ui.horizontal(|ui| {
+                                let spacing = 6.0;
+                                crate::window_egui::style::render_text_field(
+                                    ui,
+                                    egui::TextEdit::singleline(&mut form.new_password)
+                                        .password(!form.show_password),
+                                    220.0,
+                                    None,
+                                );
+                                ui.add_space(spacing);
+                                let icon = if form.show_password { "👁" } else { "🔒" };
+                                if ui
+                                    .add(
+                                        crate::window_egui::style::btn_field_action(ui, icon)
+                                            .min_size(egui::vec2(32.0, 0.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    form.show_password = !form.show_password;
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Confirm Password:");
                             crate::window_egui::style::render_text_field(
                                 ui,
-                                egui::TextEdit::singleline(&mut form.new_password)
+                                egui::TextEdit::singleline(&mut form.confirm_password)
                                     .password(!form.show_password),
                                 220.0,
                                 None,
                             );
-                            ui.add_space(spacing);
-                            let icon = if form.show_password { "👁" } else { "🔒" };
-                            if ui
-                                .add(
-                                    crate::window_egui::style::btn_field_action(ui, icon)
-                                        .min_size(egui::vec2(32.0, 0.0)),
-                                )
-                                .clicked()
-                            {
-                                form.show_password = !form.show_password;
-                            }
+                            ui.end_row();
                         });
-                        ui.end_row();
-
-                        ui.label("Confirm Password:");
-                        crate::window_egui::style::render_text_field(
-                            ui,
-                            egui::TextEdit::singleline(&mut form.confirm_password)
-                                .password(!form.show_password),
-                            220.0,
-                            None,
-                        );
-                        ui.end_row();
-                    });
+                });
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save Password").clicked() {
-                        if form.new_password.is_empty() {
-                            form.validation_error = Some("Password cannot be empty".to_string());
-                        } else if form.new_password != form.confirm_password {
-                            form.validation_error = Some("Passwords do not match".to_string());
-                        } else {
-                            submit_modal = true;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let save_btn = egui::Button::new(
+                            egui::RichText::new("Save Password")
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                        if ui.add(save_btn).clicked() {
+                            if form.new_password.is_empty() {
+                                form.validation_error =
+                                    Some("Password cannot be empty".to_string());
+                            } else if form.new_password != form.confirm_password {
+                                form.validation_error = Some("Passwords do not match".to_string());
+                            } else {
+                                submit_modal = true;
+                            }
                         }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close_modal = true;
-                    }
+                    });
                 });
             });
 
@@ -3106,47 +3126,65 @@ fn render_modals(
         let mut close_drop = false;
         let mut confirm_drop = false;
 
-        egui::Window::new("⚠️ Confirm Drop User")
+        crate::window_egui::style::render_modal_backdrop(
+            ctx,
+            "drop_user_backdrop",
+            state.drop_confirm_user.is_some(),
+        );
+
+        egui::Window::new("Confirm Drop User")
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(400.0)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Are you sure you want to permanently delete user '{}'@'{}'?",
-                        target_user, target_host
-                    ))
-                    .strong(),
+                crate::window_egui::style::render_modal_header(
+                    ui,
+                    "Confirm Drop User",
+                    &mut close_drop,
                 );
-                ui.label(
-                    egui::RichText::new(
-                        "This will revoke all granted permissions and remove access.",
-                    )
-                    .weak(),
-                );
-                ui.separator();
                 ui.add_space(8.0);
 
-                let sql_preview = generate_drop_user_sql(target_user, target_host, &active_db_type);
-                ui.label(
-                    egui::RichText::new(format!("DDL: {}", sql_preview))
-                        .monospace()
-                        .size(11.0),
-                );
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Are you sure you want to permanently delete user '{}'@'{}'?",
+                            target_user, target_host
+                        ))
+                        .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "This will revoke all granted permissions and remove access.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(8.0);
+
+                    let sql_preview =
+                        generate_drop_user_sql(target_user, target_host, &active_db_type);
+                    ui.label(
+                        egui::RichText::new(format!("DDL: {}", sql_preview))
+                            .monospace()
+                            .size(11.0),
+                    );
+                });
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let del_btn = egui::Button::new(
-                        egui::RichText::new("🗑️ Permanently Delete").color(egui::Color32::WHITE),
-                    )
-                    .fill(egui::Color32::from_rgb(180, 30, 30));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let del_btn = egui::Button::new(
+                            egui::RichText::new("🗑️ Permanently Delete")
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(180, 30, 30));
 
-                    if ui.add(del_btn).clicked() {
-                        confirm_drop = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close_drop = true;
-                    }
+                        if ui.add(del_btn).clicked() {
+                            confirm_drop = true;
+                        }
+                    });
                 });
             });
 

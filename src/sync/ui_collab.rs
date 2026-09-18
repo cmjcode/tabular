@@ -12,14 +12,35 @@ pub fn render_collab_panel(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     }
 
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "collab_panel_backdrop",
+        tabular.show_collab_panel,
+    );
+
+    let mut close_dialog = false;
     egui::Window::new("☁  Collaboration")
         .id(egui::Id::new("collab_panel"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
         .resizable(true)
-        .min_width(300.0)
-        .default_width(350.0)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
+        .min_width(320.0)
+        .default_width(360.0)
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "☁  Collaboration",
+                &mut close_dialog,
+            );
+            ui.add_space(8.0);
             render_collab_content(tabular, ui);
         });
+
+    if close_dialog || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        tabular.show_collab_panel = false;
+    }
 }
 
 pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {

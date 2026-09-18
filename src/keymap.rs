@@ -366,96 +366,117 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
         }
     }
 
-    let mut open = true;
+    let mut close = false;
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "shortcuts_window_backdrop",
+        tabular.show_shortcuts_window,
+    );
+
     egui::Window::new("Keyboard Shortcuts")
-        .open(&mut open)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(true)
-        .default_width(520.0)
+        .default_width(540.0)
         .default_height(480.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Search:");
-                crate::window_egui::style::render_text_field(
-                    ui,
-                    egui::TextEdit::singleline(&mut tabular.shortcuts_filter)
-                        .hint_text("action or key"),
-                    220.0,
-                    None,
+            crate::window_egui::style::render_modal_header(ui, "Keyboard Shortcuts", &mut close);
+            ui.add_space(8.0);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Search:");
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut tabular.shortcuts_filter)
+                            .hint_text("action or key"),
+                        220.0,
+                        None,
+                    );
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Click a shortcut to record a new one (Esc cancels). Saved to keybindings.json in the data directory.",
+                    )
+                    .small()
+                    .weak(),
                 );
             });
-            ui.label(
-                egui::RichText::new(
-                    "Click a shortcut to record a new one (Esc cancels). Saved to keybindings.json in the data directory.",
-                )
-                .small()
-                .weak(),
-            );
-            ui.separator();
+
+            ui.add_space(8.0);
 
             let filter = tabular.shortcuts_filter.to_lowercase();
             let mut record = None;
             let mut reset = None;
             let mut clear = None;
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let mut current_category = "";
-                for spec in ACTIONS {
-                    let shortcuts = tabular.keymap.shortcuts(spec.action);
-                    let shortcut_text = shortcuts
-                        .iter()
-                        .map(|s| s.display())
-                        .collect::<Vec<_>>()
-                        .join("  /  ");
-                    if !filter.is_empty()
-                        && !spec.label.to_lowercase().contains(&filter)
-                        && !shortcut_text.to_lowercase().contains(&filter)
-                    {
-                        continue;
-                    }
-                    if spec.category != current_category {
-                        current_category = spec.category;
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new(spec.category).strong());
-                    }
-                    ui.horizontal(|ui| {
-                        ui.add_sized([230.0, 20.0], egui::Label::new(spec.label));
-                        let is_recording = tabular.keymap.recording == Some(spec.action);
-                        let button_text = if is_recording {
-                            "Press keys…".to_string()
-                        } else if shortcut_text.is_empty() {
-                            "Unassigned".to_string()
-                        } else {
-                            shortcut_text.clone()
-                        };
-                        let has_conflict = shortcuts
-                            .iter()
-                            .any(|s| !tabular.keymap.conflicts_with(spec.action, *s).is_empty());
-                        let mut text = egui::RichText::new(button_text).monospace();
-                        if has_conflict {
-                            text = text.color(crate::window_egui::style::theme_danger(ui.ctx()));
-                        }
-                        let response = ui.add_sized([160.0, 20.0], egui::Button::new(text));
-                        let response = if has_conflict {
-                            response.on_hover_text("This shortcut is also bound to another action")
-                        } else {
-                            response
-                        };
-                        if response.clicked() {
-                            record = Some(spec.action);
-                        }
-                        if shortcuts != default_shortcuts(spec).as_slice()
-                            && ui.small_button("Reset").clicked()
-                        {
-                            reset = Some(spec.action);
-                        }
-                        if !shortcuts.is_empty()
-                            && ui.small_button("✕").on_hover_text("Remove shortcut").clicked()
-                        {
-                            clear = Some(spec.action);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                let avail_h = (ui.available_height() - 16.0).max(200.0);
+                egui::ScrollArea::vertical()
+                    .max_height(avail_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut current_category = "";
+                        for spec in ACTIONS {
+                            let shortcuts = tabular.keymap.shortcuts(spec.action);
+                            let shortcut_text = shortcuts
+                                .iter()
+                                .map(|s| s.display())
+                                .collect::<Vec<_>>()
+                                .join("  /  ");
+                            if !filter.is_empty()
+                                && !spec.label.to_lowercase().contains(&filter)
+                                && !shortcut_text.to_lowercase().contains(&filter)
+                            {
+                                continue;
+                            }
+                            if spec.category != current_category {
+                                current_category = spec.category;
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new(spec.category).strong());
+                            }
+                            ui.horizontal(|ui| {
+                                ui.add_sized([230.0, 20.0], egui::Label::new(spec.label));
+                                let is_recording = tabular.keymap.recording == Some(spec.action);
+                                let button_text = if is_recording {
+                                    "Press keys…".to_string()
+                                } else if shortcut_text.is_empty() {
+                                    "Unassigned".to_string()
+                                } else {
+                                    shortcut_text.clone()
+                                };
+                                let has_conflict = shortcuts
+                                    .iter()
+                                    .any(|s| !tabular.keymap.conflicts_with(spec.action, *s).is_empty());
+                                let mut text = egui::RichText::new(button_text).monospace();
+                                if has_conflict {
+                                    text = text.color(crate::window_egui::style::theme_danger(ui.ctx()));
+                                }
+                                let response = ui.add_sized([160.0, 20.0], egui::Button::new(text));
+                                let response = if has_conflict {
+                                    response.on_hover_text("This shortcut is also bound to another action")
+                                } else {
+                                    response
+                                };
+                                if response.clicked() {
+                                    record = Some(spec.action);
+                                }
+                                if shortcuts != default_shortcuts(spec).as_slice()
+                                    && ui.small_button("Reset").clicked()
+                                {
+                                    reset = Some(spec.action);
+                                }
+                                if !shortcuts.is_empty()
+                                    && ui.small_button("✕").on_hover_text("Remove shortcut").clicked()
+                                {
+                                    clear = Some(spec.action);
+                                }
+                            });
                         }
                     });
-                }
             });
 
             if let Some(action) = record {
@@ -474,7 +495,7 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                 tabular.toasts.error(format!("Could not save keybindings: {}", e));
             }
         });
-    if !open {
+    if close {
         tabular.show_shortcuts_window = false;
         tabular.keymap.recording = None;
     }
