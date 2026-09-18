@@ -666,6 +666,8 @@ impl super::Tabular {
             show_collab_panel: false,
             profile_display_name_input,
             profile_avatar_url_input,
+            show_avatar_change_menu: false,
+            show_avatar_url_input: false,
             profile_username_input,
             profile_phone_input,
             profile_update_receiver: None,
