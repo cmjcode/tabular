@@ -153,6 +153,7 @@ impl super::Tabular {
     ) {
         use crate::diagram_view::DiagramAction;
         match action {
+            DiagramAction::Save => self.save_diagram_with_defaults(conn_id, db_name, state),
             DiagramAction::Info(msg) => self.toasts.success(msg),
             DiagramAction::Error(msg) => self.toasts.error(msg),
             DiagramAction::SaveToVault => self.save_diagram_to_vault(conn_id, db_name, state),
@@ -160,6 +161,30 @@ impl super::Tabular {
             DiagramAction::LoadFromDatabase => {
                 self.load_diagram_from_db_and_apply(conn_id, db_name)
             }
+        }
+    }
+
+    /// Simpan diagram ke disk lokal dan secara default otomatis ke vault Obsidian (bila diaktifkan).
+    pub fn save_diagram_with_defaults(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+    ) {
+        let Some(cid) = conn_id else {
+            self.toasts.error("No active connection for diagram save");
+            return;
+        };
+        let db = db_name.unwrap_or_else(|| "default".to_string());
+
+        // 1. Simpan layout ke cache JSON lokal
+        self.save_diagram(cid, &db, state);
+
+        // 2. Default: simpan juga ke Obsidian vault jika vault aktif
+        if self.obsidian_root().is_some() {
+            self.save_diagram_to_vault(Some(cid), Some(db), state);
+        } else {
+            self.toasts.success("Diagram layout saved");
         }
     }
 
