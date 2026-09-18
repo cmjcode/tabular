@@ -594,6 +594,10 @@ pub struct Tabular {
     pub ai_live_edit_parser: Option<crate::agent::live_edit::LiveEditParser>,
     pub ai_live_edit_active: Option<models::structs::ActiveLiveEdit>,
     pub ai_markdown_cache: egui_commonmark::CommonMarkCache,
+    /// Badge "N tables" di header panel AI (lihat editor::ai_schema_badge)
+    pub ai_schema_badge: Option<models::structs::AiSchemaBadge>,
+    /// Konfirmasi "New chat": klik kedua sebelum waktu ini menghapus percakapan
+    pub ai_confirm_clear_until: Option<std::time::Instant>,
     // Persisted AI settings (mirrored from prefs for fast read during rendering)
     pub ai_api_key: String,
     pub ai_model: String,

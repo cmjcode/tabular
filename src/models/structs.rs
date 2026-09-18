@@ -785,6 +785,18 @@ pub struct AiChatMessage {
     pub usage: Option<String>,
 }
 
+/// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
+/// jadi hanya dihitung ulang saat koneksi/database berubah atau cache kedaluwarsa.
+#[derive(Clone, Debug)]
+pub struct AiSchemaBadge {
+    /// (connection id, nama database tab aktif)
+    pub key: (Option<i64>, String),
+    pub table_count: usize,
+    /// Potongan konteks skema untuk tooltip.
+    pub preview: String,
+    pub computed_at: std::time::Instant,
+}
+
 /// Blok live edit yang sedang di-stream ke sebuah tab.
 #[derive(Clone, Debug)]
 pub struct ActiveLiveEdit {

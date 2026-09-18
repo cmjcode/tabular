@@ -1681,7 +1681,7 @@ fn xml_tag_end(input: &str) -> usize {
 /// JSON syntax highlighter.
 /// Colors: cyan = keys, green = string values, orange = numbers,
 ///         purple = true/false/null, gray = punctuation.
-fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
@@ -2145,7 +2145,7 @@ fn is_graphql_keyword(word: &str) -> bool {
 /// Colors: green = strings, muted-green = comments, orange = numbers,
 ///         purple = keywords / curl flags, yellow = Capitalized identifiers,
 ///         cyan = $variables (PHP), gray = punctuation.
-fn highlight_code(
+pub(crate) fn highlight_code(
     text: &str,
     lang: &CodeLang,
     dark: bool,

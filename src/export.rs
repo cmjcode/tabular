@@ -2,6 +2,7 @@ use log::debug;
 use std::path::Path;
 
 use crate::models::enums::DatabaseType;
+use crate::models::structs::{AiChatMessage, AiChatRole};
 use crate::rfd;
 
 pub fn export_to_csv(
@@ -192,6 +193,103 @@ pub fn build_markdown(all_table_data: &[Vec<String>], headers: &[String]) -> Str
             .map(|i| escape(row.get(i).map(String::as_str).unwrap_or("")))
             .collect();
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
+    }
+    out
+}
+
+/// Simpan transkrip chat AI ke file `.md` lewat dialog simpan.
+/// Mengembalikan `Ok(None)` bila dialog dibatalkan.
+pub fn export_ai_chat_to_markdown(
+    chat: &[AiChatMessage],
+    meta: &[(&str, String)],
+) -> Result<Option<std::path::PathBuf>, String> {
+    let file_name = format!(
+        "tabular-chat-{}.md",
+        chrono::Local::now().format("%Y%m%d-%H%M")
+    );
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("Markdown files", &["md"])
+        .set_file_name(file_name)
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&path, build_ai_chat_markdown(chat, meta))
+        .map_err(|e| format!("Failed to export chat: {e}"))?;
+    debug!("✓ Exported AI chat ({} messages) to {:?}", chat.len(), path);
+    Ok(Some(path))
+}
+
+/// Susun transkrip chat AI menjadi dokumen Markdown. Teks jawaban ditulis
+/// mentah (sesuai keluaran model); `meta` ditulis sebagai daftar di bawah judul.
+pub fn build_ai_chat_markdown(chat: &[AiChatMessage], meta: &[(&str, String)]) -> String {
+    let mut out = String::from("# Tabular AI Chat\n");
+    if !meta.is_empty() {
+        out.push('\n');
+        for (label, value) in meta {
+            out.push_str(&format!("- {label}: {value}\n"));
+        }
+    }
+
+    for msg in chat {
+        let heading = match msg.role {
+            AiChatRole::User => "You",
+            AiChatRole::Assistant => "Assistant",
+        };
+        out.push_str(&format!("\n## {heading}\n\n"));
+
+        let body = msg.text.trim_end();
+        if !body.is_empty() {
+            out.push_str(body);
+            out.push('\n');
+            // Jawaban yang terhenti di tengah blok kode: tutup fence agar
+            // bagian berikutnya tidak ikut terbaca sebagai kode.
+            let fences = body
+                .lines()
+                .filter(|l| l.trim_start().starts_with("```"))
+                .count();
+            if fences % 2 == 1 {
+                out.push_str("```\n");
+            }
+        }
+
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(err) = &msg.error {
+            notes.push(format!("> **Error:** {err}"));
+        }
+        if !msg.tool_activity.is_empty() {
+            let mut tools: Vec<&str> = Vec::new();
+            for t in &msg.tool_activity {
+                let t = t.trim_start_matches("mcp__tabular__");
+                if !tools.contains(&t) {
+                    tools.push(t);
+                }
+            }
+            notes.push(format!("> Tools: {}", tools.join(", ")));
+        }
+        for rec in &msg.edits {
+            let status = if rec.reverted {
+                "reverted"
+            } else if rec.applied {
+                "applied"
+            } else {
+                "not applied"
+            };
+            notes.push(format!(
+                "> Edit: {} · {} · {status}",
+                rec.tab_title,
+                rec.mode.label()
+            ));
+        }
+        if let Some(usage) = &msg.usage {
+            notes.push(format!("> Usage: {usage}"));
+        }
+        if !notes.is_empty() {
+            out.push('\n');
+            // Baris "> " kosong memisahkan tiap catatan dalam satu blockquote.
+            out.push_str(&notes.join("\n>\n"));
+            out.push('\n');
+        }
     }
     out
 }
@@ -457,6 +555,54 @@ pub fn build_sql_dump(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat_msg(role: AiChatRole, text: &str) -> AiChatMessage {
+        AiChatMessage {
+            role,
+            text: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ai_chat_markdown_keeps_order_and_metadata() {
+        let mut answer = chat_msg(AiChatRole::Assistant, "Use an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```");
+        answer.tool_activity = vec![
+            "mcp__tabular__run_query".to_string(),
+            "view_file".to_string(),
+            "mcp__tabular__run_query".to_string(),
+        ];
+        answer.usage = Some("1.2k tokens".to_string());
+        let chat = vec![chat_msg(AiChatRole::User, "Why is it slow?"), answer];
+
+        let md = build_ai_chat_markdown(&chat, &[("Backend", "agy".to_string())]);
+
+        assert!(md.starts_with("# Tabular AI Chat\n"));
+        assert!(md.contains("- Backend: agy\n"));
+        let you = md.find("## You").expect("user heading");
+        let asst = md.find("## Assistant").expect("assistant heading");
+        assert!(you < asst);
+        // Isi code fence ditulis apa adanya (tidak di-escape).
+        assert!(md.contains("```sql\nCREATE INDEX i ON t (a);\n```"));
+        // Nama tool tanpa prefiks MCP dan tanpa duplikat.
+        assert!(md.contains("> Tools: run_query, view_file\n"));
+        assert!(md.contains("> Usage: 1.2k tokens\n"));
+    }
+
+    #[test]
+    fn ai_chat_markdown_closes_unfinished_fence_and_reports_errors() {
+        let mut answer = chat_msg(AiChatRole::Assistant, "```sql\nSELECT 1");
+        answer.error = Some("Stopped by user.".to_string());
+        let md = build_ai_chat_markdown(&[answer], &[]);
+        assert!(md.contains("```sql\nSELECT 1\n```\n"));
+        assert!(md.contains("> **Error:** Stopped by user.\n"));
+    }
+
+    #[test]
+    fn ai_chat_markdown_empty_chat_has_only_header() {
+        let md = build_ai_chat_markdown(&[], &[]);
+        assert_eq!(md.trim_end(), "# Tabular AI Chat");
+    }
 
     #[test]
     fn sql_inserts_escape_and_chunk() {

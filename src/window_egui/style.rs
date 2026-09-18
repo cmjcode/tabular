@@ -521,6 +521,111 @@ pub fn theme_alert_frame(ctx: &egui::Context, is_danger: bool) -> egui::Frame {
         .inner_margin(egui::Margin::same(8))
 }
 
+// ─── Palet panel AI Assistant ───────────────────────────────────────────────
+
+/// Latar panel AI Assistant (dipakai juga oleh frame `Panel::right`).
+pub fn ai_panel_bg(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(24, 26, 32)
+    } else {
+        egui::Color32::from_rgb(247, 248, 250)
+    }
+}
+
+/// Permukaan terangkat di panel AI: composer, kartu edit, blok status.
+pub fn ai_surface(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(33, 35, 43)
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+/// Garis tepi halus untuk elemen di panel AI.
+pub fn ai_border(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(52, 56, 66)
+    } else {
+        egui::Color32::from_rgb(218, 222, 230)
+    }
+}
+
+/// Latar gelembung pesan pengguna.
+pub fn ai_user_bubble(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(45, 49, 62)
+    } else {
+        egui::Color32::from_rgb(232, 236, 246)
+    }
+}
+
+/// Chip kecil (konteks tab, jumlah tabel, nama tool). Pakai `Sense::hover()`
+/// untuk chip informasi dan `Sense::click()` untuk chip yang bisa diklik,
+/// sehingga keduanya punya tinggi dan bentuk yang sama.
+pub fn ai_chip(ui: &mut egui::Ui, text: egui::RichText, sense: egui::Sense) -> egui::Response {
+    let ctx = ui.ctx().clone();
+    ui.add(
+        egui::Button::new(text.size(11.0))
+            .fill(ai_surface(&ctx))
+            .stroke(egui::Stroke::new(1.0, ai_border(&ctx)))
+            .corner_radius(10.0)
+            .min_size(egui::vec2(0.0, 20.0))
+            .sense(sense),
+    )
+}
+
+/// Warna judul markdown di jawaban AI per level (1 = paling besar).
+pub fn ai_heading_color(ctx: &egui::Context, level: u8) -> egui::Color32 {
+    let dark = ctx.global_style().visuals.dark_mode;
+    let (d, l) = match level {
+        1 => ((96, 165, 250), (37, 99, 235)),    // biru
+        2 => ((129, 140, 248), (79, 70, 229)),   // indigo
+        3 => ((192, 132, 252), (147, 51, 234)),  // ungu
+        _ => ((45, 212, 191), (13, 148, 136)),   // teal
+    };
+    let (r, g, b) = if dark { d } else { l };
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// Latar isi code block di jawaban AI (sedikit lebih gelap dari panel).
+pub fn ai_code_bg(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(18, 20, 26)
+    } else {
+        egui::Color32::from_rgb(246, 248, 250)
+    }
+}
+
+/// Latar bilah judul code block (label bahasa + tombol Copy).
+pub fn ai_code_header_bg(ctx: &egui::Context) -> egui::Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        egui::Color32::from_rgb(30, 33, 42)
+    } else {
+        egui::Color32::from_rgb(234, 237, 243)
+    }
+}
+
+/// Frame pemberitahuan berwarna (peringatan/error) dengan latar tipis dari `color`.
+pub fn ai_notice_frame(color: egui::Color32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.12))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.55)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+}
+
+/// Tombol ikon tanpa bingkai (bingkai hanya muncul saat hover), ukuran seragam.
+pub fn ai_icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str) -> egui::Response {
+    let muted = theme_muted_text(ui.ctx());
+    ui.add(
+        egui::Button::new(egui::RichText::new(icon).size(15.0).color(muted))
+            .frame_when_inactive(false)
+            .corner_radius(5.0)
+            .min_size(egui::vec2(26.0, 24.0)),
+    )
+    .on_hover_text(tooltip)
+}
+
 pub fn render_badge(
     ui: &mut egui::Ui,
     text: &str,
