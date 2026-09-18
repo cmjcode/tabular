@@ -168,7 +168,9 @@ pub(crate) fn load_postgresql_structure(
 
     let mut dba_children = Vec::new();
 
-    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL) {
+    for (name, node_type, query) in
+        crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL)
+    {
         let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
         dba_node.connection_id = Some(connection_id);
         dba_node.is_loaded = false;
@@ -177,19 +179,21 @@ pub(crate) fn load_postgresql_structure(
     }
 
     // Render Custom Views
-    log::debug!("Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+    log::debug!(
+        "Rendering custom views for connection {}: found {}",
+        connection_id,
+        connection.custom_views.len()
+    );
     for view in connection.custom_views.iter() {
         log::debug!("Adding custom view node: {}", view.name);
-        let mut view_node = models::structs::TreeNode::new(
-            view.name.clone(),
-            models::enums::NodeType::CustomView,
-        );
-            view_node.connection_id = Some(connection_id);
-            // Store index in generic_id or similar if needed, or just use name for query lookup
-            view_node.query = Some(view.query.clone()); 
-            view_node.is_loaded = true;
-            dba_children.push(view_node);
-        }
+        let mut view_node =
+            models::structs::TreeNode::new(view.name.clone(), models::enums::NodeType::CustomView);
+        view_node.connection_id = Some(connection_id);
+        // Store index in generic_id or similar if needed, or just use name for query lookup
+        view_node.query = Some(view.query.clone());
+        view_node.is_loaded = true;
+        dba_children.push(view_node);
+    }
 
     dba_folder.children = dba_children;
     main_children.push(dba_folder);
@@ -224,11 +228,17 @@ pub(crate) async fn fetch_postgres_foreign_keys(
     let mut keys = Vec::new();
     for row in rows {
         keys.push(models::structs::ForeignKey {
-            constraint_name:        row.try_get::<String, _>("constraint_name").unwrap_or_default(),
-            table_name:             row.try_get::<String, _>("table_name").unwrap_or_default(),
-            column_name:            row.try_get::<String, _>("column_name").unwrap_or_default(),
-            referenced_table_name:  row.try_get::<String, _>("referenced_table_name").unwrap_or_default(),
-            referenced_column_name: row.try_get::<String, _>("referenced_column_name").unwrap_or_default(),
+            constraint_name: row
+                .try_get::<String, _>("constraint_name")
+                .unwrap_or_default(),
+            table_name: row.try_get::<String, _>("table_name").unwrap_or_default(),
+            column_name: row.try_get::<String, _>("column_name").unwrap_or_default(),
+            referenced_table_name: row
+                .try_get::<String, _>("referenced_table_name")
+                .unwrap_or_default(),
+            referenced_column_name: row
+                .try_get::<String, _>("referenced_column_name")
+                .unwrap_or_default(),
         });
     }
     Ok(keys)
@@ -264,12 +274,14 @@ pub(crate) async fn fetch_postgres_columns(
         std::collections::HashMap::new();
     for row in rows {
         let tbl: String = row.try_get("table_name").unwrap_or_default();
-        map.entry(tbl).or_default().push(models::structs::DiagramColumn {
-            name: row.try_get("column_name").unwrap_or_default(),
-            type_name: row.try_get("type_name").unwrap_or_default(),
-            nullable: row.try_get("nullable").unwrap_or(true),
-            is_pk: row.try_get("is_pk").unwrap_or(false),
-        });
+        map.entry(tbl)
+            .or_default()
+            .push(models::structs::DiagramColumn {
+                name: row.try_get("column_name").unwrap_or_default(),
+                type_name: row.try_get("type_name").unwrap_or_default(),
+                nullable: row.try_get("nullable").unwrap_or(true),
+                is_pk: row.try_get("is_pk").unwrap_or(false),
+            });
     }
     Ok(map)
 }
@@ -331,7 +343,10 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     use sqlx::{Column, TypeInfo, ValueRef};
 
     fn show<T: ToString>(v: Result<Option<T>, sqlx::Error>) -> Option<String> {
-        v.ok().map(|o| o.map(|x| x.to_string()).unwrap_or_else(|| "NULL".to_string()))
+        v.ok().map(|o| {
+            o.map(|x| x.to_string())
+                .unwrap_or_else(|| "NULL".to_string())
+        })
     }
     fn show_array<T: ToString>(v: Result<Option<Vec<Option<T>>>, sqlx::Error>) -> Option<String> {
         v.ok().map(|o| match o {
@@ -340,7 +355,10 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
                 "{{{}}}",
                 items
                     .iter()
-                    .map(|i| i.as_ref().map(|x| x.to_string()).unwrap_or_else(|| "NULL".to_string()))
+                    .map(|i| i
+                        .as_ref()
+                        .map(|x| x.to_string())
+                        .unwrap_or_else(|| "NULL".to_string()))
                     .collect::<Vec<_>>()
                     .join(",")
             ),
@@ -359,7 +377,10 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
         "INT2" | "SMALLINT" | "SMALLSERIAL" => show(row.try_get::<Option<i16>, _>(idx)),
         "INT4" | "INT" | "SERIAL" => show(row.try_get::<Option<i32>, _>(idx)),
         "INT8" | "BIGINT" | "BIGSERIAL" => show(row.try_get::<Option<i64>, _>(idx)),
-        "OID" => show(row.try_get::<Option<sqlx::postgres::types::Oid>, _>(idx).map(|o| o.map(|v| v.0))),
+        "OID" => show(
+            row.try_get::<Option<sqlx::postgres::types::Oid>, _>(idx)
+                .map(|o| o.map(|v| v.0)),
+        ),
         "FLOAT4" | "REAL" => show(row.try_get::<Option<f32>, _>(idx)),
         "FLOAT8" | "DOUBLE PRECISION" => show(row.try_get::<Option<f64>, _>(idx)),
         "NUMERIC" => show(row.try_get::<Option<rust_decimal::Decimal>, _>(idx)),
@@ -368,15 +389,25 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
         "DATE" => show(row.try_get::<Option<chrono::NaiveDate>, _>(idx)),
         "TIME" => show(row.try_get::<Option<chrono::NaiveTime>, _>(idx)),
         "JSON" | "JSONB" => show(row.try_get::<Option<sqlx::types::JsonValue>, _>(idx)),
-        "BYTEA" => row.try_get::<Option<Vec<u8>>, _>(idx).ok().map(|o| match o {
-            None => "NULL".to_string(),
-            Some(b) => format!("\\x{}", hex::encode(b)),
-        }),
+        "BYTEA" => row
+            .try_get::<Option<Vec<u8>>, _>(idx)
+            .ok()
+            .map(|o| match o {
+                None => "NULL".to_string(),
+                Some(b) => format!("\\x{}", hex::encode(b)),
+            }),
         "UUID" => row.try_get_raw(idx).ok().and_then(|raw| {
             let bytes = raw.as_bytes().ok()?;
             (bytes.len() == 16).then(|| {
                 let h = hex::encode(bytes);
-                format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+                format!(
+                    "{}-{}-{}-{}-{}",
+                    &h[0..8],
+                    &h[8..12],
+                    &h[12..16],
+                    &h[16..20],
+                    &h[20..32]
+                )
             })
         }),
         "INT2[]" => show_array(row.try_get::<Option<Vec<Option<i16>>>, _>(idx)),
@@ -399,7 +430,11 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     {
         return s;
     }
-    match row.try_get_raw(idx).ok().and_then(|raw| raw.as_bytes().ok()) {
+    match row
+        .try_get_raw(idx)
+        .ok()
+        .and_then(|raw| raw.as_bytes().ok())
+    {
         Some(bytes) => match std::str::from_utf8(bytes) {
             Ok(s) if s.chars().all(|c| !c.is_control() || c.is_whitespace()) => s.to_string(),
             _ => format!("\\x{}", hex::encode(bytes)),
@@ -414,6 +449,10 @@ pub(crate) fn convert_postgres_rows_to_table_data(
     rows: Vec<sqlx::postgres::PgRow>,
 ) -> Vec<Vec<String>> {
     rows.iter()
-        .map(|row| (0..row.len()).map(|idx| pg_value_to_string(row, idx)).collect())
+        .map(|row| {
+            (0..row.len())
+                .map(|idx| pg_value_to_string(row, idx))
+                .collect()
+        })
         .collect()
 }

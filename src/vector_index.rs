@@ -83,10 +83,50 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// Kata yang lazim jadi nama tabel (order, group, data, count, ...) sengaja
 /// tidak dimasukkan.
 const STOPWORDS: &[&str] = &[
-    "select", "from", "where", "and", "or", "not", "the", "a", "an", "of", "to", "in", "on",
-    "by", "as", "is", "for", "with", "all", "me", "show", "get", "find", "give", "what",
-    "which", "how", "many", "query", "table", "tables", "yang", "dan", "di", "ke", "dari",
-    "untuk", "semua", "tampilkan", "berapa", "join", "inner", "outer", "into",
+    "select",
+    "from",
+    "where",
+    "and",
+    "or",
+    "not",
+    "the",
+    "a",
+    "an",
+    "of",
+    "to",
+    "in",
+    "on",
+    "by",
+    "as",
+    "is",
+    "for",
+    "with",
+    "all",
+    "me",
+    "show",
+    "get",
+    "find",
+    "give",
+    "what",
+    "which",
+    "how",
+    "many",
+    "query",
+    "table",
+    "tables",
+    "yang",
+    "dan",
+    "di",
+    "ke",
+    "dari",
+    "untuk",
+    "semua",
+    "tampilkan",
+    "berapa",
+    "join",
+    "inner",
+    "outer",
+    "into",
 ];
 
 /// Pecah teks jadi token identifier: pisah non-alfanumerik, snake_case, dan
@@ -124,9 +164,16 @@ fn singularize(token: &str) -> String {
     let n = token.chars().count();
     if n > 4 && token.ends_with("ies") {
         format!("{}y", &token[..token.len() - 3])
-    } else if n > 4 && ["sses", "xes", "ches", "shes"].iter().any(|s| token.ends_with(s)) {
+    } else if n > 4
+        && ["sses", "xes", "ches", "shes"]
+            .iter()
+            .any(|s| token.ends_with(s))
+    {
         token[..token.len() - 2].to_string()
-    } else if n > 3 && token.ends_with('s') && !["ss", "us", "is"].iter().any(|s| token.ends_with(s)) {
+    } else if n > 3
+        && token.ends_with('s')
+        && !["ss", "us", "is"].iter().any(|s| token.ends_with(s))
+    {
         token[..token.len() - 1].to_string()
     } else {
         token.to_string()
@@ -244,7 +291,10 @@ pub async fn sync_schema_embeddings(
 
     let mut columns: HashMap<String, Vec<String>> = HashMap::new();
     for (table, column) in column_rows {
-        columns.entry(table.to_lowercase()).or_default().push(column);
+        columns
+            .entry(table.to_lowercase())
+            .or_default()
+            .push(column);
     }
 
     let existing: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
@@ -262,7 +312,10 @@ pub async fn sync_schema_embeddings(
     let mut current: HashSet<String> = HashSet::new();
 
     for (table,) in tables {
-        let cols = columns.get(&table.to_lowercase()).cloned().unwrap_or_default();
+        let cols = columns
+            .get(&table.to_lowercase())
+            .cloned()
+            .unwrap_or_default();
         let doc = table_document(&table, &cols);
         let hash = content_hash(&doc);
         current.insert(table.clone());
@@ -305,10 +358,11 @@ pub async fn sync_schema_embeddings(
 
 /// Sinkronkan embedding untuk semua pasangan koneksi/database di `table_cache`.
 pub async fn sync_all_schema_embeddings(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
-    let databases: Vec<(i64, String)> =
-        sqlx::query_as("SELECT DISTINCT connection_id, database_name FROM table_cache WHERE table_type = 'table'")
-            .fetch_all(pool)
-            .await?;
+    let databases: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT connection_id, database_name FROM table_cache WHERE table_type = 'table'",
+    )
+    .fetch_all(pool)
+    .await?;
     let mut written = 0;
     for (connection_id, database_name) in databases {
         written += sync_schema_embeddings(pool, connection_id, &database_name).await?;
@@ -343,7 +397,10 @@ pub async fn search_tables(
     .bind(limit as i64)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|(c, db, t, d)| (c, db, t, d as f32)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(c, db, t, d)| (c, db, t, d as f32))
+        .collect())
 }
 
 /// Urutkan tabel berdasarkan kemiripan dengan `query` (paling relevan dulu).
@@ -412,9 +469,11 @@ pub async fn sync_history_embeddings(pool: &SqlitePool) -> Result<usize, sqlx::E
         .await?;
         written += 1;
     }
-    sqlx::query("DELETE FROM history_embedding WHERE history_id NOT IN (SELECT id FROM query_history)")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM history_embedding WHERE history_id NOT IN (SELECT id FROM query_history)",
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(written)
 }
@@ -695,7 +754,10 @@ mod tests {
             tokenize("SELECT orderItems FROM customer_addresses"),
             vec!["order", "item", "customer", "address"]
         );
-        assert_eq!(tokenize("categories boxes status"), vec!["category", "box", "status"]);
+        assert_eq!(
+            tokenize("categories boxes status"),
+            vec!["category", "box", "status"]
+        );
     }
 
     #[test]
@@ -723,36 +785,64 @@ mod tests {
     async fn rank_tables_prefers_relevant_schema() {
         let pool = test_pool().await;
         add_table(&pool, "customers", &["id", "full_name", "email", "phone"]).await;
-        add_table(&pool, "invoices", &["id", "customer_id", "total_amount", "due_date"]).await;
-        add_table(&pool, "warehouse_stock", &["sku", "quantity", "bin_location"]).await;
+        add_table(
+            &pool,
+            "invoices",
+            &["id", "customer_id", "total_amount", "due_date"],
+        )
+        .await;
+        add_table(
+            &pool,
+            "warehouse_stock",
+            &["sku", "quantity", "bin_location"],
+        )
+        .await;
 
         assert_eq!(sync_schema_embeddings(&pool, 1, "shop").await.unwrap(), 3);
         // Tanpa perubahan, sinkronisasi kedua tidak menulis apa pun.
         assert_eq!(sync_schema_embeddings(&pool, 1, "shop").await.unwrap(), 0);
 
-        let ranked = rank_tables(&pool, 1, "shop", "show customer emails", 3).await.unwrap();
+        let ranked = rank_tables(&pool, 1, "shop", "show customer emails", 3)
+            .await
+            .unwrap();
         assert_eq!(ranked[0].0, "customers");
 
-        let ranked = rank_tables(&pool, 1, "shop", "stock quantity per bin", 3).await.unwrap();
+        let ranked = rank_tables(&pool, 1, "shop", "stock quantity per bin", 3)
+            .await
+            .unwrap();
         assert_eq!(ranked[0].0, "warehouse_stock");
 
         // Koneksi lain tidak ikut.
-        assert!(rank_tables(&pool, 2, "shop", "customer", 3).await.unwrap().is_empty());
+        assert!(
+            rank_tables(&pool, 2, "shop", "customer", 3)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn search_tables_matches_columns_across_connections() {
         let pool = test_pool().await;
         add_table(&pool, "customers", &["id", "full_name", "email", "phone"]).await;
-        add_table(&pool, "warehouse_stock", &["sku", "quantity", "bin_location"]).await;
+        add_table(
+            &pool,
+            "warehouse_stock",
+            &["sku", "quantity", "bin_location"],
+        )
+        .await;
         assert_eq!(sync_all_schema_embeddings(&pool).await.unwrap(), 2);
 
-        let hits = search_tables(&pool, "customer email", 10, TABLE_MAX_DISTANCE).await.unwrap();
+        let hits = search_tables(&pool, "customer email", 10, TABLE_MAX_DISTANCE)
+            .await
+            .unwrap();
         let names: Vec<&str> = hits.iter().map(|h| h.2.as_str()).collect();
         assert_eq!(names, vec!["customers"]);
 
         // Cocok lewat nama kolom saja.
-        let hits = search_tables(&pool, "bin location", 10, TABLE_MAX_DISTANCE).await.unwrap();
+        let hits = search_tables(&pool, "bin location", 10, TABLE_MAX_DISTANCE)
+            .await
+            .unwrap();
         assert_eq!(hits.first().map(|h| h.2.as_str()), Some("warehouse_stock"));
     }
 
@@ -769,7 +859,9 @@ mod tests {
             .unwrap();
         sync_schema_embeddings(&pool, 1, "shop").await.unwrap();
 
-        let ranked = rank_tables(&pool, 1, "shop", "legacy logs message", 10).await.unwrap();
+        let ranked = rank_tables(&pool, 1, "shop", "legacy logs message", 10)
+            .await
+            .unwrap();
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].0, "customers");
     }
@@ -796,7 +888,10 @@ mod tests {
         assert!(!hits.is_empty());
         assert!(hits[0].0.contains("invoices"));
 
-        sqlx::query("DELETE FROM query_history").execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM query_history")
+            .execute(&pool)
+            .await
+            .unwrap();
         sync_history_embeddings(&pool).await.unwrap();
         let hits = search_history(&pool, "invoice", 5, 2.0).await.unwrap();
         assert!(hits.is_empty());
@@ -812,7 +907,10 @@ mod tests {
             "db/Transactions.md",
             "---\naliases: [trx_h]\ntags: [sales]\n---\n# Status codes\nIn trx_h, status 3 means the transaction was voided.\n\n# Owner\nMaintained by the finance team.",
         );
-        vault.write("Recipes/Rendang.md", "Slow cooked beef with coconut milk and chili paste.");
+        vault.write(
+            "Recipes/Rendang.md",
+            "Slow cooked beef with coconut milk and chili paste.",
+        );
 
         let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
         assert_eq!((stats.notes, stats.chunks, stats.updated), (2, 3, 2));
@@ -820,22 +918,38 @@ mod tests {
         let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
         assert_eq!((stats.notes, stats.chunks, stats.updated), (2, 3, 0));
 
-        let hits = search_notes(&pool, &vault.0, "total voided transactions this month", 3, NOTE_MAX_DISTANCE)
-            .await
-            .unwrap();
-        assert_eq!(hits.first().map(|h| h.rel_path.as_str()), Some("db/Transactions.md"));
+        let hits = search_notes(
+            &pool,
+            &vault.0,
+            "total voided transactions this month",
+            3,
+            NOTE_MAX_DISTANCE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.first().map(|h| h.rel_path.as_str()),
+            Some("db/Transactions.md")
+        );
         assert_eq!(hits[0].heading, "Status codes");
         assert!(hits.iter().all(|h| h.rel_path != "Recipes/Rendang.md"));
         // Alias di frontmatter ikut terindeks.
-        let hits = search_notes(&pool, &vault.0, "trx_h", 1, NOTE_MAX_DISTANCE).await.unwrap();
+        let hits = search_notes(&pool, &vault.0, "trx_h", 1, NOTE_MAX_DISTANCE)
+            .await
+            .unwrap();
         assert_eq!(hits[0].rel_path, "db/Transactions.md");
 
         // Isi berubah (ukuran beda) -> diindeks ulang; file terhapus -> hilang dari indeks.
-        vault.write("db/Transactions.md", "# Status codes\nStatus 9 means refunded to the customer wallet.");
+        vault.write(
+            "db/Transactions.md",
+            "# Status codes\nStatus 9 means refunded to the customer wallet.",
+        );
         std::fs::remove_file(vault.0.join("Recipes/Rendang.md")).unwrap();
         let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
         assert_eq!((stats.notes, stats.chunks, stats.updated), (1, 1, 1));
-        let hits = search_notes(&pool, &vault.0, "refunded wallet", 3, NOTE_MAX_DISTANCE).await.unwrap();
+        let hits = search_notes(&pool, &vault.0, "refunded wallet", 3, NOTE_MAX_DISTANCE)
+            .await
+            .unwrap();
         assert!(hits[0].text.contains("Status 9"));
         assert_eq!(count_notes(&pool, &vault.0).await.unwrap(), (1, 1));
 
@@ -844,6 +958,10 @@ mod tests {
         other.write("a.md", "alpha note");
         sync_note_embeddings(&pool, &other.0).await.unwrap();
         assert_eq!(count_notes(&pool, &vault.0).await.unwrap(), (0, 0));
-        assert!(sync_note_embeddings(&pool, &vault.0.join("missing")).await.is_err());
+        assert!(
+            sync_note_embeddings(&pool, &vault.0.join("missing"))
+                .await
+                .is_err()
+        );
     }
 }

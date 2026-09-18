@@ -190,22 +190,24 @@ impl Tabular {
                                     self.structure_columns = detail;
                                 } else {
                                     for (name, dtype) in cols {
-                                        self.structure_columns
-                                            .push(models::structs::ColumnStructInfo {
+                                        self.structure_columns.push(
+                                            models::structs::ColumnStructInfo {
                                                 name: name.clone(),
                                                 data_type: dtype.clone(),
                                                 ..Default::default()
-                                            });
+                                            },
+                                        );
                                     }
                                 }
                             } else {
                                 for (name, dtype) in cols {
-                                    self.structure_columns
-                                        .push(models::structs::ColumnStructInfo {
+                                    self.structure_columns.push(
+                                        models::structs::ColumnStructInfo {
                                             name: name.clone(),
                                             data_type: dtype.clone(),
                                             ..Default::default()
-                                        });
+                                        },
+                                    );
                                 }
                             }
                             self.last_structure_target =
@@ -4767,7 +4769,7 @@ impl App for Tabular {
                     let (max_rows, max_cols) = match self.structure_sub_view {
                         models::structs::StructureSubView::Columns => {
                             let cols = if self.structure_col_widths.is_empty() {
-                                7
+                                8
                             } else {
                                 self.structure_col_widths.len()
                             };

@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use eframe::egui;
-use sqlx::{Column, Row};
 use crate::models::enums::{DatabasePool, DatabaseType, DbaMonitorTab, ProcessStateFilter};
 use crate::models::structs::{DbaMonitorState, ProcessInfo};
+use eframe::egui;
+use sqlx::{Column, Row};
 
 /// Action triggered from the DBA Monitor UI
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +20,10 @@ pub async fn fetch_dba_processes(
     db_type: &DatabaseType,
 ) -> Result<Vec<ProcessInfo>, String> {
     let query = get_processlist_query(db_type);
-    log::debug!("[DBA-MONITOR] Fetching processes for db_type={:?}...", db_type);
+    log::debug!(
+        "[DBA-MONITOR] Fetching processes for db_type={:?}...",
+        db_type
+    );
     match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
             let fut = sqlx::query(sqlx::AssertSqlSafe(query)).fetch_all(&**pg_pool);
@@ -31,7 +34,11 @@ pub async fn fetch_dba_processes(
 
             let mut header_names = Vec::new();
             if let Some(first) = rows.first() {
-                header_names = first.columns().iter().map(|c| c.name().to_string()).collect();
+                header_names = first
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
             }
             let mut string_rows = Vec::new();
             for r in rows {
@@ -52,7 +59,10 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::debug!("[DBA-MONITOR] PostgreSQL processes fetched: {} rows", string_rows.len());
+            log::debug!(
+                "[DBA-MONITOR] PostgreSQL processes fetched: {} rows",
+                string_rows.len()
+            );
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::MySQL, DatabasePool::MySQL(my_pool)) => {
@@ -64,7 +74,11 @@ pub async fn fetch_dba_processes(
 
             let mut header_names = Vec::new();
             if let Some(first) = rows.first() {
-                header_names = first.columns().iter().map(|c| c.name().to_string()).collect();
+                header_names = first
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
             }
             let mut string_rows = Vec::new();
             for r in rows {
@@ -87,7 +101,10 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::debug!("[DBA-MONITOR] MySQL processes fetched: {} rows", string_rows.len());
+            log::debug!(
+                "[DBA-MONITOR] MySQL processes fetched: {} rows",
+                string_rows.len()
+            );
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         (DatabaseType::SQLite, DatabasePool::SQLite(sq_pool)) => {
@@ -99,7 +116,11 @@ pub async fn fetch_dba_processes(
 
             let mut header_names = Vec::new();
             if let Some(first) = rows.first() {
-                header_names = first.columns().iter().map(|c| c.name().to_string()).collect();
+                header_names = first
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
             }
             let mut string_rows = Vec::new();
             for r in rows {
@@ -116,7 +137,10 @@ pub async fn fetch_dba_processes(
                 }
                 string_rows.push(row_vals);
             }
-            log::debug!("[DBA-MONITOR] SQLite processes fetched: {} rows", string_rows.len());
+            log::debug!(
+                "[DBA-MONITOR] SQLite processes fetched: {} rows",
+                string_rows.len()
+            );
             Ok(parse_processlist_rows(&header_names, &string_rows, db_type))
         }
         _ => Err("Database engine not supported for live process monitor".to_string()),
@@ -124,10 +148,7 @@ pub async fn fetch_dba_processes(
 }
 
 /// Execute a cancel or kill command on the database pool
-pub async fn execute_dba_command(
-    pool: &DatabasePool,
-    query: &str,
-) -> Result<(), String> {
+pub async fn execute_dba_command(pool: &DatabasePool, query: &str) -> Result<(), String> {
     let query_owned = query.to_string();
     match pool {
         DatabasePool::PostgreSQL(pg_pool) => {
@@ -301,7 +322,10 @@ pub fn parse_processlist_rows(
                 };
                 let query = get_val("query_text");
                 let is_blocking = get_val("is_blocking") == "1";
-                let blocked_by = get_val("blocked_by").parse::<i64>().ok().filter(|&id| id > 0);
+                let blocked_by = get_val("blocked_by")
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|&id| id > 0);
 
                 result.push(ProcessInfo {
                     pid,
@@ -335,7 +359,8 @@ pub fn parse_processlist_rows(
                     command.clone()
                 };
 
-                let is_waiting = state.to_lowercase().contains("lock") || state.to_lowercase().contains("waiting");
+                let is_waiting = state.to_lowercase().contains("lock")
+                    || state.to_lowercase().contains("waiting");
 
                 result.push(ProcessInfo {
                     pid,
@@ -344,7 +369,11 @@ pub fn parse_processlist_rows(
                     host,
                     state,
                     duration_secs,
-                    wait_event: if is_waiting { Some("Locked/Waiting".to_string()) } else { None },
+                    wait_event: if is_waiting {
+                        Some("Locked/Waiting".to_string())
+                    } else {
+                        None
+                    },
                     query,
                     is_blocking: false,
                     blocked_by: None,
@@ -520,16 +549,17 @@ pub fn render_dba_monitor(
         // --- 3. Main Body Content (Processlist or Lock Tree) ---
         egui::Frame::group(ui.style())
             .fill(ui.visuals().window_fill())
-            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+            .stroke(egui::Stroke::new(
+                1.0,
+                ui.visuals().widgets.noninteractive.bg_stroke.color,
+            ))
             .inner_margin(egui::Margin::same(6))
-            .show(ui, |ui| {
-                match state.selected_tab {
-                    DbaMonitorTab::Processlist => {
-                        render_processlist_table(ui, state, to_execute);
-                    }
-                    DbaMonitorTab::LockTree => {
-                        render_lock_tree_view(ui, state, to_execute);
-                    }
+            .show(ui, |ui| match state.selected_tab {
+                DbaMonitorTab::Processlist => {
+                    render_processlist_table(ui, state, to_execute);
+                }
+                DbaMonitorTab::LockTree => {
+                    render_lock_tree_view(ui, state, to_execute);
                 }
             });
 
@@ -637,9 +667,12 @@ fn render_header_and_metrics(
     ui.horizontal(|ui| {
         // Title & Database Badge
         ui.heading(
-            egui::RichText::new(format!("{} Live DBA Process Monitor", egui_icons::icons::ICON_MONITORING.codepoint))
-                .strong()
-                .size(16.0),
+            egui::RichText::new(format!(
+                "{} Live DBA Process Monitor",
+                egui_icons::icons::ICON_MONITORING.codepoint
+            ))
+            .strong()
+            .size(16.0),
         );
 
         ui.add_space(8.0);
@@ -651,14 +684,25 @@ fn render_header_and_metrics(
             _ => "Database",
         };
         ui.label(
-            egui::RichText::new(format!("{} {} — {}", egui_icons::icons::ICON_STORAGE.codepoint, engine_label, conn_name))
-                .color(egui::Color32::from_rgb(100, 180, 240))
-                .size(12.0),
+            egui::RichText::new(format!(
+                "{} {} — {}",
+                egui_icons::icons::ICON_STORAGE.codepoint,
+                engine_label,
+                conn_name
+            ))
+            .color(egui::Color32::from_rgb(100, 180, 240))
+            .size(12.0),
         );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Manual Refresh Button
-            if ui.button(format!("{} Refresh Now", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() {
+            if ui
+                .button(format!(
+                    "{} Refresh Now",
+                    egui_icons::icons::ICON_REFRESH.codepoint
+                ))
+                .clicked()
+            {
                 *to_execute = Some(DbaAction::Refresh);
             }
 
@@ -676,18 +720,28 @@ fn render_header_and_metrics(
                     ui.selectable_value(&mut state.refresh_interval_secs, 10, "10s");
                 });
 
-            ui.label(egui::RichText::new("Interval:").size(11.0).color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new("Interval:")
+                    .size(11.0)
+                    .color(egui::Color32::GRAY),
+            );
 
             // Auto-refresh Toggle
             let refresh_btn = if state.auto_refresh {
                 egui::Button::new(
-                    egui::RichText::new(format!("{} Polling", egui_icons::icons::ICON_FIBER_MANUAL_RECORD.codepoint))
-                        .color(egui::Color32::from_rgb(50, 205, 50))
+                    egui::RichText::new(format!(
+                        "{} Polling",
+                        egui_icons::icons::ICON_FIBER_MANUAL_RECORD.codepoint
+                    ))
+                    .color(egui::Color32::from_rgb(50, 205, 50)),
                 )
             } else {
                 egui::Button::new(
-                    egui::RichText::new(format!("{} Paused", egui_icons::icons::ICON_PAUSE.codepoint))
-                        .color(egui::Color32::from_rgb(220, 150, 50))
+                    egui::RichText::new(format!(
+                        "{} Paused",
+                        egui_icons::icons::ICON_PAUSE.codepoint
+                    ))
+                    .color(egui::Color32::from_rgb(220, 150, 50)),
                 )
             };
             if ui.add(refresh_btn).clicked() {
@@ -707,21 +761,48 @@ fn render_header_and_metrics(
     let active_count = state
         .processes
         .iter()
-        .filter(|p| p.state.to_lowercase().contains("active") || p.state.to_lowercase().contains("running"))
+        .filter(|p| {
+            p.state.to_lowercase().contains("active") || p.state.to_lowercase().contains("running")
+        })
         .count();
     let blocked_count = state
         .processes
         .iter()
-        .filter(|p| p.is_blocking || p.blocked_by.is_some() || p.state.to_lowercase().contains("lock") || p.state.to_lowercase().contains("wait"))
+        .filter(|p| {
+            p.is_blocking
+                || p.blocked_by.is_some()
+                || p.state.to_lowercase().contains("lock")
+                || p.state.to_lowercase().contains("wait")
+        })
         .count();
-    let slow_count = state.processes.iter().filter(|p| p.duration_secs > 5.0).count();
+    let slow_count = state
+        .processes
+        .iter()
+        .filter(|p| p.duration_secs > 5.0)
+        .count();
 
     ui.horizontal(|ui| {
-        metric_card(ui, &format!("{} Total Sessions", egui_icons::icons::ICON_PERSON.codepoint), &total_count.to_string(), egui::Color32::from_rgb(140, 160, 220));
-        metric_card(ui, &format!("{} Active Queries", egui_icons::icons::ICON_BOLT.codepoint), &active_count.to_string(), egui::Color32::from_rgb(80, 200, 120));
         metric_card(
             ui,
-            &format!("{} Blocked / Locks", egui_icons::icons::ICON_BLOCK.codepoint),
+            &format!(
+                "{} Total Sessions",
+                egui_icons::icons::ICON_PERSON.codepoint
+            ),
+            &total_count.to_string(),
+            egui::Color32::from_rgb(140, 160, 220),
+        );
+        metric_card(
+            ui,
+            &format!("{} Active Queries", egui_icons::icons::ICON_BOLT.codepoint),
+            &active_count.to_string(),
+            egui::Color32::from_rgb(80, 200, 120),
+        );
+        metric_card(
+            ui,
+            &format!(
+                "{} Blocked / Locks",
+                egui_icons::icons::ICON_BLOCK.codepoint
+            ),
             &blocked_count.to_string(),
             if blocked_count > 0 {
                 egui::Color32::from_rgb(240, 80, 80)
@@ -731,7 +812,10 @@ fn render_header_and_metrics(
         );
         metric_card(
             ui,
-            &format!("{} Slow (> 5s)", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint),
+            &format!(
+                "{} Slow (> 5s)",
+                egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint
+            ),
             &slow_count.to_string(),
             if slow_count > 0 {
                 egui::Color32::from_rgb(240, 160, 50)
@@ -758,8 +842,17 @@ fn metric_card(ui: &mut egui::Ui, title: &str, value: &str, accent_color: egui::
         .inner_margin(egui::Margin::symmetric(10, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(title).size(11.0).color(egui::Color32::GRAY));
-                ui.label(egui::RichText::new(value).size(13.0).strong().color(accent_color));
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(11.0)
+                        .color(egui::Color32::GRAY),
+                );
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(13.0)
+                        .strong()
+                        .color(accent_color),
+                );
             });
         });
 }
@@ -774,18 +867,30 @@ fn render_navigation_and_filters(
         if ui
             .selectable_label(
                 state.selected_tab == DbaMonitorTab::Processlist,
-                format!("{} Processlist ({})", egui_icons::icons::ICON_DNS.codepoint, state.processes.len()),
+                format!(
+                    "{} Processlist ({})",
+                    egui_icons::icons::ICON_DNS.codepoint,
+                    state.processes.len()
+                ),
             )
             .clicked()
         {
             state.selected_tab = DbaMonitorTab::Processlist;
         }
 
-        let blocked_count = state.processes.iter().filter(|p| p.is_blocking || p.blocked_by.is_some()).count();
+        let blocked_count = state
+            .processes
+            .iter()
+            .filter(|p| p.is_blocking || p.blocked_by.is_some())
+            .count();
         if ui
             .selectable_label(
                 state.selected_tab == DbaMonitorTab::LockTree,
-                format!("{} Deadlock & Lock Tree ({})", egui_icons::icons::ICON_ACCOUNT_TREE.codepoint, blocked_count),
+                format!(
+                    "{} Deadlock & Lock Tree ({})",
+                    egui_icons::icons::ICON_ACCOUNT_TREE.codepoint,
+                    blocked_count
+                ),
             )
             .clicked()
         {
@@ -795,7 +900,11 @@ fn render_navigation_and_filters(
         ui.separator();
 
         // State Filter Pills
-        ui.label(egui::RichText::new("Filter:").size(11.0).color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new("Filter:")
+                .size(11.0)
+                .color(egui::Color32::GRAY),
+        );
         if ui
             .selectable_label(state.filter_state == ProcessStateFilter::All, "All")
             .clicked()
@@ -803,19 +912,28 @@ fn render_navigation_and_filters(
             state.filter_state = ProcessStateFilter::All;
         }
         if ui
-            .selectable_label(state.filter_state == ProcessStateFilter::ActiveOnly, format!("{} Active", egui_icons::icons::ICON_PLAY_ARROW.codepoint))
+            .selectable_label(
+                state.filter_state == ProcessStateFilter::ActiveOnly,
+                format!("{} Active", egui_icons::icons::ICON_PLAY_ARROW.codepoint),
+            )
             .clicked()
         {
             state.filter_state = ProcessStateFilter::ActiveOnly;
         }
         if ui
-            .selectable_label(state.filter_state == ProcessStateFilter::BlockedOnly, format!("{} Blocked", egui_icons::icons::ICON_BLOCK.codepoint))
+            .selectable_label(
+                state.filter_state == ProcessStateFilter::BlockedOnly,
+                format!("{} Blocked", egui_icons::icons::ICON_BLOCK.codepoint),
+            )
             .clicked()
         {
             state.filter_state = ProcessStateFilter::BlockedOnly;
         }
         if ui
-            .selectable_label(state.filter_state == ProcessStateFilter::IdleOnly, format!("{} Idle", egui_icons::icons::ICON_PAUSE.codepoint))
+            .selectable_label(
+                state.filter_state == ProcessStateFilter::IdleOnly,
+                format!("{} Idle", egui_icons::icons::ICON_PAUSE.codepoint),
+            )
             .clicked()
         {
             state.filter_state = ProcessStateFilter::IdleOnly;
@@ -837,9 +955,20 @@ fn filter_process(p: &ProcessInfo, state: &DbaMonitorState) -> bool {
     let state_lower = p.state.to_lowercase();
     let matches_state = match state.filter_state {
         ProcessStateFilter::All => true,
-        ProcessStateFilter::ActiveOnly => state_lower.contains("active") || state_lower.contains("running") || state_lower.contains("execut"),
-        ProcessStateFilter::BlockedOnly => p.is_blocking || p.blocked_by.is_some() || state_lower.contains("lock") || state_lower.contains("wait"),
-        ProcessStateFilter::IdleOnly => state_lower.contains("idle") || state_lower.contains("sleep"),
+        ProcessStateFilter::ActiveOnly => {
+            state_lower.contains("active")
+                || state_lower.contains("running")
+                || state_lower.contains("execut")
+        }
+        ProcessStateFilter::BlockedOnly => {
+            p.is_blocking
+                || p.blocked_by.is_some()
+                || state_lower.contains("lock")
+                || state_lower.contains("wait")
+        }
+        ProcessStateFilter::IdleOnly => {
+            state_lower.contains("idle") || state_lower.contains("sleep")
+        }
     };
     if !matches_state {
         return false;
@@ -867,12 +996,19 @@ fn render_processlist_table(
     state: &mut DbaMonitorState,
     _to_execute: &mut Option<DbaAction>,
 ) {
-    let filtered_processes: Vec<&ProcessInfo> = state.processes.iter().filter(|p| filter_process(p, state)).collect();
+    let filtered_processes: Vec<&ProcessInfo> = state
+        .processes
+        .iter()
+        .filter(|p| filter_process(p, state))
+        .collect();
 
     if filtered_processes.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(30.0);
-            ui.label(egui::RichText::new("No matching active processes found.").color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new("No matching active processes found.")
+                    .color(egui::Color32::GRAY),
+            );
             ui.add_space(30.0);
         });
         return;
@@ -918,20 +1054,37 @@ fn render_processlist_table(
                         }
 
                         // User & DB & Host
-                        ui.label(egui::RichText::new(&p.user).color(egui::Color32::from_rgb(180, 180, 220)));
-                        ui.label(egui::RichText::new(&p.db).color(egui::Color32::from_rgb(140, 210, 210)));
-                        ui.label(egui::RichText::new(&p.host).size(11.0).color(egui::Color32::GRAY));
+                        ui.label(
+                            egui::RichText::new(&p.user)
+                                .color(egui::Color32::from_rgb(180, 180, 220)),
+                        );
+                        ui.label(
+                            egui::RichText::new(&p.db)
+                                .color(egui::Color32::from_rgb(140, 210, 210)),
+                        );
+                        ui.label(
+                            egui::RichText::new(&p.host)
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                        );
 
                         // State Pill
                         let state_lower = p.state.to_lowercase();
-                        let (state_bg, state_fg) = if p.is_blocking || p.blocked_by.is_some() || state_lower.contains("lock") {
+                        let (state_bg, state_fg) = if p.is_blocking
+                            || p.blocked_by.is_some()
+                            || state_lower.contains("lock")
+                        {
                             (egui::Color32::from_rgb(180, 40, 40), egui::Color32::WHITE)
-                        } else if state_lower.contains("active") || state_lower.contains("running") {
+                        } else if state_lower.contains("active") || state_lower.contains("running")
+                        {
                             (egui::Color32::from_rgb(40, 140, 60), egui::Color32::WHITE)
                         } else if state_lower.contains("idle in transaction") {
                             (egui::Color32::from_rgb(180, 130, 30), egui::Color32::WHITE)
                         } else {
-                            (egui::Color32::from_rgb(70, 70, 70), egui::Color32::LIGHT_GRAY)
+                            (
+                                egui::Color32::from_rgb(70, 70, 70),
+                                egui::Color32::LIGHT_GRAY,
+                            )
                         };
 
                         ui.horizontal(|ui| {
@@ -947,7 +1100,12 @@ fn render_processlist_table(
                                 .fill(state_bg)
                                 .inner_margin(egui::Margin::symmetric(4, 1));
                             frame.show(ui, |ui| {
-                                ui.label(egui::RichText::new(label).color(state_fg).size(10.0).strong());
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .color(state_fg)
+                                        .size(10.0)
+                                        .strong(),
+                                );
                             });
                         });
 
@@ -959,14 +1117,27 @@ fn render_processlist_table(
                         } else {
                             ui.visuals().text_color()
                         };
-                        ui.label(egui::RichText::new(format_duration(p.duration_secs)).monospace().color(dur_col));
+                        ui.label(
+                            egui::RichText::new(format_duration(p.duration_secs))
+                                .monospace()
+                                .color(dur_col),
+                        );
 
                         // Wait Event
                         let wait_text = p.wait_event.as_deref().unwrap_or("-");
-                        ui.label(egui::RichText::new(wait_text).size(11.0).color(egui::Color32::GRAY));
+                        ui.label(
+                            egui::RichText::new(wait_text)
+                                .size(11.0)
+                                .color(egui::Color32::GRAY),
+                        );
 
                         // Query Preview
-                        let clean_query: String = p.query.lines().map(|l| l.trim()).collect::<Vec<_>>().join(" ");
+                        let clean_query: String = p
+                            .query
+                            .lines()
+                            .map(|l| l.trim())
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         let truncated = if clean_query.len() > 60 {
                             format!("{}...", &clean_query[..57])
                         } else if clean_query.is_empty() {
@@ -986,16 +1157,39 @@ fn render_processlist_table(
                             query_resp = query_resp.on_hover_ui(|ui| {
                                 ui.set_max_width(500.0);
                                 ui.label(egui::RichText::new("Full Query:").strong());
-                                ui.add(egui::Label::new(egui::RichText::new(&p.query).monospace().size(11.0)));
+                                ui.add(egui::Label::new(
+                                    egui::RichText::new(&p.query).monospace().size(11.0),
+                                ));
                             });
                         }
 
                         // Actions
                         ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(egui::RichText::new(format!("{} Cancel", egui_icons::icons::ICON_CANCEL.codepoint)).size(10.0))).on_hover_text("Cancel current running query").clicked() {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "{} Cancel",
+                                        egui_icons::icons::ICON_CANCEL.codepoint
+                                    ))
+                                    .size(10.0),
+                                ))
+                                .on_hover_text("Cancel current running query")
+                                .clicked()
+                            {
                                 pid_to_confirm_cancel = Some(p.pid);
                             }
-                            if ui.add(egui::Button::new(egui::RichText::new(format!("{} Kill", egui_icons::icons::ICON_DELETE_FOREVER.codepoint)).color(egui::Color32::from_rgb(240, 80, 80)).size(10.0))).on_hover_text("Terminate connection").clicked() {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "{} Kill",
+                                        egui_icons::icons::ICON_DELETE_FOREVER.codepoint
+                                    ))
+                                    .color(egui::Color32::from_rgb(240, 80, 80))
+                                    .size(10.0),
+                                ))
+                                .on_hover_text("Terminate connection")
+                                .clicked()
+                            {
                                 pid_to_confirm_kill = Some(p.pid);
                             }
                         });
@@ -1023,15 +1217,35 @@ fn render_lock_tree_view(
     if trees.is_empty() && orphans.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
-            ui.label(egui::RichText::new(format!("{} No lock contention or deadlocks detected!", egui_icons::icons::ICON_CHECK_CIRCLE.codepoint)).color(egui::Color32::from_rgb(80, 200, 120)).size(14.0));
-            ui.label(egui::RichText::new("All database sessions are running smoothly without blocking each other.").color(egui::Color32::GRAY).size(12.0));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} No lock contention or deadlocks detected!",
+                    egui_icons::icons::ICON_CHECK_CIRCLE.codepoint
+                ))
+                .color(egui::Color32::from_rgb(80, 200, 120))
+                .size(14.0),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "All database sessions are running smoothly without blocking each other.",
+                )
+                .color(egui::Color32::GRAY)
+                .size(12.0),
+            );
             ui.add_space(40.0);
         });
         return;
     }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.label(egui::RichText::new(format!("{} Active Lock Dependencies & Bottlenecks", egui_icons::icons::ICON_WARNING.codepoint)).strong().color(egui::Color32::from_rgb(240, 100, 100)));
+        ui.label(
+            egui::RichText::new(format!(
+                "{} Active Lock Dependencies & Bottlenecks",
+                egui_icons::icons::ICON_WARNING.codepoint
+            ))
+            .strong()
+            .color(egui::Color32::from_rgb(240, 100, 100)),
+        );
         ui.add_space(6.0);
 
         for tree in &trees {
@@ -1041,20 +1255,47 @@ fn render_lock_tree_view(
 
         if !orphans.is_empty() {
             ui.add_space(10.0);
-            ui.label(egui::RichText::new(format!("{} Other Waiting Sessions (Waiting for external / transaction locks)", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint)).strong().color(egui::Color32::from_rgb(220, 160, 50)));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} Other Waiting Sessions (Waiting for external / transaction locks)",
+                    egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint
+                ))
+                .strong()
+                .color(egui::Color32::from_rgb(220, 160, 50)),
+            );
             for p in &orphans {
                 egui::Frame::group(ui.style())
                     .fill(ui.visuals().faint_bg_color)
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("PID {}", p.pid)).strong().monospace());
+                            ui.label(
+                                egui::RichText::new(format!("PID {}", p.pid))
+                                    .strong()
+                                    .monospace(),
+                            );
                             ui.label(format!("User: {} | DB: {}", p.user, p.db));
-                            ui.label(egui::RichText::new(format!("Waiting: {}", format_duration(p.duration_secs))).color(egui::Color32::from_rgb(240, 160, 50)));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Waiting: {}",
+                                    format_duration(p.duration_secs)
+                                ))
+                                .color(egui::Color32::from_rgb(240, 160, 50)),
+                            );
                             if let Some(event) = &p.wait_event {
-                                ui.label(egui::RichText::new(event).size(11.0).color(egui::Color32::GRAY));
+                                ui.label(
+                                    egui::RichText::new(event)
+                                        .size(11.0)
+                                        .color(egui::Color32::GRAY),
+                                );
                             }
-                            if ui.button(format!("{} Kill", egui_icons::icons::ICON_DELETE_FOREVER.codepoint)).clicked() {
+                            if ui
+                                .button(format!(
+                                    "{} Kill",
+                                    egui_icons::icons::ICON_DELETE_FOREVER.codepoint
+                                ))
+                                .clicked()
+                            {
                                 state.confirm_action = Some((p.pid, false));
                             }
                         });
@@ -1064,7 +1305,12 @@ fn render_lock_tree_view(
     });
 }
 
-fn render_tree_node(ui: &mut egui::Ui, node: &LockTreeNode, depth: usize, state: &mut DbaMonitorState) {
+fn render_tree_node(
+    ui: &mut egui::Ui,
+    node: &LockTreeNode,
+    depth: usize,
+    state: &mut DbaMonitorState,
+) {
     let is_root = depth == 0;
     let bg_color = if is_root {
         egui::Color32::from_rgb(60, 20, 20)
@@ -1078,7 +1324,13 @@ fn render_tree_node(ui: &mut egui::Ui, node: &LockTreeNode, depth: usize, state:
     ui.horizontal(|ui| {
         if indent > 0.0 {
             ui.add_space(indent);
-            ui.label(egui::RichText::new(format!("{} ", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)).color(egui::Color32::from_rgb(240, 100, 100)));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} ",
+                    egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint
+                ))
+                .color(egui::Color32::from_rgb(240, 100, 100)),
+            );
         }
 
         egui::Frame::group(ui.style())
@@ -1087,26 +1339,66 @@ fn render_tree_node(ui: &mut egui::Ui, node: &LockTreeNode, depth: usize, state:
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if is_root {
-                        ui.label(egui::RichText::new(format!("{} ROOT BLOCKER", egui_icons::icons::ICON_ERROR.codepoint)).strong().color(egui::Color32::from_rgb(255, 80, 80)));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} ROOT BLOCKER",
+                                egui_icons::icons::ICON_ERROR.codepoint
+                            ))
+                            .strong()
+                            .color(egui::Color32::from_rgb(255, 80, 80)),
+                        );
                     }
-                    ui.label(egui::RichText::new(format!("PID: {}", p.pid)).monospace().strong());
+                    ui.label(
+                        egui::RichText::new(format!("PID: {}", p.pid))
+                            .monospace()
+                            .strong(),
+                    );
                     ui.label(format!("User: {} | DB: {}", p.user, p.db));
                     ui.label(egui::RichText::new(format_duration(p.duration_secs)).monospace());
-                    ui.label(egui::RichText::new(&p.state).size(11.0).color(egui::Color32::GRAY));
+                    ui.label(
+                        egui::RichText::new(&p.state)
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                    );
 
-                    let clean_query: String = p.query.lines().map(|l| l.trim()).collect::<Vec<_>>().join(" ");
+                    let clean_query: String = p
+                        .query
+                        .lines()
+                        .map(|l| l.trim())
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let short_query = if clean_query.len() > 40 {
                         format!("{}...", &clean_query[..37])
                     } else {
                         clean_query
                     };
-                    ui.label(egui::RichText::new(short_query).monospace().size(11.0).color(egui::Color32::LIGHT_GRAY));
+                    ui.label(
+                        egui::RichText::new(short_query)
+                            .monospace()
+                            .size(11.0)
+                            .color(egui::Color32::LIGHT_GRAY),
+                    );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui::RichText::new(format!("{} Terminate", egui_icons::icons::ICON_DELETE_FOREVER.codepoint)).color(egui::Color32::from_rgb(255, 100, 100))).clicked() {
+                        if ui
+                            .button(
+                                egui::RichText::new(format!(
+                                    "{} Terminate",
+                                    egui_icons::icons::ICON_DELETE_FOREVER.codepoint
+                                ))
+                                .color(egui::Color32::from_rgb(255, 100, 100)),
+                            )
+                            .clicked()
+                        {
                             state.confirm_action = Some((p.pid, false));
                         }
-                        if ui.button(format!("{} Cancel", egui_icons::icons::ICON_CANCEL.codepoint)).clicked() {
+                        if ui
+                            .button(format!(
+                                "{} Cancel",
+                                egui_icons::icons::ICON_CANCEL.codepoint
+                            ))
+                            .clicked()
+                        {
                             state.confirm_action = Some((p.pid, true));
                         }
                     });
@@ -1125,68 +1417,76 @@ fn render_confirm_modal(
     to_execute: &mut Option<DbaAction>,
 ) {
     if let Some((pid, is_cancel)) = state.confirm_action {
-        let action_name = if is_cancel { "Cancel Query" } else { "Kill Process / Session" };
+        let action_name = if is_cancel {
+            "Cancel Query"
+        } else {
+            "Kill Process / Session"
+        };
         let action_verb = if is_cancel { "Cancel" } else { "Kill" };
 
         let proc_info = state.processes.iter().find(|p| p.pid == pid).cloned();
 
-        egui::Window::new(format!("{} Confirm {}", egui_icons::icons::ICON_WARNING.codepoint, action_name))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ui.ctx(), |ui| {
-                ui.set_width(380.0);
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Are you sure you want to {} for PID {}?",
-                            action_verb.to_lowercase(),
-                            pid
-                        ))
-                        .strong()
-                        .size(13.0),
-                    );
-                    ui.add_space(4.0);
+        egui::Window::new(format!(
+            "{} Confirm {}",
+            egui_icons::icons::ICON_WARNING.codepoint,
+            action_name
+        ))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(380.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Are you sure you want to {} for PID {}?",
+                        action_verb.to_lowercase(),
+                        pid
+                    ))
+                    .strong()
+                    .size(13.0),
+                );
+                ui.add_space(4.0);
 
-                    if let Some(p) = proc_info {
-                        ui.label(format!("• User: {}", p.user));
-                        ui.label(format!("• Database: {}", p.db));
-                        ui.label(format!("• Duration: {}", format_duration(p.duration_secs)));
-                        if !p.query.is_empty() {
-                            ui.label(egui::RichText::new("• Query:").size(11.0));
-                            egui::Frame::group(ui.style())
-                                .fill(ui.visuals().faint_bg_color)
-                                .show(ui, |ui| {
-                                    ui.label(egui::RichText::new(&p.query).monospace().size(11.0));
-                                });
-                        }
+                if let Some(p) = proc_info {
+                    ui.label(format!("• User: {}", p.user));
+                    ui.label(format!("• Database: {}", p.db));
+                    ui.label(format!("• Duration: {}", format_duration(p.duration_secs)));
+                    if !p.query.is_empty() {
+                        ui.label(egui::RichText::new("• Query:").size(11.0));
+                        egui::Frame::group(ui.style())
+                            .fill(ui.visuals().faint_bg_color)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(&p.query).monospace().size(11.0));
+                            });
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("No, Keep Running").clicked() {
+                        state.confirm_action = None;
                     }
 
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("No, Keep Running").clicked() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let confirm_btn = egui::Button::new(
+                            egui::RichText::new(format!("Yes, {}", action_verb))
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(200, 40, 40));
+
+                        if ui.add(confirm_btn).clicked() {
+                            if is_cancel {
+                                *to_execute = Some(DbaAction::CancelQuery(pid));
+                            } else {
+                                *to_execute = Some(DbaAction::KillProcess(pid));
+                            }
                             state.confirm_action = None;
                         }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let confirm_btn = egui::Button::new(
-                                egui::RichText::new(format!("Yes, {}", action_verb))
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .fill(egui::Color32::from_rgb(200, 40, 40));
-
-                            if ui.add(confirm_btn).clicked() {
-                                if is_cancel {
-                                    *to_execute = Some(DbaAction::CancelQuery(pid));
-                                } else {
-                                    *to_execute = Some(DbaAction::KillProcess(pid));
-                                }
-                                state.confirm_action = None;
-                            }
-                        });
                     });
                 });
             });
+        });
     }
 }
 

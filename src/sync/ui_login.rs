@@ -5,10 +5,10 @@
 //! 2. `render_account_dialog`: Dedicated modal popup for account management, login/logout, and profile photo settings.
 //! 3. `draw_circular_avatar`: Helper to render circular user avatars with image texture or initials fallback.
 
-use eframe::egui;
+use super::auth::OAuthProvider;
 use crate::rfd;
 use crate::window_egui::{Tabular, style};
-use super::auth::OAuthProvider;
+use eframe::egui;
 
 /// Directly paint a circular avatar into any painter at center with radius using a circular fan mesh.
 pub fn paint_circular_avatar(
@@ -142,7 +142,9 @@ pub fn open_account_dialog(tabular: &mut Tabular) {
 
 /// Render the Cloud Sync panel inside the Settings / Preferences modal.
 pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    use crate::window_egui::preferences::{Tone, divider, hint, page_header, row, section, stacked, status};
+    use crate::window_egui::preferences::{
+        Tone, divider, hint, page_header, row, section, stacked, status,
+    };
 
     page_header(
         ui,
@@ -153,7 +155,13 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
     section(ui, "Account", |ui| {
         ui.horizontal(|ui| {
             if let Some(ref account) = tabular.sync_account {
-                draw_circular_avatar(ui, tabular, 36.0, &account.email, account.display_name.as_deref());
+                draw_circular_avatar(
+                    ui,
+                    tabular,
+                    36.0,
+                    &account.email,
+                    account.display_name.as_deref(),
+                );
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     let name = account.display_name.as_deref().unwrap_or(&account.email);
@@ -161,17 +169,26 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     hint(ui, &account.email);
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(style::btn_primary_ctx(ui.ctx(), "Manage Account")).clicked() {
+                    if ui
+                        .add(style::btn_primary_ctx(ui.ctx(), "Manage Account"))
+                        .clicked()
+                    {
                         open_account_dialog(tabular);
                     }
                 });
             } else {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Not signed in").strong().size(13.5));
-                    hint(ui, "Tabular works fully offline. Sign in to enable cloud sync.");
+                    hint(
+                        ui,
+                        "Tabular works fully offline. Sign in to enable cloud sync.",
+                    );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(style::btn_primary_ctx(ui.ctx(), "Sign In / Create Account")).clicked() {
+                    if ui
+                        .add(style::btn_primary_ctx(ui.ctx(), "Sign In / Create Account"))
+                        .clicked()
+                    {
                         open_account_dialog(tabular);
                     }
                 });
@@ -192,8 +209,14 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 tabular.prefs_dirty = true;
             }
         });
-        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
-            status(ui, Tone::Warning, "⚠ Use https://. Plain http:// is only accepted for localhost.");
+        if !tabular.sync_server_url.trim().is_empty()
+            && !is_server_url_acceptable(&tabular.sync_server_url)
+        {
+            status(
+                ui,
+                Tone::Warning,
+                "⚠ Use https://. Plain http:// is only accepted for localhost.",
+            );
         }
         divider(ui);
 
@@ -215,7 +238,10 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     if tabular.sync_account.is_some() {
         section(ui, "Manual Sync", |ui| {
-            hint(ui, "Push and pull changes immediately instead of waiting for the next automatic sync.");
+            hint(
+                ui,
+                "Push and pull changes immediately instead of waiting for the next automatic sync.",
+            );
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 if ui.add(style::btn_secondary("🔗  Connections")).clicked() {
@@ -326,14 +352,12 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     .id_salt("account_dialog_content_scroll")
                     .max_height(max_scroll_h)
                     .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        match tabular.account_dialog_tab {
-                            crate::window_egui::AccountDialogTab::Profile => {
-                                render_account_profile_tab(tabular, ui);
-                            }
-                            crate::window_egui::AccountDialogTab::Security => {
-                                render_account_security_tab(tabular, ui);
-                            }
+                    .show(ui, |ui| match tabular.account_dialog_tab {
+                        crate::window_egui::AccountDialogTab::Profile => {
+                            render_account_profile_tab(tabular, ui);
+                        }
+                        crate::window_egui::AccountDialogTab::Security => {
+                            render_account_security_tab(tabular, ui);
                         }
                     });
 
@@ -356,7 +380,11 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 if ui
                                     .add(style::btn_primary_ctx(
                                         ui.ctx(),
-                                        if saving { "💾  Saving…" } else { "💾  Save Changes" },
+                                        if saving {
+                                            "💾  Saving…"
+                                        } else {
+                                            "💾  Save Changes"
+                                        },
                                     ))
                                     .clicked()
                                 {
@@ -444,7 +472,6 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         render_account_login_view(tabular, ui);
                     });
             });
-
     }
 
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -719,7 +746,11 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.set_min_width(ui.available_width());
                 let field_w = (ui.available_width() - 130.0).max(280.0);
 
-                ui.label(egui::RichText::new("Personal Information").strong().size(14.0));
+                ui.label(
+                    egui::RichText::new("Personal Information")
+                        .strong()
+                        .size(14.0),
+                );
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new("Update your personal details and public profile info.")
@@ -1111,9 +1142,7 @@ fn render_oauth_tile(
         child_ui.vertical_centered(|ui| {
             ui.add_space(6.0);
             ui.add(egui::Label::new(
-                icon.rich_text()
-                    .size(20.0)
-                    .color(egui::Color32::WHITE),
+                icon.rich_text().size(20.0).color(egui::Color32::WHITE),
             ));
             ui.add_space(2.0);
             ui.add(egui::Label::new(
@@ -1280,7 +1309,8 @@ fn start_oauth(tabular: &mut Tabular, provider: OAuthProvider) {
     }
     if !is_server_url_acceptable(&tabular.sync_server_url) {
         tabular.sync_login_error = Some(
-            "Server URL must use https:// (plain http:// is only allowed for localhost/127.0.0.1)".to_string(),
+            "Server URL must use https:// (plain http:// is only allowed for localhost/127.0.0.1)"
+                .to_string(),
         );
         return;
     }
@@ -1314,7 +1344,8 @@ fn try_submit_token(tabular: &mut Tabular) {
             let phone = root["user"]["phone"].as_str().map(|s| s.to_string());
 
             if access_token.is_empty() || email.is_empty() {
-                tabular.sync_login_error = Some("Invalid token JSON — missing access_token or email".to_string());
+                tabular.sync_login_error =
+                    Some("Invalid token JSON — missing access_token or email".to_string());
                 return;
             }
 
@@ -1420,7 +1451,6 @@ pub fn wipe_local_session(tabular: &mut Tabular) {
     tabular.vault_recovery_code_display = None;
     tabular.vault_error = None;
 }
-
 
 /// Fetch the blocked-user list for the unblock UI (App Store Guideline 1.2).
 pub fn refresh_blocked_users(tabular: &mut Tabular) {

@@ -1,5 +1,5 @@
-use std::sync::mpsc;
 use serde_json::json;
+use std::sync::mpsc;
 
 use crate::config::AiProvider;
 
@@ -33,8 +33,9 @@ pub fn build_schema_context_for_prompt(
     if db_name.is_empty() {
         // Try to pick first available database from in-memory cache
         if let Some(dbs) = tabular.database_cache.get(&conn_id)
-            && let Some(first_db) = dbs.first() {
-                return build_schema_for_db(tabular, conn_id, first_db, max_tables, prompt);
+            && let Some(first_db) = dbs.first()
+        {
+            return build_schema_for_db(tabular, conn_id, first_db, max_tables, prompt);
         }
         return String::new();
     }
@@ -62,7 +63,8 @@ fn order_tables_by_relevance(
 
     match ranked {
         Ok(ranked) if !ranked.is_empty() => {
-            let known: std::collections::HashSet<&str> = tables.iter().map(String::as_str).collect();
+            let known: std::collections::HashSet<&str> =
+                tables.iter().map(String::as_str).collect();
             let mut ordered: Vec<String> = ranked
                 .into_iter()
                 .map(|(table, _)| table)
@@ -88,7 +90,8 @@ fn build_schema_for_db(
     prompt: &str,
 ) -> String {
     // Fetch tables from cache
-    let tables = match crate::cache_data::get_tables_from_cache(tabular, conn_id, db_name, "table") {
+    let tables = match crate::cache_data::get_tables_from_cache(tabular, conn_id, db_name, "table")
+    {
         Some(t) if !t.is_empty() => t,
         _ => return String::new(),
     };
@@ -105,7 +108,9 @@ fn build_schema_for_db(
     for table in tables.iter().take(max_tables) {
         out.push_str(&format!("-- Table: {table}\n"));
 
-        if let Some(cols) = crate::cache_data::get_columns_from_cache(tabular, conn_id, db_name, table) {
+        if let Some(cols) =
+            crate::cache_data::get_columns_from_cache(tabular, conn_id, db_name, table)
+        {
             if cols.is_empty() {
                 out.push_str("--   (no columns cached)\n");
             } else {
@@ -113,10 +118,15 @@ fn build_schema_for_db(
                     .iter()
                     .map(|(name, typ)| format!("  {name} {typ}"))
                     .collect();
-                out.push_str(&format!("CREATE TABLE {table} (\n{}\n);\n", col_list.join(",\n")));
+                out.push_str(&format!(
+                    "CREATE TABLE {table} (\n{}\n);\n",
+                    col_list.join(",\n")
+                ));
             }
         } else {
-            out.push_str(&format!("-- Table {table}: (columns not cached yet — browse the table first)\n"));
+            out.push_str(&format!(
+                "-- Table {table}: (columns not cached yet — browse the table first)\n"
+            ));
         }
         out.push('\n');
     }
@@ -217,7 +227,9 @@ fn call_openai_compatible(
         .map_err(|e| format!("Request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
+    let text = resp
+        .text()
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if !status.is_success() {
         return Err(format!("API error {status}: {text}"));
@@ -265,7 +277,9 @@ fn call_anthropic(
         .map_err(|e| format!("Request failed: {e}"))?;
 
     let status = resp.status();
-    let text = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
+    let text = resp
+        .text()
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if !status.is_success() {
         return Err(format!("Anthropic API error {status}: {text}"));
@@ -401,7 +415,9 @@ pub fn backend_ready(tabular: &Tabular) -> Result<(), String> {
             // Preferensi bisa terbawa dari build download langsung ke build App Store.
             if harness::is_app_sandboxed() {
                 Err(harness::SANDBOX_UNAVAILABLE_MESSAGE.to_string())
-            } else if tabular.ai_cli_kind == CliAgentKind::Custom && tabular.ai_cli_bin.trim().is_empty() {
+            } else if tabular.ai_cli_kind == CliAgentKind::Custom
+                && tabular.ai_cli_bin.trim().is_empty()
+            {
                 Err("No CLI command configured. Open Settings → AI Assistant.".to_string())
             } else {
                 Ok(())
@@ -451,7 +467,11 @@ pub fn start_chat(
             let req = AgentRequest {
                 system_prompt,
                 user_prompt,
-                session_id: if cfg.cli.kind.supports_resume() { session_id } else { None },
+                session_id: if cfg.cli.kind.supports_resume() {
+                    session_id
+                } else {
+                    None
+                },
                 cwd: harness::agent_workspace_dir(),
                 mcp_config,
             };
@@ -550,7 +570,11 @@ pub fn context_tab_ids(tabular: &Tabular) -> Vec<usize> {
         if ids.contains(id) {
             continue;
         }
-        if tabular.query_tabs.iter().any(|t| t.id == *id && is_sql_tab(t)) {
+        if tabular
+            .query_tabs
+            .iter()
+            .any(|t| t.id == *id && is_sql_tab(t))
+        {
             ids.push(*id);
         }
     }
@@ -567,12 +591,25 @@ pub fn build_editor_context(tabular: &Tabular) -> String {
     let mut out = String::from("## Open editor tabs\n");
     let mut total = 0usize;
     for id in ids {
-        let Some((idx, tab)) = tabular.query_tabs.iter().enumerate().find(|(_, t)| t.id == id) else {
+        let Some((idx, tab)) = tabular
+            .query_tabs
+            .iter()
+            .enumerate()
+            .find(|(_, t)| t.id == id)
+        else {
             continue;
         };
         let is_active = idx == tabular.active_tab_index;
-        let content: &str = if is_active { &tabular.editor.text } else { &tab.content };
-        let conn_id = tab.connection_id.or(if is_active { tabular.current_connection_id } else { None });
+        let content: &str = if is_active {
+            &tabular.editor.text
+        } else {
+            &tab.content
+        };
+        let conn_id = tab.connection_id.or(if is_active {
+            tabular.current_connection_id
+        } else {
+            None
+        });
         let db = tab.database_name.clone().unwrap_or_default();
 
         let mut section = format!(
@@ -584,7 +621,11 @@ pub fn build_editor_context(tabular: &Tabular) -> String {
         section.push_str(&format!(
             "Connection: {}; database: {}\n",
             describe_connection(tabular, conn_id),
-            if db.is_empty() { "(default)" } else { db.as_str() }
+            if db.is_empty() {
+                "(default)"
+            } else {
+                db.as_str()
+            }
         ));
         let (body, truncated) = truncate_utf8(content, MAX_TAB_CONTEXT_BYTES);
         if body.trim().is_empty() {
@@ -598,7 +639,10 @@ pub fn build_editor_context(tabular: &Tabular) -> String {
         if is_active
             && tabular.selection_start < tabular.selection_end
             && tabular.selection_end <= tabular.editor.text.len()
-            && tabular.editor.text.is_char_boundary(tabular.selection_start)
+            && tabular
+                .editor
+                .text
+                .is_char_boundary(tabular.selection_start)
             && tabular.editor.text.is_char_boundary(tabular.selection_end)
         {
             let sel = &tabular.editor.text[tabular.selection_start..tabular.selection_end];
@@ -755,9 +799,16 @@ pub fn build_notes_context(tabular: &Tabular, query: &str) -> String {
 }
 
 /// Susun (system, user) prompt untuk satu giliran chat dari state UI.
-pub fn build_chat_prompts(tabular: &Tabular, cfg: &ChatBackend, user_text: &str) -> (String, String) {
+pub fn build_chat_prompts(
+    tabular: &Tabular,
+    cfg: &ChatBackend,
+    user_text: &str,
+) -> (String, String) {
     let editor_context = build_editor_context(tabular);
-    let retrieval_query = format!("{user_text} {}", editor_context.chars().take(4_000).collect::<String>());
+    let retrieval_query = format!(
+        "{user_text} {}",
+        editor_context.chars().take(4_000).collect::<String>()
+    );
     let schema = build_schema_context_for_prompt(tabular, &retrieval_query, 30);
     let system = system_prompt_for(cfg, &schema);
 
@@ -767,7 +818,10 @@ pub fn build_chat_prompts(tabular: &Tabular, cfg: &ChatBackend, user_text: &str)
     }
     // Query retrieval catatan: permintaan user + awal konteks editor (nama
     // tabel di SQL yang sedang dibuka sering jadi kata kunci catatan).
-    let notes_query = format!("{user_text} {}", editor_context.chars().take(1_000).collect::<String>());
+    let notes_query = format!(
+        "{user_text} {}",
+        editor_context.chars().take(1_000).collect::<String>()
+    );
     user.push_str(&build_notes_context(tabular, &notes_query));
     if !editor_context.is_empty() {
         user.push_str(&editor_context);
@@ -858,10 +912,14 @@ mod tests {
             hit("db/Orders.md", "Status codes", "3 = void".into()),
             hit("Glossary.md", "", "GMV = gross merchandise value".into()),
         ]);
-        assert!(out.starts_with("## Notes from your Obsidian vault\n### db/Orders.md > Status codes\n3 = void\n\n"));
+        assert!(out.starts_with(
+            "## Notes from your Obsidian vault\n### db/Orders.md > Status codes\n3 = void\n\n"
+        ));
         assert!(out.contains("### Glossary.md\nGMV"));
 
-        let big: Vec<_> = (0..10).map(|i| hit(&format!("n{i}.md"), "", "x".repeat(1_500))).collect();
+        let big: Vec<_> = (0..10)
+            .map(|i| hit(&format!("n{i}.md"), "", "x".repeat(1_500)))
+            .collect();
         let out = format_notes_context(&big);
         assert!(out.len() <= MAX_NOTES_CONTEXT_BYTES + 40);
         assert!(out.contains("n2.md") && !out.contains("n9.md"));
@@ -891,7 +949,10 @@ mod tests {
             notes_enabled: false,
             notes_writable: false,
         };
-        let system = system_prompt_for(&cfg, "-- Table: users\nCREATE TABLE users (\n  id INT,\n  email TEXT,\n  created_at TIMESTAMP\n);\n");
+        let system = system_prompt_for(
+            &cfg,
+            "-- Table: users\nCREATE TABLE users (\n  id INT,\n  email TEXT,\n  created_at TIMESTAMP\n);\n",
+        );
         let user = "## Open editor tabs\n\n### Tab \"Query 1\" (tab_id=7, ACTIVE)\nConnection: \"local\" (connection_id=1, PostgreSQL); database: app\n```sql\nSELECT * FROM users\n```\n\n## Request\nRewrite the query in this tab to return only id and email of the 10 most recent users.".to_string();
         let (rx, _handle) = start_chat(&cfg, system, user, None).expect("start_chat");
 
@@ -913,11 +974,16 @@ mod tests {
         events.extend(parser.finish());
         eprintln!("--- model output ---\n{full}\n--- events ---\n{events:#?}");
         let end = events.iter().find_map(|e| match e {
-            LiveEditEvent::End { tab_id: 7, body, .. } => Some(body.clone()),
+            LiveEditEvent::End {
+                tab_id: 7, body, ..
+            } => Some(body.clone()),
             _ => None,
         });
         let body = end.expect("model did not emit a live-edit block for tab 7");
         let lower = body.to_ascii_lowercase();
-        assert!(lower.contains("select") && lower.contains("email") && lower.contains("limit 10"), "body: {body}");
+        assert!(
+            lower.contains("select") && lower.contains("email") && lower.contains("limit 10"),
+            "body: {body}"
+        );
     }
 }

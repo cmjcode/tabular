@@ -8,8 +8,8 @@
 
 // `pub(crate)` agar lapisan headless `crate::agent` bisa memuat ulang cache skema.
 pub(crate) mod cache;
-mod databases;
 mod columns;
+mod databases;
 mod ddl;
 pub(crate) mod staging;
 
@@ -27,6 +27,6 @@ pub(crate) use databases::fetch_databases_from_connection_blocking;
 pub(crate) use columns::fetch_columns_from_database;
 
 pub(crate) use ddl::{
-    compute_schema_diff,
-    fetch_procedure_definition, fetch_table_definition, fetch_view_definition, get_foreign_keys,
+    compute_schema_diff, fetch_procedure_definition, fetch_table_definition, fetch_view_definition,
+    get_foreign_keys,
 };

@@ -53,25 +53,73 @@ impl QuickOpenKind {
         // (background_color, text_color)
         if dark_mode {
             match self {
-                Self::Table => (egui::Color32::from_rgb(22, 60, 42), egui::Color32::from_rgb(74, 222, 128)),
-                Self::View => (egui::Color32::from_rgb(18, 48, 68), egui::Color32::from_rgb(56, 189, 248)),
-                Self::Procedure => (egui::Color32::from_rgb(50, 25, 75), egui::Color32::from_rgb(192, 132, 252)),
-                Self::Function => (egui::Color32::from_rgb(60, 45, 20), egui::Color32::from_rgb(251, 191, 36)),
-                Self::SavedQuery => (egui::Color32::from_rgb(65, 40, 20), egui::Color32::from_rgb(251, 146, 60)),
-                Self::History => (egui::Color32::from_rgb(45, 45, 55), egui::Color32::from_rgb(203, 213, 225)),
-                Self::Connection => (egui::Color32::from_rgb(30, 40, 80), egui::Color32::from_rgb(129, 140, 248)),
-                Self::Command => (egui::Color32::from_rgb(60, 25, 45), egui::Color32::from_rgb(244, 114, 182)),
+                Self::Table => (
+                    egui::Color32::from_rgb(22, 60, 42),
+                    egui::Color32::from_rgb(74, 222, 128),
+                ),
+                Self::View => (
+                    egui::Color32::from_rgb(18, 48, 68),
+                    egui::Color32::from_rgb(56, 189, 248),
+                ),
+                Self::Procedure => (
+                    egui::Color32::from_rgb(50, 25, 75),
+                    egui::Color32::from_rgb(192, 132, 252),
+                ),
+                Self::Function => (
+                    egui::Color32::from_rgb(60, 45, 20),
+                    egui::Color32::from_rgb(251, 191, 36),
+                ),
+                Self::SavedQuery => (
+                    egui::Color32::from_rgb(65, 40, 20),
+                    egui::Color32::from_rgb(251, 146, 60),
+                ),
+                Self::History => (
+                    egui::Color32::from_rgb(45, 45, 55),
+                    egui::Color32::from_rgb(203, 213, 225),
+                ),
+                Self::Connection => (
+                    egui::Color32::from_rgb(30, 40, 80),
+                    egui::Color32::from_rgb(129, 140, 248),
+                ),
+                Self::Command => (
+                    egui::Color32::from_rgb(60, 25, 45),
+                    egui::Color32::from_rgb(244, 114, 182),
+                ),
             }
         } else {
             match self {
-                Self::Table => (egui::Color32::from_rgb(220, 252, 231), egui::Color32::from_rgb(22, 101, 52)),
-                Self::View => (egui::Color32::from_rgb(224, 242, 254), egui::Color32::from_rgb(7, 89, 133)),
-                Self::Procedure => (egui::Color32::from_rgb(243, 232, 255), egui::Color32::from_rgb(107, 33, 168)),
-                Self::Function => (egui::Color32::from_rgb(254, 243, 199), egui::Color32::from_rgb(146, 64, 14)),
-                Self::SavedQuery => (egui::Color32::from_rgb(255, 237, 213), egui::Color32::from_rgb(154, 52, 18)),
-                Self::History => (egui::Color32::from_rgb(241, 245, 249), egui::Color32::from_rgb(71, 85, 105)),
-                Self::Connection => (egui::Color32::from_rgb(224, 231, 255), egui::Color32::from_rgb(55, 48, 163)),
-                Self::Command => (egui::Color32::from_rgb(252, 231, 243), egui::Color32::from_rgb(157, 23, 77)),
+                Self::Table => (
+                    egui::Color32::from_rgb(220, 252, 231),
+                    egui::Color32::from_rgb(22, 101, 52),
+                ),
+                Self::View => (
+                    egui::Color32::from_rgb(224, 242, 254),
+                    egui::Color32::from_rgb(7, 89, 133),
+                ),
+                Self::Procedure => (
+                    egui::Color32::from_rgb(243, 232, 255),
+                    egui::Color32::from_rgb(107, 33, 168),
+                ),
+                Self::Function => (
+                    egui::Color32::from_rgb(254, 243, 199),
+                    egui::Color32::from_rgb(146, 64, 14),
+                ),
+                Self::SavedQuery => (
+                    egui::Color32::from_rgb(255, 237, 213),
+                    egui::Color32::from_rgb(154, 52, 18),
+                ),
+                Self::History => (
+                    egui::Color32::from_rgb(241, 245, 249),
+                    egui::Color32::from_rgb(71, 85, 105),
+                ),
+                Self::Connection => (
+                    egui::Color32::from_rgb(224, 231, 255),
+                    egui::Color32::from_rgb(55, 48, 163),
+                ),
+                Self::Command => (
+                    egui::Color32::from_rgb(252, 231, 243),
+                    egui::Color32::from_rgb(157, 23, 77),
+                ),
             }
         }
     }
@@ -130,8 +178,7 @@ impl QuickOpenItem {
 }
 
 /// State for Quick Open modal
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct QuickOpenState {
     pub is_open: bool,
     pub query: String,
@@ -142,7 +189,6 @@ pub struct QuickOpenState {
     pub request_focus: bool,
     pub scroll_to_selected: bool,
 }
-
 
 impl QuickOpenState {
     /// Invalidate items cache so next open will reload from database/tree
@@ -185,7 +231,10 @@ impl QuickOpenState {
             Some(QuickOpenKind::Command),
         ];
 
-        let current_pos = categories.iter().position(|c| *c == self.active_category).unwrap_or(0);
+        let current_pos = categories
+            .iter()
+            .position(|c| *c == self.active_category)
+            .unwrap_or(0);
         let next_pos = (current_pos + 1) % categories.len();
         self.active_category = categories[next_pos];
         self.refilter();
@@ -262,12 +311,16 @@ impl QuickOpenState {
 /// Similarity terbaik item terhadap query (judul, nama tabel, atau isi SQL),
 /// hanya bila melewati ambang [`crate::search_match::MIN_SIMILARITY`].
 fn item_similarity(query: &crate::search_match::SearchQuery, item: &QuickOpenItem) -> Option<f32> {
-    [Some(item.title.as_str()), item.table_name.as_deref(), item.sql_content.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter_map(|text| query.similarity(text))
-        .filter(|s| *s >= crate::search_match::MIN_SIMILARITY)
-        .reduce(f32::max)
+    [
+        Some(item.title.as_str()),
+        item.table_name.as_deref(),
+        item.sql_content.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|text| query.similarity(text))
+    .filter(|s| *s >= crate::search_match::MIN_SIMILARITY)
+    .reduce(f32::max)
 }
 
 /// Skor Quick Open untuk hasil kemiripan: 100..=300, sengaja di bawah semua
@@ -281,26 +334,75 @@ fn parse_query_prefix(query: &str) -> (Option<QuickOpenKind>, &str) {
     let lower = query.to_lowercase();
     let lower_str = lower.as_str();
 
-    if let Some(rest) = lower_str.strip_prefix("t:").or_else(|| lower_str.strip_prefix("@table ")).or_else(|| lower_str.strip_prefix("@t ")) {
-        return (Some(QuickOpenKind::Table), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str
+        .strip_prefix("t:")
+        .or_else(|| lower_str.strip_prefix("@table "))
+        .or_else(|| lower_str.strip_prefix("@t "))
+    {
+        return (
+            Some(QuickOpenKind::Table),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix("v:").or_else(|| lower_str.strip_prefix("@view ")).or_else(|| lower_str.strip_prefix("@v ")) {
-        return (Some(QuickOpenKind::View), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str
+        .strip_prefix("v:")
+        .or_else(|| lower_str.strip_prefix("@view "))
+        .or_else(|| lower_str.strip_prefix("@v "))
+    {
+        return (
+            Some(QuickOpenKind::View),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix("p:").or_else(|| lower_str.strip_prefix("@proc ")).or_else(|| lower_str.strip_prefix("@p ")) {
-        return (Some(QuickOpenKind::Procedure), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str
+        .strip_prefix("p:")
+        .or_else(|| lower_str.strip_prefix("@proc "))
+        .or_else(|| lower_str.strip_prefix("@p "))
+    {
+        return (
+            Some(QuickOpenKind::Procedure),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix("q:").or_else(|| lower_str.strip_prefix("/").or_else(|| lower_str.strip_prefix("@query "))) {
-        return (Some(QuickOpenKind::SavedQuery), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str.strip_prefix("q:").or_else(|| {
+        lower_str
+            .strip_prefix("/")
+            .or_else(|| lower_str.strip_prefix("@query "))
+    }) {
+        return (
+            Some(QuickOpenKind::SavedQuery),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix("h:").or_else(|| lower_str.strip_prefix("?").or_else(|| lower_str.strip_prefix("@hist "))) {
-        return (Some(QuickOpenKind::History), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str.strip_prefix("h:").or_else(|| {
+        lower_str
+            .strip_prefix("?")
+            .or_else(|| lower_str.strip_prefix("@hist "))
+    }) {
+        return (
+            Some(QuickOpenKind::History),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix("c:").or_else(|| lower_str.strip_prefix("#").or_else(|| lower_str.strip_prefix("@conn "))) {
-        return (Some(QuickOpenKind::Connection), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str.strip_prefix("c:").or_else(|| {
+        lower_str
+            .strip_prefix("#")
+            .or_else(|| lower_str.strip_prefix("@conn "))
+    }) {
+        return (
+            Some(QuickOpenKind::Connection),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
-    if let Some(rest) = lower_str.strip_prefix(">").or_else(|| lower_str.strip_prefix("cmd:").or_else(|| lower_str.strip_prefix("@cmd "))) {
-        return (Some(QuickOpenKind::Command), query[query.len() - rest.len()..].trim());
+    if let Some(rest) = lower_str.strip_prefix(">").or_else(|| {
+        lower_str
+            .strip_prefix("cmd:")
+            .or_else(|| lower_str.strip_prefix("@cmd "))
+    }) {
+        return (
+            Some(QuickOpenKind::Command),
+            query[query.len() - rest.len()..].trim(),
+        );
     }
 
     (None, query)
@@ -327,12 +429,19 @@ fn score_fuzzy_match_fast(q_lower: &str, item: &QuickOpenItem) -> Option<i32> {
 
     // Title contains exact substring
     if let Some(pos) = title_lower.find(q_lower) {
-        let word_boundary_bonus = if pos == 0 || title_lower.as_bytes().get(pos.saturating_sub(1)).is_some_and(|&b| b == b'_' || b == b'.' || b == b' ') {
+        let word_boundary_bonus = if pos == 0
+            || title_lower
+                .as_bytes()
+                .get(pos.saturating_sub(1))
+                .is_some_and(|&b| b == b'_' || b == b'.' || b == b' ')
+        {
             1000
         } else {
             0
         };
-        return Some(3000 + word_boundary_bonus - (pos as i32 * 20) - (item.title.len() as i32 * 2));
+        return Some(
+            3000 + word_boundary_bonus - (pos as i32 * 20) - (item.title.len() as i32 * 2),
+        );
     }
 
     // Subtitle contains exact substring
@@ -386,7 +495,10 @@ fn subsequence_fuzzy_fast(query_lower: &str, target_orig: &str, target_lower: &s
             }
 
             // Word boundary & CamelCase bonus
-            let is_boundary = idx == 0 || orig_bytes.get(idx.saturating_sub(1)).is_some_and(|&c| c == b'_' || c == b'.' || c == b' ');
+            let is_boundary = idx == 0
+                || orig_bytes
+                    .get(idx.saturating_sub(1))
+                    .is_some_and(|&c| c == b'_' || c == b'.' || c == b' ');
             let is_camel = orig_bytes.get(idx).is_some_and(|c| c.is_ascii_uppercase());
             if is_boundary || is_camel {
                 score += 150;
@@ -427,7 +539,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                 conn.connection_type.badge_label(),
                 conn.host,
                 conn.port,
-                if conn.database.is_empty() { "default" } else { &conn.database }
+                if conn.database.is_empty() {
+                    "default"
+                } else {
+                    &conn.database
+                }
             );
             items.push(QuickOpenItem::new(
                 id,
@@ -473,12 +589,7 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| format!("Conn #{}", conn_id));
 
-                let subtitle = format!(
-                    "{} • {} • {}",
-                    kind.label(),
-                    db_name,
-                    conn_name
-                );
+                let subtitle = format!("{} • {} • {}", kind.label(), db_name, conn_name);
 
                 items.push(QuickOpenItem::new(
                     id,
@@ -537,7 +648,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                         k,
                         conn_id,
                         Some(conn_name),
-                        if db_name.is_empty() { None } else { Some(db_name) },
+                        if db_name.is_empty() {
+                            None
+                        } else {
+                            Some(db_name)
+                        },
                         Some(node.name.clone()),
                         node.file_path.clone(),
                         None,
@@ -588,7 +703,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|ext| ext == "sql") {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("query.sql").to_string();
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("query.sql")
+                    .to_string();
                 let path_str = path.to_string_lossy().to_string();
                 let id = format!("query_{}", path_str);
                 if seen_ids.insert(id.clone()) {
@@ -612,7 +731,13 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
 
     // 4. QUERY HISTORY (From RAM or SQLite)
     for hist in &tabular.history_items {
-        let clean_sql = hist.query.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+        let clean_sql = hist
+            .query
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         let preview_title = if clean_sql.len() > 60 {
             format!("{}…", &clean_sql[..60])
         } else {
@@ -639,7 +764,9 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
     }
 
     // If history in RAM is empty, try loading from SQLite
-    if tabular.history_items.is_empty() && let Some(pool) = &tabular.db_pool {
+    if tabular.history_items.is_empty()
+        && let Some(pool) = &tabular.db_pool
+    {
         let pool_clone = pool.clone();
         let rt = tabular.get_runtime();
         let history_rows = rt.block_on(async {
@@ -652,7 +779,12 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         });
 
         for (_hid, q_text, conn_id, conn_name, exec_at) in history_rows {
-            let clean_sql = q_text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+            let clean_sql = q_text
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
             let preview_title = if clean_sql.len() > 60 {
                 format!("{}…", &clean_sql[..60])
             } else {
@@ -681,36 +813,124 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
 
     // 5. ACTIONS & COMMANDS
     let commands = [
-        ("Query: Run", "Execute the current query or selection", "⌘ Enter"),
-        ("Query: Format SQL", "Format and beautify SQL query", "⌘ Shift+F"),
-        ("Query: Explain", "Inspect query execution plan", "⌘ Shift+E"),
+        (
+            "Query: Run",
+            "Execute the current query or selection",
+            "⌘ Enter",
+        ),
+        (
+            "Query: Format SQL",
+            "Format and beautify SQL query",
+            "⌘ Shift+F",
+        ),
+        (
+            "Query: Explain",
+            "Inspect query execution plan",
+            "⌘ Shift+E",
+        ),
         ("Query: New Tab", "Open a new query editor tab", "⌘T"),
         ("Query: Close Tab", "Close current editor tab", "⌘W"),
         ("Query: Save Tab", "Save query to file", "⌘S"),
-        ("Editor: Go to Definition", "Navigate to symbol / table in tree", "F12"),
-        ("Editor: Rename Symbol", "Rename table/column across query", "F2"),
-        ("Editor: Toggle Find & Replace", "Open search and replace toolbar", "⌘F"),
+        (
+            "Editor: Go to Definition",
+            "Navigate to symbol / table in tree",
+            "F12",
+        ),
+        (
+            "Editor: Rename Symbol",
+            "Rename table/column across query",
+            "F2",
+        ),
+        (
+            "Editor: Toggle Find & Replace",
+            "Open search and replace toolbar",
+            "⌘F",
+        ),
         ("Editor: Toggle Word Wrap", "Wrap long SQL query lines", ""),
-        ("Editor: Toggle Line Numbers", "Show or hide editor line numbers", ""),
+        (
+            "Editor: Toggle Line Numbers",
+            "Show or hide editor line numbers",
+            "",
+        ),
         ("Data: Export CSV", "Export current result set to CSV", ""),
         ("Data: Export JSON", "Export current result set to JSON", ""),
-        ("Data: Export SQL Inserts", "Export data as SQL INSERT statements", ""),
-        ("Data: Export Markdown", "Export table results as Markdown", ""),
+        (
+            "Data: Export SQL Inserts",
+            "Export data as SQL INSERT statements",
+            "",
+        ),
+        (
+            "Data: Export Markdown",
+            "Export table results as Markdown",
+            "",
+        ),
         ("Data: Import CSV", "Import CSV data into table", ""),
-        ("Transaction: Begin / Toggle", "Toggle transactional execution mode", "⌘ Shift+T"),
-        ("Transaction: Commit", "Commit pending transaction changes", ""),
-        ("Transaction: Rollback", "Rollback pending transaction changes", ""),
-        ("DBA: Live Process Monitor", "Open real-time processlist monitor & kill queries", ""),
-        ("DBA: Deadlock & Lock Tree", "Inspect active lock dependencies and blocking hierarchy", ""),
-        ("DBA: Manage Users & Privileges", "Open User & Role Management and Object Grants GUI", ""),
-        ("DBA: Create New User", "Create database user account & assign permissions", ""),
-        ("Plugins: Extensibility & Wasm Automation", "Run Wasm plugins, export Parquet/DuckDB & generate ORM models", ""),
+        (
+            "Transaction: Begin / Toggle",
+            "Toggle transactional execution mode",
+            "⌘ Shift+T",
+        ),
+        (
+            "Transaction: Commit",
+            "Commit pending transaction changes",
+            "",
+        ),
+        (
+            "Transaction: Rollback",
+            "Rollback pending transaction changes",
+            "",
+        ),
+        (
+            "DBA: Live Process Monitor",
+            "Open real-time processlist monitor & kill queries",
+            "",
+        ),
+        (
+            "DBA: Deadlock & Lock Tree",
+            "Inspect active lock dependencies and blocking hierarchy",
+            "",
+        ),
+        (
+            "DBA: Manage Users & Privileges",
+            "Open User & Role Management and Object Grants GUI",
+            "",
+        ),
+        (
+            "DBA: Create New User",
+            "Create database user account & assign permissions",
+            "",
+        ),
+        (
+            "Plugins: Extensibility & Wasm Automation",
+            "Run Wasm plugins, export Parquet/DuckDB & generate ORM models",
+            "",
+        ),
         ("View: Refresh", "Refresh active database or table", "⌘R"),
-        ("Preferences: Color Theme", "Change editor and UI color palette", ""),
-        ("Preferences: Settings", "Configure application settings", "⌘,"),
-        ("Help: Keyboard Shortcuts", "View and customize keyboard shortcuts", ""),
-        ("Export All Data (ZIP)", "Export all connections, queries, HTTP APIs, and history to a ZIP file", ""),
-        ("Import All Data (ZIP)", "Restore all connections, queries, HTTP APIs, and history from a ZIP file", ""),
+        (
+            "Preferences: Color Theme",
+            "Change editor and UI color palette",
+            "",
+        ),
+        (
+            "Preferences: Settings",
+            "Configure application settings",
+            "⌘,",
+        ),
+        (
+            "Help: Keyboard Shortcuts",
+            "View and customize keyboard shortcuts",
+            "",
+        ),
+        (
+            "Export All Data (ZIP)",
+            "Export all connections, queries, HTTP APIs, and history to a ZIP file",
+            "",
+        ),
+        (
+            "Import All Data (ZIP)",
+            "Restore all connections, queries, HTTP APIs, and history from a ZIP file",
+            "",
+        ),
     ];
 
     for (cmd_title, cmd_sub, sc) in commands {
@@ -730,7 +950,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                 None,
                 None,
                 Some(cmd_title.to_string()),
-                if sc.is_empty() { None } else { Some(sc.to_string()) },
+                if sc.is_empty() {
+                    None
+                } else {
+                    Some(sc.to_string())
+                },
             ));
         }
     }
@@ -740,13 +964,19 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
 
 /// Execute an item selected from Quick Open
 pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
-    info!("🚀 Executing Quick Open Item: [{:?}] {}", item.kind, item.title);
+    info!(
+        "🚀 Executing Quick Open Item: [{:?}] {}",
+        item.kind, item.title
+    );
 
     match item.kind {
         QuickOpenKind::Table | QuickOpenKind::View => {
             let conn_id = item.connection_id.unwrap_or(0);
             let db_name = item.database_name.clone().unwrap_or_default();
-            let table_name = item.table_name.clone().unwrap_or_else(|| item.title.clone());
+            let table_name = item
+                .table_name
+                .clone()
+                .unwrap_or_else(|| item.title.clone());
             let is_view = item.kind == QuickOpenKind::View;
 
             tabular.current_connection_id = Some(conn_id);
@@ -755,7 +985,11 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
             }
 
             // Find connection info to generate appropriate query
-            let conn_opt = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned();
+            let conn_opt = tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .cloned();
 
             if let Some(conn) = conn_opt {
                 let tab_title = if is_view {
@@ -767,26 +1001,38 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                 let query_content = match conn.connection_type {
                     models::enums::DatabaseType::MySQL => {
                         if !db_name.is_empty() {
-                            format!("USE `{}`;\nSELECT * FROM `{}` LIMIT 100;", db_name, table_name)
+                            format!(
+                                "USE `{}`;\nSELECT * FROM `{}` LIMIT 100;",
+                                db_name, table_name
+                            )
                         } else {
                             format!("SELECT * FROM `{}` LIMIT 100;", table_name)
                         }
                     }
                     models::enums::DatabaseType::PostgreSQL => {
                         if !db_name.is_empty() {
-                            format!("SELECT * FROM \"{}\".\"{}\" LIMIT 100;", db_name, table_name)
+                            format!(
+                                "SELECT * FROM \"{}\".\"{}\" LIMIT 100;",
+                                db_name, table_name
+                            )
                         } else {
                             format!("SELECT * FROM \"{}\" LIMIT 100;", table_name)
                         }
                     }
                     models::enums::DatabaseType::MsSQL => {
-                        crate::driver_mssql::build_mssql_select_query(db_name.clone(), table_name.clone())
+                        crate::driver_mssql::build_mssql_select_query(
+                            db_name.clone(),
+                            table_name.clone(),
+                        )
                     }
                     models::enums::DatabaseType::Redis => {
                         format!("SCAN 0 MATCH *{}* COUNT 100", table_name)
                     }
                     models::enums::DatabaseType::MongoDB => {
-                        format!("// Sample collection {}\ndb.{}.find().limit(100)", table_name, table_name)
+                        format!(
+                            "// Sample collection {}\ndb.{}.find().limit(100)",
+                            table_name, table_name
+                        )
                     }
                     models::enums::DatabaseType::SQLite | models::enums::DatabaseType::ApiHttp => {
                         format!("SELECT * FROM `{}` LIMIT 100;", table_name)
@@ -798,7 +1044,11 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                     tabular,
                     &tab_title,
                     conn_id,
-                    if db_name.is_empty() { None } else { Some(&db_name) },
+                    if db_name.is_empty() {
+                        None
+                    } else {
+                        Some(&db_name)
+                    },
                 ) {
                     editor::switch_to_tab(tabular, existing_idx);
                 } else {
@@ -807,7 +1057,11 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                         tab_title.clone(),
                         query_content.clone(),
                         Some(conn_id),
-                        if db_name.is_empty() { None } else { Some(db_name.clone()) },
+                        if db_name.is_empty() {
+                            None
+                        } else {
+                            Some(db_name.clone())
+                        },
                     );
                 }
 
@@ -819,16 +1073,32 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
         QuickOpenKind::Procedure | QuickOpenKind::Function => {
             let conn_id = item.connection_id.unwrap_or(0);
             let db_name = item.database_name.clone();
-            let proc_name = item.table_name.clone().unwrap_or_else(|| item.title.clone());
+            let proc_name = item
+                .table_name
+                .clone()
+                .unwrap_or_else(|| item.title.clone());
 
             tabular.current_connection_id = Some(conn_id);
-            let conn_opt = tabular.connections.iter().find(|c| c.id == Some(conn_id)).cloned();
+            let conn_opt = tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(conn_id))
+                .cloned();
 
             if let Some(conn) = conn_opt {
-                let definition_opt = crate::connection::fetch_procedure_definition(&conn, db_name.as_deref(), &proc_name);
+                let definition_opt = crate::connection::fetch_procedure_definition(
+                    &conn,
+                    db_name.as_deref(),
+                    &proc_name,
+                );
                 let content = match definition_opt {
                     Some(sql) if !sql.trim().is_empty() => sql,
-                    _ => format!("-- Stored Procedure: {}\n-- Database: {}\n-- Connection: {}\n\n", proc_name, db_name.as_deref().unwrap_or("default"), conn.name),
+                    _ => format!(
+                        "-- Stored Procedure: {}\n-- Database: {}\n-- Connection: {}\n\n",
+                        proc_name,
+                        db_name.as_deref().unwrap_or("default"),
+                        conn.name
+                    ),
                 };
 
                 let tab_title = format!("Proc: {}", proc_name);
@@ -940,14 +1210,24 @@ fn apply_semantic_history(tabular: &mut Tabular) {
     let rt = tabular.get_runtime();
     let (history_hits, table_hits) = rt.block_on(async {
         let history = if want_history {
-            crate::vector_index::search_history(&pool, clean_query, 10, crate::vector_index::HISTORY_MAX_DISTANCE)
-                .await
+            crate::vector_index::search_history(
+                &pool,
+                clean_query,
+                10,
+                crate::vector_index::HISTORY_MAX_DISTANCE,
+            )
+            .await
         } else {
             Ok(Vec::new())
         };
         let tables = if want_tables {
-            crate::vector_index::search_tables(&pool, clean_query, 20, crate::vector_index::TABLE_MAX_DISTANCE)
-                .await
+            crate::vector_index::search_tables(
+                &pool,
+                clean_query,
+                20,
+                crate::vector_index::TABLE_MAX_DISTANCE,
+            )
+            .await
         } else {
             Ok(Vec::new())
         };
@@ -965,11 +1245,9 @@ fn apply_semantic_history(tabular: &mut Tabular) {
     let state = &mut tabular.quick_open_state;
     let mut matched: Vec<(usize, i32)> = Vec::new();
     for (sql, distance) in history_hits {
-        if let Some(idx) = state
-            .items
-            .iter()
-            .position(|it| it.kind == QuickOpenKind::History && it.sql_content.as_deref() == Some(sql.as_str()))
-        {
+        if let Some(idx) = state.items.iter().position(|it| {
+            it.kind == QuickOpenKind::History && it.sql_content.as_deref() == Some(sql.as_str())
+        }) {
             matched.push((idx, semantic_score(1.0 - distance)));
         }
     }
@@ -1022,11 +1300,13 @@ pub fn cycle_filter_category(tabular: &mut Tabular) {
 pub fn execute_selected_quick_open(tabular: &mut Tabular) {
     let selected_item = {
         if tabular.quick_open_state.filtered_items.is_empty()
-            || tabular.quick_open_state.selected_index >= tabular.quick_open_state.filtered_items.len()
+            || tabular.quick_open_state.selected_index
+                >= tabular.quick_open_state.filtered_items.len()
         {
             None
         } else {
-            let item_idx = tabular.quick_open_state.filtered_items[tabular.quick_open_state.selected_index].0;
+            let item_idx =
+                tabular.quick_open_state.filtered_items[tabular.quick_open_state.selected_index].0;
             tabular.quick_open_state.items.get(item_idx).cloned()
         }
     };
@@ -1039,7 +1319,11 @@ pub fn execute_selected_quick_open(tabular: &mut Tabular) {
 
 /// Render the Universal Quick Open Modal UI with 60 FPS Virtualized Scrolling
 pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
-    let progress = window_egui::style::render_modal_backdrop(ctx, "quick_open_spotlight", tabular.quick_open_state.is_open);
+    let progress = window_egui::style::render_modal_backdrop(
+        ctx,
+        "quick_open_spotlight",
+        tabular.quick_open_state.is_open,
+    );
     if progress <= 0.01 {
         return;
     }
@@ -1417,17 +1701,50 @@ mod tests {
 
     #[test]
     fn test_parse_query_prefix() {
-        assert_eq!(parse_query_prefix("t:users"), (Some(QuickOpenKind::Table), "users"));
-        assert_eq!(parse_query_prefix("@table orders"), (Some(QuickOpenKind::Table), "orders"));
-        assert_eq!(parse_query_prefix("v:active_users"), (Some(QuickOpenKind::View), "active_users"));
-        assert_eq!(parse_query_prefix("p:get_balance"), (Some(QuickOpenKind::Procedure), "get_balance"));
-        assert_eq!(parse_query_prefix("q:monthly_report"), (Some(QuickOpenKind::SavedQuery), "monthly_report"));
-        assert_eq!(parse_query_prefix("/monthly_report"), (Some(QuickOpenKind::SavedQuery), "monthly_report"));
-        assert_eq!(parse_query_prefix("h:select *"), (Some(QuickOpenKind::History), "select *"));
-        assert_eq!(parse_query_prefix("?select *"), (Some(QuickOpenKind::History), "select *"));
-        assert_eq!(parse_query_prefix("c:prod_db"), (Some(QuickOpenKind::Connection), "prod_db"));
-        assert_eq!(parse_query_prefix("#prod_db"), (Some(QuickOpenKind::Connection), "prod_db"));
-        assert_eq!(parse_query_prefix(">format"), (Some(QuickOpenKind::Command), "format"));
+        assert_eq!(
+            parse_query_prefix("t:users"),
+            (Some(QuickOpenKind::Table), "users")
+        );
+        assert_eq!(
+            parse_query_prefix("@table orders"),
+            (Some(QuickOpenKind::Table), "orders")
+        );
+        assert_eq!(
+            parse_query_prefix("v:active_users"),
+            (Some(QuickOpenKind::View), "active_users")
+        );
+        assert_eq!(
+            parse_query_prefix("p:get_balance"),
+            (Some(QuickOpenKind::Procedure), "get_balance")
+        );
+        assert_eq!(
+            parse_query_prefix("q:monthly_report"),
+            (Some(QuickOpenKind::SavedQuery), "monthly_report")
+        );
+        assert_eq!(
+            parse_query_prefix("/monthly_report"),
+            (Some(QuickOpenKind::SavedQuery), "monthly_report")
+        );
+        assert_eq!(
+            parse_query_prefix("h:select *"),
+            (Some(QuickOpenKind::History), "select *")
+        );
+        assert_eq!(
+            parse_query_prefix("?select *"),
+            (Some(QuickOpenKind::History), "select *")
+        );
+        assert_eq!(
+            parse_query_prefix("c:prod_db"),
+            (Some(QuickOpenKind::Connection), "prod_db")
+        );
+        assert_eq!(
+            parse_query_prefix("#prod_db"),
+            (Some(QuickOpenKind::Connection), "prod_db")
+        );
+        assert_eq!(
+            parse_query_prefix(">format"),
+            (Some(QuickOpenKind::Command), "format")
+        );
         assert_eq!(parse_query_prefix("users"), (None, "users"));
     }
 

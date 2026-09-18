@@ -32,10 +32,15 @@ pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
     let result = serde_json::to_string_pretty(&persisted)
         .map_err(|e| e.to_string())
         .and_then(|json| {
-            crate::directory::write_file_atomically(&path, json.as_bytes()).map_err(|e| e.to_string())
+            crate::directory::write_file_atomically(&path, json.as_bytes())
+                .map_err(|e| e.to_string())
         });
     if let Err(e) = result {
-        log::error!("Failed to save HTTP request state to {}: {}", path.display(), e);
+        log::error!(
+            "Failed to save HTTP request state to {}: {}",
+            path.display(),
+            e
+        );
     }
 }
 
@@ -220,7 +225,10 @@ fn render_url_bar(
 
         // SEND button — identical width, height, and corner radius as Save and Code
         let send_label = if state.is_loading {
-            format!("{}  Sending…", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint)
+            format!(
+                "{}  Sending…",
+                egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint
+            )
         } else {
             format!("{}  Send", egui_icons::icons::ICON_PLAY_ARROW.codepoint)
         };
@@ -518,7 +526,10 @@ fn render_code_dialog(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let copy_label = format!("{} Copy to Clipboard", egui_icons::icons::ICON_CONTENT_COPY.codepoint);
+                        let copy_label = format!(
+                            "{} Copy to Clipboard",
+                            egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                        );
                         let copy_btn = egui::Button::new(
                             egui::RichText::new(copy_label)
                                 .color(egui::Color32::WHITE)
@@ -979,7 +990,8 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
             );
 
             let del_btn = egui::Button::new(
-                egui_icons::icons::ICON_CLOSE.rich_text()
+                egui_icons::icons::ICON_CLOSE
+                    .rich_text()
                     .size(if metrics.is_touch { 14.0 } else { 11.0 }),
             )
             .corner_radius(egui::CornerRadius::same(5));
@@ -1070,8 +1082,7 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     ui.label("Username:");
                     crate::window_egui::style::render_text_field(
                         ui,
-                        egui::TextEdit::singleline(&mut state.basic_user)
-                            .hint_text("username"),
+                        egui::TextEdit::singleline(&mut state.basic_user).hint_text("username"),
                         260.0,
                         None,
                     );
@@ -1097,8 +1108,7 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                     ui.label("Key Name:");
                     crate::window_egui::style::render_text_field(
                         ui,
-                        egui::TextEdit::singleline(&mut state.api_key_name)
-                            .hint_text("X-API-Key"),
+                        egui::TextEdit::singleline(&mut state.api_key_name).hint_text("X-API-Key"),
                         260.0,
                         None,
                     );
@@ -1667,7 +1677,11 @@ fn xml_tag_end(input: &str) -> usize {
 /// JSON syntax highlighter.
 /// Colors: cyan = keys, green = string values, orange = numbers,
 ///         purple = true/false/null, gray = punctuation.
-pub(crate) fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_json(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 

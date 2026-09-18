@@ -12,7 +12,10 @@ pub(crate) fn get_data_dir() -> std::path::PathBuf {
 /// Tulis file secara atomik: tulis ke file sementara di folder yang sama lalu
 /// rename. Crash atau disk penuh di tengah penulisan tidak akan meninggalkan
 /// file setengah jadi yang membuat data user hilang saat dibaca ulang.
-pub(crate) fn write_file_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_file_atomically(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

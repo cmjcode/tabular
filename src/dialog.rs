@@ -1168,7 +1168,10 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui
-                            .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Cancel"))
+                            .add_sized(
+                                egui::vec2(110.0, 32.0),
+                                crate::window_egui::style::btn_secondary("Cancel"),
+                            )
                             .clicked()
                         {
                             action = WizardAction::Cancel;
@@ -1176,7 +1179,10 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
 
                         if current_step.previous().is_some()
                             && ui
-                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Back"))
+                                .add_sized(
+                                    egui::vec2(110.0, 32.0),
+                                    crate::window_egui::style::btn_secondary("Back"),
+                                )
                                 .clicked()
                         {
                             action = WizardAction::Back;
@@ -1188,9 +1194,11 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     .as_ref()
                                     .map(|res| res.is_ok())
                                     .unwrap_or(false);
-                                let create_button =
-                                    crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Create Table")
-                                        .min_size(egui::vec2(110.0, 32.0));
+                                let create_button = crate::window_egui::style::btn_primary_ctx(
+                                    ui.ctx(),
+                                    "Create Table",
+                                )
+                                .min_size(egui::vec2(110.0, 32.0));
                                 if ui.add_enabled(create_enabled, create_button).clicked() {
                                     action = WizardAction::Create;
                                 }
@@ -1205,7 +1213,10 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                     copy_preview = Some(sql.clone());
                                 }
                             } else if ui
-                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Next"))
+                                .add_sized(
+                                    egui::vec2(110.0, 32.0),
+                                    crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Next"),
+                                )
                                 .clicked()
                             {
                                 action = WizardAction::Next;
@@ -1280,7 +1291,11 @@ fn parse_csv_preview(
         .map_err(|e| e.to_string())?;
 
     let headers: Vec<String> = if has_header_row {
-        rdr.headers().map_err(|e| e.to_string())?.iter().map(|s| s.to_string()).collect()
+        rdr.headers()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         vec![]
     };
@@ -1313,7 +1328,11 @@ fn parse_csv_all(
     Ok(rows)
 }
 
-fn csv_quote_value(v: &str, null_value: &str, db_type: &crate::models::enums::DatabaseType) -> String {
+fn csv_quote_value(
+    v: &str,
+    null_value: &str,
+    db_type: &crate::models::enums::DatabaseType,
+) -> String {
     if v == null_value || (null_value.is_empty() && v.is_empty()) {
         return "NULL".to_string();
     }
@@ -1354,10 +1373,18 @@ fn build_csv_insert_batches(
 
     let full_table = match (db_type, database_name) {
         (crate::models::enums::DatabaseType::MySQL, Some(db)) => {
-            format!("{}.{}", csv_quote_ident(db, db_type), csv_quote_ident(table_name, db_type))
+            format!(
+                "{}.{}",
+                csv_quote_ident(db, db_type),
+                csv_quote_ident(table_name, db_type)
+            )
         }
         (crate::models::enums::DatabaseType::PostgreSQL, Some(schema)) => {
-            format!("{}.{}", csv_quote_ident(schema, db_type), csv_quote_ident(table_name, db_type))
+            format!(
+                "{}.{}",
+                csv_quote_ident(schema, db_type),
+                csv_quote_ident(table_name, db_type)
+            )
         }
         (crate::models::enums::DatabaseType::MsSQL, Some(db)) => {
             format!("[{}].dbo.{}", db, csv_quote_ident(table_name, db_type))
@@ -1388,7 +1415,9 @@ fn build_csv_insert_batches(
             .collect();
         batches.push(format!(
             "INSERT INTO {} ({}) VALUES\n{};",
-            full_table, col_list, rows_sql.join(",\n")
+            full_table,
+            col_list,
+            rows_sql.join(",\n")
         ));
     }
     batches
@@ -1403,9 +1432,18 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         return;
     }
 
-    window_egui::style::render_modal_backdrop(ctx, "csv_import_modal", tabular.show_csv_import_dialog);
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "csv_import_modal",
+        tabular.show_csv_import_dialog,
+    );
 
-    let table_name = tabular.csv_import_state.as_ref().unwrap().table_name.clone();
+    let table_name = tabular
+        .csv_import_state
+        .as_ref()
+        .unwrap()
+        .table_name
+        .clone();
     let title = format!("Import Data into \"{}\"", table_name);
     let mut open_flag = tabular.show_csv_import_dialog;
     let mut should_close = false;
@@ -1896,7 +1934,10 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         let state = tabular.csv_import_state.as_mut().unwrap();
         let table_cols = state.table_columns.clone();
         for mapping in &mut state.column_mappings {
-            if let Some(matched) = table_cols.iter().find(|c| c.eq_ignore_ascii_case(&mapping.csv_header)) {
+            if let Some(matched) = table_cols
+                .iter()
+                .find(|c| c.eq_ignore_ascii_case(&mapping.csv_header))
+            {
                 mapping.target_column = matched.clone();
             }
         }
@@ -1928,27 +1969,27 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         && let Some(path) = rfd::FileDialog::new()
             .add_filter("CSV / TSV", &["csv", "tsv", "txt"])
             .pick_file()
-        {
-            let state = tabular.csv_import_state.as_mut().unwrap();
-            let delim = state.delimiter;
-            let has_hdr = state.has_header_row;
-            match parse_csv_preview(&path, delim, has_hdr) {
-                Ok((headers, preview)) => {
-                    let table_cols = state.table_columns.clone();
-                    let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
-                    state.preview_headers = headers;
-                    state.preview_rows = preview;
-                    state.column_mappings = mappings;
-                    state.file_path = Some(path);
-                    state.status = crate::models::structs::CsvImportStatus::Idle;
-                    state.progress_message = String::new();
-                }
-                Err(e) => {
-                    state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                    state.progress_message = format!("Parse error: {}", e);
-                }
+    {
+        let state = tabular.csv_import_state.as_mut().unwrap();
+        let delim = state.delimiter;
+        let has_hdr = state.has_header_row;
+        match parse_csv_preview(&path, delim, has_hdr) {
+            Ok((headers, preview)) => {
+                let table_cols = state.table_columns.clone();
+                let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
+                state.preview_headers = headers;
+                state.preview_rows = preview;
+                state.column_mappings = mappings;
+                state.file_path = Some(path);
+                state.status = crate::models::structs::CsvImportStatus::Idle;
+                state.progress_message = String::new();
+            }
+            Err(e) => {
+                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+                state.progress_message = format!("Parse error: {}", e);
             }
         }
+    }
 
     if trigger_import {
         let state = tabular.csv_import_state.as_ref().unwrap();
@@ -1975,7 +2016,9 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 );
                 if batches.is_empty() {
                     let state = tabular.csv_import_state.as_mut().unwrap();
-                    state.status = crate::models::structs::CsvImportStatus::Failed("No data or all columns skipped.".into());
+                    state.status = crate::models::structs::CsvImportStatus::Failed(
+                        "No data or all columns skipped.".into(),
+                    );
                     state.progress_message = "No data or all columns skipped.".into();
                 } else {
                     let batch_count = batches.len();
@@ -1983,7 +2026,12 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     let mut all_ok = true;
                     for (i, sql) in batches.into_iter().enumerate() {
                         let job_id = tabular.jobs.allocate_id();
-                        match crate::connection::prepare_query_job(tabular, connection_id, sql, job_id) {
+                        match crate::connection::prepare_query_job(
+                            tabular,
+                            connection_id,
+                            sql,
+                            job_id,
+                        ) {
                             Ok(job) => {
                                 let preview = format!("CSV import batch {}/{}", i + 1, batch_count);
                                 tabular.jobs.active.insert(
@@ -2000,8 +2048,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             }
                             Err(e) => {
                                 let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
-                                state.progress_message = format!("Failed to prepare batch: {:?}", e);
+                                state.status = crate::models::structs::CsvImportStatus::Failed(
+                                    format!("{:?}", e),
+                                );
+                                state.progress_message =
+                                    format!("Failed to prepare batch: {:?}", e);
                                 all_ok = false;
                                 break;
                             }
@@ -2020,7 +2071,9 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             }
                             Err(e) => {
                                 let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
+                                state.status = crate::models::structs::CsvImportStatus::Failed(
+                                    format!("{:?}", e),
+                                );
                                 state.progress_message = format!("Failed to start import: {:?}", e);
                             }
                         }
@@ -2048,19 +2101,34 @@ fn build_auto_mappings(
     table_cols: &[String],
 ) -> Vec<crate::models::structs::CsvColumnMapping> {
     if has_header_row {
-        headers.iter().map(|h| {
-            let target = table_cols.iter()
-                .find(|c| c.to_lowercase() == h.to_lowercase())
-                .cloned()
-                .unwrap_or_else(|| "__skip__".to_string());
-            crate::models::structs::CsvColumnMapping { csv_header: h.clone(), target_column: target }
-        }).collect()
+        headers
+            .iter()
+            .map(|h| {
+                let target = table_cols
+                    .iter()
+                    .find(|c| c.to_lowercase() == h.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| "__skip__".to_string());
+                crate::models::structs::CsvColumnMapping {
+                    csv_header: h.clone(),
+                    target_column: target,
+                }
+            })
+            .collect()
     } else {
         let ncols = preview.first().map(|r| r.len()).unwrap_or(0);
-        (0..ncols).map(|i| {
-            let target = table_cols.get(i).cloned().unwrap_or_else(|| "__skip__".to_string());
-            crate::models::structs::CsvColumnMapping { csv_header: format!("col_{}", i + 1), target_column: target }
-        }).collect()
+        (0..ncols)
+            .map(|i| {
+                let target = table_cols
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "__skip__".to_string());
+                crate::models::structs::CsvColumnMapping {
+                    csv_header: format!("col_{}", i + 1),
+                    target_column: target,
+                }
+            })
+            .collect()
     }
 }
 
@@ -2081,8 +2149,10 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("Query ini memiliki parameter placeholder. Masukkan nilai parameter:")
-                        .strong(),
+                    egui::RichText::new(
+                        "Query ini memiliki parameter placeholder. Masukkan nilai parameter:",
+                    )
+                    .strong(),
                 );
                 ui.add_space(8.0);
 
@@ -2091,7 +2161,11 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                     .spacing([10.0, 8.0])
                     .show(ui, |ui| {
                         for (param_name, val) in &mut tabular.parameter_inputs {
-                            ui.label(egui::RichText::new(param_name.as_str()).monospace().strong());
+                            ui.label(
+                                egui::RichText::new(param_name.as_str())
+                                    .monospace()
+                                    .strong(),
+                            );
                             crate::window_egui::style::render_text_field(
                                 ui,
                                 egui::TextEdit::singleline(val).hint_text("Masukkan nilai..."),
@@ -2140,7 +2214,11 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
     if !tabular.show_unsafe_dml_dialog {
         return;
     }
-    window_egui::style::render_modal_backdrop(ctx, "unsafe_dml_dialog", tabular.show_unsafe_dml_dialog);
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "unsafe_dml_dialog",
+        tabular.show_unsafe_dml_dialog,
+    );
 
     let mut confirm_clicked = false;
     let mut cancel_clicked = false;
@@ -2208,4 +2286,3 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
         editor::execute_query_bypass_checks(tabular, query);
     }
 }
-

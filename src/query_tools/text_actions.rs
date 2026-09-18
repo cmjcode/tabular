@@ -3,7 +3,11 @@
 /// Toggle SQL line comments (`-- `) on lines spanned by selection.
 /// If all non-empty selected lines already start with `--`, comments are removed.
 /// Otherwise, `-- ` is added to each line.
-pub fn toggle_line_comments(text: &str, selection_start: usize, selection_end: usize) -> (String, usize, usize) {
+pub fn toggle_line_comments(
+    text: &str,
+    selection_start: usize,
+    selection_end: usize,
+) -> (String, usize, usize) {
     let reversed = selection_start > selection_end;
     let (sel_min, sel_max) = if reversed {
         (selection_end, selection_start)
@@ -167,7 +171,12 @@ pub fn duplicate_lines(text: &str, start_pos: usize, end_pos: usize) -> (String,
 }
 
 /// Move selected lines up or down (Alt+Up / Alt+Down).
-pub fn move_lines(text: &str, start_pos: usize, end_pos: usize, move_up: bool) -> (String, usize, usize) {
+pub fn move_lines(
+    text: &str,
+    start_pos: usize,
+    end_pos: usize,
+    move_up: bool,
+) -> (String, usize, usize) {
     let reversed = start_pos > end_pos;
     let (sel_min, sel_max) = if reversed {
         (end_pos, start_pos)

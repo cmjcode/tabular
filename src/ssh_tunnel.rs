@@ -88,8 +88,8 @@ fn key_lock(key: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-fn lock_registry()
--> Result<std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>>, String> {
+fn lock_registry() -> Result<std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>>, String>
+{
     TUNNELS
         .lock()
         .map_err(|_| "Failed to lock SSH tunnel registry".to_string())
@@ -269,7 +269,11 @@ fn spawn_tunnel(
         remote_port,
         connection.ssh_host.trim(),
         ssh_port,
-        if connection.ssh_jump_host.trim().is_empty() { "none" } else { connection.ssh_jump_host.trim() }
+        if connection.ssh_jump_host.trim().is_empty() {
+            "none"
+        } else {
+            connection.ssh_jump_host.trim()
+        }
     );
 
     let mut child = command.spawn().map_err(|e| {
@@ -504,4 +508,3 @@ mod tests {
         assert!(args.contains(&"deploy@private-app-server.lan".to_string()));
     }
 }
-

@@ -46,7 +46,7 @@ pub struct ExplainNode {
     pub total_cost: f64,
     pub cost_percentage: f32, // 0.0 - 100.0% relative to plan total cost
     pub actual_startup_time: Option<f64>, // ms
-    pub actual_total_time: Option<f64>,   // ms
+    pub actual_total_time: Option<f64>, // ms
     pub time_percentage: f32, // 0.0 - 100.0% relative to total execution time
 
     // Rows & cardinality
@@ -56,10 +56,10 @@ pub struct ExplainNode {
     pub actual_loops: Option<u64>,
 
     // Buffer & I/O statistics
-    pub buffer_hit: Option<u64>,      // Shared hit blocks
-    pub buffer_read: Option<u64>,     // Shared read blocks
-    pub buffer_dirtied: Option<u64>,  // Shared dirtied blocks
-    pub buffer_written: Option<u64>,  // Shared written blocks
+    pub buffer_hit: Option<u64>,     // Shared hit blocks
+    pub buffer_read: Option<u64>,    // Shared read blocks
+    pub buffer_dirtied: Option<u64>, // Shared dirtied blocks
+    pub buffer_written: Option<u64>, // Shared written blocks
     pub temp_read_blocks: Option<u64>,
     pub temp_written_blocks: Option<u64>,
 
@@ -143,24 +143,47 @@ impl ExplainNode {
     }
 
     pub fn total_nodes_count(&self) -> usize {
-        1 + self.children.iter().map(|c| c.total_nodes_count()).sum::<usize>()
+        1 + self
+            .children
+            .iter()
+            .map(|c| c.total_nodes_count())
+            .sum::<usize>()
     }
 
     pub fn count_warnings(&self) -> usize {
-        self.warnings.len() + self.children.iter().map(|c| c.count_warnings()).sum::<usize>()
+        self.warnings.len()
+            + self
+                .children
+                .iter()
+                .map(|c| c.count_warnings())
+                .sum::<usize>()
     }
 
     pub fn total_buffer_hit(&self) -> u64 {
-        self.buffer_hit.unwrap_or(0) + self.children.iter().map(|c| c.total_buffer_hit()).sum::<u64>()
+        self.buffer_hit.unwrap_or(0)
+            + self
+                .children
+                .iter()
+                .map(|c| c.total_buffer_hit())
+                .sum::<u64>()
     }
 
     pub fn total_buffer_read(&self) -> u64 {
-        self.buffer_read.unwrap_or(0) + self.children.iter().map(|c| c.total_buffer_read()).sum::<u64>()
+        self.buffer_read.unwrap_or(0)
+            + self
+                .children
+                .iter()
+                .map(|c| c.total_buffer_read())
+                .sum::<u64>()
     }
 
     pub fn total_temp_written(&self) -> u64 {
         self.temp_written_blocks.unwrap_or(0)
-            + self.children.iter().map(|c| c.total_temp_written()).sum::<u64>()
+            + self
+                .children
+                .iter()
+                .map(|c| c.total_temp_written())
+                .sum::<u64>()
     }
 
     pub fn has_disk_spill(&self) -> bool {

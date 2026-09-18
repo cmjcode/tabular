@@ -93,7 +93,8 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         let token_trimmed = token.trim();
         if !token_trimmed.is_empty() {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", token_trimmed));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", token_trimmed));
         }
     }
 
@@ -207,14 +208,18 @@ pub async fn check_for_updates_web_fallback() -> Result<UpdateInfo, UpdateError>
         .map_err(|e| UpdateError::ParseError(format!("Invalid current version: {}", e)))?;
 
     let latest_version_str = tag_name.strip_prefix('v').unwrap_or(&tag_name);
-    let latest_version = Version::parse(latest_version_str)
-        .map_err(|e| UpdateError::ParseError(format!("Invalid latest version tag '{}': {}", tag_name, e)))?;
+    let latest_version = Version::parse(latest_version_str).map_err(|e| {
+        UpdateError::ParseError(format!("Invalid latest version tag '{}': {}", tag_name, e))
+    })?;
 
     let update_available = latest_version > current_version;
     let release_url = if let Some(loc) = redirect_url {
         loc
     } else {
-        format!("https://github.com/{}/releases/tag/{}", GITHUB_REPO, tag_name)
+        format!(
+            "https://github.com/{}/releases/tag/{}",
+            GITHUB_REPO, tag_name
+        )
     };
 
     let release_notes = if update_available {
@@ -237,7 +242,9 @@ pub async fn check_for_updates_web_fallback() -> Result<UpdateInfo, UpdateError>
 }
 
 /// Returns `(download_url, asset_name, windows_update_kind)`
-fn find_asset_for_platform(assets: &[GitHubAsset]) -> (Option<String>, Option<String>, Option<WindowsUpdateKind>) {
+fn find_asset_for_platform(
+    assets: &[GitHubAsset],
+) -> (Option<String>, Option<String>, Option<WindowsUpdateKind>) {
     let platform = get_platform_info();
 
     debug!("🔍 Searching for asset matching platform: {}", platform);
@@ -472,12 +479,18 @@ mod tests {
 
     #[test]
     fn test_arch_matches() {
-        let win_x64 = PlatformInfo { os: "windows", arch: "x86_64" };
+        let win_x64 = PlatformInfo {
+            os: "windows",
+            arch: "x86_64",
+        };
         assert!(win_x64.arch_matches("tabular-0.10.5-windows-x86_64.msi"));
         assert!(win_x64.arch_matches("tabular-x86_64-pc-windows-msvc.zip"));
         assert!(!win_x64.arch_matches("tabular-aarch64-pc-windows-msvc.zip"));
 
-        let win_arm = PlatformInfo { os: "windows", arch: "aarch64" };
+        let win_arm = PlatformInfo {
+            os: "windows",
+            arch: "aarch64",
+        };
         assert!(win_arm.arch_matches("tabular-0.10.5-windows-aarch64.msi"));
         assert!(!win_arm.arch_matches("tabular-0.10.5-windows-x86_64.msi"));
     }
@@ -491,9 +504,14 @@ mod tests {
 
     #[test]
     fn test_update_error_formatting() {
-        let err_403 = UpdateError::NetworkError("GitHub API returned status: 403 Forbidden".to_string());
+        let err_403 =
+            UpdateError::NetworkError("GitHub API returned status: 403 Forbidden".to_string());
         assert!(err_403.to_string().contains("403 Forbidden"));
-        assert!(err_403.to_string().contains("https://github.com/tabular-id/tabular/releases"));
+        assert!(
+            err_403
+                .to_string()
+                .contains("https://github.com/tabular-id/tabular/releases")
+        );
 
         let err_generic = UpdateError::NetworkError("Connection refused".to_string());
         assert_eq!(err_generic.to_string(), "Network error: Connection refused");

@@ -19,7 +19,10 @@ pub fn generate_duckdb_script(
     ));
 
     // DuckDB Schema creation
-    sql.push_str(&format!("-- 1. Create In-Memory DuckDB Table Schema\nCREATE OR REPLACE TABLE \"{}\" (\n", table_name));
+    sql.push_str(&format!(
+        "-- 1. Create In-Memory DuckDB Table Schema\nCREATE OR REPLACE TABLE \"{}\" (\n",
+        table_name
+    ));
 
     let col_defs: Vec<String> = schema
         .columns
@@ -27,7 +30,11 @@ pub fn generate_duckdb_script(
         .map(|col| {
             let duckdb_type = map_to_duckdb_type(&col.data_type);
             let not_null = if !col.is_nullable { " NOT NULL" } else { "" };
-            let pk = if col.is_primary_key { " PRIMARY KEY" } else { "" };
+            let pk = if col.is_primary_key {
+                " PRIMARY KEY"
+            } else {
+                ""
+            };
             format!("    \"{}\" {}{}{}", col.name, duckdb_type, not_null, pk)
         })
         .collect();
@@ -47,7 +54,10 @@ pub fn generate_duckdb_script(
                 .join(", ");
 
             for chunk in sel.rows.chunks(100) {
-                sql.push_str(&format!("INSERT INTO \"{}\" ({}) VALUES\n", table_name, col_list));
+                sql.push_str(&format!(
+                    "INSERT INTO \"{}\" ({}) VALUES\n",
+                    table_name, col_list
+                ));
                 let rows: Vec<String> = chunk
                     .iter()
                     .map(|r| {

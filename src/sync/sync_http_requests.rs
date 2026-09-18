@@ -7,13 +7,15 @@ use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::mpsc;
 
+use super::api_client::{
+    ApiClient, CreateHttpRequestReq, RemoteHttpRequest, RemoteSharedFolder, UpdateHttpRequestReq,
+};
+use super::vault_crypto::{self, SymKey};
+use super::vault_sync;
 use crate::http_collection::{
     HttpFolder, HttpWorkspace, SavedRequest, load_workspaces, save_workspaces,
 };
 use crate::models::structs::{HttpAuthType, HttpBodyType, HttpMethod};
-use super::api_client::{ApiClient, CreateHttpRequestReq, RemoteHttpRequest, RemoteSharedFolder, UpdateHttpRequestReq};
-use super::vault_crypto::{self, SymKey};
-use super::vault_sync;
 
 /// Compute MD5 checksum of a SavedRequest (for conflict detection)
 pub fn checksum(req: &SavedRequest) -> String {
@@ -89,13 +91,14 @@ pub fn push_http_requests_to_server(
                 None => continue, // Team key not unlocked yet — retried next tick
             };
 
-            let (headers_json, body_json, auth_json) = match pack_request_details(key, &flat.request) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("❌ [sync_http] Failed to encrypt '{}': {}", req_name, e);
-                    continue;
-                }
-            };
+            let (headers_json, body_json, auth_json) =
+                match pack_request_details(key, &flat.request) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("❌ [sync_http] Failed to encrypt '{}': {}", req_name, e);
+                        continue;
+                    }
+                };
 
             let req = CreateHttpRequestReq {
                 workspace_name: flat.workspace_name.clone(),
@@ -116,7 +119,10 @@ pub fn push_http_requests_to_server(
             }
         }
 
-        info!("✅ [sync_http] Pushed {} new/updated HTTP requests to server", pushed);
+        info!(
+            "✅ [sync_http] Pushed {} new/updated HTTP requests to server",
+            pushed
+        );
         let _ = result_tx.send(Ok(pushed));
     });
 }
@@ -125,14 +131,22 @@ pub fn push_http_requests_to_server(
 /// request under the resolved vault key and persist it as `crypto_version = 1`.
 /// Fire-and-forget: on failure the row stays `crypto_version = 0` and
 /// migration is retried on the next pull.
-fn migrate_legacy_http_request(remote: RemoteHttpRequest, key: SymKey, token: String, server_url: String) {
+fn migrate_legacy_http_request(
+    remote: RemoteHttpRequest,
+    key: SymKey,
+    token: String,
+    server_url: String,
+) {
     super::spawn_async(async move {
         let client = ApiClient::new(&server_url);
         let legacy = unpack_remote_request_legacy(&remote);
         let (headers_json, body_json, auth_json) = match pack_request_details(&key, &legacy) {
             Ok(v) => v,
             Err(e) => {
-                warn!("❌ [migrate] Failed to encrypt legacy request '{}': {}", remote.name, e);
+                warn!(
+                    "❌ [migrate] Failed to encrypt legacy request '{}': {}",
+                    remote.name, e
+                );
                 return;
             }
         };
@@ -148,9 +162,18 @@ fn migrate_legacy_http_request(remote: RemoteHttpRequest, key: SymKey, token: St
             client_checksum: None,
             crypto_version: Some(1),
         };
-        match client.update_http_request(&token, &remote.id, &update).await {
-            Ok(_) => info!("✅ [migrate] Migrated legacy HTTP request '{}' to end-to-end encryption", remote.name),
-            Err(e) => warn!("❌ [migrate] Failed to migrate HTTP request '{}': {}", remote.name, e),
+        match client
+            .update_http_request(&token, &remote.id, &update)
+            .await
+        {
+            Ok(_) => info!(
+                "✅ [migrate] Migrated legacy HTTP request '{}' to end-to-end encryption",
+                remote.name
+            ),
+            Err(e) => warn!(
+                "❌ [migrate] Failed to migrate HTTP request '{}': {}",
+                remote.name, e
+            ),
         }
     });
 }
@@ -180,7 +203,10 @@ pub fn reencrypt_folder_to_server(
         let remote_requests = match client.list_http_requests(&token).await {
             Ok(r) => r,
             Err(e) => {
-                warn!("❌ [sync_http] re-encrypt: failed to list remote requests: {}", e);
+                warn!(
+                    "❌ [sync_http] re-encrypt: failed to list remote requests: {}",
+                    e
+                );
                 return;
             }
         };
@@ -188,17 +214,23 @@ pub fn reencrypt_folder_to_server(
         let mut migrated = 0usize;
         for flat in flat_requests {
             let req_name = flat.request.display_name();
-            let (headers_json, body_json, auth_json) = match pack_request_details(&key, &flat.request) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("❌ [sync_http] re-encrypt: failed to encrypt '{}': {}", req_name, e);
-                    continue;
-                }
-            };
+            let (headers_json, body_json, auth_json) =
+                match pack_request_details(&key, &flat.request) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            "❌ [sync_http] re-encrypt: failed to encrypt '{}': {}",
+                            req_name, e
+                        );
+                        continue;
+                    }
+                };
             let cs = checksum(&flat.request);
 
             let existing = remote_requests.iter().find(|r| {
-                r.workspace_name == flat.workspace_name && r.folder_path == flat.folder_path && r.name == req_name
+                r.workspace_name == flat.workspace_name
+                    && r.folder_path == flat.folder_path
+                    && r.name == req_name
             });
             let result = match existing {
                 Some(r) => {
@@ -214,7 +246,10 @@ pub fn reencrypt_folder_to_server(
                         client_checksum: Some(cs),
                         crypto_version: Some(1),
                     };
-                    client.update_http_request(&token, &r.id, &update).await.map(|_| ())
+                    client
+                        .update_http_request(&token, &r.id, &update)
+                        .await
+                        .map(|_| ())
                 }
                 None => {
                     let req = CreateHttpRequestReq {
@@ -234,10 +269,16 @@ pub fn reencrypt_folder_to_server(
             };
             match result {
                 Ok(()) => migrated += 1,
-                Err(e) => warn!("❌ [sync_http] re-encrypt: failed to upsert '{}': {}", req_name, e),
+                Err(e) => warn!(
+                    "❌ [sync_http] re-encrypt: failed to upsert '{}': {}",
+                    req_name, e
+                ),
             }
         }
-        info!("✅ [sync_http] Re-encrypted {} request(s) in '{}' under the Team key", migrated, folder_path);
+        info!(
+            "✅ [sync_http] Re-encrypted {} request(s) in '{}' under the Team key",
+            migrated, folder_path
+        );
     });
 }
 
@@ -281,7 +322,10 @@ pub fn pull_http_requests_from_server(
             ) {
                 Some(k) => k,
                 None => {
-                    info!("[sync_http] Skipping Team-shared '{}': Team key not unlocked yet", remote.name);
+                    info!(
+                        "[sync_http] Skipping Team-shared '{}': Team key not unlocked yet",
+                        remote.name
+                    );
                     continue;
                 }
             };
@@ -299,7 +343,12 @@ pub fn pull_http_requests_from_server(
                 // JSON. Parse it as-is, then queue a re-upload under the real
                 // vault key so it migrates for good.
                 let legacy = unpack_remote_request_legacy(remote);
-                migrate_legacy_http_request(remote.clone(), key.clone(), token.clone(), server_url.clone());
+                migrate_legacy_http_request(
+                    remote.clone(),
+                    key.clone(),
+                    token.clone(),
+                    server_url.clone(),
+                );
                 legacy
             };
             let added = merge_remote_request(&mut workspaces, remote, unpacked);
@@ -313,7 +362,10 @@ pub fn pull_http_requests_from_server(
             let _ = save_workspaces(&workspaces);
         }
 
-        info!("✅ [sync_http] Downloaded {} HTTP requests from server", saved);
+        info!(
+            "✅ [sync_http] Downloaded {} HTTP requests from server",
+            saved
+        );
         let _ = result_tx.send(Ok(saved));
     });
 }
@@ -360,7 +412,10 @@ fn collect_folder_requests(
 /// Encrypts each of the three JSON blobs independently with `key` (AES-256-GCM).
 /// `auth_json` in particular carries bearer tokens / basic-auth passwords /
 /// API keys — the whole point of this module's crypto.
-fn pack_request_details(key: &SymKey, req: &SavedRequest) -> Result<(String, String, String), String> {
+fn pack_request_details(
+    key: &SymKey,
+    req: &SavedRequest,
+) -> Result<(String, String, String), String> {
     let headers_data = serde_json::json!({
         "params": req.params,
         "headers": req.headers,
@@ -400,7 +455,9 @@ fn unpack_remote_request(key: &SymKey, remote: &RemoteHttpRequest) -> Result<Sav
 /// Parses each JSON blob as plain (never-encrypted) JSON — the pre-vault
 /// `crypto_version = 0` scheme, used only for one-time migration.
 fn unpack_remote_request_legacy(remote: &RemoteHttpRequest) -> SavedRequest {
-    let decode = |raw: &str| -> Option<serde_json::Value> { serde_json::from_str::<serde_json::Value>(raw).ok() };
+    let decode = |raw: &str| -> Option<serde_json::Value> {
+        serde_json::from_str::<serde_json::Value>(raw).ok()
+    };
     unpack_remote_request_with(remote, decode)
 }
 
@@ -521,7 +578,11 @@ fn merge_remote_request(
     let ws_idx = if let Some(pos) = workspaces.iter().position(|w| &w.name == ws_name) {
         pos
     } else {
-        let ws_id = format!("ws_{}_{}", chrono::Utc::now().timestamp_millis(), rand_suffix());
+        let ws_id = format!(
+            "ws_{}_{}",
+            chrono::Utc::now().timestamp_millis(),
+            rand_suffix()
+        );
         workspaces.push(HttpWorkspace {
             id: ws_id,
             name: ws_name.clone(),
@@ -551,12 +612,19 @@ fn merge_remote_request(
 
     if folder_parts.is_empty() {
         // Workspace top-level request
-        if let Some(existing) = ws.requests.iter_mut().find(|r| r.id == remote.id || r.name == remote.name) {
+        if let Some(existing) = ws
+            .requests
+            .iter_mut()
+            .find(|r| r.id == remote.id || r.name == remote.name)
+        {
             let cs = checksum(existing);
             if remote.client_checksum.as_deref() == Some(&cs) {
                 return false; // In sync
             }
-            debug!("⚠️ [sync_http] Conflict on '{}' — keeping local version", remote.name);
+            debug!(
+                "⚠️ [sync_http] Conflict on '{}' — keeping local version",
+                remote.name
+            );
             return false;
         }
         ws.requests.push(unpacked_req);
@@ -566,12 +634,19 @@ fn merge_remote_request(
         let folder = navigate_or_create_folders(&mut ws.folders, &folder_parts);
         unpacked_req.folder_id = Some(folder.id.clone());
 
-        if let Some(existing) = folder.requests.iter_mut().find(|r| r.id == remote.id || r.name == remote.name) {
+        if let Some(existing) = folder
+            .requests
+            .iter_mut()
+            .find(|r| r.id == remote.id || r.name == remote.name)
+        {
             let cs = checksum(existing);
             if remote.client_checksum.as_deref() == Some(&cs) {
                 return false; // In sync
             }
-            debug!("⚠️ [sync_http] Conflict on '{}' — keeping local version", remote.name);
+            debug!(
+                "⚠️ [sync_http] Conflict on '{}' — keeping local version",
+                remote.name
+            );
             return false;
         }
         folder.requests.push(unpacked_req);
@@ -597,7 +672,11 @@ fn navigate_or_create_folders<'a>(
         let idx = if let Some(pos) = current_folders.iter().position(|f| f.name == *part) {
             pos
         } else {
-            let new_id = format!("folder_{}_{}", chrono::Utc::now().timestamp_millis(), rand_suffix());
+            let new_id = format!(
+                "folder_{}_{}",
+                chrono::Utc::now().timestamp_millis(),
+                rand_suffix()
+            );
             current_folders.push(HttpFolder {
                 id: new_id,
                 name: (*part).to_string(),

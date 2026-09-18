@@ -1,7 +1,7 @@
 pub mod statement_parser;
 pub mod text_actions;
 
-pub use statement_parser::{find_statement_at_cursor, split_statements, SqlStatementSpan};
+pub use statement_parser::{SqlStatementSpan, find_statement_at_cursor, split_statements};
 pub use text_actions::{duplicate_lines, move_lines, toggle_line_comments};
 
 use sqlformat::{FormatOptions, Indent};
@@ -280,7 +280,10 @@ pub fn format_sql(sql: &str) -> Option<String> {
     format_sql_with_options(sql, &default_sqlformat_options())
 }
 
-pub fn format_sql_with_casing(sql: &str, casing: crate::models::enums::KeywordCasing) -> Option<String> {
+pub fn format_sql_with_casing(
+    sql: &str,
+    casing: crate::models::enums::KeywordCasing,
+) -> Option<String> {
     let mut opts = default_sqlformat_options();
     match casing {
         crate::models::enums::KeywordCasing::Upper => opts.uppercase = Some(true),

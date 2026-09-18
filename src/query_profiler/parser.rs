@@ -32,7 +32,10 @@ pub fn parse_explain_raw(raw_plan: &str) -> Option<(ExplainNode, ProfilerEngine)
     }
 
     // 3. Try SQLite Query Plan text lines
-    if trimmed.lines().any(|l| l.contains("SCAN ") || l.contains("SEARCH ")) {
+    if trimmed
+        .lines()
+        .any(|l| l.contains("SCAN ") || l.contains("SEARCH "))
+    {
         if let Some(node) = parse_sqlite_text(trimmed) {
             return Some((node, ProfilerEngine::SQLite));
         }
@@ -67,12 +70,27 @@ fn parse_pg_json_root(v: &serde_json::Value) -> Option<ExplainNode> {
 
 fn parse_pg_plan_object(v: &serde_json::Value) -> Option<ExplainNode> {
     let node_type = v.get("Node Type")?.as_str()?.to_string();
-    let relation_name = v.get("Relation Name").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let schema_name = v.get("Schema").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let alias = v.get("Alias").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let index_name = v.get("Index Name").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let relation_name = v
+        .get("Relation Name")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let schema_name = v
+        .get("Schema")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let alias = v
+        .get("Alias")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let index_name = v
+        .get("Index Name")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
 
-    let startup_cost = v.get("Startup Cost").and_then(|n| n.as_f64()).unwrap_or(0.0);
+    let startup_cost = v
+        .get("Startup Cost")
+        .and_then(|n| n.as_f64())
+        .unwrap_or(0.0);
     let total_cost = v.get("Total Cost").and_then(|n| n.as_f64()).unwrap_or(0.0);
     let plan_rows = v.get("Plan Rows").and_then(|n| n.as_u64()).unwrap_or(0);
     let plan_width = v.get("Plan Width").and_then(|n| n.as_u64());
@@ -91,11 +109,23 @@ fn parse_pg_plan_object(v: &serde_json::Value) -> Option<ExplainNode> {
     let temp_written_blocks = v.get("Temp Written Blocks").and_then(|n| n.as_u64());
 
     // Filtering, sorting, joins
-    let filter = v.get("Filter").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let filter = v
+        .get("Filter")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
     let rows_removed_by_filter = v.get("Rows Removed by Filter").and_then(|n| n.as_u64());
-    let index_cond = v.get("Index Cond").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let hash_cond = v.get("Hash Cond").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let join_type = v.get("Join Type").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let index_cond = v
+        .get("Index Cond")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let hash_cond = v
+        .get("Hash Cond")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let join_type = v
+        .get("Join Type")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
 
     let mut sort_keys = Vec::new();
     if let Some(keys) = v.get("Sort Key").and_then(|k| k.as_array()) {
@@ -108,9 +138,15 @@ fn parse_pg_plan_object(v: &serde_json::Value) -> Option<ExplainNode> {
         sort_keys.push(key_str.to_string());
     }
 
-    let sort_method = v.get("Sort Method").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let sort_method = v
+        .get("Sort Method")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
     let sort_space_used = v.get("Sort Space Used").and_then(|n| n.as_u64());
-    let sort_space_type = v.get("Sort Space Type").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let sort_space_type = v
+        .get("Sort Space Type")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
 
     let mut extra_properties = HashMap::new();
     if let Some(strategy) = v.get("Strategy").and_then(|s| s.as_str()) {
@@ -230,7 +266,10 @@ fn parse_mysql_query_block(v: &serde_json::Value) -> Option<ExplainNode> {
         return parse_mysql_table(t);
     } else if let Some(union_result) = v.get("union_result") {
         node_type = "UNION Result".to_string();
-        if let Some(tbl_arr) = union_result.get("using_temporary_table").and_then(|_| v.get("table")) {
+        if let Some(tbl_arr) = union_result
+            .get("using_temporary_table")
+            .and_then(|_| v.get("table"))
+        {
             if let Some(cn) = parse_mysql_table(tbl_arr) {
                 children.push(cn);
             }
@@ -277,8 +316,14 @@ fn parse_mysql_query_block(v: &serde_json::Value) -> Option<ExplainNode> {
 }
 
 fn parse_mysql_table(v: &serde_json::Value) -> Option<ExplainNode> {
-    let table_name = v.get("table_name").and_then(|s| s.as_str()).map(|s| s.to_string());
-    let access_type = v.get("access_type").and_then(|s| s.as_str()).unwrap_or("ALL");
+    let table_name = v
+        .get("table_name")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    let access_type = v
+        .get("access_type")
+        .and_then(|s| s.as_str())
+        .unwrap_or("ALL");
     let key = v.get("key").and_then(|s| s.as_str()).map(|s| s.to_string());
 
     let node_type = match access_type {
@@ -297,16 +342,27 @@ fn parse_mysql_table(v: &serde_json::Value) -> Option<ExplainNode> {
 
     let mut cost = 0.0;
     if let Some(c) = v.get("cost_info") {
-        if let Some(val) = c.get("prefix_cost").and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()) {
+        if let Some(val) = c
+            .get("prefix_cost")
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+        {
             cost = val;
-        } else if let Some(val) = c.get("read_cost").and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()) {
+        } else if let Some(val) = c
+            .get("read_cost")
+            .and_then(|s| s.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+        {
             cost = val;
         } else if let Some(val) = c.get("prefix_cost").and_then(|n| n.as_f64()) {
             cost = val;
         }
     }
 
-    let filter = v.get("attached_condition").and_then(|s| s.as_str()).map(|s| s.to_string());
+    let filter = v
+        .get("attached_condition")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
     let mut extra_props = HashMap::new();
     if let Some(using_filesort) = v.get("using_filesort").and_then(|b| b.as_bool()) {
         if using_filesort {
@@ -477,8 +533,8 @@ fn parse_single_mssql_relop(slice: &str) -> Option<(ExplainNode, usize)> {
     let actual_rows = extract_xml_attr(body, "ActualRows")
         .and_then(|s| s.parse::<f64>().ok())
         .map(|f| f as u64);
-    let actual_elapsed_ms = extract_xml_attr(body, "ActualElapsedms")
-        .and_then(|s| s.parse::<f64>().ok());
+    let actual_elapsed_ms =
+        extract_xml_attr(body, "ActualElapsedms").and_then(|s| s.parse::<f64>().ok());
 
     let mut extra_props = HashMap::new();
     if let Some(log_op) = logical_op {
@@ -553,7 +609,11 @@ fn extract_xml_attr(text: &str, attr_name: &str) -> Option<String> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn parse_sqlite_text(text: &str) -> Option<ExplainNode> {
-    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.is_empty() {
         return None;
     }
@@ -605,7 +665,11 @@ fn parse_sqlite_text(text: &str) -> Option<ExplainNode> {
 }
 
 fn parse_generic_text(text: &str) -> Option<ExplainNode> {
-    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.is_empty() {
         return None;
     }

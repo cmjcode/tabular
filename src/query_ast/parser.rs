@@ -333,9 +333,7 @@ fn extract_limit_offset(q: &sq::Query) -> Result<(Option<u64>, Option<u64>), Que
         Some(sq::LimitClause::LimitOffset { limit, offset, .. }) => {
             (limit.as_ref(), offset.as_ref().map(|o| &o.value))
         }
-        Some(sq::LimitClause::OffsetCommaLimit { offset, limit }) => {
-            (Some(limit), Some(offset))
-        }
+        Some(sq::LimitClause::OffsetCommaLimit { offset, limit }) => (Some(limit), Some(offset)),
         None => (None, None),
     };
     let limit = match limit_expr {

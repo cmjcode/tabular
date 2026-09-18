@@ -40,10 +40,20 @@ impl LiveEditMode {
 /// Kejadian yang dihasilkan parser saat streaming.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveEditEvent {
-    Begin { tab_id: usize, mode: LiveEditMode },
+    Begin {
+        tab_id: usize,
+        mode: LiveEditMode,
+    },
     /// Isi blok sejauh ini (baris lengkap + baris parsial yang aman).
-    Progress { tab_id: usize, body: String },
-    End { tab_id: usize, mode: LiveEditMode, body: String },
+    Progress {
+        tab_id: usize,
+        body: String,
+    },
+    End {
+        tab_id: usize,
+        mode: LiveEditMode,
+        body: String,
+    },
 }
 
 /// Catatan satu edit yang sudah/bisa diterapkan, disimpan di pesan chat
@@ -189,7 +199,12 @@ fn trim_body(body: &str) -> String {
 }
 
 /// Susun isi tab baru dari isi lama, mode, seleksi (byte offset), dan body.
-pub fn compose(mode: LiveEditMode, original: &str, selection: (usize, usize), body: &str) -> String {
+pub fn compose(
+    mode: LiveEditMode,
+    original: &str,
+    selection: (usize, usize),
+    body: &str,
+) -> String {
     match mode {
         LiveEditMode::Replace => body.to_string(),
         LiveEditMode::Append => {
@@ -241,7 +256,10 @@ mod tests {
 
     #[test]
     fn fence_info_parsing() {
-        assert_eq!(parse_fence_info("```sql tabular:tab=3"), Some((3, LiveEditMode::Replace)));
+        assert_eq!(
+            parse_fence_info("```sql tabular:tab=3"),
+            Some((3, LiveEditMode::Replace))
+        );
         assert_eq!(
             parse_fence_info("```sql tabular:tab=12 mode=append"),
             Some((12, LiveEditMode::Append))
@@ -260,13 +278,28 @@ mod tests {
         let mut p = LiveEditParser::default();
         assert!(p.feed("Here is the fix:\n``").is_empty());
         let evs = p.feed("`sql tabular:tab=5 mode=replace\nSEL");
-        assert_eq!(evs[0], LiveEditEvent::Begin { tab_id: 5, mode: LiveEditMode::Replace });
-        assert_eq!(evs[1], LiveEditEvent::Progress { tab_id: 5, body: "SEL".into() });
+        assert_eq!(
+            evs[0],
+            LiveEditEvent::Begin {
+                tab_id: 5,
+                mode: LiveEditMode::Replace
+            }
+        );
+        assert_eq!(
+            evs[1],
+            LiveEditEvent::Progress {
+                tab_id: 5,
+                body: "SEL".into()
+            }
+        );
         let evs = p.feed("ECT 1\nFROM t;\n`");
         // Partial "`" could be a closing fence: not shown yet.
         assert_eq!(
             evs.last(),
-            Some(&LiveEditEvent::Progress { tab_id: 5, body: "SELECT 1\nFROM t;".into() })
+            Some(&LiveEditEvent::Progress {
+                tab_id: 5,
+                body: "SELECT 1\nFROM t;".into()
+            })
         );
         let evs = p.feed("``\nDone.\n");
         assert_eq!(
@@ -307,10 +340,19 @@ mod tests {
     fn compose_modes() {
         assert_eq!(compose(LiveEditMode::Replace, "old", (0, 0), "new"), "new");
         assert_eq!(compose(LiveEditMode::Append, "", (0, 0), "new"), "new");
-        assert_eq!(compose(LiveEditMode::Append, "old;\n\n", (0, 0), "new"), "old;\n\nnew");
-        assert_eq!(compose(LiveEditMode::Selection, "abcdef", (2, 4), "XY"), "abXYef");
+        assert_eq!(
+            compose(LiveEditMode::Append, "old;\n\n", (0, 0), "new"),
+            "old;\n\nnew"
+        );
+        assert_eq!(
+            compose(LiveEditMode::Selection, "abcdef", (2, 4), "XY"),
+            "abXYef"
+        );
         assert_eq!(compose(LiveEditMode::Selection, "abc", (5, 9), "X"), "abcX");
         // Byte offset di tengah karakter multibyte digeser ke batas karakter.
-        assert_eq!(compose(LiveEditMode::Selection, "héllo", (2, 3), "E"), "hEllo");
+        assert_eq!(
+            compose(LiveEditMode::Selection, "héllo", (2, 3), "E"),
+            "hEllo"
+        );
     }
 }

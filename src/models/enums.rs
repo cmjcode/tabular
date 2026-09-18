@@ -193,7 +193,9 @@ pub enum BackgroundResult {
         connection_id: i64,
     },
     // Result from SQLite folder/file picker for new connection dialog
-    SqlitePathPicked { path: String },
+    SqlitePathPicked {
+        path: String,
+    },
     // Result from background database fetch
     DatabasesFetched {
         connection_id: i64,

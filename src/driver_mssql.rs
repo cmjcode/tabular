@@ -136,7 +136,9 @@ pub(crate) fn load_mssql_structure(
 
     let mut dba_children = Vec::new();
 
-    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL) {
+    for (name, node_type, query) in
+        crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL)
+    {
         let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
         dba_node.connection_id = Some(connection_id);
         dba_node.is_loaded = false;
@@ -221,12 +223,13 @@ pub(crate) fn fetch_objects_from_mssql_connection(
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
         // Get or create pool
-        let pool_enum = crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        let pool_enum =
+            crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
         let pool = match pool_enum {
-             crate::models::enums::DatabasePool::MsSQL(p) => p,
-             _ => return None,
+            crate::models::enums::DatabasePool::MsSQL(p) => p,
+            _ => return None,
         };
-        
+
         let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {

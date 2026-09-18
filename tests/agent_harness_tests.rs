@@ -98,7 +98,10 @@ echo '{"event":"result","result":{"status":"SUCCESS","response":"Hello world","d
     }
 
     let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
-    assert!(args.contains("--print\nSYS\n\n---\n\nUSER\n"), "args: {args}");
+    assert!(
+        args.contains("--print\nSYS\n\n---\n\nUSER\n"),
+        "args: {args}"
+    );
     assert!(args.contains("--output-format\nstream-json\n"));
     assert!(args.contains("--model\ntest-model\n"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -147,8 +150,14 @@ fn cancel_kills_a_hanging_cli() {
     let started = Instant::now();
     handle.cancel();
     let events = collect(&rx, Duration::from_secs(10));
-    assert!(started.elapsed() < Duration::from_secs(10), "cancel did not stop the process");
-    assert_eq!(events.last(), Some(&AgentEvent::Error("Stopped by user.".into())));
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "cancel did not stop the process"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Error("Stopped by user.".into()))
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -160,6 +169,8 @@ fn missing_binary_is_reported_before_spawn() {
         extra_args: "{prompt}".into(),
         ..Default::default()
     };
-    let err = spawn_stream(&cfg, request(std::env::temp_dir())).err().expect("should fail");
+    let err = spawn_stream(&cfg, request(std::env::temp_dir()))
+        .err()
+        .expect("should fail");
     assert!(err.contains("not found"), "err: {err}");
 }

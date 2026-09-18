@@ -88,7 +88,7 @@ pub struct UnlockedVault {
 pub struct VaultKeyBundle {
     pub kdf_algo: String,
     pub kdf_params_json: String,
-    pub salt: String,                        // base64
+    pub salt: String,                         // base64
     pub wrapped_account_key: String,          // base64(nonce || ciphertext)
     pub x25519_public_key: String,            // base64
     pub wrapped_x25519_private_key: String,   // base64(nonce || ciphertext)
@@ -119,8 +119,13 @@ fn normalize_recovery_code(code: &str) -> String {
 /// Derive the 256-bit Key-Encryption-Key from a passphrase (or recovery code)
 /// and salt via Argon2id. Both use the same KDF; only the salt differs.
 fn derive_kek(secret: &str, salt: &[u8]) -> Result<SymKey, String> {
-    let params = Params::new(ARGON2_M_COST_KIB, ARGON2_T_COST, ARGON2_P_COST, Some(KEY_LEN))
-        .map_err(|e| format!("argon2 params: {e}"))?;
+    let params = Params::new(
+        ARGON2_M_COST_KIB,
+        ARGON2_T_COST,
+        ARGON2_P_COST,
+        Some(KEY_LEN),
+    )
+    .map_err(|e| format!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut out = [0u8; KEY_LEN];
     argon2
@@ -177,7 +182,10 @@ pub fn encrypt_json<T: Serialize>(key: &SymKey, value: &T) -> Result<String, Str
 }
 
 /// Decrypt a payload produced by [`encrypt_json`].
-pub fn decrypt_json<T: for<'de> Deserialize<'de>>(key: &SymKey, encoded: &str) -> Result<T, String> {
+pub fn decrypt_json<T: for<'de> Deserialize<'de>>(
+    key: &SymKey,
+    encoded: &str,
+) -> Result<T, String> {
     let bytes = aes_decrypt(key, encoded)?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
@@ -246,7 +254,10 @@ pub fn create_vault(passphrase: &str) -> Result<(UnlockedVault, VaultKeyBundle, 
 
 /// Unlock an existing vault bundle (fetched from the server) using the
 /// user's Sync Passphrase.
-pub fn unlock_with_passphrase(bundle: &VaultKeyBundle, passphrase: &str) -> Result<UnlockedVault, String> {
+pub fn unlock_with_passphrase(
+    bundle: &VaultKeyBundle,
+    passphrase: &str,
+) -> Result<UnlockedVault, String> {
     let salt = base64::engine::general_purpose::STANDARD
         .decode(&bundle.salt)
         .map_err(|e| e.to_string())?;
@@ -256,7 +267,10 @@ pub fn unlock_with_passphrase(bundle: &VaultKeyBundle, passphrase: &str) -> Resu
 
 /// Unlock an existing vault bundle using the one-time recovery code shown at
 /// vault-creation time (fallback when the passphrase is forgotten).
-pub fn unlock_with_recovery_code(bundle: &VaultKeyBundle, recovery_code: &str) -> Result<UnlockedVault, String> {
+pub fn unlock_with_recovery_code(
+    bundle: &VaultKeyBundle,
+    recovery_code: &str,
+) -> Result<UnlockedVault, String> {
     let salt = base64::engine::general_purpose::STANDARD
         .decode(&bundle.recovery_salt)
         .map_err(|e| e.to_string())?;
@@ -343,7 +357,8 @@ pub fn rewrap_with_new_passphrase(
         kdf_params_json: KDF_PARAMS_JSON.to_string(),
         salt: base64::engine::general_purpose::STANDARD.encode(salt),
         wrapped_account_key,
-        x25519_public_key: base64::engine::general_purpose::STANDARD.encode(vault.x25519_public_bytes),
+        x25519_public_key: base64::engine::general_purpose::STANDARD
+            .encode(vault.x25519_public_bytes),
         wrapped_x25519_private_key,
         recovery_salt: base64::engine::general_purpose::STANDARD.encode(recovery_salt),
         wrapped_account_key_recovery,
@@ -400,7 +415,8 @@ mod tests {
 
     #[test]
     fn wrong_passphrase_fails() {
-        let (_vault, bundle, _recovery_code) = create_vault("correct horse battery staple").unwrap();
+        let (_vault, bundle, _recovery_code) =
+            create_vault("correct horse battery staple").unwrap();
         assert!(unlock_with_passphrase(&bundle, "wrong passphrase entirely").is_err());
     }
 
@@ -413,7 +429,8 @@ mod tests {
 
     #[test]
     fn wrong_recovery_code_fails() {
-        let (_vault, bundle, _recovery_code) = create_vault("correct horse battery staple").unwrap();
+        let (_vault, bundle, _recovery_code) =
+            create_vault("correct horse battery staple").unwrap();
         let bogus = generate_recovery_code();
         assert!(unlock_with_recovery_code(&bundle, &bogus).is_err());
     }
@@ -431,7 +448,10 @@ mod tests {
             password: "hunter2".to_string(),
         };
         let ciphertext = encrypt_json(&key, &original).unwrap();
-        assert!(!ciphertext.contains("hunter2"), "plaintext must not leak into ciphertext");
+        assert!(
+            !ciphertext.contains("hunter2"),
+            "plaintext must not leak into ciphertext"
+        );
         let decrypted: Payload = decrypt_json(&key, &ciphertext).unwrap();
         assert_eq!(original, decrypted);
     }
@@ -439,7 +459,8 @@ mod tests {
     #[test]
     fn team_key_seal_unseal_roundtrip() {
         let (vault, _bundle, _rc) = create_vault("team member passphrase!").unwrap();
-        let recipient_pub_b64 = base64::engine::general_purpose::STANDARD.encode(vault.x25519_public_bytes);
+        let recipient_pub_b64 =
+            base64::engine::general_purpose::STANDARD.encode(vault.x25519_public_bytes);
 
         let team_key = SymKey::generate();
         let sealed = wrap_team_key(&recipient_pub_b64, &team_key).unwrap();
@@ -455,7 +476,8 @@ mod tests {
         let team_key = SymKey::generate();
         // Seal to a throwaway key that is neither A nor B.
         let (other, _bundle_other, _rc_other) = create_vault("unrelated passphrase!!").unwrap();
-        let other_pub_b64 = base64::engine::general_purpose::STANDARD.encode(other.x25519_public_bytes);
+        let other_pub_b64 =
+            base64::engine::general_purpose::STANDARD.encode(other.x25519_public_bytes);
         let sealed = wrap_team_key(&other_pub_b64, &team_key).unwrap();
 
         // B (not the intended recipient) must not be able to open it.

@@ -554,7 +554,11 @@ pub(crate) async fn get_foreign_keys(
         }
     } else {
         // MSSQL uses mssql-client (no sqlx pool) — fetch via one-off connection
-        let conn_opt = tabular.connections.iter().find(|c| c.id == Some(connection_id)).cloned();
+        let conn_opt = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+            .cloned();
         if let Some(conn) = conn_opt {
             if conn.connection_type == models::enums::DatabaseType::MsSQL {
                 keys = fetch_mssql_foreign_keys(&conn, database_name).await;
@@ -601,7 +605,11 @@ async fn fetch_mssql_foreign_keys(
 ) -> Vec<models::structs::ForeignKey> {
     let host = conn.host.clone();
     let port: u16 = conn.port.parse().unwrap_or(1433);
-    let db = if !conn.database.is_empty() { conn.database.clone() } else { database_name.to_string() };
+    let db = if !conn.database.is_empty() {
+        conn.database.clone()
+    } else {
+        database_name.to_string()
+    };
 
     let mut client = match crate::driver_mssql::connect_mssql(
         &host,
@@ -631,19 +639,17 @@ async fn fetch_mssql_foreign_keys(
     "#;
 
     let mut keys = Vec::new();
-    if let Ok(Ok(stream)) = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        client.query(q, &[]),
-    ).await
+    if let Ok(Ok(stream)) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), client.query(q, &[])).await
         && let Ok(rows) = stream.collect_all().await
     {
         for row in rows {
             let get = |i: usize| -> String { row.get_string(i).unwrap_or_default() };
             keys.push(models::structs::ForeignKey {
-                constraint_name:        get(0),
-                table_name:             get(1),
-                column_name:            get(2),
-                referenced_table_name:  get(3),
+                constraint_name: get(0),
+                table_name: get(1),
+                column_name: get(2),
+                referenced_table_name: get(3),
                 referenced_column_name: get(4),
             });
         }
@@ -697,12 +703,15 @@ pub(crate) fn fetch_table_definition(
                             tbl_name.replace('`', "``")
                         );
                         let query = format!("SHOW CREATE TABLE {}", qualified);
-                        match sqlx::query(sqlx::AssertSqlSafe(query.as_str())).fetch_optional(&pool).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+                            .fetch_optional(&pool)
+                            .await
+                        {
                             Ok(Some(row)) => {
                                 use sqlx::Row;
-                                row.try_get::<String, _>(1).ok().or_else(|| {
-                                    row.try_get::<String, _>("Create Table").ok()
-                                })
+                                row.try_get::<String, _>(1)
+                                    .ok()
+                                    .or_else(|| row.try_get::<String, _>("Create Table").ok())
                             }
                             Err(e) => {
                                 debug!("Failed to fetch table definition: {}", e);
@@ -752,19 +761,28 @@ pub(crate) fn fetch_table_definition(
                 }
             }
             models::enums::DatabaseType::PostgreSQL => {
-                if db_name.is_empty() { return None; }
+                if db_name.is_empty() {
+                    return None;
+                }
                 let conn_str = format!(
                     "postgresql://{}:{}@{}:{}/{}",
-                    connection_clone.username, connection_clone.password,
-                    connection_clone.host, connection_clone.port, db_name
+                    connection_clone.username,
+                    connection_clone.password,
+                    connection_clone.host,
+                    connection_clone.port,
+                    db_name
                 );
                 let pool = match sqlx::postgres::PgPoolOptions::new()
                     .max_connections(1)
                     .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&conn_str).await
+                    .connect(&conn_str)
+                    .await
                 {
                     Ok(p) => p,
-                    Err(e) => { debug!("PG DDL connect error: {}", e); return None; }
+                    Err(e) => {
+                        debug!("PG DDL connect error: {}", e);
+                        return None;
+                    }
                 };
                 generate_postgres_ddl(&pool, &tbl_name).await
             }
@@ -787,7 +805,9 @@ async fn generate_postgres_ddl(pool: &sqlx::PgPool, tbl_name: &str) -> Option<St
          ORDER BY ordinal_position"
     ).bind(tbl_name).fetch_all(pool).await.ok()?;
 
-    if col_rows.is_empty() { return None; }
+    if col_rows.is_empty() {
+        return None;
+    }
 
     // PK columns
     let pk_rows = sqlx::query(
@@ -795,10 +815,15 @@ async fn generate_postgres_ddl(pool: &sqlx::PgPool, tbl_name: &str) -> Option<St
          JOIN information_schema.key_column_usage kcu \
            ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
          WHERE tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY' \
-         ORDER BY kcu.ordinal_position"
-    ).bind(tbl_name).fetch_all(pool).await.unwrap_or_default();
-    let pk_cols: Vec<String> = pk_rows.iter()
-        .filter_map(|r| r.try_get::<String,_>("column_name").ok())
+         ORDER BY kcu.ordinal_position",
+    )
+    .bind(tbl_name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let pk_cols: Vec<String> = pk_rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>("column_name").ok())
         .collect();
 
     // FK constraints
@@ -819,48 +844,67 @@ async fn generate_postgres_ddl(pool: &sqlx::PgPool, tbl_name: &str) -> Option<St
          JOIN information_schema.key_column_usage kcu \
            ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
          WHERE tc.table_name = $1 AND tc.constraint_type = 'UNIQUE' \
-         ORDER BY tc.constraint_name, kcu.ordinal_position"
-    ).bind(tbl_name).fetch_all(pool).await.unwrap_or_default();
+         ORDER BY tc.constraint_name, kcu.ordinal_position",
+    )
+    .bind(tbl_name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
     let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
 
     let mut lines: Vec<String> = Vec::new();
     for row in &col_rows {
-        let col:     String = row.try_get("column_name").unwrap_or_default();
-        let dtype:   String = row.try_get("data_type").unwrap_or_default();
+        let col: String = row.try_get("column_name").unwrap_or_default();
+        let dtype: String = row.try_get("data_type").unwrap_or_default();
         let char_len: Option<i32> = row.try_get("character_maximum_length").ok();
-        let num_p:   Option<i32> = row.try_get("numeric_precision").ok();
-        let num_s:   Option<i32> = row.try_get("numeric_scale").ok();
-        let nullable: String = row.try_get("is_nullable").unwrap_or_else(|_| "YES".to_string());
-        let default:  Option<String> = row.try_get("column_default").ok().flatten();
+        let num_p: Option<i32> = row.try_get("numeric_precision").ok();
+        let num_s: Option<i32> = row.try_get("numeric_scale").ok();
+        let nullable: String = row
+            .try_get("is_nullable")
+            .unwrap_or_else(|_| "YES".to_string());
+        let default: Option<String> = row.try_get("column_default").ok().flatten();
 
         let full_type = match dtype.as_str() {
             "character varying" | "character" | "char" | "varchar" => {
-                if let Some(l) = char_len { format!("{}({})", dtype, l) } else { dtype.clone() }
+                if let Some(l) = char_len {
+                    format!("{}({})", dtype, l)
+                } else {
+                    dtype.clone()
+                }
             }
             "numeric" | "decimal" => match (num_p, num_s) {
                 (Some(p), Some(s)) => format!("{}({},{})", dtype, p, s),
-                (Some(p), None)    => format!("{}({})", dtype, p),
-                _                  => dtype.clone(),
+                (Some(p), None) => format!("{}({})", dtype, p),
+                _ => dtype.clone(),
             },
             _ => dtype.clone(),
         };
         let mut col_def = format!("  {} {}", esc(&col), full_type.to_uppercase());
-        if nullable == "NO" { col_def.push_str(" NOT NULL"); }
-        if let Some(d) = default { col_def.push_str(&format!(" DEFAULT {}", d)); }
+        if nullable == "NO" {
+            col_def.push_str(" NOT NULL");
+        }
+        if let Some(d) = default {
+            col_def.push_str(&format!(" DEFAULT {}", d));
+        }
         lines.push(col_def);
     }
 
     if !pk_cols.is_empty() {
-        let pk_str = pk_cols.iter().map(|c| esc(c)).collect::<Vec<_>>().join(", ");
+        let pk_str = pk_cols
+            .iter()
+            .map(|c| esc(c))
+            .collect::<Vec<_>>()
+            .join(", ");
         lines.push(format!("  PRIMARY KEY ({})", pk_str));
     }
 
     // Group UQ constraints
-    let mut uq_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut uq_map: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for row in &uq_rows {
         let name: String = row.try_get("constraint_name").unwrap_or_default();
-        let col:  String = row.try_get("column_name").unwrap_or_default();
+        let col: String = row.try_get("column_name").unwrap_or_default();
         uq_map.entry(name).or_default().push(col);
     }
     for (name, cols) in &uq_map {
@@ -869,17 +913,24 @@ async fn generate_postgres_ddl(pool: &sqlx::PgPool, tbl_name: &str) -> Option<St
     }
 
     for row in &fk_rows {
-        let cname:     String = row.try_get("constraint_name").unwrap_or_default();
-        let col:       String = row.try_get("column_name").unwrap_or_default();
+        let cname: String = row.try_get("constraint_name").unwrap_or_default();
+        let col: String = row.try_get("column_name").unwrap_or_default();
         let ref_table: String = row.try_get("ref_table").unwrap_or_default();
-        let ref_col:   String = row.try_get("ref_col").unwrap_or_default();
+        let ref_col: String = row.try_get("ref_col").unwrap_or_default();
         lines.push(format!(
             "  CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}({})",
-            esc(&cname), esc(&col), esc(&ref_table), esc(&ref_col)
+            esc(&cname),
+            esc(&col),
+            esc(&ref_table),
+            esc(&ref_col)
         ));
     }
 
-    Some(format!("CREATE TABLE {} (\n{}\n);", esc(tbl_name), lines.join(",\n")))
+    Some(format!(
+        "CREATE TABLE {} (\n{}\n);",
+        esc(tbl_name),
+        lines.join(",\n")
+    ))
 }
 
 async fn generate_mssql_ddl(
@@ -910,44 +961,54 @@ async fn generate_mssql_ddl(
          JOIN sys.types tp ON tp.user_type_id = c.user_type_id \
          LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id \
          WHERE c.object_id = OBJECT_ID(N'{}') \
-         ORDER BY c.column_id", tbl_esc
+         ORDER BY c.column_id",
+        tbl_esc
     );
 
     let mut col_lines: Vec<String> = Vec::new();
-    if let Ok(Ok(stream)) = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        client.query(&q, &[]),
-    ).await
+    if let Ok(Ok(stream)) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), client.query(&q, &[])).await
         && let Ok(rows) = stream.collect_all().await
     {
         for row in rows {
-            let col:      String = row.get_string(0).unwrap_or_default();
+            let col: String = row.get_string(0).unwrap_or_default();
             let typename: String = row.get_string(1).unwrap_or_default();
-            let max_len:  i16    = row.try_get::<i16>(2).ok().flatten().unwrap_or(0);
-            let prec:     u8     = row.try_get::<u8>(3).ok().flatten().unwrap_or(0);
-            let scale:    u8     = row.try_get::<u8>(4).ok().flatten().unwrap_or(0);
-            let nullable: bool   = row.try_get::<bool>(5).ok().flatten().unwrap_or(true);
-            let default:  Option<String> = row.get_string(6);
-            let identity: bool   = row.try_get::<bool>(7).ok().flatten().unwrap_or(false);
+            let max_len: i16 = row.try_get::<i16>(2).ok().flatten().unwrap_or(0);
+            let prec: u8 = row.try_get::<u8>(3).ok().flatten().unwrap_or(0);
+            let scale: u8 = row.try_get::<u8>(4).ok().flatten().unwrap_or(0);
+            let nullable: bool = row.try_get::<bool>(5).ok().flatten().unwrap_or(true);
+            let default: Option<String> = row.get_string(6);
+            let identity: bool = row.try_get::<bool>(7).ok().flatten().unwrap_or(false);
 
             let full_type = match typename.to_lowercase().as_str() {
                 "nvarchar" | "varchar" | "nchar" | "char" | "binary" | "varbinary" => {
-                    if max_len == -1 { format!("{}(MAX)", typename) }
-                    else { format!("{}({})", typename, max_len) }
+                    if max_len == -1 {
+                        format!("{}(MAX)", typename)
+                    } else {
+                        format!("{}({})", typename, max_len)
+                    }
                 }
                 "decimal" | "numeric" => format!("{}({},{})", typename, prec, scale),
                 _ => typename.clone(),
             };
             let esc_col = format!("[{}]", col);
             let mut line = format!("  {} {}", esc_col, full_type.to_uppercase());
-            if identity { line.push_str(" IDENTITY(1,1)"); }
-            if !nullable { line.push_str(" NOT NULL"); }
-            if let Some(d) = default { line.push_str(&format!(" DEFAULT {}", d)); }
+            if identity {
+                line.push_str(" IDENTITY(1,1)");
+            }
+            if !nullable {
+                line.push_str(" NOT NULL");
+            }
+            if let Some(d) = default {
+                line.push_str(&format!(" DEFAULT {}", d));
+            }
             col_lines.push(line);
         }
     }
 
-    if col_lines.is_empty() { return None; }
+    if col_lines.is_empty() {
+        return None;
+    }
 
     // PK query
     let pk_q = format!(
@@ -955,13 +1016,12 @@ async fn generate_mssql_ddl(
          JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id \
          JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
          WHERE i.is_primary_key = 1 AND ic.object_id = OBJECT_ID(N'{}') \
-         ORDER BY ic.key_ordinal", tbl_esc
+         ORDER BY ic.key_ordinal",
+        tbl_esc
     );
     let mut pk_cols: Vec<String> = Vec::new();
-    if let Ok(Ok(stream)) = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.query(&pk_q, &[]),
-    ).await
+    if let Ok(Ok(stream)) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), client.query(&pk_q, &[])).await
         && let Ok(rows) = stream.collect_all().await
     {
         for row in rows {
@@ -976,7 +1036,8 @@ async fn generate_mssql_ddl(
 
     Some(format!(
         "CREATE TABLE [{}] (\n{}\n);",
-        tbl_name, col_lines.join(",\n")
+        tbl_name,
+        col_lines.join(",\n")
     ))
 }
 
@@ -991,7 +1052,10 @@ async fn fetch_schema_columns(
                        FROM INFORMATION_SCHEMA.COLUMNS
                        WHERE TABLE_SCHEMA = ?
                        ORDER BY TABLE_NAME, ORDINAL_POSITION"#;
-            sqlx::query(q).bind(db_name).fetch_all(p.as_ref()).await
+            sqlx::query(q)
+                .bind(db_name)
+                .fetch_all(p.as_ref())
+                .await
                 .unwrap_or_default()
                 .into_iter()
                 .fold(HashMap::new(), |mut m, row| {
@@ -1008,7 +1072,9 @@ async fn fetch_schema_columns(
                        FROM information_schema.columns
                        WHERE table_schema NOT IN ('pg_catalog','information_schema')
                        ORDER BY table_name, ordinal_position"#;
-            sqlx::query(q).fetch_all(p.as_ref()).await
+            sqlx::query(q)
+                .fetch_all(p.as_ref())
+                .await
                 .unwrap_or_default()
                 .into_iter()
                 .fold(HashMap::new(), |mut m, row| {
@@ -1023,12 +1089,20 @@ async fn fetch_schema_columns(
         models::enums::DatabasePool::SQLite(p) => {
             let tables: Vec<String> = sqlx::query_as::<_, (String,)>(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            ).fetch_all(p.as_ref()).await.unwrap_or_default()
-             .into_iter().map(|(n,)| n).collect();
+            )
+            .fetch_all(p.as_ref())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(n,)| n)
+            .collect();
             let mut map: HashMap<String, Vec<(String, String)>> = HashMap::new();
             for tbl in tables {
                 let pragma = format!("PRAGMA table_info('{}')", tbl.replace('\'', "''"));
-                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(p.as_ref()).await {
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str()))
+                    .fetch_all(p.as_ref())
+                    .await
+                {
                     for row in rows {
                         use sqlx::Row;
                         let c: String = row.try_get("name").unwrap_or_default();
@@ -1062,51 +1136,81 @@ pub(crate) fn compute_schema_diff(
         if let Some(p) = tabular.connection_pools.get(&conn_id) {
             return Some(p.clone());
         }
-        tabular.shared_connection_pools.lock().ok()
+        tabular
+            .shared_connection_pools
+            .lock()
+            .ok()
             .and_then(|shared| shared.get(&conn_id).cloned())
     };
-    let left_pool  = get_pool(left_conn_id);
+    let left_pool = get_pool(left_conn_id);
     let right_pool = get_pool(right_conn_id);
 
     let (left_schema, right_schema) = rt.block_on(async {
-        let l = if let Some(p) = left_pool  { fetch_schema_columns(&p, left_db).await  } else { HashMap::new() };
-        let r = if let Some(p) = right_pool { fetch_schema_columns(&p, right_db).await } else { HashMap::new() };
+        let l = if let Some(p) = left_pool {
+            fetch_schema_columns(&p, left_db).await
+        } else {
+            HashMap::new()
+        };
+        let r = if let Some(p) = right_pool {
+            fetch_schema_columns(&p, right_db).await
+        } else {
+            HashMap::new()
+        };
         (l, r)
     });
 
     let mut all_tables: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for k in left_schema.keys()  { all_tables.insert(k); }
-    for k in right_schema.keys() { all_tables.insert(k); }
+    for k in left_schema.keys() {
+        all_tables.insert(k);
+    }
+    for k in right_schema.keys() {
+        all_tables.insert(k);
+    }
 
     let mut diffs = Vec::new();
     for table in all_tables {
-        let left_cols  = left_schema.get(table);
+        let left_cols = left_schema.get(table);
         let right_cols = right_schema.get(table);
 
         let status = match (left_cols, right_cols) {
-            (Some(_), None)    => models::structs::DiffStatus::Removed,
-            (None, Some(_))    => models::structs::DiffStatus::Added,
+            (Some(_), None) => models::structs::DiffStatus::Removed,
+            (None, Some(_)) => models::structs::DiffStatus::Added,
             (Some(l), Some(r)) => {
-                if l == r { models::structs::DiffStatus::Same }
-                else      { models::structs::DiffStatus::Modified }
+                if l == r {
+                    models::structs::DiffStatus::Same
+                } else {
+                    models::structs::DiffStatus::Modified
+                }
             }
             (None, None) => continue,
         };
 
         let mut col_diffs = Vec::new();
         if status == models::structs::DiffStatus::Modified {
-            let left_map:  HashMap<&str, &str> = left_cols.unwrap().iter().map(|(c, t)| (c.as_str(), t.as_str())).collect();
-            let right_map: HashMap<&str, &str> = right_cols.unwrap().iter().map(|(c, t)| (c.as_str(), t.as_str())).collect();
+            let left_map: HashMap<&str, &str> = left_cols
+                .unwrap()
+                .iter()
+                .map(|(c, t)| (c.as_str(), t.as_str()))
+                .collect();
+            let right_map: HashMap<&str, &str> = right_cols
+                .unwrap()
+                .iter()
+                .map(|(c, t)| (c.as_str(), t.as_str()))
+                .collect();
             let mut all_cols: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-            for k in left_map.keys()  { all_cols.insert(k); }
-            for k in right_map.keys() { all_cols.insert(k); }
+            for k in left_map.keys() {
+                all_cols.insert(k);
+            }
+            for k in right_map.keys() {
+                all_cols.insert(k);
+            }
             for col in all_cols {
                 let lt = left_map.get(col).map(|s| s.to_string());
                 let rt2 = right_map.get(col).map(|s| s.to_string());
                 if lt != rt2 {
                     col_diffs.push(models::structs::ColumnDiff {
                         name: col.to_string(),
-                        left_type:  lt,
+                        left_type: lt,
                         right_type: rt2,
                     });
                 }

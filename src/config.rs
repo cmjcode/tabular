@@ -1159,9 +1159,15 @@ mod tests {
         assert_eq!(settings.active_root(), Some(PathBuf::from("/vaults/work")));
 
         // Mati, belum dipilih, atau file rusak -> tidak ada vault aktif.
-        let off = ObsidianSettings { enabled: false, ..settings.clone() };
+        let off = ObsidianSettings {
+            enabled: false,
+            ..settings.clone()
+        };
         assert_eq!(off.active_root(), None);
         assert_eq!(ObsidianSettings::from_json("{}").active_root(), None);
-        assert_eq!(ObsidianSettings::from_json("not json"), ObsidianSettings::default());
+        assert_eq!(
+            ObsidianSettings::from_json("not json"),
+            ObsidianSettings::default()
+        );
     }
 }

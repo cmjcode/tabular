@@ -1549,7 +1549,12 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
                     }
                     ui.checkbox(&mut state.show_same, "Show identical tables");
                     ui.add_space(10.0);
-                    crate::window_egui::style::render_search_field(ui, &mut state.filter_text, "Filter tables…", 160.0);
+                    crate::window_egui::style::render_search_field(
+                        ui,
+                        &mut state.filter_text,
+                        "Filter tables…",
+                        160.0,
+                    );
                 });
 
                 ui.separator();
@@ -2023,7 +2028,8 @@ impl super::Tabular {
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,
-                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new request name"),
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new request name"),
                             f32::INFINITY,
                             None,
                         );
@@ -2118,7 +2124,8 @@ impl super::Tabular {
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,
-                            egui::TextEdit::singleline(&mut folder_name).hint_text("Enter folder name"),
+                            egui::TextEdit::singleline(&mut folder_name)
+                                .hint_text("Enter folder name"),
                             f32::INFINITY,
                             None,
                         );
@@ -2192,7 +2199,8 @@ impl super::Tabular {
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,
-                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new folder name"),
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new folder name"),
                             f32::INFINITY,
                             None,
                         );
@@ -2262,7 +2270,8 @@ impl super::Tabular {
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,
-                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new workspace name"),
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new workspace name"),
                             f32::INFINITY,
                             None,
                         );
@@ -2331,7 +2340,8 @@ impl super::Tabular {
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,
-                            egui::TextEdit::singleline(&mut ws_name).hint_text("Enter collection name"),
+                            egui::TextEdit::singleline(&mut ws_name)
+                                .hint_text("Enter collection name"),
                             f32::INFINITY,
                             None,
                         );

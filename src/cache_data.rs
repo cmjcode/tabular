@@ -1,4 +1,4 @@
-use log::{debug};
+use log::debug;
 
 use crate::{
     cache_data, connection, driver_mysql, driver_redis, driver_sqlite, models,
@@ -86,7 +86,9 @@ pub(crate) fn get_tables_for_connection_any_db(
     } else {
         tokio::runtime::Runtime::new().unwrap().block_on(fut)
     };
-    result.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
+    result
+        .ok()
+        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
 /// Resolve which database a cached table belongs to (first match). Used so the
@@ -134,7 +136,9 @@ pub(crate) fn get_all_cached_tables_global(tabular: &Tabular) -> Option<Vec<Stri
     } else {
         tokio::runtime::Runtime::new().unwrap().block_on(fut)
     };
-    result.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
+    result
+        .ok()
+        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
 /// Like `get_columns_from_cache` but NOT scoped to a database. Returns the first
@@ -207,10 +211,8 @@ pub(crate) fn build_redis_structure_from_cache(
     databases: &[String],
 ) {
     if databases.len() == 1 && databases[0] == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
-        let mut cluster_node = models::structs::TreeNode::new(
-            "Keys".to_string(),
-            models::enums::NodeType::Database,
-        );
+        let mut cluster_node =
+            models::structs::TreeNode::new("Keys".to_string(), models::enums::NodeType::Database);
         cluster_node.connection_id = Some(connection_id);
         cluster_node.database_name = Some(crate::driver_redis::REDIS_CLUSTER_KEYSPACE.to_string());
         cluster_node.is_loaded = false;
@@ -280,11 +282,15 @@ pub(crate) fn clear_tables_from_cache_for_db(
             .execute(pool_clone.as_ref())
             .await
             {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     let err_str = e.to_string();
-                    if err_str.contains("code: 11") || err_str.contains("malformed") || err_str.contains("corrupt") {
-                        let vacuum_result = sqlx::query("VACUUM").execute(pool_clone.as_ref()).await;
+                    if err_str.contains("code: 11")
+                        || err_str.contains("malformed")
+                        || err_str.contains("corrupt")
+                    {
+                        let vacuum_result =
+                            sqlx::query("VACUUM").execute(pool_clone.as_ref()).await;
                         match vacuum_result {
                             Ok(_) => {
                                 let _ = sqlx::query(
@@ -359,7 +365,8 @@ pub(crate) fn fetch_and_cache_connection_data(
     // Fetch databases from server
     #[allow(deprecated)]
     #[allow(deprecated)]
-    let databases_result = connection::fetch_databases_from_connection_blocking(tabular, connection_id);
+    let databases_result =
+        connection::fetch_databases_from_connection_blocking(tabular, connection_id);
 
     if let Some(databases) = databases_result {
         // Save databases to cache
@@ -513,10 +520,8 @@ pub(crate) fn save_tables_to_cache(
         // Collect the unique table_types present in this batch so we only
         // delete entries of those types (not ALL types for the database).
         // This prevents expanding "Views" from wiping "Tables" from cache.
-        let types_to_replace: std::collections::HashSet<String> = tables_clone
-            .iter()
-            .map(|(_, t)| t.clone())
-            .collect();
+        let types_to_replace: std::collections::HashSet<String> =
+            tables_clone.iter().map(|(_, t)| t.clone()).collect();
         let fut = async move {
             // Delete only entries of the types we are about to replace
             for table_type in &types_to_replace {
@@ -619,15 +624,23 @@ pub(crate) fn get_foreign_keys_from_cache(
     match result {
         Ok(rows) => Some(
             rows.into_iter()
-                .map(|(table_name, column_name, referenced_table_name, referenced_column_name, constraint_name)| {
-                    models::structs::ForeignKey {
-                        constraint_name,
+                .map(
+                    |(
                         table_name,
                         column_name,
                         referenced_table_name,
                         referenced_column_name,
-                    }
-                })
+                        constraint_name,
+                    )| {
+                        models::structs::ForeignKey {
+                            constraint_name,
+                            table_name,
+                            column_name,
+                            referenced_table_name,
+                            referenced_column_name,
+                        }
+                    },
+                )
                 .collect(),
         ),
         Err(e) => {
@@ -932,7 +945,8 @@ pub(crate) fn get_redis_browser_preview_from_cache(
     key_name: &str,
 ) -> Option<models::structs::RedisBrowserPreview> {
     let cache_name = redis_browser_preview_cache_name(key_name);
-    let (headers, rows) = get_table_rows_from_cache(tabular, connection_id, database_name, &cache_name)?;
+    let (headers, rows) =
+        get_table_rows_from_cache(tabular, connection_id, database_name, &cache_name)?;
     let first_row = rows.first()?;
     if first_row.len() != headers.len() {
         return None;
@@ -945,11 +959,19 @@ pub(crate) fn get_redis_browser_preview_from_cache(
 
     Some(models::structs::RedisBrowserPreview {
         key_name: key_name.to_string(),
-        key_type: values.remove("key_type").unwrap_or_else(|| "unknown".to_string()),
+        key_type: values
+            .remove("key_type")
+            .unwrap_or_else(|| "unknown".to_string()),
         database_name: database_name.to_string(),
-        ttl_label: values.remove("ttl_label").unwrap_or_else(|| "-".to_string()),
-        size_label: values.remove("size_label").unwrap_or_else(|| "-".to_string()),
-        length_label: values.remove("length_label").unwrap_or_else(|| "-".to_string()),
+        ttl_label: values
+            .remove("ttl_label")
+            .unwrap_or_else(|| "-".to_string()),
+        size_label: values
+            .remove("size_label")
+            .unwrap_or_else(|| "-".to_string()),
+        length_label: values
+            .remove("length_label")
+            .unwrap_or_else(|| "-".to_string()),
         json_text: values.remove("json_text").unwrap_or_default(),
     })
 }
@@ -1264,4 +1286,3 @@ pub(crate) fn get_partitions_from_cache(
         None
     }
 }
-
