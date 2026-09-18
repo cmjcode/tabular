@@ -172,6 +172,14 @@ pub fn start_oauth_flow(
                                             }
                                         }
                                     }
+                                } else if status == "error" {
+                                    let err_msg = data
+                                        .get("error")
+                                        .and_then(|e| e.as_str())
+                                        .unwrap_or("Authentication failed on server");
+                                    warn!("❌ Authentication failed via ticket poll: {}", err_msg);
+                                    let _ = tx.send(Err(err_msg.to_string()));
+                                    return;
                                 }
                             }
                         }

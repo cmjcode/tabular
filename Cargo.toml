@@ -234,5 +234,13 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# Proc-macro dan build script dikompilasi sebagai dylib yang di-dlopen oleh rustc.
+# `strip = true` (strip simbol penuh) memakai `strip` dari Xcode 27 yang membuat
+# LINKEDIT string pool tidak sejajar, sehingga dyld macOS 27 menolak memuatnya
+# ("mis-aligned LINKEDIT string pool" -> E0463 can't find crate serde_derive dll).
+# Untuk artefak host ini cukup buang debuginfo saja; binary akhir tetap strip penuh.
+[profile.release.build-override]
+strip = "debuginfo"
+
 [patch.crates-io]
 winit = { path = "patches/winit" }
