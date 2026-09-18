@@ -4053,6 +4053,9 @@ impl Tabular {
                     ai_cli_effort: self.ai_cli_effort.clone(),
                     ai_cli_extra_args: self.ai_cli_extra_args.clone(),
                     ai_cli_auto_apply_edits: self.ai_cli_auto_apply_edits,
+                    ai_obsidian_vault_path: self.ai_obsidian_vault_path.clone(),
+                    ai_obsidian_enabled: self.ai_obsidian_enabled,
+                    ai_obsidian_allow_write: self.ai_obsidian_allow_write,
                     redis_browser_auto_refresh_seconds: self
                         .redis_browser_auto_refresh_default_seconds
                         .max(1),

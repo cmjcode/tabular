@@ -1,9 +1,11 @@
 //! Indeks vektor lokal berbasis `sqlite-vec`.
 //!
-//! Dipakai untuk dua hal:
+//! Dipakai untuk tiga hal:
 //! - memilih tabel yang paling relevan dengan pertanyaan user saat menyusun
-//!   konteks skema untuk AI assistant (retrieval), dan
-//! - pencarian history query yang mirip secara isi di Quick Open.
+//!   konteks skema untuk AI assistant (retrieval),
+//! - pencarian history query yang mirip secara isi di Quick Open, dan
+//! - mencari potongan catatan vault Obsidian yang relevan sebagai memory AI
+//!   assistant (lihat [`crate::obsidian`]).
 //!
 //! Embedding dibuat secara lokal dengan *feature hashing* (token identifier +
 //! trigram karakter), bukan lewat API provider: tidak semua provider punya
@@ -32,6 +34,11 @@ pub const HISTORY_MAX_DISTANCE: f32 = 0.7;
 /// Jarak cosine maksimum untuk pencarian tabel. Dokumen tabel berisi banyak
 /// nama kolom sehingga kemiripannya lebih "encer" dibanding nama saja.
 pub const TABLE_MAX_DISTANCE: f32 = 0.65;
+
+/// Jarak cosine maksimum untuk potongan catatan. Prosa lebih beragam daripada
+/// nama tabel, jadi ambangnya lebih longgar; urutan akhir diperbaiki dengan
+/// kecocokan kata kunci di [`search_notes`].
+pub const NOTE_MAX_DISTANCE: f32 = 0.85;
 
 static REGISTER: Once = Once::new();
 
@@ -189,6 +196,17 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             history_id INTEGER PRIMARY KEY,
             content_hash INTEGER NOT NULL,
             embedding BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS note_embedding (
+            vault_path TEXT NOT NULL,
+            rel_path TEXT NOT NULL,
+            chunk_idx INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            heading TEXT NOT NULL,
+            text TEXT NOT NULL,
+            stamp INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            PRIMARY KEY (vault_path, rel_path, chunk_idx)
         );
         "#,
     )
@@ -431,6 +449,205 @@ pub async fn search_history(
     Ok(rows.into_iter().map(|(t, d)| (t, d as f32)).collect())
 }
 
+/// Hasil satu kali sinkronisasi indeks vault.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct NoteSyncStats {
+    /// Jumlah catatan `.md` di vault.
+    pub notes: usize,
+    /// Jumlah potongan yang terindeks setelah sinkronisasi.
+    pub chunks: usize,
+    /// Catatan yang dibaca ulang karena baru atau berubah.
+    pub updated: usize,
+}
+
+/// Potongan catatan hasil pencarian.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NoteHit {
+    pub rel_path: String,
+    pub title: String,
+    pub heading: String,
+    pub text: String,
+    pub distance: f32,
+}
+
+/// Teks representasi potongan catatan. Judul, alias, tag dan heading diulang
+/// agar bobotnya lebih besar daripada isi.
+fn note_document(note: &crate::obsidian::ParsedNote, chunk: &crate::obsidian::NoteChunk) -> String {
+    format!(
+        "{title} {title} {aliases} {tags} {heading} {heading} {text}",
+        title = note.title,
+        aliases = note.aliases.join(" "),
+        tags = note.tags.join(" "),
+        heading = chunk.heading,
+        text = chunk.text
+    )
+}
+
+/// Sinkronkan indeks dengan isi vault di `root`. Hanya catatan yang mtime /
+/// ukurannya berubah yang dibaca ulang; catatan yang hilang dan baris milik
+/// vault lain dihapus. Melakukan I/O file sinkron, jadi panggil dari thread
+/// latar.
+pub async fn sync_note_embeddings(
+    pool: &SqlitePool,
+    root: &std::path::Path,
+) -> Result<NoteSyncStats, String> {
+    let files = crate::obsidian::scan_vault(root)?;
+    let vault = root.to_string_lossy().to_string();
+    let db = |e: sqlx::Error| format!("note index error: {e}");
+
+    ensure_schema(pool).await.map_err(db)?;
+    // Hanya satu vault yang aktif; indeks vault sebelumnya tidak dipakai lagi.
+    sqlx::query("DELETE FROM note_embedding WHERE vault_path <> ?")
+        .bind(&vault)
+        .execute(pool)
+        .await
+        .map_err(db)?;
+
+    let existing: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT DISTINCT rel_path, stamp FROM note_embedding WHERE vault_path = ?",
+    )
+    .bind(&vault)
+    .fetch_all(pool)
+    .await
+    .map_err(db)?
+    .into_iter()
+    .collect();
+
+    let mut tx = pool.begin().await.map_err(db)?;
+    let mut updated = 0;
+    let mut current: HashSet<&str> = HashSet::new();
+
+    for file in &files {
+        current.insert(file.rel_path.as_str());
+        let stamp = content_hash(&format!("{}:{}", file.mtime, file.size));
+        if existing.get(&file.rel_path) == Some(&stamp) {
+            continue;
+        }
+        let raw = match crate::obsidian::read_note(root, &file.rel_path) {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!("[OBSIDIAN] skipped: {e}");
+                continue;
+            }
+        };
+        let note = crate::obsidian::parse_note(&file.rel_path, &raw);
+        sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
+            .bind(&vault)
+            .bind(&file.rel_path)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        for (idx, chunk) in note.chunks.iter().enumerate() {
+            let Some(embedding) = embed_text(&note_document(&note, chunk)) else {
+                continue;
+            };
+            sqlx::query(
+                "INSERT INTO note_embedding (vault_path, rel_path, chunk_idx, title, heading, text, stamp, embedding)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&vault)
+            .bind(&file.rel_path)
+            .bind(idx as i64)
+            .bind(&note.title)
+            .bind(&chunk.heading)
+            .bind(&chunk.text)
+            .bind(stamp)
+            .bind(to_blob(&embedding))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
+        updated += 1;
+    }
+
+    for stale in existing.keys().filter(|p| !current.contains(p.as_str())) {
+        sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
+            .bind(&vault)
+            .bind(stale)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+    tx.commit().await.map_err(db)?;
+
+    let (_, chunks) = count_notes(pool, root).await.map_err(db)?;
+    Ok(NoteSyncStats {
+        notes: files.len(),
+        chunks,
+        updated,
+    })
+}
+
+/// `(jumlah catatan, jumlah potongan)` yang terindeks untuk vault `root`.
+pub async fn count_notes(
+    pool: &SqlitePool,
+    root: &std::path::Path,
+) -> Result<(usize, usize), sqlx::Error> {
+    ensure_schema(pool).await?;
+    let (notes, chunks): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(DISTINCT rel_path), COUNT(*) FROM note_embedding WHERE vault_path = ?",
+    )
+    .bind(root.to_string_lossy().to_string())
+    .fetch_one(pool)
+    .await?;
+    Ok((notes as usize, chunks as usize))
+}
+
+/// Cari potongan catatan yang relevan dengan `query`. Kandidat diambil lewat
+/// jarak cosine (<= `max_distance`), lalu diurutkan ulang: tiap kata kunci
+/// query yang benar-benar muncul di potongan mengurangi jaraknya sedikit,
+/// karena feature hashing saja cukup berisik untuk prosa.
+pub async fn search_notes(
+    pool: &SqlitePool,
+    root: &std::path::Path,
+    query: &str,
+    limit: usize,
+    max_distance: f32,
+) -> Result<Vec<NoteHit>, sqlx::Error> {
+    let Some(embedding) = embed_text(query) else {
+        return Ok(Vec::new());
+    };
+    ensure_schema(pool).await?;
+    let rows: Vec<(String, String, String, String, f64)> = sqlx::query_as(
+        "SELECT rel_path, title, heading, text, distance FROM (
+             SELECT rel_path, title, heading, text, chunk_idx, vec_distance_cosine(embedding, ?) AS distance
+             FROM note_embedding
+             WHERE vault_path = ?
+         )
+         WHERE distance <= ?
+         ORDER BY distance ASC, rel_path ASC, chunk_idx ASC
+         LIMIT ?",
+    )
+    .bind(to_blob(&embedding))
+    .bind(root.to_string_lossy().to_string())
+    .bind(f64::from(max_distance))
+    .bind((limit.max(1) * 4) as i64)
+    .fetch_all(pool)
+    .await?;
+
+    let query_tokens: HashSet<String> = tokenize(query).into_iter().collect();
+    let mut hits: Vec<(f32, NoteHit)> = rows
+        .into_iter()
+        .map(|(rel_path, title, heading, text, distance)| {
+            let tokens: HashSet<String> = tokenize(&format!("{title} {heading} {text}"))
+                .into_iter()
+                .collect();
+            let overlap = query_tokens.intersection(&tokens).count().min(5);
+            let distance = distance as f32;
+            let hit = NoteHit {
+                rel_path,
+                title,
+                heading,
+                text,
+                distance,
+            };
+            (distance - 0.04 * overlap as f32, hit)
+        })
+        .collect();
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(hits.into_iter().take(limit).map(|(_, hit)| hit).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +800,50 @@ mod tests {
         sync_history_embeddings(&pool).await.unwrap();
         let hits = search_history(&pool, "invoice", 5, 2.0).await.unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn note_index_syncs_incrementally_and_finds_relevant_chunks() {
+        use crate::obsidian::tests::TempVault;
+
+        let pool = test_pool().await;
+        let vault = TempVault::new("index");
+        vault.write(
+            "db/Transactions.md",
+            "---\naliases: [trx_h]\ntags: [sales]\n---\n# Status codes\nIn trx_h, status 3 means the transaction was voided.\n\n# Owner\nMaintained by the finance team.",
+        );
+        vault.write("Recipes/Rendang.md", "Slow cooked beef with coconut milk and chili paste.");
+
+        let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
+        assert_eq!((stats.notes, stats.chunks, stats.updated), (2, 3, 2));
+        // Tidak ada yang berubah: tidak ada catatan yang dibaca ulang.
+        let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
+        assert_eq!((stats.notes, stats.chunks, stats.updated), (2, 3, 0));
+
+        let hits = search_notes(&pool, &vault.0, "total voided transactions this month", 3, NOTE_MAX_DISTANCE)
+            .await
+            .unwrap();
+        assert_eq!(hits.first().map(|h| h.rel_path.as_str()), Some("db/Transactions.md"));
+        assert_eq!(hits[0].heading, "Status codes");
+        assert!(hits.iter().all(|h| h.rel_path != "Recipes/Rendang.md"));
+        // Alias di frontmatter ikut terindeks.
+        let hits = search_notes(&pool, &vault.0, "trx_h", 1, NOTE_MAX_DISTANCE).await.unwrap();
+        assert_eq!(hits[0].rel_path, "db/Transactions.md");
+
+        // Isi berubah (ukuran beda) -> diindeks ulang; file terhapus -> hilang dari indeks.
+        vault.write("db/Transactions.md", "# Status codes\nStatus 9 means refunded to the customer wallet.");
+        std::fs::remove_file(vault.0.join("Recipes/Rendang.md")).unwrap();
+        let stats = sync_note_embeddings(&pool, &vault.0).await.unwrap();
+        assert_eq!((stats.notes, stats.chunks, stats.updated), (1, 1, 1));
+        let hits = search_notes(&pool, &vault.0, "refunded wallet", 3, NOTE_MAX_DISTANCE).await.unwrap();
+        assert!(hits[0].text.contains("Status 9"));
+        assert_eq!(count_notes(&pool, &vault.0).await.unwrap(), (1, 1));
+
+        // Pindah vault: indeks vault lama dibuang.
+        let other = TempVault::new("index-other");
+        other.write("a.md", "alpha note");
+        sync_note_embeddings(&pool, &other.0).await.unwrap();
+        assert_eq!(count_notes(&pool, &vault.0).await.unwrap(), (0, 0));
+        assert!(sync_note_embeddings(&pool, &vault.0.join("missing")).await.is_err());
     }
 }

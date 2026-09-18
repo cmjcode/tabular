@@ -1236,6 +1236,7 @@ impl Tabular {
         self.render_ai_backend_settings(ui);
 
         if self.ai_backend != AiBackend::Api {
+            self.render_ai_memory_settings(ui);
             return;
         }
 
@@ -1394,6 +1395,8 @@ impl Tabular {
                 );
             }
         });
+
+        self.render_ai_memory_settings(ui);
     }
 
     // ─────────────────────────────────────────────────────────────────────

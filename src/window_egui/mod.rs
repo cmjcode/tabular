@@ -624,6 +624,16 @@ pub struct Tabular {
     pub ai_cli_mcp_registered: Option<bool>,
     pub ai_cli_mcp_receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
     pub ai_cli_mcp_message: Option<String>,
+    // Vault Obsidian sebagai memory AI (lihat `crate::obsidian`)
+    pub ai_obsidian_vault_path: String,
+    pub ai_obsidian_enabled: bool,
+    pub ai_obsidian_allow_write: bool,
+    /// Hasil sinkronisasi indeks terakhir; `None` sebelum pernah diindeks.
+    pub ai_obsidian_index: Option<Result<crate::vector_index::NoteSyncStats, String>>,
+    pub ai_obsidian_index_receiver:
+        Option<std::sync::mpsc::Receiver<Result<crate::vector_index::NoteSyncStats, String>>>,
+    /// Pesan hasil "Save to vault" terakhir dari panel chat.
+    pub ai_obsidian_save_message: Option<Result<String, String>>,
     // Inline --AI ... -- block processing
     pub ai_inline_processed: std::collections::HashSet<u64>,
     // (block_hash, placeholder_start, placeholder_end, rx)

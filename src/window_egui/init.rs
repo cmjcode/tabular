@@ -87,6 +87,9 @@ impl super::Tabular {
         self.ai_cli_effort = prefs.ai_cli_effort.clone();
         self.ai_cli_extra_args = prefs.ai_cli_extra_args.clone();
         self.ai_cli_auto_apply_edits = prefs.ai_cli_auto_apply_edits;
+        self.ai_obsidian_vault_path = prefs.ai_obsidian_vault_path.clone();
+        self.ai_obsidian_enabled = prefs.ai_obsidian_enabled;
+        self.ai_obsidian_allow_write = prefs.ai_obsidian_allow_write;
         self.ai_settings_cli_bin_input = prefs.ai_cli_bin.clone();
         self.ai_settings_cli_model_input = prefs.ai_cli_model.clone();
         self.ai_settings_cli_extra_args_input = prefs.ai_cli_extra_args.clone();
@@ -616,6 +619,12 @@ impl super::Tabular {
             ai_cli_mcp_registered: None,
             ai_cli_mcp_receiver: None,
             ai_cli_mcp_message: None,
+            ai_obsidian_vault_path: String::new(),
+            ai_obsidian_enabled: false,
+            ai_obsidian_allow_write: false,
+            ai_obsidian_index: None,
+            ai_obsidian_index_receiver: None,
+            ai_obsidian_save_message: None,
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
@@ -1570,6 +1579,9 @@ mod tests {
             ai_cli_effort: "high".into(),
             ai_cli_extra_args: "--verbose".into(),
             ai_cli_auto_apply_edits: false,
+            ai_obsidian_vault_path: "/vaults/work".into(),
+            ai_obsidian_enabled: true,
+            ai_obsidian_allow_write: true,
             ai_panel_width: 420.0,
             ..AppPreferences::default()
         };
@@ -1588,6 +1600,9 @@ mod tests {
         assert_eq!(tabular.ai_cli_effort, "high");
         assert_eq!(tabular.ai_cli_extra_args, "--verbose");
         assert!(!tabular.ai_cli_auto_apply_edits);
+        assert_eq!(tabular.ai_obsidian_vault_path, "/vaults/work");
+        assert!(tabular.ai_obsidian_enabled);
+        assert!(tabular.ai_obsidian_allow_write);
         assert_eq!(tabular.ai_panel_width, 420.0);
         // Input di dialog Preferences ikut terisi
         assert_eq!(tabular.ai_settings_api_key_input, "sk-test");

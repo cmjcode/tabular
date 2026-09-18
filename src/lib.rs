@@ -45,6 +45,7 @@ pub mod http_collection;
 pub mod keymap;
 pub mod models;
 pub mod modules;
+pub mod obsidian;
 pub mod plugin_runtime;
 pub mod query_profiler;
 pub mod query_tools;
