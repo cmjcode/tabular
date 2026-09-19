@@ -565,6 +565,9 @@ pub(crate) fn open_query_file(
         session: None,
         pinned_columns: std::collections::HashSet::new(),
         is_pinned: false,
+        last_executed_sql: String::new(),
+        last_statement_type: models::structs::StatementType::Select,
+        last_affected_rows: None,
     };
 
     tabular.query_tabs.push(new_tab);

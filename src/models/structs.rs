@@ -933,6 +933,128 @@ pub struct ColumnMetadata {
     pub is_primary_key: bool,
 }
 
+/// Jenis pernyataan SQL (SELECT, INSERT, UPDATE, DELETE, DDL, dll.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StatementType {
+    #[default]
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Ddl,
+    Transaction,
+    Show,
+    Other,
+}
+
+impl StatementType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Select => "SELECT",
+            Self::Insert => "INSERT",
+            Self::Update => "UPDATE",
+            Self::Delete => "DELETE",
+            Self::Ddl => "DDL",
+            Self::Transaction => "TRANSACTION",
+            Self::Show => "SHOW",
+            Self::Other => "QUERY",
+        }
+    }
+
+    pub fn is_mutation(&self) -> bool {
+        matches!(self, Self::Insert | Self::Update | Self::Delete | Self::Ddl)
+    }
+
+    pub fn is_select(&self) -> bool {
+        matches!(self, Self::Select)
+    }
+
+    /// Deteksi jenis pernyataan SQL dari string SQL dengan mengabaikan komentar dan spasi
+    pub fn from_sql(sql: &str) -> Self {
+        let trimmed = sql.trim();
+        let bytes = trimmed.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+
+        // Lewati komentar SQL dan spasi awal
+        while i < len {
+            // Lewati spasi
+            while i < len && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n') {
+                i += 1;
+            }
+            if i >= len {
+                break;
+            }
+
+            // Lewati komentar satu baris -- atau #
+            if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-') || bytes[i] == b'#' {
+                i += 2;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+
+            // Lewati komentar blok /* ... */
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < len {
+                    i += 2;
+                }
+                continue;
+            }
+
+            break;
+        }
+
+        if i >= len {
+            return Self::Other;
+        }
+
+        // Ambil kata kunci pertama (alfanumerik)
+        let word_start = i;
+        while i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+            i += 1;
+        }
+        let word = &trimmed[word_start..i];
+
+        if word.eq_ignore_ascii_case("select") || word.eq_ignore_ascii_case("with") {
+            Self::Select
+        } else if word.eq_ignore_ascii_case("insert") || word.eq_ignore_ascii_case("upsert") || word.eq_ignore_ascii_case("replace") {
+            Self::Insert
+        } else if word.eq_ignore_ascii_case("update") {
+            Self::Update
+        } else if word.eq_ignore_ascii_case("delete") {
+            Self::Delete
+        } else if word.eq_ignore_ascii_case("create")
+            || word.eq_ignore_ascii_case("alter")
+            || word.eq_ignore_ascii_case("drop")
+            || word.eq_ignore_ascii_case("truncate")
+            || word.eq_ignore_ascii_case("rename")
+        {
+            Self::Ddl
+        } else if word.eq_ignore_ascii_case("begin")
+            || word.eq_ignore_ascii_case("commit")
+            || word.eq_ignore_ascii_case("rollback")
+            || word.eq_ignore_ascii_case("start")
+            || word.eq_ignore_ascii_case("savepoint")
+        {
+            Self::Transaction
+        } else if word.eq_ignore_ascii_case("show")
+            || word.eq_ignore_ascii_case("describe")
+            || word.eq_ignore_ascii_case("desc")
+            || word.eq_ignore_ascii_case("explain")
+        {
+            Self::Show
+        } else {
+            Self::Other
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueryResult {
     pub headers: Vec<String>,
@@ -949,6 +1071,12 @@ pub struct QueryResult {
     pub explain_plan_json: Option<String>,
     #[serde(default)]
     pub pinned_columns: HashSet<String>,
+    #[serde(default)]
+    pub executed_sql: String,
+    #[serde(default)]
+    pub statement_type: StatementType,
+    #[serde(default)]
+    pub affected_rows: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -1008,6 +1136,9 @@ pub struct QueryTab {
     pub session: Option<crate::connection::session::SessionHandle>,
     pub pinned_columns: HashSet<String>,
     pub is_pinned: bool,
+    pub last_executed_sql: String,
+    pub last_statement_type: StatementType,
+    pub last_affected_rows: Option<usize>,
 }
 
 // ─── AI Assistant chat ──────────────────────────────────────────────────────
@@ -2148,10 +2279,31 @@ mod tests {
             session: None,
             pinned_columns: HashSet::new(),
             is_pinned: false,
+            last_executed_sql: String::new(),
+            last_statement_type: StatementType::Select,
+            last_affected_rows: None,
         };
 
         assert!(!tab.is_pinned);
         tab.is_pinned = true;
         assert!(tab.is_pinned);
+    }
+
+    #[test]
+    fn test_statement_type_from_sql() {
+        assert_eq!(StatementType::from_sql("SELECT * FROM users"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("  -- comment\nSELECT 1"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("/* block */ WITH cte AS (...) SELECT 1"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("INSERT INTO t VALUES (1)"), StatementType::Insert);
+        assert_eq!(StatementType::from_sql("UPDATE t SET a = 1"), StatementType::Update);
+        assert_eq!(StatementType::from_sql("DELETE FROM t WHERE a = 1"), StatementType::Delete);
+        assert_eq!(StatementType::from_sql("CREATE TABLE foo (id INT)"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("ALTER TABLE foo ADD COLUMN bar TEXT"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("DROP TABLE foo"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("TRUNCATE foo"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("BEGIN;"), StatementType::Transaction);
+        assert_eq!(StatementType::from_sql("COMMIT;"), StatementType::Transaction);
+        assert_eq!(StatementType::from_sql("SHOW TABLES;"), StatementType::Show);
+        assert_eq!(StatementType::from_sql("EXPLAIN SELECT 1;"), StatementType::Show);
     }
 }

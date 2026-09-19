@@ -62,6 +62,9 @@ pub(crate) fn create_new_tab(
         session: None,
         pinned_columns: std::collections::HashSet::new(),
         is_pinned: false,
+        last_executed_sql: String::new(),
+        last_statement_type: models::structs::StatementType::Select,
+        last_affected_rows: None,
     };
 
     tabular.query_tabs.push(new_tab);
@@ -671,9 +674,12 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             );
             std::mem::swap(&mut current_tab.object_ddl, &mut tabular.current_object_ddl);
             std::mem::swap(&mut current_tab.pinned_columns, &mut tabular.pinned_columns);
-            // Save query message state
+            // Save query message and execution state
             current_tab.query_message = tabular.query_message.clone();
             current_tab.query_message_is_error = tabular.query_message_is_error;
+            current_tab.last_executed_sql = tabular.last_executed_sql.clone();
+            current_tab.last_statement_type = tabular.last_statement_type;
+            current_tab.last_affected_rows = tabular.last_affected_rows;
             // dba_special_mode already resides on current_tab; no action required here
         }
 
@@ -708,10 +714,13 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             std::mem::swap(&mut tabular.pinned_columns, &mut new_tab.pinned_columns);
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
-            // Restore query message state
+            // Restore query message and execution state
             tabular.query_message = new_tab.query_message.clone();
             tabular.query_message_is_error = new_tab.query_message_is_error;
             tabular.show_message_panel = !tabular.query_message.is_empty();
+            tabular.last_executed_sql = new_tab.last_executed_sql.clone();
+            tabular.last_statement_type = new_tab.last_statement_type;
+            tabular.last_affected_rows = new_tab.last_affected_rows;
             // dba_special_mode automatically follows with new_tab
 
             // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation
@@ -9794,7 +9803,11 @@ pub(crate) fn process_query_result(
 ) {
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.has_executed_query = true;
+        tab.last_executed_sql = query.to_string();
+        tab.last_statement_type = models::structs::StatementType::from_sql(query);
     }
+    tabular.last_executed_sql = query.to_string();
+    tabular.last_statement_type = models::structs::StatementType::from_sql(query);
 
     if let Some((headers, data)) = result {
         let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
@@ -9812,7 +9825,11 @@ pub(crate) fn process_query_result(
         data_table::update_pagination_data(tabular, data);
 
         if tabular.total_rows == 0 {
-            tabular.current_table_name = "Query executed successfully (no results)".to_string();
+            if tabular.last_statement_type.is_mutation() {
+                tabular.current_table_name = format!("{} completed successfully", tabular.last_statement_type.as_str());
+            } else {
+                tabular.current_table_name = "Query executed successfully (0 rows)".to_string();
+            }
         } else {
             tabular.current_table_name = format!(
                 "Query Results ({} total rows, showing page {} of {})",

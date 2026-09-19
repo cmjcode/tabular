@@ -96,6 +96,13 @@ impl super::Tabular {
             _ => {}
         }
 
+        let stmt_type = models::structs::StatementType::from_sql(&message.query);
+        let duration_ms = message.duration.as_millis();
+        self.last_executed_sql = message.query.clone();
+        self.last_statement_type = stmt_type;
+        self.last_affected_rows = message.affected_rows;
+        self.last_execution_duration_ms = duration_ms;
+
         // Update query message panel
         if message.success {
             self.query_message = describe_query_outcome(&message);
@@ -115,10 +122,13 @@ impl super::Tabular {
         self.show_message_panel = true;
         self.message_shown_at = Some(std::time::Instant::now());
 
-        // Update active tab message
+        // Update active tab message and execution state
         if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
             active_tab.query_message = self.query_message.clone();
             active_tab.query_message_is_error = self.query_message_is_error;
+            active_tab.last_executed_sql = message.query.clone();
+            active_tab.last_statement_type = stmt_type;
+            active_tab.last_affected_rows = message.affected_rows;
         }
 
         if was_paginated && message.success {
@@ -162,6 +172,9 @@ impl super::Tabular {
             column_metadata: message.column_metadata.clone(),
             explain_plan_json: None,
             pinned_columns: std::collections::HashSet::new(),
+            executed_sql: message.query.clone(),
+            statement_type: stmt_type,
+            affected_rows: message.affected_rows,
         });
 
         if new_index == 0 {
@@ -227,6 +240,7 @@ impl super::Tabular {
         was_paginated: bool,
     ) {
         let query_message = describe_query_outcome(message);
+        let stmt_type = models::structs::StatementType::from_sql(&message.query);
         let tab_title;
         {
             let Some(tab) = self.query_tabs.get_mut(tab_index) else {
@@ -236,6 +250,9 @@ impl super::Tabular {
             tab.has_executed_query = true;
             tab.query_message = query_message.clone();
             tab.query_message_is_error = !message.success;
+            tab.last_executed_sql = message.query.clone();
+            tab.last_statement_type = stmt_type;
+            tab.last_affected_rows = message.affected_rows;
 
             if !(was_paginated && message.success) {
                 let new_index = tab.results.len();
@@ -257,6 +274,9 @@ impl super::Tabular {
                     column_metadata: message.column_metadata.clone(),
                     explain_plan_json: None,
                     pinned_columns: std::collections::HashSet::new(),
+                    executed_sql: message.query.clone(),
+                    statement_type: stmt_type,
+                    affected_rows: message.affected_rows,
                 });
                 if new_index > 0 {
                     // Statement berikutnya dalam batch hanya menambah tab hasil.
@@ -639,9 +659,17 @@ impl super::Tabular {
     }
 }
 
-/// Baris status untuk query yang selesai: jumlah baris yang dikembalikan untuk
-/// result set, jumlah baris terdampak untuk perubahan data (dari driver), atau
-/// teks error.
+/// Helper format durasi waktu yang ramah developer: '14ms' atau '1.240s'
+pub(crate) fn format_duration_human(duration_ms: u128) -> String {
+    if duration_ms < 1000 {
+        format!("{}ms", duration_ms)
+    } else {
+        format!("{}.{:03}s", duration_ms / 1000, duration_ms % 1000)
+    }
+}
+
+/// Baris status untuk query yang selesai: menyertakan jenis statement (SELECT/UPDATE/DDL),
+/// durasi eksekusi, serta jumlah baris returned/affected atau teks error.
 pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -> String {
     if !message.success {
         return format!(
@@ -649,7 +677,9 @@ pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -
             message.error.as_deref().unwrap_or("Unknown error")
         );
     }
-    let duration_ms = message.duration.as_millis();
+    let duration_str = format_duration_human(message.duration.as_millis());
+    let stmt_type = models::structs::StatementType::from_sql(&message.query);
+
     let count = match message.affected_rows {
         Some(n) => format!("{} row(s) affected", n),
         None if message.truncated => {
@@ -657,12 +687,13 @@ pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -
         }
         None => format!("{} row(s) returned", message.rows.len()),
     };
-    format!(
-        "Query executed successfully in {}.{:03}s • {}",
-        duration_ms / 1000,
-        duration_ms % 1000,
-        count
-    )
+
+    let type_str = stmt_type.as_str();
+    if stmt_type == models::structs::StatementType::Other {
+        format!("Query completed in {} • {}", duration_str, count)
+    } else {
+        format!("{} completed in {} • {}", type_str, duration_str, count)
+    }
 }
 
 /// Pesan hasil gagal untuk query yang tidak sempat dijalankan.
