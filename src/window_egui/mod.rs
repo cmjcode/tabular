@@ -554,6 +554,10 @@ pub struct Tabular {
     pub message_shown_at: Option<std::time::Instant>,
     pub message_panel_height: f32, // Height of message panel in pixels
     pub query_message_display_buffer: String, // Buffer for TextEdit to maintain selection state
+    pub last_executed_sql: String,
+    pub last_statement_type: crate::models::structs::StatementType,
+    pub last_affected_rows: Option<usize>,
+    pub last_execution_duration_ms: u128,
     // Custom Views state
     pub show_add_view_dialog: bool,
     pub new_view_name: String,

@@ -24,12 +24,13 @@ impl super::Tabular {
             return;
         }
 
-        // 3.5-second auto-hide timer check for Query Message toast
+        // Auto-hide timer check for Query Message toast (error does not auto-hide, success hides after 5s)
         let mut msg_hovered = false;
         if self.show_message_panel
             && has_message
+            && !self.query_message_is_error
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() < std::time::Duration::from_millis(3500)
+            && shown_at.elapsed() < std::time::Duration::from_millis(5000)
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
@@ -73,7 +74,7 @@ impl super::Tabular {
                         .fill(container_fill)
                         .stroke(container_stroke)
                         .corner_radius(egui::CornerRadius::same(7u8))
-                        .inner_margin(egui::Margin::symmetric(10, 5))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
                         .shadow(egui::Shadow {
                             offset: [0, 2],
                             blur: 8,
@@ -81,48 +82,151 @@ impl super::Tabular {
                             color: egui::Color32::from_black_alpha(90),
                         })
                         .show(ui, |ui| {
-                            ui.set_max_width(420.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.set_max_width(460.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
 
-                                let icon = if self.query_message_is_error { "❌" } else { "⚡" };
-                                ui.label(egui::RichText::new(icon).size(11.0));
+                                // Header row: Badge, Duration, and Action Buttons
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
 
+                                    if self.query_message_is_error {
+                                        ui.label(egui::RichText::new("❌").size(12.0));
+                                        let badge_bg = super::style::theme_danger(ctx).linear_multiply(0.2);
+                                        let badge_fg = super::style::theme_danger(ctx);
+                                        egui::Frame::new()
+                                            .fill(badge_bg)
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 1))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new("ERROR")
+                                                        .color(badge_fg)
+                                                        .size(10.5)
+                                                        .strong(),
+                                                );
+                                            });
+                                    } else {
+                                        ui.label(egui::RichText::new("⚡").size(12.0));
+                                        let badge_bg = super::style::theme_accent(ctx).linear_multiply(0.2);
+                                        let badge_fg = super::style::theme_accent(ctx);
+                                        egui::Frame::new()
+                                            .fill(badge_bg)
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 1))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(self.last_statement_type.as_str())
+                                                        .color(badge_fg)
+                                                        .size(10.5)
+                                                        .strong(),
+                                                );
+                                            });
+
+                                        if self.last_execution_duration_ms > 0 {
+                                            let dur_text = format!(
+                                                "⏱ {}",
+                                                super::query_jobs::format_duration_human(
+                                                    self.last_execution_duration_ms
+                                                )
+                                            );
+                                            ui.label(egui::RichText::new(dur_text).size(11.0).weak());
+                                        }
+                                    }
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("✕").size(10.0).weak(),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .on_hover_text("Close")
+                                            .clicked()
+                                        {
+                                            close_msg_toast = true;
+                                        }
+                                        if self.query_message_is_error
+                                            && self.error_location_in_editor().is_some()
+                                            && ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("↪ Go to error").size(11.0),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(
+                                                    "Move the cursor to where the database reported the error",
+                                                )
+                                                .clicked()
+                                        {
+                                            self.jump_to_error_location();
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("📋").size(11.0).weak(),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .on_hover_text("Copy message and executed SQL")
+                                            .clicked()
+                                        {
+                                            let mut text_to_copy = self.query_message.clone();
+                                            if !self.last_executed_sql.is_empty() {
+                                                text_to_copy.push_str("\n\n-- Executed SQL:\n");
+                                                text_to_copy.push_str(&self.last_executed_sql);
+                                            }
+                                            ui.ctx().copy_text(text_to_copy);
+                                        }
+                                    });
+                                });
+
+                                // Message body text
                                 let text_color = if self.query_message_is_error {
                                     super::style::theme_danger(ctx)
                                 } else {
                                     ui.visuals().text_color()
                                 };
-
                                 ui.label(
                                     egui::RichText::new(&self.query_message)
                                         .color(text_color)
                                         .size(11.5),
                                 );
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.spacing_mut().item_spacing.x = 2.0;
-                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(10.0).weak()).frame(false))
-                                        .on_hover_text("Close")
-                                        .clicked()
-                                    {
-                                        close_msg_toast = true;
-                                    }
-                                    if self.query_message_is_error
-                                        && self.error_location_in_editor().is_some()
-                                        && ui.add(egui::Button::new(egui::RichText::new("↪ Go to error").size(11.0)).frame(false))
-                                            .on_hover_text("Move the cursor to where the database reported the error")
-                                            .clicked()
-                                    {
-                                        self.jump_to_error_location();
-                                    }
-                                    if ui.add(egui::Button::new(egui::RichText::new("📋").size(11.0).weak()).frame(false))
-                                        .on_hover_text("Copy message")
-                                        .clicked()
-                                    {
-                                        ui.ctx().copy_text(self.query_message.clone());
-                                    }
-                                });
+                                // SQL preview snippet (1-line truncated)
+                                if !self.last_executed_sql.is_empty() {
+                                    let one_line = self
+                                        .last_executed_sql
+                                        .lines()
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty() && !s.starts_with("--"))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    let snippet = if one_line.len() > 80 {
+                                        format!("{}...", &one_line[..80])
+                                    } else {
+                                        one_line
+                                    };
+                                    egui::Frame::new()
+                                        .fill(if ctx.global_style().visuals.dark_mode {
+                                            egui::Color32::from_rgb(18, 20, 26)
+                                        } else {
+                                            egui::Color32::from_rgb(240, 242, 246)
+                                        })
+                                        .corner_radius(3.0)
+                                        .inner_margin(egui::Margin::symmetric(6, 3))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(snippet)
+                                                    .monospace()
+                                                    .size(10.5)
+                                                    .weak(),
+                                            );
+                                        });
+                                }
                             });
                         });
                 });
@@ -260,11 +364,12 @@ impl super::Tabular {
                 });
         }
 
-        // 3.5-second auto-hide check for Message Toast
+        // 5-second auto-hide check for Message Toast (error toasts stay until manually dismissed)
         if is_msg_open
             && !msg_hovered
+            && !self.query_message_is_error
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() >= std::time::Duration::from_millis(3500)
+            && shown_at.elapsed() >= std::time::Duration::from_millis(5000)
         {
             close_msg_toast = true;
         }
@@ -1310,10 +1415,17 @@ impl super::Tabular {
                                     self.current_column_metadata = res.column_metadata.clone();
                                     self.query_message = res.query_message.clone();
                                     self.query_message_is_error = res.query_message_is_error;
+                                    self.last_executed_sql = res.executed_sql.clone();
+                                    self.last_statement_type = res.statement_type;
+                                    self.last_affected_rows = res.affected_rows;
+                                    self.last_execution_duration_ms = res.execution_time_ms;
                                     self.show_message_panel = true; // Always show message panel context
                                     tab.result_table_name = res.table_name.clone();
                                     tab.query_message = res.query_message.clone();
                                     tab.query_message_is_error = res.query_message_is_error;
+                                    tab.last_executed_sql = res.executed_sql.clone();
+                                    tab.last_statement_type = res.statement_type;
+                                    tab.last_affected_rows = res.affected_rows;
                                     tab.total_rows = res.total_rows;
                                     tab.current_page = res.current_page;
                                     switched = true;

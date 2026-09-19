@@ -24,6 +24,11 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
         egui::Color32::from_rgb(215, 215, 220)
     };
 
+    if tabular.total_rows == 0 || tabular.query_execution_in_progress {
+        render_compact_footer_bar(tabular, ui, exec_ms, bg_color, stroke_color);
+        return;
+    }
+
     egui::Frame::new()
         .fill(bg_color)
         .stroke(egui::Stroke::new(1.0, stroke_color))
@@ -218,6 +223,70 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     // Embed 3 view buttons directly into the right side of the datatable footer bar
                     render_footer_view_buttons(tabular, ui);
                 });
+            });
+        });
+}
+
+fn render_compact_footer_bar(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut egui::Ui,
+    exec_ms: Option<u128>,
+    bg_color: egui::Color32,
+    stroke_color: egui::Color32,
+) {
+    egui::Frame::new()
+        .fill(bg_color)
+        .stroke(egui::Stroke::new(1.0, stroke_color))
+        .inner_margin(egui::Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+
+                if tabular.query_execution_in_progress {
+                    ui.add(egui::Spinner::new().size(13.0));
+                    ui.label(egui::RichText::new("Executing query...").size(12.0).weak());
+                } else if tabular.query_message_is_error {
+                    ui.label(
+                        egui::RichText::new("❌ Query failed")
+                            .size(12.0)
+                            .color(crate::window_egui::style::theme_danger(ui.ctx())),
+                    );
+                } else {
+                    let display_ms = exec_ms.or(if tabular.last_execution_duration_ms > 0 {
+                        Some(tabular.last_execution_duration_ms)
+                    } else {
+                        None
+                    });
+                    if let Some(ms) = display_ms {
+                        crate::window_egui::style::render_execution_pill(ui, ms, 0);
+                    }
+
+                    if let Some(affected) = tabular.last_affected_rows {
+                        ui.label(
+                            egui::RichText::new(format!("{} row(s) affected", affected))
+                                .size(11.5)
+                                .color(crate::window_egui::style::theme_success(ui.ctx())),
+                        );
+                    } else if tabular.last_statement_type.is_select() {
+                        ui.label(egui::RichText::new("0 rows returned").size(11.5).weak());
+                    }
+
+                    if !tabular.current_table_headers.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "({} column{})",
+                                tabular.current_table_headers.len(),
+                                if tabular.current_table_headers.len() == 1 { "" } else { "s" }
+                            ))
+                            .size(11.0)
+                            .weak(),
+                        );
+                    }
+                }
+
+                // View buttons on the right
+                render_footer_view_buttons(tabular, ui);
             });
         });
 }
