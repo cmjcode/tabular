@@ -37,3 +37,4 @@ DerivedData/
 
 # Local environment (see .env.example)
 .env
+.venv
