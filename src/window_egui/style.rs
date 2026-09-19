@@ -662,6 +662,37 @@ pub fn theme_info(ctx: &egui::Context) -> egui::Color32 {
     }
 }
 
+/// Warna khas per HTTP method (konvensi umum Postman/Insomnia): GET hijau,
+/// POST amber, PUT biru, PATCH ungu, DELETE merah, HEAD/OPTIONS netral/teal.
+pub fn http_method_color(
+    ctx: &egui::Context,
+    method: &crate::models::structs::HttpMethod,
+) -> egui::Color32 {
+    use crate::models::structs::HttpMethod;
+    let dark = ctx.global_style().visuals.dark_mode;
+    match method {
+        HttpMethod::GET => theme_success(ctx),
+        HttpMethod::POST => theme_warning(ctx),
+        HttpMethod::PUT => theme_info(ctx),
+        HttpMethod::DELETE => theme_danger(ctx),
+        HttpMethod::PATCH => {
+            if dark {
+                egui::Color32::from_rgb(192, 132, 252)
+            } else {
+                egui::Color32::from_rgb(147, 51, 234)
+            }
+        }
+        HttpMethod::OPTIONS => {
+            if dark {
+                egui::Color32::from_rgb(45, 212, 191)
+            } else {
+                egui::Color32::from_rgb(13, 148, 136)
+            }
+        }
+        HttpMethod::HEAD => theme_muted_text(ctx),
+    }
+}
+
 pub fn theme_muted_text(ctx: &egui::Context) -> egui::Color32 {
     if ctx.global_style().visuals.dark_mode {
         egui::Color32::from_rgb(160, 165, 175)

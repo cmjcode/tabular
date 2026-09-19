@@ -77,6 +77,11 @@ pub enum HttpResponseTab {
     #[default]
     Body,
     Headers,
+    Raw,
+}
+
+fn default_http_split_ratio() -> f32 {
+    0.5
 }
 
 /// Target language/tool for the "Copy as Code" request-export dialog.
@@ -168,6 +173,23 @@ pub struct HttpClientState {
     pub response_tab: HttpResponseTab,
     pub is_loading: bool,
 
+    // ── Layout editor ────────────────────────────────────────────────────────
+    /// Porsi panel request (0..1) terhadap panel response; bisa digeser user.
+    #[serde(default = "default_http_split_ratio")]
+    pub split_ratio: f32,
+    /// true = request di atas, response di bawah.
+    #[serde(default)]
+    pub layout_vertical: bool,
+    /// Wrap baris panjang pada body response.
+    #[serde(default = "default_true")]
+    pub response_wrap: bool,
+    /// Teks pencarian di body response (transient).
+    #[serde(skip)]
+    pub response_search: String,
+    /// Waktu mulai request yang sedang berjalan, untuk timer live.
+    #[serde(skip)]
+    pub request_started: Option<std::time::Instant>,
+
     /// Channel receiver from background HTTP thread (Arc so Clone works).
     /// Skipped during serialization — recreated at runtime.
     #[serde(skip)]
@@ -233,6 +255,11 @@ impl Default for HttpClientState {
             response_error: None,
             response_tab: HttpResponseTab::Body,
             is_loading: false,
+            split_ratio: default_http_split_ratio(),
+            layout_vertical: false,
+            response_wrap: true,
+            response_search: String::new(),
+            request_started: None,
             response_receiver: None,
             workspaces: Vec::new(),
             collection_panel: crate::http_collection::CollectionPanelState::default(),
