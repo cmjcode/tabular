@@ -5138,6 +5138,35 @@ fn ai_handle_agent_event(
             }
             false
         }
+        AgentEvent::Progress(step) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                let existing_idx = msg.progress_steps.iter().position(|s| {
+                    if let (Some(a), Some(b)) = (s.step_index, step.step_index) {
+                        a == b
+                            && (s.tool_name == step.tool_name || s.description == step.description)
+                    } else {
+                        s.description == step.description
+                    }
+                });
+
+                if let Some(idx) = existing_idx {
+                    msg.progress_steps[idx].status = step.status;
+                    if step.detail.is_some() {
+                        msg.progress_steps[idx].detail = step.detail;
+                    }
+                } else {
+                    if step.status == crate::agent::harness::ProgressStatus::Active {
+                        for prev in &mut msg.progress_steps {
+                            if prev.status == crate::agent::harness::ProgressStatus::Active {
+                                prev.status = crate::agent::harness::ProgressStatus::Done;
+                            }
+                        }
+                    }
+                    msg.progress_steps.push(step);
+                }
+            }
+            false
+        }
         AgentEvent::Done { text, usage } => {
             let mut late_text: Option<String> = None;
             if let Some(msg) = tabular.ai_chat.last_mut() {
@@ -5147,6 +5176,11 @@ fn ai_handle_agent_event(
                 }
                 msg.usage = usage;
                 msg.streaming = false;
+                for step in &mut msg.progress_steps {
+                    if step.status == crate::agent::harness::ProgressStatus::Active {
+                        step.status = crate::agent::harness::ProgressStatus::Done;
+                    }
+                }
             }
             if let Some(t) = late_text {
                 ai_feed_live_edit(tabular, &t);
@@ -5155,8 +5189,19 @@ fn ai_handle_agent_event(
         }
         AgentEvent::Error(e) => {
             if let Some(msg) = tabular.ai_chat.last_mut() {
-                msg.error = Some(e);
+                msg.error = Some(e.clone());
                 msg.streaming = false;
+                if let Some(step) = msg
+                    .progress_steps
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.status == crate::agent::harness::ProgressStatus::Active)
+                {
+                    step.status = crate::agent::harness::ProgressStatus::Error;
+                    if step.detail.is_none() {
+                        step.detail = Some(e);
+                    }
+                }
             }
             true
         }
@@ -5175,6 +5220,11 @@ fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
     tabular.ai_is_loading = false;
     if let Some(msg) = tabular.ai_chat.last_mut() {
         msg.streaming = false;
+        for step in &mut msg.progress_steps {
+            if step.status == crate::agent::harness::ProgressStatus::Active {
+                step.status = crate::agent::harness::ProgressStatus::Done;
+            }
+        }
     }
 }
 
@@ -5227,6 +5277,23 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     let cfg = crate::ai_assistant::chat_backend(tabular);
     let (system, user) = crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text);
 
+    let initial_step = match cfg.backend {
+        crate::config::AiBackend::Api => crate::agent::harness::ProgressStep {
+            step_index: Some(1),
+            description: format!("Connecting to {}…", cfg.provider.display_name()),
+            detail: None,
+            status: crate::agent::harness::ProgressStatus::Active,
+            tool_name: Some("api_call".to_string()),
+        },
+        crate::config::AiBackend::Cli => crate::agent::harness::ProgressStep {
+            step_index: Some(0),
+            description: format!("Starting {} agent…", cfg.cli.kind.display_name()),
+            detail: None,
+            status: crate::agent::harness::ProgressStatus::Active,
+            tool_name: None,
+        },
+    };
+
     tabular.ai_chat.push(AiChatMessage {
         role: AiChatRole::User,
         text,
@@ -5235,6 +5302,7 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     tabular.ai_chat.push(AiChatMessage {
         role: AiChatRole::Assistant,
         streaming: true,
+        progress_steps: vec![initial_step],
         ..Default::default()
     });
     tabular.ai_input.clear();
@@ -6310,6 +6378,165 @@ fn ai_render_edit_card(
     ui.add_space(4.0);
 }
 
+fn ai_render_progress_steps(
+    ui: &mut egui::Ui,
+    msg_idx: usize,
+    msg: &crate::models::structs::AiChatMessage,
+) {
+    use crate::agent::harness::ProgressStatus;
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let ctx = ui.ctx().clone();
+    let accent = style::theme_accent(&ctx);
+    let muted = style::theme_muted_text(&ctx);
+    let success = style::theme_success(&ctx);
+    let danger = style::theme_danger(&ctx);
+
+    if msg.progress_steps.is_empty() {
+        return;
+    }
+
+    let total = msg.progress_steps.len();
+    let active = msg
+        .progress_steps
+        .iter()
+        .find(|s| s.status == ProgressStatus::Active);
+
+    let id = ui.make_persistent_id(format!("ai_msg_progress_{}", msg_idx));
+    let user_toggled = ui.data(|d| d.get_temp::<bool>(id));
+    let is_open = user_toggled.unwrap_or(msg.streaming);
+
+    let header_text = if msg.streaming {
+        if let Some(act) = active {
+            if let Some(idx) = act.step_index {
+                format!("Step {idx}: {}", act.description)
+            } else {
+                act.description.clone()
+            }
+        } else {
+            "Thinking…".to_string()
+        }
+    } else {
+        let done_count = msg
+            .progress_steps
+            .iter()
+            .filter(|s| s.status == ProgressStatus::Done)
+            .count();
+        format!(
+            "{done_count} step{} completed",
+            if done_count == 1 { "" } else { "s" }
+        )
+    };
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if msg.streaming {
+                    ui.add(egui::Spinner::new().size(11.0));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&header_text)
+                                .size(11.5)
+                                .strong()
+                                .color(accent),
+                        )
+                        .truncate(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(icons::ICON_CHECK.codepoint)
+                            .size(12.0)
+                            .color(success),
+                    );
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&header_text).size(11.5).color(muted))
+                            .truncate(),
+                    );
+                }
+
+                if total > 1 || !msg.streaming {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let toggle_icon = if is_open {
+                            icons::ICON_KEYBOARD_ARROW_DOWN.codepoint
+                        } else {
+                            icons::ICON_CHEVRON_RIGHT.codepoint
+                        };
+                        let btn_text = format!("{} {total} steps", toggle_icon);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(btn_text).size(10.5).color(muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Click to toggle steps list")
+                            .clicked()
+                        {
+                            ui.data_mut(|d| d.insert_temp(id, !is_open));
+                        }
+                    });
+                }
+            });
+
+            if is_open && (total > 1 || !msg.streaming) {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(2.0);
+
+                for step in &msg.progress_steps {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        match step.status {
+                            ProgressStatus::Active => {
+                                ui.add(egui::Spinner::new().size(10.0));
+                            }
+                            ProgressStatus::Done => {
+                                ui.label(
+                                    egui::RichText::new(icons::ICON_CHECK.codepoint)
+                                        .size(10.5)
+                                        .color(success),
+                                );
+                            }
+                            ProgressStatus::Error => {
+                                ui.label(
+                                    egui::RichText::new(icons::ICON_CLOSE.codepoint)
+                                        .size(10.5)
+                                        .color(danger),
+                                );
+                            }
+                        }
+
+                        let prefix = step
+                            .step_index
+                            .map(|idx| format!("Step {idx}: "))
+                            .unwrap_or_default();
+                        let text = format!("{}{}", prefix, step.description);
+                        let color = match step.status {
+                            ProgressStatus::Active => accent,
+                            ProgressStatus::Done => muted,
+                            ProgressStatus::Error => danger,
+                        };
+                        let label_resp = ui.add(
+                            egui::Label::new(egui::RichText::new(&text).size(11.0).color(color))
+                                .truncate(),
+                        );
+                        if let Some(detail) = &step.detail {
+                            label_resp.on_hover_text(detail);
+                        }
+                    });
+                }
+            }
+        });
+    ui.add_space(4.0);
+}
+
 fn ai_render_assistant_message(
     ui: &mut egui::Ui,
     mi: usize,
@@ -6343,7 +6570,10 @@ fn ai_render_assistant_message(
         }
     });
 
-    if !msg.tool_activity.is_empty() {
+    if !msg.progress_steps.is_empty() {
+        ui.add_space(3.0);
+        ai_render_progress_steps(ui, mi, msg);
+    } else if !msg.tool_activity.is_empty() {
         ui.add_space(2.0);
         ai_render_tool_chips(ui, &msg.tool_activity);
     }
@@ -6352,7 +6582,7 @@ fn ai_render_assistant_message(
     if !msg.text.is_empty() {
         let display = ai_normalize_markdown(&msg.text);
         ai_render_markdown(ui, mi, &display, cache, actions);
-    } else if msg.streaming {
+    } else if msg.streaming && msg.progress_steps.is_empty() {
         // Satu-satunya indikator status selama giliran berjalan.
         let status = msg
             .tool_activity

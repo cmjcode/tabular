@@ -318,7 +318,9 @@ pub fn sql_system_prompt() -> String {
 
 // ─── Backend terpadu (HTTP API / CLI agent) ──────────────────────────────────
 
-use crate::agent::harness::{self, AgentEvent, AgentRequest, CancelHandle, CliAgentConfig};
+use crate::agent::harness::{
+    self, AgentEvent, AgentRequest, CancelHandle, CliAgentConfig, ProgressStatus, ProgressStep,
+};
 use crate::agent::live_edit;
 use crate::config::{AiBackend, CliAgentKind};
 use crate::models::structs::{AiChatMessage, AiChatRole, QueryTab};
@@ -436,6 +438,12 @@ pub fn start_chat(
 ) -> Result<(mpsc::Receiver<AgentEvent>, Option<CancelHandle>), String> {
     match cfg.backend {
         AiBackend::Api => {
+            let provider_label = cfg.provider.display_name().to_string();
+            let effective_model = if cfg.model.is_empty() {
+                cfg.provider.default_model().to_string()
+            } else {
+                cfg.model.clone()
+            };
             let rx = request_ai_suggestion(
                 cfg.provider,
                 cfg.api_key.clone(),
@@ -446,12 +454,35 @@ pub fn start_chat(
             );
             let (tx, out_rx) = mpsc::channel();
             std::thread::spawn(move || {
+                let _ = tx.send(AgentEvent::Progress(ProgressStep {
+                    step_index: Some(1),
+                    description: format!("Querying {provider_label} ({effective_model})…"),
+                    detail: None,
+                    status: ProgressStatus::Active,
+                    tool_name: Some("api_call".to_string()),
+                }));
                 let ev = match rx.recv() {
                     Ok(Ok(text)) => {
+                        let _ = tx.send(AgentEvent::Progress(ProgressStep {
+                            step_index: Some(1),
+                            description: format!("Received response from {provider_label}"),
+                            detail: None,
+                            status: ProgressStatus::Done,
+                            tool_name: Some("api_call".to_string()),
+                        }));
                         let _ = tx.send(AgentEvent::TextDelta(text.clone()));
                         AgentEvent::Done { text, usage: None }
                     }
-                    Ok(Err(e)) => AgentEvent::Error(e),
+                    Ok(Err(e)) => {
+                        let _ = tx.send(AgentEvent::Progress(ProgressStep {
+                            step_index: Some(1),
+                            description: format!("Request to {provider_label} failed"),
+                            detail: Some(e.clone()),
+                            status: ProgressStatus::Error,
+                            tool_name: Some("api_call".to_string()),
+                        }));
+                        AgentEvent::Error(e)
+                    }
                     Err(_) => AgentEvent::Error("AI request channel closed".to_string()),
                 };
                 let _ = tx.send(ev);
