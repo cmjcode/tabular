@@ -1,11 +1,14 @@
+use crate::{connection, data_table, editor, models, query_tools};
 use eframe::egui;
 use log::debug;
-use crate::{models, connection, query_tools, editor, data_table};
-
-
 
 impl super::Tabular {
-    pub fn render_bottom_right_dock(&mut self, ctx: &egui::Context, rendered_http: bool, rendered_redis_browser: bool) {
+    pub fn render_bottom_right_dock(
+        &mut self,
+        ctx: &egui::Context,
+        rendered_http: bool,
+        rendered_redis_browser: bool,
+    ) {
         let executed = self
             .query_tabs
             .get(self.active_tab_index)
@@ -14,15 +17,20 @@ impl super::Tabular {
         let has_headers = !self.current_table_headers.is_empty();
         let has_message = !self.query_message.is_empty();
         let has_lint = !self.lint_messages.is_empty();
-        if rendered_http || rendered_redis_browser || (!executed && !has_headers && !has_message && !has_lint) {
+        if rendered_http
+            || rendered_redis_browser
+            || (!executed && !has_headers && !has_message && !has_lint)
+        {
             return;
         }
 
-        // 3.5-second auto-hide timer check for Query Message toast
+        // Auto-hide timer check for Query Message toast (error does not auto-hide, success hides after 5s)
         let mut msg_hovered = false;
-        if self.show_message_panel && has_message
+        if self.show_message_panel
+            && has_message
+            && !self.query_message_is_error
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() < std::time::Duration::from_millis(3500)
+            && shown_at.elapsed() < std::time::Duration::from_millis(5000)
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
@@ -41,7 +49,8 @@ impl super::Tabular {
 
         // 1. COMPACT MESSAGE TOAST PILL (Anchored at RIGHT_BOTTOM with subtle slide-up animation)
         if is_msg_open {
-            let msg_anim = ctx.animate_value_with_time(egui::Id::new("toast_msg_slide_anim"), 1.0, 0.16);
+            let msg_anim =
+                ctx.animate_value_with_time(egui::Id::new("toast_msg_slide_anim"), 1.0, 0.16);
             let eased_anim = super::style::ease_out_cubic(msg_anim);
             let y_offset = -44.0 + (1.0 - eased_anim) * 20.0;
 
@@ -65,7 +74,7 @@ impl super::Tabular {
                         .fill(container_fill)
                         .stroke(container_stroke)
                         .corner_radius(egui::CornerRadius::same(7u8))
-                        .inner_margin(egui::Margin::symmetric(10, 5))
+                        .inner_margin(egui::Margin::symmetric(12, 8))
                         .shadow(egui::Shadow {
                             offset: [0, 2],
                             blur: 8,
@@ -73,40 +82,151 @@ impl super::Tabular {
                             color: egui::Color32::from_black_alpha(90),
                         })
                         .show(ui, |ui| {
-                            ui.set_max_width(420.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.set_max_width(460.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
 
-                                let icon = if self.query_message_is_error { "❌" } else { "⚡" };
-                                ui.label(egui::RichText::new(icon).size(11.0));
+                                // Header row: Badge, Duration, and Action Buttons
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
 
+                                    if self.query_message_is_error {
+                                        ui.label(egui::RichText::new("❌").size(12.0));
+                                        let badge_bg = super::style::theme_danger(ctx).linear_multiply(0.2);
+                                        let badge_fg = super::style::theme_danger(ctx);
+                                        egui::Frame::new()
+                                            .fill(badge_bg)
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 1))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new("ERROR")
+                                                        .color(badge_fg)
+                                                        .size(10.5)
+                                                        .strong(),
+                                                );
+                                            });
+                                    } else {
+                                        ui.label(egui::RichText::new("⚡").size(12.0));
+                                        let badge_bg = super::style::theme_accent(ctx).linear_multiply(0.2);
+                                        let badge_fg = super::style::theme_accent(ctx);
+                                        egui::Frame::new()
+                                            .fill(badge_bg)
+                                            .corner_radius(3.0)
+                                            .inner_margin(egui::Margin::symmetric(5, 1))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(self.last_statement_type.as_str())
+                                                        .color(badge_fg)
+                                                        .size(10.5)
+                                                        .strong(),
+                                                );
+                                            });
+
+                                        if self.last_execution_duration_ms > 0 {
+                                            let dur_text = format!(
+                                                "⏱ {}",
+                                                super::query_jobs::format_duration_human(
+                                                    self.last_execution_duration_ms
+                                                )
+                                            );
+                                            ui.label(egui::RichText::new(dur_text).size(11.0).weak());
+                                        }
+                                    }
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("✕").size(10.0).weak(),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .on_hover_text("Close")
+                                            .clicked()
+                                        {
+                                            close_msg_toast = true;
+                                        }
+                                        if self.query_message_is_error
+                                            && self.error_location_in_editor().is_some()
+                                            && ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("↪ Go to error").size(11.0),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(
+                                                    "Move the cursor to where the database reported the error",
+                                                )
+                                                .clicked()
+                                        {
+                                            self.jump_to_error_location();
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("📋").size(11.0).weak(),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .on_hover_text("Copy message and executed SQL")
+                                            .clicked()
+                                        {
+                                            let mut text_to_copy = self.query_message.clone();
+                                            if !self.last_executed_sql.is_empty() {
+                                                text_to_copy.push_str("\n\n-- Executed SQL:\n");
+                                                text_to_copy.push_str(&self.last_executed_sql);
+                                            }
+                                            ui.ctx().copy_text(text_to_copy);
+                                        }
+                                    });
+                                });
+
+                                // Message body text
                                 let text_color = if self.query_message_is_error {
                                     super::style::theme_danger(ctx)
                                 } else {
                                     ui.visuals().text_color()
                                 };
-
                                 ui.label(
                                     egui::RichText::new(&self.query_message)
                                         .color(text_color)
                                         .size(11.5),
                                 );
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.spacing_mut().item_spacing.x = 2.0;
-                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(10.0).weak()).frame(false))
-                                        .on_hover_text("Close")
-                                        .clicked()
-                                    {
-                                        close_msg_toast = true;
-                                    }
-                                    if ui.add(egui::Button::new(egui::RichText::new("📋").size(11.0).weak()).frame(false))
-                                        .on_hover_text("Copy message")
-                                        .clicked()
-                                    {
-                                        ui.ctx().copy_text(self.query_message.clone());
-                                    }
-                                });
+                                // SQL preview snippet (1-line truncated)
+                                if !self.last_executed_sql.is_empty() {
+                                    let one_line = self
+                                        .last_executed_sql
+                                        .lines()
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty() && !s.starts_with("--"))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    let snippet = if one_line.len() > 80 {
+                                        format!("{}...", &one_line[..80])
+                                    } else {
+                                        one_line
+                                    };
+                                    egui::Frame::new()
+                                        .fill(if ctx.global_style().visuals.dark_mode {
+                                            egui::Color32::from_rgb(18, 20, 26)
+                                        } else {
+                                            egui::Color32::from_rgb(240, 242, 246)
+                                        })
+                                        .corner_radius(3.0)
+                                        .inner_margin(egui::Margin::symmetric(6, 3))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(snippet)
+                                                    .monospace()
+                                                    .size(10.5)
+                                                    .weak(),
+                                            );
+                                        });
+                                }
                             });
                         });
                 });
@@ -159,15 +279,19 @@ impl super::Tabular {
                                 // Header row with title & close button (X) aligned right
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new(format!("⚠ Lint Detail{} ({})", plural, count))
-                                            .color(warning_color)
-                                            .strong(),
+                                        egui::RichText::new(format!(
+                                            "⚠ Lint Detail{} ({})",
+                                            plural, count
+                                        ))
+                                        .color(warning_color)
+                                        .strong(),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             ui.spacing_mut().item_spacing.x = 0.0;
-                                            if super::style::render_close_icon_button(ui).clicked() {
+                                            if super::style::render_close_icon_button(ui).clicked()
+                                            {
                                                 close_lint_toast = true;
                                             }
                                         },
@@ -206,19 +330,29 @@ impl super::Tabular {
                                             };
 
                                             ui.horizontal(|ui| {
-                                                ui.label(egui::RichText::new(icon).color(color).strong());
+                                                ui.label(
+                                                    egui::RichText::new(icon).color(color).strong(),
+                                                );
                                                 ui.label(egui::RichText::new(&msg.message).small());
                                             });
 
                                             if let Some(hint) = &msg.hint {
-                                                ui.label(egui::RichText::new(hint).small().italics().weak());
+                                                ui.label(
+                                                    egui::RichText::new(hint)
+                                                        .small()
+                                                        .italics()
+                                                        .weak(),
+                                                );
                                             }
 
                                             if let Some(span) = &msg.span {
                                                 ui.label(
-                                                    egui::RichText::new(format!("range {}..{}", span.start, span.end))
-                                                        .small()
-                                                        .weak(),
+                                                    egui::RichText::new(format!(
+                                                        "range {}..{}",
+                                                        span.start, span.end
+                                                    ))
+                                                    .small()
+                                                    .weak(),
                                                 );
                                             }
 
@@ -230,11 +364,12 @@ impl super::Tabular {
                 });
         }
 
-        // 3.5-second auto-hide check for Message Toast
+        // 5-second auto-hide check for Message Toast (error toasts stay until manually dismissed)
         if is_msg_open
             && !msg_hovered
+            && !self.query_message_is_error
             && let Some(shown_at) = self.message_shown_at
-            && shown_at.elapsed() >= std::time::Duration::from_millis(3500)
+            && shown_at.elapsed() >= std::time::Duration::from_millis(5000)
         {
             close_msg_toast = true;
         }
@@ -284,83 +419,112 @@ impl super::Tabular {
         // Extract candidates to avoid borrowing self inside closure
         // Only include connections that have an active pool
         if let Some(state) = &self.replication_dialog {
-            log::debug!("[REPLICATION] Building source candidates for target_id: {}", state.target_connection_id);
-            log::debug!("[REPLICATION] Total connections: {}", self.connections.len());
-            log::debug!("[REPLICATION] Active pools: {}", self.connection_pools.len());
-            
+            log::debug!(
+                "[REPLICATION] Building source candidates for target_id: {}",
+                state.target_connection_id
+            );
+            log::debug!(
+                "[REPLICATION] Total connections: {}",
+                self.connections.len()
+            );
+            log::debug!(
+                "[REPLICATION] Active pools: {}",
+                self.connection_pools.len()
+            );
+
             for conn in &self.connections {
                 if let Some(conn_id) = conn.id {
                     let is_target = conn_id == state.target_connection_id;
                     let is_mysql = conn.connection_type == models::enums::DatabaseType::MySQL;
                     let has_pool = self.connection_pools.contains_key(&conn_id);
-                    
+
                     log::debug!(
                         "[REPLICATION] Conn '{}' (id={}): is_target={}, is_mysql={}, has_pool={}",
-                        conn.name, conn_id, is_target, is_mysql, has_pool
+                        conn.name,
+                        conn_id,
+                        is_target,
+                        is_mysql,
+                        has_pool
                     );
-                    
+
                     if !is_target && is_mysql && has_pool {
                         source_candidates.push((Some(conn_id), conn.display_name()));
-                        log::debug!("[REPLICATION] ✓ Added '{}' to candidates", conn.display_name());
+                        log::debug!(
+                            "[REPLICATION] ✓ Added '{}' to candidates",
+                            conn.display_name()
+                        );
                     }
                 }
             }
             source_candidates.sort_by_key(|a| a.1.to_lowercase());
-            
-            log::debug!("[REPLICATION] Total source candidates: {}", source_candidates.len());
+
+            log::debug!(
+                "[REPLICATION] Total source candidates: {}",
+                source_candidates.len()
+            );
         }
+
+        crate::window_egui::style::render_modal_backdrop(ctx, "modal_replication_dialog", open);
 
         egui::Window::new("Setup Replication")
             .open(&mut open)
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                crate::window_egui::style::render_modal_header(ui, "Setup Replication", &mut close_dialog);
+
                 if let Some(state) = &mut self.replication_dialog {
-                    ui.heading("Configure Replication");
-                    ui.add_space(8.0);
-                    ui.label("Select the Master connection to replicate from:");
-                    
-                    let current_source = state.source_connection_id;
-                    let current_name = source_candidates.iter()
-                        .find(|(id, _)| *id == current_source)
-                        .map(|(_, name)| name.as_str())
-                        .unwrap_or("Select Master...");
-
-                    egui::ComboBox::from_id_salt("repl_master_combo")
-                        .selected_text(current_name)
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &source_candidates {
-                                let is_selected = current_source == *id;
-                                if ui.selectable_label(is_selected, name).clicked() {
-                                    state.source_connection_id = *id;
-                                    state.error = None;
-                                }
-                            }
-                        });
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Select the Master connection to replicate from:");
                         
-                    ui.add_space(8.0);
-                    ui.label("Replication User (Optional - leave empty to use connection default):");
-                    ui.text_edit_singleline(&mut state.replication_user);
-                    
-                    ui.add_space(8.0);
-                    ui.label("Replication Password (Optional):");
-                    ui.add(egui::TextEdit::singleline(&mut state.replication_password).password(true));
+                        let current_source = state.source_connection_id;
+                        let current_name = source_candidates.iter()
+                            .find(|(id, _)| *id == current_source)
+                            .map(|(_, name)| name.as_str())
+                            .unwrap_or("Select Master...");
 
+                        egui::ComboBox::from_id_salt("repl_master_combo")
+                            .selected_text(current_name)
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &source_candidates {
+                                    let is_selected = current_source == *id;
+                                    if ui.selectable_label(is_selected, name).clicked() {
+                                        state.source_connection_id = *id;
+                                        state.error = None;
+                                    }
+                                }
+                            });
+                            
+                        ui.add_space(8.0);
+                        ui.label("Replication User (Optional - leave empty to use connection default):");
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.replication_user),
+                            f32::INFINITY,
+                            None,
+                        );
+                        
+                        ui.add_space(8.0);
+                        ui.label("Replication Password (Optional):");
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.replication_password).password(true),
+                            f32::INFINITY,
+                            None,
+                        );
+
+                        if let Some(err) = &state.error {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
+                        }
+                    });
+                    
                     ui.add_space(8.0);
-                    
-                    if let Some(err) = &state.error {
-                         ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
-                         ui.add_space(8.0);
-                    }
-                    
-                    ui.separator();
                     
                     ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close_dialog = true;
-                        }
-                        
                         let can_start = state.source_connection_id.is_some() && !state.is_executing;
                         if ui.add_enabled(can_start, egui::Button::new("Init & Start Replication")).clicked() {
                             if let Some(sid) = state.source_connection_id {
@@ -392,37 +556,60 @@ impl super::Tabular {
             self.show_add_replication_dialog = false;
             self.replication_dialog = None;
         }
-        
+
         if start_replication {
-            log::debug!("[REPLICATION] start_replication=true, source_id_to_start={:?}", source_id_to_start);
+            log::debug!(
+                "[REPLICATION] start_replication=true, source_id_to_start={:?}",
+                source_id_to_start
+            );
             if let Some(source_id) = source_id_to_start {
                 let target_id = target_id_for_start;
-                
-                log::debug!("[REPLICATION] Starting replication setup task for source_id={}, target_id={}", source_id, target_id);
-                
+
+                log::debug!(
+                    "[REPLICATION] Starting replication setup task for source_id={}, target_id={}",
+                    source_id,
+                    target_id
+                );
+
                 let runtime = self.get_runtime();
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.replication_setup_receiver = Some(rx);
-                
+
                 // Clone necessary data for async task
                 // (No need to clone self, we have cloned configs)
-                
-                let source_config_opt = self.connections.iter().find(|c| c.id == Some(source_id)).cloned();
-                let target_config_opt = self.connections.iter().find(|c| c.id == Some(target_id)).cloned();
-                
-                if let (Some(source_config), Some(target_config)) = (source_config_opt, target_config_opt) {
+
+                let source_config_opt = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(source_id))
+                    .cloned();
+                let target_config_opt = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(target_id))
+                    .cloned();
+
+                if let (Some(source_config), Some(target_config)) =
+                    (source_config_opt, target_config_opt)
+                {
                     runtime.spawn(async move {
                         log::debug!("[REPLICATION] Async task started");
-                        
+
                         // Helper to create pool manually since we can't easily use app-wide helpers here
-                        async fn create_mysql_pool(config: &models::structs::ConnectionConfig) -> Result<sqlx::MySqlPool, String> {
+                        async fn create_mysql_pool(
+                            config: &models::structs::ConnectionConfig,
+                        ) -> Result<sqlx::MySqlPool, String> {
                             let encoded_username = crate::modules::url_encode(&config.username);
                             let encoded_password = crate::modules::url_encode(&config.password);
                             let dsn = format!(
                                 "mysql://{}:{}@{}:{}/{}",
-                                encoded_username, encoded_password, config.host, config.port, config.database
+                                encoded_username,
+                                encoded_password,
+                                config.host,
+                                config.port,
+                                config.database
                             );
-                            
+
                             sqlx::mysql::MySqlPoolOptions::new()
                                 .max_connections(5)
                                 .acquire_timeout(std::time::Duration::from_secs(5))
@@ -434,25 +621,29 @@ impl super::Tabular {
                         // Create pools on demand
                         let source_pool_res = create_mysql_pool(&source_config).await;
                         let target_pool_res = create_mysql_pool(&target_config).await;
-                        
+
                         match (source_pool_res, target_pool_res) {
                             (Ok(source_pool), Ok(target_pool)) => {
-                                log::debug!("[REPLICATION] Pools created successfully, running setup...");
+                                log::debug!(
+                                    "[REPLICATION] Pools created successfully, running setup..."
+                                );
                                 let res = crate::driver_mysql::setup_replication(
-                                    &source_pool, 
-                                    &target_pool, 
+                                    &source_pool,
+                                    &target_pool,
                                     &source_config,
                                     repl_user_to_start,
-                                    repl_pass_to_start
-                                ).await;
+                                    repl_pass_to_start,
+                                )
+                                .await;
                                 let _ = tx.send(res);
-                            },
-                             (Err(e), _) => {
-                                 let _ = tx.send(Err(format!("Failed to connect to Master: {}", e)));
-                             },
-                             (_, Err(e)) => {
-                                 let _ = tx.send(Err(format!("Failed to connect to Replica: {}", e)));
-                             }
+                            }
+                            (Err(e), _) => {
+                                let _ = tx.send(Err(format!("Failed to connect to Master: {}", e)));
+                            }
+                            (_, Err(e)) => {
+                                let _ =
+                                    tx.send(Err(format!("Failed to connect to Replica: {}", e)));
+                            }
                         }
                     });
                 } else {
@@ -589,7 +780,8 @@ impl super::Tabular {
                     spacing.interact_size = egui::vec2(24.0, 22.0);
 
                     let style = ui.style_mut();
-                    style.override_font_id = Some(egui::FontId::new(12.5, egui::FontFamily::Proportional));
+                    style.override_font_id =
+                        Some(egui::FontId::new(12.5, egui::FontFamily::Proportional));
                     style.text_styles.insert(
                         egui::TextStyle::Body,
                         egui::FontId::new(12.5, egui::FontFamily::Proportional),
@@ -615,72 +807,104 @@ impl super::Tabular {
         let mut open = true;
 
         if self.show_add_view_dialog {
-            let title = if self.edit_view_original_name.is_some() { "Edit Custom View" } else { "Add Custom View" };
+            let title = if self.edit_view_original_name.is_some() {
+                "Edit Custom View"
+            } else {
+                "Add Custom View"
+            };
+
+            crate::window_egui::style::render_modal_backdrop(
+                ctx,
+                "modal_add_view_dialog",
+                self.show_add_view_dialog,
+            );
+            let mut close_dialog = false;
+
             egui::Window::new(title)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(true)
                 .default_size([600.0, 400.0])
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("Name:");
-                    let name_response = ui.add(
-                        egui::TextEdit::singleline(&mut self.new_view_name)
-                            .desired_width(f32::INFINITY),
-                    );
+                    crate::window_egui::style::render_modal_header(ui, title, &mut close_dialog);
 
-                    // Request focus on the name field when dialog first opens
-                    if ui.memory(|mem| mem.focused().is_none()) {
-                        name_response.request_focus();
-                    }
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Name:");
+                        let name_response = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut self.new_view_name),
+                            f32::INFINITY,
+                            None,
+                        );
 
-                    ui.add_space(8.0);
-                    ui.label("SQL Query:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.new_view_query)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(10),
-                    );
+                        // Request focus on the name field when dialog first opens
+                        if ui.memory(|mem| mem.focused().is_none()) {
+                            name_response.request_focus();
+                        }
+
+                        ui.add_space(8.0);
+                        ui.label("SQL Query:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.new_view_query)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(10),
+                        );
+                    });
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked()
-                             && !self.new_view_name.is_empty() && !self.new_view_query.is_empty()
-                                 && let Some(conn_id) = self.new_view_connection_id {
-                                     // Save logic
-                                     if let Some(conn_idx) = self.connections.iter().position(|c| c.id == Some(conn_id)) {
-                                         let mut conn = self.connections[conn_idx].clone();
-                                         let new_view = models::structs::CustomView {
-                                             name: self.new_view_name.clone(),
-                                             query: self.new_view_query.clone(),
-                                         };
+                            && !self.new_view_name.is_empty()
+                            && !self.new_view_query.is_empty()
+                            && let Some(conn_id) = self.new_view_connection_id
+                        {
+                            // Save logic
+                            if let Some(conn_idx) =
+                                self.connections.iter().position(|c| c.id == Some(conn_id))
+                            {
+                                let mut conn = self.connections[conn_idx].clone();
+                                let new_view = models::structs::CustomView {
+                                    name: self.new_view_name.clone(),
+                                    query: self.new_view_query.clone(),
+                                };
 
-                                         if let Some(original_name) = &self.edit_view_original_name {
-                                             // Edit mode: find and update
-                                             if let Some(view_idx) = conn.custom_views.iter().position(|v| v.name == *original_name) {
-                                                 conn.custom_views[view_idx] = new_view;
-                                             } else {
-                                                 // Should not happen normally, but treat as new if not found
-                                                 conn.custom_views.push(new_view);
-                                             }
-                                         } else {
-                                             // Add mode: append
-                                             conn.custom_views.push(new_view);
-                                         }
+                                if let Some(original_name) = &self.edit_view_original_name {
+                                    // Edit mode: find and update
+                                    if let Some(view_idx) = conn
+                                        .custom_views
+                                        .iter()
+                                        .position(|v| v.name == *original_name)
+                                    {
+                                        conn.custom_views[view_idx] = new_view;
+                                    } else {
+                                        // Should not happen normally, but treat as new if not found
+                                        conn.custom_views.push(new_view);
+                                    }
+                                } else {
+                                    // Add mode: append
+                                    conn.custom_views.push(new_view);
+                                }
 
-                                         // Optimistic: apply in memory right away and persist on
-                                         // the shared runtime; the result lands in
-                                         // custom_view_save_receiver (polled in app_impl).
-                                         self.connections[conn_idx] = conn.clone();
-                                         crate::sidebar_database::refresh_connections_tree(self);
-                                         crate::sidebar_database::update_connection_in_database_background(self, &conn);
-                                         self.show_add_view_dialog = false;
-                                     }
-                                 }
-                        if ui.button("Cancel").clicked() {
-                            self.show_add_view_dialog = false;
+                                // Optimistic: apply in memory right away and persist on
+                                // the shared runtime; the result lands in
+                                // custom_view_save_receiver (polled in app_impl).
+                                self.connections[conn_idx] = conn.clone();
+                                crate::sidebar_database::refresh_connections_tree(self);
+                                crate::sidebar_database::update_connection_in_database_background(
+                                    self, &conn,
+                                );
+                                self.show_add_view_dialog = false;
+                            }
                         }
                     });
                 });
+
+            if close_dialog {
+                open = false;
+            }
         }
 
         if !open {
@@ -1070,7 +1294,7 @@ impl super::Tabular {
                 }
 
                 // Keyboard shortcut: Run (Cmd/Ctrl + Enter)
-                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && !i.modifiers.shift && i.key_pressed(egui::Key::Enter)) {
+                if crate::keymap::consume(ui.ctx(), &self.keymap, crate::keymap::Action::RunQuery) {
                     let has_q = if !self.selected_text.trim().is_empty() {
                         true
                     } else {
@@ -1101,7 +1325,7 @@ impl super::Tabular {
                 }
 
                 // Keyboard shortcut: Explain (Cmd/Ctrl + Shift + E)
-                if ui.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd || i.modifiers.command) && i.modifiers.shift && i.key_pressed(egui::Key::E)) {
+                if crate::keymap::consume(ui.ctx(), &self.keymap, crate::keymap::Action::ExplainQuery) {
                     let id = egui::Id::new("sql_editor");
                     let mut direct_selected = String::new();
                     if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
@@ -1124,28 +1348,36 @@ impl super::Tabular {
                 }
             });
 
-
         if show_bottom {
             let handle_id = ui.make_persistent_id(format!("editor_table_splitter_{}", context_id));
             let desired_h = 6.0;
             let available_w = ui.available_width();
-            let (rect, resp) = ui.allocate_at_least(egui::vec2(available_w, desired_h), egui::Sense::click_and_drag());
-            let stroke = egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color);
+            let (rect, resp) = ui.allocate_at_least(
+                egui::vec2(available_w, desired_h),
+                egui::Sense::click_and_drag(),
+            );
+            let stroke =
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color);
             ui.painter().hline(rect.x_range(), rect.center().y, stroke);
             if resp.dragged() {
                 let drag_delta = resp.drag_delta().y;
                 if avail > 0.0 {
-                    self.table_split_ratio = (self.table_split_ratio + (drag_delta / avail)).clamp(0.05, 0.995);
+                    self.table_split_ratio =
+                        (self.table_split_ratio + (drag_delta / avail)).clamp(0.05, 0.995);
                 }
                 ui.memory_mut(|m| m.request_focus(handle_id));
             }
             ui.add_space(2.0);
-            
+
             // RESULT TAB BAR
             // Only show if we have more than one result in the active tab
             let mut result_tabs_info: Option<(usize, usize)> = None; // (count, active_index)
-            if let Some(tab) = self.query_tabs.get(self.active_tab_index).filter(|t| t.results.len() > 1) {
-                    result_tabs_info = Some((tab.results.len(), tab.active_result_index));
+            if let Some(tab) = self
+                .query_tabs
+                .get(self.active_tab_index)
+                .filter(|t| t.results.len() > 1)
+            {
+                result_tabs_info = Some((tab.results.len(), tab.active_result_index));
             }
 
             if let Some((count, active_idx)) = result_tabs_info {
@@ -1155,39 +1387,57 @@ impl super::Tabular {
                         let label = format!("Result {}", i + 1);
                         let is_active = i == active_idx;
                         let btn = if is_active {
-                             egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
-                                .fill(super::style::theme_accent(ui.ctx()))
+                            egui::Button::new(
+                                egui::RichText::new(label)
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(super::style::theme_accent(ui.ctx()))
                         } else {
-                             egui::Button::new(label)
+                            egui::Button::new(label)
                         };
-                        
+
                         if ui.add(btn).clicked() {
                             // Switch result tab!
-                             if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            let mut switched = false;
+                            if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                                 tab.active_result_index = i;
                                 if let Some(res) = tab.results.get(i) {
-                                    // Sync to viewport fields
+                                    // Sinkronkan ke tampilan; potongan halaman dibuat
+                                    // dari all_rows di bawah (sebelumnya seluruh baris
+                                    // ditampilkan sekaligus dan paginasi terabaikan).
                                     self.current_table_headers = res.headers.clone();
-                                    self.current_table_data = res.rows.clone();
                                     self.all_table_data = res.all_rows.clone();
                                     self.current_table_name = res.table_name.clone();
                                     self.total_rows = res.total_rows;
                                     self.current_page = res.current_page;
-                                    self.page_size = res.page_size;
+                                    self.page_size = res.page_size.max(1);
+                                    self.current_column_metadata = res.column_metadata.clone();
                                     self.query_message = res.query_message.clone();
                                     self.query_message_is_error = res.query_message_is_error;
+                                    self.last_executed_sql = res.executed_sql.clone();
+                                    self.last_statement_type = res.statement_type;
+                                    self.last_affected_rows = res.affected_rows;
+                                    self.last_execution_duration_ms = res.execution_time_ms;
                                     self.show_message_panel = true; // Always show message panel context
-                                     // Also update Viewport fields in Tab
-                                    tab.result_headers = res.headers.clone();
-                                    tab.result_rows = res.rows.clone();
-                                    tab.result_all_rows = res.all_rows.clone();
                                     tab.result_table_name = res.table_name.clone();
                                     tab.query_message = res.query_message.clone();
                                     tab.query_message_is_error = res.query_message_is_error;
+                                    tab.last_executed_sql = res.executed_sql.clone();
+                                    tab.last_statement_type = res.statement_type;
+                                    tab.last_affected_rows = res.affected_rows;
                                     tab.total_rows = res.total_rows;
                                     tab.current_page = res.current_page;
+                                    switched = true;
                                 }
-                             }
+                            }
+                            if switched {
+                                // Result dari batch bukan hasil server pagination.
+                                self.use_server_pagination = false;
+                                self.current_base_query.clear();
+                                self.actual_total_rows = None;
+                                data_table::update_current_page_data(self);
+                            }
                         }
                     }
                 });
@@ -1200,14 +1450,14 @@ impl super::Tabular {
     }
     pub fn render_active_query_jobs_overlay(&mut self, ctx: &egui::Context) {
         self.prune_cancelled_jobs();
-        if self.active_query_jobs.is_empty() {
+        if self.jobs.active.is_empty() {
             return;
         }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
 
         let mut jobs: Vec<connection::QueryJobStatus> =
-            self.active_query_jobs.values().cloned().collect();
+            self.jobs.active.values().cloned().collect();
         jobs.sort_by_key(|status| status.started_at);
 
         let count = jobs.len();
@@ -1337,99 +1587,127 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
     use crate::models::structs::{DiffStatus, SchemaDiffStatus};
 
     // Collect values needed outside closure upfront to avoid borrow conflicts.
-    let mut conn_labels: Vec<(i64, String)> = tabular.connections.iter()
+    let mut conn_labels: Vec<(i64, String)> = tabular
+        .connections
+        .iter()
         .filter_map(|c| c.id.map(|id| (id, c.display_name())))
         .collect();
     conn_labels.sort_by_key(|a| a.1.to_lowercase());
 
-    // Variables set inside the window closure and used after.
     let mut run_diff: Option<(i64, String, i64, String)> = None;
     let mut open = tabular.show_schema_diff_dialog;
+    let mut close_dialog = false;
+
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_schema_diff", open);
 
     egui::Window::new("Schema Diff")
         .open(&mut open)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .default_size(egui::vec2(820.0, 560.0))
         .resizable(true)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(ui, "Schema Diff", &mut close_dialog);
+
             if let Some(state) = &mut tabular.schema_diff_state {
-                // ── Connection pickers ────────────────────────────────────
-                ui.horizontal(|ui| {
-                    ui.label("Left:");
-                    egui::ComboBox::from_id_salt("schema_diff_left_conn")
-                        .selected_text(
-                            conn_labels.iter()
-                                .find(|(id, _)| *id == state.left_conn_id)
-                                .map(|(_, n)| n.as_str())
-                                .unwrap_or("—")
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &conn_labels {
-                                ui.selectable_value(&mut state.left_conn_id, *id, name);
-                            }
-                        });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.left_db)
-                            .hint_text("database")
-                            .desired_width(120.0),
-                    );
-                    ui.add_space(16.0);
-                    ui.label("Right:");
-                    egui::ComboBox::from_id_salt("schema_diff_right_conn")
-                        .selected_text(
-                            conn_labels.iter()
-                                .find(|(id, _)| *id == state.right_conn_id)
-                                .map(|(_, n)| n.as_str())
-                                .unwrap_or("—")
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &conn_labels {
-                                ui.selectable_value(&mut state.right_conn_id, *id, name);
-                            }
-                        });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.right_db)
-                            .hint_text("database")
-                            .desired_width(120.0),
-                    );
+                // ── Connection pickers & Action bar Card ───────────────────
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Left:");
+                        egui::ComboBox::from_id_salt("schema_diff_left_conn")
+                            .selected_text(
+                                conn_labels
+                                    .iter()
+                                    .find(|(id, _)| *id == state.left_conn_id)
+                                    .map(|(_, n)| n.as_str())
+                                    .unwrap_or("—"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &conn_labels {
+                                    ui.selectable_value(&mut state.left_conn_id, *id, name);
+                                }
+                            });
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.left_db).hint_text("database"),
+                            120.0,
+                            None,
+                        );
+                        ui.add_space(16.0);
+                        ui.label("Right:");
+                        egui::ComboBox::from_id_salt("schema_diff_right_conn")
+                            .selected_text(
+                                conn_labels
+                                    .iter()
+                                    .find(|(id, _)| *id == state.right_conn_id)
+                                    .map(|(_, n)| n.as_str())
+                                    .unwrap_or("—"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &conn_labels {
+                                    ui.selectable_value(&mut state.right_conn_id, *id, name);
+                                }
+                            });
+                        super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.right_db).hint_text("database"),
+                            120.0,
+                            None,
+                        );
+                    });
+
+                    ui.add_space(6.0);
+
+                    // ── Action bar ────────────────────────────────────────────
+                    let running = state.status == SchemaDiffStatus::Running;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !running,
+                                egui::Button::new(if running {
+                                    "⏳ Running…"
+                                } else {
+                                    "▶ Compare"
+                                }),
+                            )
+                            .clicked()
+                        {
+                            run_diff = Some((
+                                state.left_conn_id,
+                                state.left_db.clone(),
+                                state.right_conn_id,
+                                state.right_db.clone(),
+                            ));
+                            state.status = SchemaDiffStatus::Running;
+                        }
+                        ui.checkbox(&mut state.show_same, "Show identical tables");
+                        ui.add_space(10.0);
+                        crate::window_egui::style::render_search_field(
+                            ui,
+                            &mut state.filter_text,
+                            "Filter tables…",
+                            160.0,
+                        );
+                    });
                 });
 
-                ui.add_space(6.0);
-
-                // ── Action bar ────────────────────────────────────────────
-                let running = state.status == SchemaDiffStatus::Running;
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(
-                        !running,
-                        egui::Button::new(if running { "⏳ Running…" } else { "▶ Compare" }),
-                    ).clicked() {
-                        run_diff = Some((
-                            state.left_conn_id, state.left_db.clone(),
-                            state.right_conn_id, state.right_db.clone(),
-                        ));
-                        state.status = SchemaDiffStatus::Running;
-                    }
-                    ui.checkbox(&mut state.show_same, "Show identical tables");
-                    ui.add_space(10.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.filter_text)
-                            .hint_text("Filter tables…")
-                            .desired_width(160.0),
-                    );
-                });
+                ui.add_space(8.0);
 
                 ui.separator();
 
                 // ── Results ───────────────────────────────────────────────
                 if let Some(result) = &state.result {
-                    let filter = state.filter_text.to_lowercase();
+                    let filter = crate::search_match::SearchQuery::new(&state.filter_text);
                     let show_same = state.show_same;
 
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let diffs: Vec<_> = result.diffs.iter()
+                        let diffs: Vec<_> = result
+                            .diffs
+                            .iter()
                             .filter(|d| show_same || d.status != DiffStatus::Same)
-                            .filter(|d| filter.is_empty() || d.table_name.to_lowercase().contains(&filter))
+                            .filter(|d| filter.matches(&d.table_name))
                             .collect();
 
                         if diffs.is_empty() {
@@ -1448,10 +1726,16 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
 
                                 for diff in diffs {
                                     let (status_label, color) = match diff.status {
-                                        DiffStatus::Added    => ("+ Added",    egui::Color32::from_rgb(80, 180, 80)),
-                                        DiffStatus::Removed  => ("- Removed",  egui::Color32::from_rgb(220, 70, 70)),
-                                        DiffStatus::Modified => ("~ Modified", egui::Color32::from_rgb(220, 165, 30)),
-                                        DiffStatus::Same     => ("= Same",     egui::Color32::GRAY),
+                                        DiffStatus::Added => {
+                                            ("+ Added", egui::Color32::from_rgb(80, 180, 80))
+                                        }
+                                        DiffStatus::Removed => {
+                                            ("- Removed", egui::Color32::from_rgb(220, 70, 70))
+                                        }
+                                        DiffStatus::Modified => {
+                                            ("~ Modified", egui::Color32::from_rgb(220, 165, 30))
+                                        }
+                                        DiffStatus::Same => ("= Same", egui::Color32::GRAY),
                                     };
 
                                     ui.label(&diff.table_name);
@@ -1460,14 +1744,20 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
                                     if diff.column_diffs.is_empty() {
                                         ui.label("—");
                                     } else {
-                                        let summary: Vec<String> = diff.column_diffs.iter().map(|cd| {
-                                            match (&cd.left_type, &cd.right_type) {
-                                                (None, Some(rt))     => format!("+{} ({})", cd.name, rt),
-                                                (Some(_), None)      => format!("-{}", cd.name),
-                                                (Some(lt), Some(rt)) => format!("{}: {}→{}", cd.name, lt, rt),
-                                                _                    => cd.name.clone(),
-                                            }
-                                        }).collect();
+                                        let summary: Vec<String> = diff
+                                            .column_diffs
+                                            .iter()
+                                            .map(|cd| match (&cd.left_type, &cd.right_type) {
+                                                (None, Some(rt)) => {
+                                                    format!("+{} ({})", cd.name, rt)
+                                                }
+                                                (Some(_), None) => format!("-{}", cd.name),
+                                                (Some(lt), Some(rt)) => {
+                                                    format!("{}: {}→{}", cd.name, lt, rt)
+                                                }
+                                                _ => cd.name.clone(),
+                                            })
+                                            .collect();
                                         ui.label(summary.join(", "))
                                             .on_hover_text(summary.join("\n"));
                                     }
@@ -1492,8 +1782,10 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
     if let Some((left_conn_id, left_db, right_conn_id, right_db)) = run_diff {
         let result = crate::connection::compute_schema_diff(
             tabular,
-            left_conn_id, &left_db,
-            right_conn_id, &right_db,
+            left_conn_id,
+            &left_db,
+            right_conn_id,
+            &right_db,
         );
         if let Some(s) = &mut tabular.schema_diff_state {
             s.result = Some(result);
@@ -1513,22 +1805,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_conn", true);
+
             egui::Window::new("Confirm Delete Connection")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Connection",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Connection")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to remove connection '{}'?",
                             conn_name
@@ -1539,31 +1838,29 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let delete_btn = egui::Button::new(
-                                    egui::RichText::new("Delete")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(super::style::theme_danger(ctx));
-                                if ui.add(delete_btn).clicked() {
-                                    confirm_delete = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
+                    });
 
-                            });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
 
             if confirm_delete {
                 connection::remove_connection(self, conn_id);
-                self.toasts.success(format!("Removed connection: {}", conn_name));
+                self.toasts
+                    .success(format!("Removed connection: {}", conn_name));
             }
             if close_dialog {
                 self.pending_delete_connection = None;
@@ -1577,22 +1874,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_clear = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_clear_history", true);
+
             egui::Window::new("Confirm Clear History")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Clear History",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Clear History")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label("Are you sure you want to clear all query history?");
                         ui.add_space(4.0);
                         ui.label(
@@ -1600,23 +1904,21 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let clear_btn = egui::Button::new(
-                                    egui::RichText::new("Clear History")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(super::style::theme_danger(ctx));
-                                if ui.add(clear_btn).clicked() {
-                                    confirm_clear = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
-                            });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let clear_btn = egui::Button::new(
+                                egui::RichText::new("Clear History")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(clear_btn).clicked() {
+                                confirm_clear = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1635,22 +1937,29 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_req", true);
+
             egui::Window::new("Confirm Delete Request")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Request",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Request")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete request '{}'?",
                             req_name
@@ -1661,31 +1970,35 @@ impl super::Tabular {
                                 .small()
                                 .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let delete_btn = egui::Button::new(
-                                    egui::RichText::new("Delete")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(super::style::theme_danger(ctx));
-                                if ui.add(delete_btn).clicked() {
-                                    confirm_delete = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
-                            });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
 
             if confirm_delete {
-                if crate::sidebar_collection::delete_request_from_workspaces(&mut self.yaak_workspaces, &req_id) {
-                    crate::http_collection::save_workspaces(&self.yaak_workspaces);
-                    self.toasts.success(format!("Deleted request: {}", req_name));
+                if crate::sidebar_collection::delete_request_from_workspaces(
+                    &mut self.yaak_workspaces,
+                    &req_id,
+                ) {
+                    if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                        self.toasts.error(e);
+                    }
+                    self.toasts
+                        .success(format!("Deleted request: {}", req_name));
                 }
             }
             if close_dialog {
@@ -1699,57 +2012,71 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_folder", true);
+
             egui::Window::new("Confirm Delete Folder")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Folder",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Folder")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete folder '{}'?",
                             folder_name
                         ));
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("All requests inside this folder will also be deleted.")
-                                .small()
-                                .weak(),
+                            egui::RichText::new(
+                                "All requests inside this folder will also be deleted.",
+                            )
+                            .small()
+                            .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let delete_btn = egui::Button::new(
-                                    egui::RichText::new("Delete")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(super::style::theme_danger(ctx));
-                                if ui.add(delete_btn).clicked() {
-                                    confirm_delete = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
-                            });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
 
             if confirm_delete {
-                crate::sidebar_collection::delete_folder_from_workspaces(&mut self.yaak_workspaces, &ws_id, &folder_id);
-                crate::http_collection::save_workspaces(&self.yaak_workspaces);
-                self.toasts.success(format!("Deleted folder: {}", folder_name));
+                crate::sidebar_collection::delete_folder_from_workspaces(
+                    &mut self.yaak_workspaces,
+                    &ws_id,
+                    &folder_id,
+                );
+                if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                    self.toasts.error(e);
+                }
+                self.toasts
+                    .success(format!("Deleted folder: {}", folder_name));
             }
             if close_dialog {
                 self.pending_delete_http_folder = None;
@@ -1762,49 +2089,56 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_delete = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_ws", true);
+
             egui::Window::new("Confirm Delete Workspace")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(360.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Confirm Delete Workspace",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
                         ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("⚠️ Confirm Delete Workspace")
-                                    .strong()
-                                    .color(super::style::theme_danger(ctx)),
-                            );
-                        });
-                        ui.add_space(6.0);
                         ui.label(format!(
                             "Are you sure you want to delete workspace '{}'?",
                             ws_name
                         ));
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("All requests and folders in this workspace will be deleted.")
-                                .small()
-                                .weak(),
+                            egui::RichText::new(
+                                "All requests and folders in this workspace will be deleted.",
+                            )
+                            .small()
+                            .weak(),
                         );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let delete_btn = egui::Button::new(
-                                    egui::RichText::new("Delete")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                )
-                                .fill(super::style::theme_danger(ctx));
-                                if ui.add(delete_btn).clicked() {
-                                    confirm_delete = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
-                            });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let delete_btn = egui::Button::new(
+                                egui::RichText::new("Delete")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+                            if ui.add(delete_btn).clicked() {
+                                confirm_delete = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1812,7 +2146,8 @@ impl super::Tabular {
             if confirm_delete {
                 crate::http_collection::delete_workspace(&ws_id);
                 self.yaak_workspaces.retain(|w| w.id != ws_id);
-                self.toasts.success(format!("Deleted workspace: {}", ws_name));
+                self.toasts
+                    .success(format!("Deleted workspace: {}", ws_name));
             }
             if close_dialog {
                 self.pending_delete_http_workspace = None;
@@ -1821,44 +2156,51 @@ impl super::Tabular {
     }
 
     pub fn render_rename_http_request_dialog(&mut self, ctx: &egui::Context) {
-        if let Some((req_id, current_name, mut edit_name)) = self.pending_rename_http_request.clone() {
+        if let Some((req_id, current_name, mut edit_name)) =
+            self.pending_rename_http_request.clone()
+        {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_req", true);
+
             egui::Window::new("Rename HTTP Request")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("✏️ Rename HTTP Request")
-                                .strong(),
-                        );
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename HTTP Request",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label("Request Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut edit_name).hint_text("Enter new request name"),
+                        let text_edit = super::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut edit_name)
+                                .hint_text("Enter new request name"),
+                            f32::INFINITY,
+                            None,
                         );
                         if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Save").clicked() {
-                                    confirm_rename = true;
-                                    close_dialog = true;
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    close_dialog = true;
-                                }
-                            });
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1866,8 +2208,16 @@ impl super::Tabular {
             if confirm_rename {
                 let trimmed = edit_name.trim();
                 if !trimmed.is_empty() {
-                    if crate::sidebar_collection::rename_request_in_workspaces(&mut self.yaak_workspaces, &req_id, trimmed) {
-                        crate::http_collection::save_workspaces(&self.yaak_workspaces);
+                    if crate::sidebar_collection::rename_request_in_workspaces(
+                        &mut self.yaak_workspaces,
+                        &req_id,
+                        trimmed,
+                    ) {
+                        if let Err(e) =
+                            crate::http_collection::save_workspaces(&self.yaak_workspaces)
+                        {
+                            self.toasts.error(e);
+                        }
                         for tab in &mut self.query_tabs {
                             if let Some(ref state) = tab.http_client_state {
                                 if state.saved_request_id.as_deref() == Some(&req_id) {
@@ -1875,7 +2225,8 @@ impl super::Tabular {
                                 }
                             }
                         }
-                        self.toasts.success(format!("Renamed request to '{}'", trimmed));
+                        self.toasts
+                            .success(format!("Renamed request to '{}'", trimmed));
                     }
                 }
             } else if !close_dialog {
@@ -1896,56 +2247,53 @@ impl super::Tabular {
             let mut confirm_create = false;
 
             let is_subfolder = parent_id_opt.is_some();
-            let title = if is_subfolder {
-                format!("📁 Add New Subfolder in '{}'", parent_name)
+            let heading_label = if is_subfolder {
+                "📁 Create Subfolder"
             } else {
-                format!("📁 Add New Folder in '{}'", parent_name)
+                "📁 Create Folder"
             };
 
-            egui::Window::new(title)
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_create_http_folder", true);
+
+            egui::Window::new(heading_label)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        let heading_label = if is_subfolder {
-                            "📁 Create Subfolder"
-                        } else {
-                            "📁 Create Folder"
-                        };
-                        ui.label(egui::RichText::new(heading_label).strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        heading_label,
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label(format!("Parent: {}", parent_name));
                         ui.add_space(6.0);
                         ui.label("Folder Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
+                        let text_edit = super::style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut folder_name)
                                 .hint_text("Enter folder name"),
+                            f32::INFINITY,
+                            None,
                         );
-                        if text_edit.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_create = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Create").clicked() {
-                                        confirm_create = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Create").clicked() {
+                                confirm_create = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -1953,14 +2301,15 @@ impl super::Tabular {
             if confirm_create {
                 let trimmed = folder_name.trim();
                 if !trimmed.is_empty() {
-                    if let Some(_) = crate::http_collection::create_folder_in_workspace(
+                    if crate::http_collection::create_folder_in_workspace(
                         &mut self.yaak_workspaces,
                         &ws_id,
                         parent_id_opt.as_deref(),
                         trimmed,
-                    ) {
-                        self.toasts
-                            .success(format!("Created folder '{}'", trimmed));
+                    )
+                    .is_some()
+                    {
+                        self.toasts.success(format!("Created folder '{}'", trimmed));
                     } else {
                         self.toasts.error("Failed to create folder");
                     }
@@ -1983,43 +2332,47 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_folder", true);
+
             egui::Window::new("Rename HTTP Folder")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("✏️ Rename Folder").strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename Folder",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(format!("Current folder: {}", current_name));
+                        ui.add_space(6.0);
                         ui.label("Folder Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
+                        let text_edit = super::style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut edit_name)
                                 .hint_text("Enter new folder name"),
+                            f32::INFINITY,
+                            None,
                         );
-                        if text_edit.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Save").clicked() {
-                                        confirm_rename = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2038,8 +2391,7 @@ impl super::Tabular {
                     }
                 }
             } else if !close_dialog {
-                self.pending_rename_http_folder =
-                    Some((ws_id, folder_id, current_name, edit_name));
+                self.pending_rename_http_folder = Some((ws_id, folder_id, current_name, edit_name));
             }
 
             if close_dialog {
@@ -2055,43 +2407,47 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_rename = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_ws", true);
+
             egui::Window::new("Rename Workspace")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("✏️ Rename Workspace").strong());
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "✏️ Rename Workspace",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(format!("Current workspace: {}", current_name));
+                        ui.add_space(6.0);
                         ui.label("Workspace Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
+                        let text_edit = super::style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut edit_name)
                                 .hint_text("Enter new workspace name"),
+                            f32::INFINITY,
+                            None,
                         );
-                        if text_edit.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_rename = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Save").clicked() {
-                                        confirm_rename = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Save").clicked() {
+                                confirm_rename = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2109,8 +2465,7 @@ impl super::Tabular {
                     }
                 }
             } else if !close_dialog {
-                self.pending_rename_http_workspace =
-                    Some((ws_id, current_name, edit_name));
+                self.pending_rename_http_workspace = Some((ws_id, current_name, edit_name));
             }
 
             if close_dialog {
@@ -2124,46 +2479,45 @@ impl super::Tabular {
             let mut close_dialog = false;
             let mut confirm_create = false;
 
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_create_http_ws", true);
+
             egui::Window::new("Create New HTTP Collection")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .default_width(380.0)
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("📁 Create New Collection (Workspace)")
-                                .strong(),
-                        );
-                        ui.add_space(8.0);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "📁 Create New Collection",
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label("Collection Name:");
                         ui.add_space(2.0);
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
+                        let text_edit = super::style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut ws_name)
                                 .hint_text("Enter collection name"),
+                            f32::INFINITY,
+                            None,
                         );
-                        if text_edit.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if text_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             confirm_create = true;
                             close_dialog = true;
                         }
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Create").clicked() {
-                                        confirm_create = true;
-                                        close_dialog = true;
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        close_dialog = true;
-                                    }
-                                },
-                            );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Create").clicked() {
+                                confirm_create = true;
+                                close_dialog = true;
+                            }
                         });
                     });
                 });
@@ -2218,6 +2572,3 @@ impl super::Tabular {
         );
     }
 }
-
-
-

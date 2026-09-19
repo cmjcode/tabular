@@ -1,7 +1,9 @@
-use crate::{driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models, modules};
+use crate::{
+    driver_mssql, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models, modules,
+};
 use futures_util::stream::StreamExt;
-use sqlx::{Column, SqlitePool};
-use sqlx::Connection as SqlxConnection; // required for MySqlConnection::connect
+use sqlx::Connection as SqlxConnection;
+use sqlx::{Column, SqlitePool}; // required for MySqlConnection::connect
 
 // Limit concurrent prefetch tasks
 pub(super) const PREFETCH_CONCURRENCY: usize = 6;
@@ -126,12 +128,18 @@ async fn prefetch_first_rows_for_all_tables(
                         );
                         if let Ok(mut conn) = sqlx::mysql::MySqlConnection::connect(&dsn).await {
                             let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
-                            if let Ok(mysql_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(&mut conn).await {
+                            if let Ok(mysql_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                                .fetch_all(&mut conn)
+                                .await
+                            {
                                 let headers: Vec<String> = if let Some(r0) = mysql_rows.first() {
                                     r0.columns().iter().map(|c| c.name().to_string()).collect()
                                 } else {
                                     let dq = format!("DESCRIBE `{}`", tbn.replace('`', "``"));
-                                    match sqlx::query(sqlx::AssertSqlSafe(dq.as_str())).fetch_all(&mut conn).await {
+                                    match sqlx::query(sqlx::AssertSqlSafe(dq.as_str()))
+                                        .fetch_all(&mut conn)
+                                        .await
+                                    {
                                         Ok(desc_rows) => desc_rows
                                             .iter()
                                             .filter_map(|r| r.try_get::<String, _>(0).ok())
@@ -139,8 +147,9 @@ async fn prefetch_first_rows_for_all_tables(
                                         Err(_) => Vec::new(),
                                     }
                                 };
-                                let data =
-                                    crate::driver_mysql::convert_mysql_rows_to_table_data(mysql_rows);
+                                let data = crate::driver_mysql::convert_mysql_rows_to_table_data(
+                                    mysql_rows,
+                                );
                                 save_row_cache_direct(
                                     cache_pool,
                                     connection_id,
@@ -221,17 +230,20 @@ async fn prefetch_first_rows_for_all_tables(
                 .map(|(_dbn, tbn)| {
                     let pool = sqlite_pool.clone();
                     async move {
-                        let q =
-                            format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
-                        if let Ok(sqlite_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(pool.as_ref()).await {
+                        let q = format!("SELECT * FROM `{}` LIMIT 100", tbn.replace('`', "``"));
+                        if let Ok(sqlite_rows) = sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .fetch_all(pool.as_ref())
+                            .await
+                        {
                             let headers: Vec<String> = if let Some(r0) = sqlite_rows.first() {
                                 r0.columns().iter().map(|c| c.name().to_string()).collect()
                             } else {
-                                let iq = format!(
-                                    "PRAGMA table_info(\"{}\")",
-                                    tbn.replace('"', "\\\"")
-                                );
-                                match sqlx::query(sqlx::AssertSqlSafe(iq.as_str())).fetch_all(pool.as_ref()).await {
+                                let iq =
+                                    format!("PRAGMA table_info(\"{}\")", tbn.replace('"', "\\\""));
+                                match sqlx::query(sqlx::AssertSqlSafe(iq.as_str()))
+                                    .fetch_all(pool.as_ref())
+                                    .await
+                                {
                                     Ok(infos) => infos
                                         .iter()
                                         .filter_map(|r| r.try_get::<String, _>(1).ok())
@@ -239,8 +251,9 @@ async fn prefetch_first_rows_for_all_tables(
                                     Err(_) => Vec::new(),
                                 }
                             };
-                            let data =
-                                crate::driver_sqlite::convert_sqlite_rows_to_table_data(sqlite_rows);
+                            let data = crate::driver_sqlite::convert_sqlite_rows_to_table_data(
+                                sqlite_rows,
+                            );
                             save_row_cache_direct(
                                 cache_pool,
                                 connection_id,

@@ -10,13 +10,13 @@
 //   crud     – connection CRUD (update, remove, test) + background refresh
 //   ui       – egui connection-selector popup
 
-pub mod types;
-pub mod sql;
-pub mod pool;
+pub mod crud;
 pub mod execute;
 pub mod metadata;
-pub mod crud;
+pub mod pool;
 pub mod session;
+pub mod sql;
+pub mod types;
 pub mod ui;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
@@ -38,18 +38,14 @@ pub(crate) use pool::{
 };
 
 // Query execution
-pub(crate) use execute::{
-    execute_query_with_connection, prepare_query_job, spawn_query_job, spawn_query_job_batch,
-};
+pub(crate) use execute::{prepare_query_job, spawn_query_job, spawn_query_job_batch};
 
 // Metadata / schema discovery
 pub use metadata::fetch_databases_background_task; // fully pub in original
 #[allow(deprecated)]
 pub(crate) use metadata::{
-    compute_schema_diff,
-    fetch_columns_from_database,
-    fetch_databases_from_connection_blocking,
-    fetch_procedure_definition, fetch_table_definition, fetch_view_definition, get_foreign_keys,
+    compute_schema_diff, fetch_columns_from_database, fetch_databases_from_connection_blocking,
+    fetch_procedure_definition, fetch_table_definition, fetch_view_definition,
 };
 
 // Connection CRUD + testing

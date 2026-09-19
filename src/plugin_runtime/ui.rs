@@ -1,14 +1,14 @@
-use eframe::egui;
 use crate::models::enums::DatabaseType;
 use crate::models::structs::{ColumnMetadata, ColumnStructInfo};
 use crate::plugin_runtime::host_api::{PluginColumnSchema, PluginSelectionData, PluginTableSchema};
 use crate::plugin_runtime::manager::{
-    PluginCategory, PluginManifest, PluginManager, PluginModalState, PluginModalTab,
+    PluginCategory, PluginManager, PluginManifest, PluginModalState, PluginModalTab,
 };
 use crate::plugin_runtime::templates::{
-    generate_orm_code, OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER,
+    OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER, generate_orm_code,
 };
 use crate::rfd;
+use eframe::egui;
 
 /// Extract table schema from Tabular table state
 pub fn extract_plugin_table_schema(
@@ -32,7 +32,8 @@ pub fn extract_plugin_table_schema(
         for col in struct_cols {
             let extra_lower = col.extra.as_deref().unwrap_or("").to_lowercase();
             let is_pk = extra_lower.contains("pri") || col.name.eq_ignore_ascii_case("id");
-            let is_auto = extra_lower.contains("auto_increment") || extra_lower.contains("identity");
+            let is_auto =
+                extra_lower.contains("auto_increment") || extra_lower.contains("identity");
 
             columns.push(PluginColumnSchema {
                 name: col.name.clone(),
@@ -45,7 +46,7 @@ pub fn extract_plugin_table_schema(
                 is_primary_key: is_pk,
                 is_auto_increment: is_auto,
                 default_value: col.default_value.clone(),
-                comment: None,
+                comment: col.comment.clone(),
             });
         }
     } else if let Some(meta_cols) = meta_columns.filter(|c| !c.is_empty()) {
@@ -69,7 +70,11 @@ pub fn extract_plugin_table_schema(
             let is_id = header.eq_ignore_ascii_case("id");
             columns.push(PluginColumnSchema {
                 name: header.clone(),
-                data_type: if is_id { "BIGINT".to_string() } else { "VARCHAR(255)".to_string() },
+                data_type: if is_id {
+                    "BIGINT".to_string()
+                } else {
+                    "VARCHAR(255)".to_string()
+                },
                 is_nullable: !is_id,
                 is_primary_key: is_id,
                 is_auto_increment: is_id,
@@ -80,7 +85,11 @@ pub fn extract_plugin_table_schema(
     }
 
     PluginTableSchema {
-        table_name: if clean_name.is_empty() { "exported_table".to_string() } else { clean_name },
+        table_name: if clean_name.is_empty() {
+            "exported_table".to_string()
+        } else {
+            clean_name
+        },
         schema_name: None,
         database_type: db_type
             .map(|d| format!("{:?}", d))
@@ -254,7 +263,10 @@ pub fn render_plugin_panel(
             } else {
                 egui::Color32::from_rgb(235, 255, 240)
             })
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 180, 100)))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(50, 180, 100),
+            ))
             .corner_radius(6.0)
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
@@ -333,7 +345,8 @@ pub fn render_plugin_modal(
         return;
     }
 
-    let mut open = state.is_open;
+    crate::window_egui::style::render_modal_backdrop(ctx, "plugin_modal_backdrop", state.is_open);
+
     let screen_rect = ctx.content_rect();
     let modal_width = (screen_rect.width() * 0.85).clamp(720.0, 1100.0);
     let modal_height = (screen_rect.height() * 0.85).clamp(540.0, 800.0);
@@ -343,12 +356,16 @@ pub fn render_plugin_modal(
         egui_icons::icons::MDI_PUZZLE.codepoint
     );
 
-    egui::Window::new(window_title)
-        .open(&mut open)
+    let mut close_dialog = false;
+    egui::Window::new(&window_title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(true)
         .default_size([modal_width, modal_height])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(ui, &window_title, &mut close_dialog);
+            ui.add_space(8.0);
             render_plugin_panel(
                 ui,
                 state,
@@ -363,7 +380,9 @@ pub fn render_plugin_modal(
             );
         });
 
-    state.is_open = open;
+    if close_dialog || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.is_open = false;
+    }
 }
 
 /// Renders the catalog tab listing available plugins
@@ -387,38 +406,12 @@ fn render_catalog_tab(
         ui.spacing_mut().item_spacing.x = 8.0;
 
         // Search box with icon
-        let search_frame = egui::Frame::new()
-            .fill(if dark {
-                egui::Color32::from_rgb(22, 24, 30)
-            } else {
-                egui::Color32::from_rgb(244, 247, 251)
-            })
-            .stroke(egui::Stroke::new(
-                1.0,
-                if dark {
-                    egui::Color32::from_rgb(46, 50, 60)
-                } else {
-                    egui::Color32::from_rgb(215, 220, 230)
-                },
-            ))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::symmetric(8, 4));
-
-        search_frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(egui_icons::icons::ICON_SEARCH.codepoint)
-                        .size(13.0)
-                        .color(egui::Color32::GRAY),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.search_query)
-                        .hint_text("Search plugins by name, tag, or description...")
-                        .desired_width(260.0)
-                        .frame(egui::Frame::NONE),
-                );
-            });
-        });
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.search_query,
+            "Search plugins by name, tag, or description…",
+            300.0,
+        );
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Category:").small().weak());
@@ -473,7 +466,7 @@ fn render_catalog_tab(
     ui.add_space(4.0);
 
     let plugins = manager.get_plugins();
-    let search_lower = state.search_query.to_lowercase();
+    let search = crate::search_match::SearchQuery::new(&state.search_query);
 
     let filtered_plugins: Vec<&PluginManifest> = plugins
         .into_iter()
@@ -483,9 +476,8 @@ fn render_catalog_tab(
                     return false;
                 }
             }
-            if !search_lower.is_empty() {
-                return p.name.to_lowercase().contains(&search_lower)
-                    || p.description.to_lowercase().contains(&search_lower);
+            if !search.is_empty() {
+                return search.matches_any([p.name.as_str(), p.description.as_str()]);
             }
             true
         })
@@ -494,7 +486,9 @@ fn render_catalog_tab(
     // Auto-select first plugin if selection is empty or invalid
     if !filtered_plugins.is_empty()
         && (state.selected_plugin_id.is_empty()
-            || !filtered_plugins.iter().any(|p| p.id == state.selected_plugin_id))
+            || !filtered_plugins
+                .iter()
+                .any(|p| p.id == state.selected_plugin_id))
     {
         state.selected_plugin_id = filtered_plugins[0].id.clone();
     }
@@ -1016,7 +1010,13 @@ fn render_output_tab(ui: &mut egui::Ui, state: &mut PluginModalState) {
 
     if let Some(ref text) = state.execution_output {
         let mut display_text = text.clone();
-        let out_scroll_h = (ui.available_height() - if state.execution_logs.is_empty() { 20.0 } else { 130.0 }).max(360.0);
+        let out_scroll_h = (ui.available_height()
+            - if state.execution_logs.is_empty() {
+                20.0
+            } else {
+                130.0
+            })
+        .max(360.0);
         egui::ScrollArea::both()
             .id_salt("output_content_scroll")
             .max_height(out_scroll_h)
@@ -1125,8 +1125,7 @@ fn render_custom_wasm_tab(
             ))
             .clicked()
         {
-            let dialog =
-                rfd::FileDialog::new().add_filter("WebAssembly Files", &["wasm", "wat"]);
+            let dialog = rfd::FileDialog::new().add_filter("WebAssembly Files", &["wasm", "wat"]);
             if let Some(path) = dialog.pick_file() {
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     if ext.eq_ignore_ascii_case("wat") {
@@ -1401,5 +1400,3 @@ fn render_starter_templates_tab(ui: &mut egui::Ui, state: &mut PluginModalState)
             );
         });
 }
-
-

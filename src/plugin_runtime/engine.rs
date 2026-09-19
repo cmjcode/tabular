@@ -1,7 +1,7 @@
-use wasmi::{Caller, Config, Engine, Linker, Module, Store};
 use crate::plugin_runtime::host_api::{
     PluginExportPayload, PluginLogEntry, PluginLogLevel, PluginSelectionData, PluginTableSchema,
 };
+use wasmi::{Caller, Config, Engine, Linker, Module, Store};
 
 /// Sandboxed Execution Context holding input data and capturing outputs
 #[derive(Debug, Clone, Default)]
@@ -18,9 +18,7 @@ pub struct PluginExecutionContext {
 
 impl PluginExecutionContext {
     pub fn new(schema: Option<PluginTableSchema>, selection: Option<PluginSelectionData>) -> Self {
-        let cached_schema_json = schema
-            .as_ref()
-            .and_then(|s| serde_json::to_string(s).ok());
+        let cached_schema_json = schema.as_ref().and_then(|s| serde_json::to_string(s).ok());
         let cached_selection_json = selection
             .as_ref()
             .and_then(|s| serde_json::to_string(s).ok());
@@ -39,7 +37,11 @@ impl PluginExecutionContext {
 }
 
 /// Helper function to read a slice of bytes from guest memory safely
-fn read_guest_memory(caller: &Caller<PluginExecutionContext>, ptr: i32, len: i32) -> Option<Vec<u8>> {
+fn read_guest_memory(
+    caller: &Caller<PluginExecutionContext>,
+    ptr: i32,
+    len: i32,
+) -> Option<Vec<u8>> {
     if ptr < 0 || len < 0 {
         return None;
     }
@@ -54,7 +56,11 @@ fn read_guest_memory(caller: &Caller<PluginExecutionContext>, ptr: i32, len: i32
 }
 
 /// Helper function to read a UTF-8 string from guest memory safely
-fn read_guest_string(caller: &Caller<PluginExecutionContext>, ptr: i32, len: i32) -> Option<String> {
+fn read_guest_string(
+    caller: &Caller<PluginExecutionContext>,
+    ptr: i32,
+    len: i32,
+) -> Option<String> {
     let bytes = read_guest_memory(caller, ptr, len)?;
     String::from_utf8(bytes).ok()
 }
@@ -194,8 +200,8 @@ impl WasmPluginEngine {
                  -> i32 {
                     let format = read_guest_string(&caller, format_ptr, format_len)
                         .unwrap_or_else(|| "text".to_string());
-                    let payload = read_guest_string(&caller, payload_ptr, payload_len)
-                        .unwrap_or_default();
+                    let payload =
+                        read_guest_string(&caller, payload_ptr, payload_len).unwrap_or_default();
 
                     let (content_type, filename_ext) = match format.to_lowercase().as_str() {
                         "parquet" => ("application/vnd.apache.parquet", "parquet"),

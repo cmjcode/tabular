@@ -15,17 +15,18 @@
 
 use log::{debug, info, warn};
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::path::Path;
+use std::sync::mpsc;
 
-use crate::directory;
-use super::api_client::{ApiClient, CreateQueryReq, RemoteSavedQuery, RemoteSharedFolder, UpdateQueryReq};
+use super::api_client::{
+    ApiClient, CreateQueryReq, RemoteSavedQuery, RemoteSharedFolder, UpdateQueryReq,
+};
 use super::vault_crypto::{self, SymKey};
 use super::vault_sync;
+use crate::directory;
 
 /// Compute SHA-256 checksum of a string (for conflict detection)
 pub fn checksum(content: &str) -> String {
-
     let digest = md5::compute(content.as_bytes());
     format!("{:x}", digest)
 }
@@ -116,7 +117,10 @@ pub fn push_queries_to_server(
             }
         }
 
-        info!("✅ [sync_queries] Pushed {} new/updated queries to server", pushed);
+        info!(
+            "✅ [sync_queries] Pushed {} new/updated queries to server",
+            pushed
+        );
         let _ = result_tx.send(Ok(pushed));
     });
 }
@@ -132,7 +136,10 @@ fn migrate_legacy_query(remote: RemoteSavedQuery, key: SymKey, token: String, se
         let encrypted = match vault_crypto::encrypt_str(&key, &remote.query_text) {
             Ok(e) => e,
             Err(e) => {
-                warn!("❌ [migrate] Failed to encrypt legacy query '{}': {}", remote.name, e);
+                warn!(
+                    "❌ [migrate] Failed to encrypt legacy query '{}': {}",
+                    remote.name, e
+                );
                 return;
             }
         };
@@ -142,8 +149,14 @@ fn migrate_legacy_query(remote: RemoteSavedQuery, key: SymKey, token: String, se
             ..Default::default()
         };
         match client.update_saved_query(&token, &remote.id, &update).await {
-            Ok(_) => info!("✅ [migrate] Migrated legacy query '{}' to end-to-end encryption", remote.name),
-            Err(e) => warn!("❌ [migrate] Failed to migrate query '{}': {}", remote.name, e),
+            Ok(_) => info!(
+                "✅ [migrate] Migrated legacy query '{}' to end-to-end encryption",
+                remote.name
+            ),
+            Err(e) => warn!(
+                "❌ [migrate] Failed to migrate query '{}': {}",
+                remote.name, e
+            ),
         }
     });
 }
@@ -173,7 +186,10 @@ pub fn reencrypt_folder_to_server(
         let remote_queries = match client.list_queries(&token).await {
             Ok(q) => q,
             Err(e) => {
-                warn!("❌ [sync_queries] re-encrypt: failed to list remote queries: {}", e);
+                warn!(
+                    "❌ [sync_queries] re-encrypt: failed to list remote queries: {}",
+                    e
+                );
                 return;
             }
         };
@@ -188,12 +204,17 @@ pub fn reencrypt_folder_to_server(
             let encrypted = match vault_crypto::encrypt_str(&key, &content) {
                 Ok(e) => e,
                 Err(e) => {
-                    warn!("❌ [sync_queries] re-encrypt: failed to encrypt '{}': {}", name, e);
+                    warn!(
+                        "❌ [sync_queries] re-encrypt: failed to encrypt '{}': {}",
+                        name, e
+                    );
                     continue;
                 }
             };
 
-            let existing = remote_queries.iter().find(|q| q.name == name && q.folder_path == folder);
+            let existing = remote_queries
+                .iter()
+                .find(|q| q.name == name && q.folder_path == folder);
             let result = match existing {
                 Some(r) => {
                     let update = UpdateQueryReq {
@@ -202,7 +223,10 @@ pub fn reencrypt_folder_to_server(
                         crypto_version: Some(1),
                         ..Default::default()
                     };
-                    client.update_saved_query(&token, &r.id, &update).await.map(|_| ())
+                    client
+                        .update_saved_query(&token, &r.id, &update)
+                        .await
+                        .map(|_| ())
                 }
                 None => {
                     let req = CreateQueryReq {
@@ -218,10 +242,16 @@ pub fn reencrypt_folder_to_server(
             };
             match result {
                 Ok(()) => migrated += 1,
-                Err(e) => warn!("❌ [sync_queries] re-encrypt: failed to upsert '{}': {}", name, e),
+                Err(e) => warn!(
+                    "❌ [sync_queries] re-encrypt: failed to upsert '{}': {}",
+                    name, e
+                ),
             }
         }
-        info!("✅ [sync_queries] Re-encrypted {} quer(y/ies) in '{}' under the Team key", migrated, folder_path);
+        info!(
+            "✅ [sync_queries] Re-encrypted {} quer(y/ies) in '{}' under the Team key",
+            migrated, folder_path
+        );
     });
 }
 
@@ -260,7 +290,10 @@ pub fn pull_queries_from_server(
             ) {
                 Some(k) => k,
                 None => {
-                    info!("[sync_queries] Skipping Team-shared '{}': Team key not unlocked yet", rq.name);
+                    info!(
+                        "[sync_queries] Skipping Team-shared '{}': Team key not unlocked yet",
+                        rq.name
+                    );
                     continue;
                 }
             };
@@ -297,7 +330,10 @@ pub fn pull_queries_from_server(
                         continue; // In sync
                     }
                     // Conflict: local differs — skip (local wins)
-                    debug!("⚠️ [sync_queries] Conflict on '{}' — local version kept", rq.name);
+                    debug!(
+                        "⚠️ [sync_queries] Conflict on '{}' — local version kept",
+                        rq.name
+                    );
                     continue;
                 }
             }
@@ -354,6 +390,12 @@ fn collect_sql_files(dir: &Path) -> Vec<(String, String, String)> {
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

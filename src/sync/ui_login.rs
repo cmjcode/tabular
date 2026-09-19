@@ -5,10 +5,10 @@
 //! 2. `render_account_dialog`: Dedicated modal popup for account management, login/logout, and profile photo settings.
 //! 3. `draw_circular_avatar`: Helper to render circular user avatars with image texture or initials fallback.
 
-use eframe::egui;
+use super::auth::OAuthProvider;
 use crate::rfd;
 use crate::window_egui::{Tabular, style};
-use super::auth::OAuthProvider;
+use eframe::egui;
 
 /// Directly paint a circular avatar into any painter at center with radius using a circular fan mesh.
 pub fn paint_circular_avatar(
@@ -142,133 +142,131 @@ pub fn open_account_dialog(tabular: &mut Tabular) {
 
 /// Render the Cloud Sync panel inside the Settings / Preferences modal.
 pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
-    ui.vertical(|ui| {
-        ui.add_space(6.0);
-        ui.heading("☁ Cloud Synchronization");
-        ui.add_space(4.0);
-        ui.label("Synchronize database connections, query history, and collaborate securely across devices.");
-        ui.add_space(10.0);
+    use crate::window_egui::preferences::{
+        Tone, divider, hint, page_header, row, section, stacked, status,
+    };
 
-        // Account status card
-        let dark = ui.visuals().dark_mode;
-        let card_bg = if dark {
-            egui::Color32::from_rgb(32, 34, 42)
-        } else {
-            egui::Color32::from_rgb(245, 247, 250)
-        };
-        let card_stroke = if dark {
-            egui::Color32::from_rgb(52, 56, 68)
-        } else {
-            egui::Color32::from_rgb(220, 224, 232)
-        };
+    page_header(
+        ui,
+        "Cloud Sync",
+        "Synchronize connections and query history across devices and collaborate securely.",
+    );
 
-        egui::Frame::new()
-            .fill(card_bg)
-            .stroke(egui::Stroke::new(1.0, card_stroke))
-            .corner_radius(egui::CornerRadius::same(6))
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(ref account) = tabular.sync_account {
-                        draw_circular_avatar(
-                            ui,
-                            tabular,
-                            36.0,
-                            &account.email,
-                            account.display_name.as_deref(),
-                        );
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            let name = account.display_name.as_deref().unwrap_or(&account.email);
-                            ui.label(egui::RichText::new(name).strong().size(13.5));
-                            ui.label(egui::RichText::new(&account.email).color(ui.visuals().weak_text_color()).size(11.5));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(style::btn_primary_ctx(ui.ctx(), "👤 Manage Account")).clicked() {
-                                open_account_dialog(tabular);
-                            }
-                        });
-                    } else {
-                        ui.label(egui::RichText::new("⚙").size(24.0));
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Offline Mode (No Account)").strong().size(13.0));
-                            ui.label(egui::RichText::new("Tabular works fully offline. Sign in to enable cloud sync.").color(ui.visuals().weak_text_color()).size(11.5));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.add(style::btn_primary_ctx(ui.ctx(), "👤 Sign In / Create Account")).clicked() {
-                                open_account_dialog(tabular);
-                            }
-                        });
+    section(ui, "Account", |ui| {
+        ui.horizontal(|ui| {
+            if let Some(ref account) = tabular.sync_account {
+                draw_circular_avatar(
+                    ui,
+                    tabular,
+                    36.0,
+                    &account.email,
+                    account.display_name.as_deref(),
+                );
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    let name = account.display_name.as_deref().unwrap_or(&account.email);
+                    ui.label(egui::RichText::new(name).strong().size(13.5));
+                    hint(ui, &account.email);
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(style::btn_primary_ctx(ui.ctx(), "Manage Account"))
+                        .clicked()
+                    {
+                        open_account_dialog(tabular);
                     }
                 });
-            });
+            } else {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Not signed in").strong().size(13.5));
+                    hint(
+                        ui,
+                        "Tabular works fully offline. Sign in to enable cloud sync.",
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(style::btn_primary_ctx(ui.ctx(), "Sign In / Create Account"))
+                        .clicked()
+                    {
+                        open_account_dialog(tabular);
+                    }
+                });
+            }
+        });
+    });
 
-        ui.add_space(10.0);
-
-        // Server URL input
-        ui.label(egui::RichText::new("Sync Server URL:").strong());
-        let server_url = &mut tabular.sync_server_url;
-        let url_resp = ui.add(
-            egui::TextEdit::singleline(server_url)
-                .hint_text("https://api.tabular.id")
-                .desired_width(f32::INFINITY),
-        );
-        if url_resp.lost_focus() || url_resp.changed() {
-            tabular.prefs_dirty = true;
-        }
-        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 193, 7),
-                "⚠ Use https:// — plain http:// is only accepted for localhost",
+    section(ui, "Server", |ui| {
+        stacked(ui, "Sync server URL", None, |ui| {
+            let resp = style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut tabular.sync_server_url)
+                    .hint_text("https://api.tabular.id"),
+                f32::INFINITY,
+                None,
+            );
+            if resp.lost_focus() || resp.changed() {
+                tabular.prefs_dirty = true;
+            }
+        });
+        if !tabular.sync_server_url.trim().is_empty()
+            && !is_server_url_acceptable(&tabular.sync_server_url)
+        {
+            status(
+                ui,
+                Tone::Warning,
+                "⚠ Use https://. Plain http:// is only accepted for localhost.",
             );
         }
+        divider(ui);
 
-        ui.add_space(8.0);
-
-        // Sync status
-        let status_label = tabular.sync_status.label();
-        let status_color = match &tabular.sync_status {
-            super::SyncStatus::Synced  => egui::Color32::from_rgb(72, 199, 116),
-            super::SyncStatus::Syncing => egui::Color32::from_rgb(255, 213, 0),
-            super::SyncStatus::Error(_) => egui::Color32::from_rgb(255, 80, 80),
-            super::SyncStatus::Offline => egui::Color32::GRAY,
+        let tone = match &tabular.sync_status {
+            super::SyncStatus::Synced => Tone::Success,
+            super::SyncStatus::Syncing => Tone::Warning,
+            super::SyncStatus::Error(_) => Tone::Danger,
+            super::SyncStatus::Offline => Tone::Muted,
         };
-        ui.horizontal(|ui| {
-            ui.label("Sync status:");
-            ui.colored_label(status_color, status_label);
+        let label = tabular.sync_status.label().to_string();
+        row(ui, "Status", None, |ui| {
+            let color = crate::window_egui::preferences::tone_color(ui.ctx(), tone);
+            style::render_badge(ui, &label, color.gamma_multiply(0.18), color);
         });
-
         if let super::SyncStatus::Error(e) = &tabular.sync_status {
-            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("  {}", e));
+            status(ui, Tone::Danger, e.clone());
         }
+    });
 
-        if tabular.sync_account.is_some() {
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            // Manual sync buttons
-            ui.label(egui::RichText::new("Manual Sync Actions").strong());
-            ui.add_space(4.0);
+    if tabular.sync_account.is_some() {
+        section(ui, "Manual Sync", |ui| {
+            hint(
+                ui,
+                "Push and pull changes immediately instead of waiting for the next automatic sync.",
+            );
+            ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                if ui.add(style::btn_secondary("🔗  Sync Connections")).clicked() {
+                let conn_btn = format!("{}  Connections", egui_icons::icons::ICON_LINK.codepoint);
+                if ui.add(style::btn_secondary(&conn_btn)).clicked() {
                     tabular.sync_trigger_connections = true;
                 }
-                if ui.add(style::btn_secondary("📜  Sync History")).clicked() {
+                let hist_btn = format!("{}  History", egui_icons::icons::ICON_HISTORY.codepoint);
+                if ui.add(style::btn_secondary(&hist_btn)).clicked() {
                     tabular.sync_trigger_history = true;
                 }
-                if ui.add(style::btn_secondary("💾  Sync Queries")).clicked() {
+                let queries_btn = format!("{}  Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint);
+                if ui.add(style::btn_secondary(&queries_btn)).clicked() {
                     tabular.sync_trigger_queries = true;
                 }
-                if ui.add(style::btn_secondary("🌐  Sync HTTP Requests")).clicked() {
+                let http_btn = format!("{}  HTTP Requests", egui_icons::icons::ICON_HTTP.codepoint);
+                if ui.add(style::btn_secondary(&http_btn)).clicked() {
                     tabular.sync_trigger_http = true;
                 }
             });
+        });
 
+        section(ui, "End-to-End Encryption", |ui| {
             super::ui_vault_setup::render_vault_panel(tabular, ui);
-        }
-    });
+        });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,107 +283,202 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     let mut open_flag = true;
     let screen_rect = ctx.content_rect();
-    // Generous and responsive dimensions: taller to eliminate excessive scrolling,
-    // wider for a balanced two-card or structured layout.
-    let dialog_w = (screen_rect.width() - 40.0).min(680.0).max(480.0);
-    let dialog_h = (screen_rect.height() - 50.0).min(780.0).max(520.0);
-
     let is_logged_in = tabular.sync_account.is_some();
 
-    egui::Window::new("👤 Account & Profile")
-        .open(&mut open_flag)
-        .collapsible(false)
-        .resizable(true)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(screen_rect.center())
-        .min_width(480.0)
-        .default_width(dialog_w)
-        .max_width(screen_rect.width() - 24.0)
-        .min_height(520.0)
-        .default_height(dialog_h)
-        .max_height(screen_rect.height() - 32.0)
-        .show(ctx, |ui| {
-            if is_logged_in {
-                // Top Tab Bar
-                ui.add_space(2.0);
-                render_account_tab_bar(tabular, ui);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
+    if is_logged_in {
+        let dialog_w = 580.0f32.min(screen_rect.width() - 32.0);
+        let max_scroll_h = (screen_rect.height() - 140.0).max(250.0);
 
-                // Scrollable main content (leaves 48px for fixed footer)
-                let content_h = (ui.available_height() - 48.0).max(180.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("account_dialog_content_scroll")
-                    .max_height(content_h)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        match tabular.account_dialog_tab {
-                            crate::window_egui::AccountDialogTab::Profile => {
-                                render_account_profile_tab(tabular, ui);
-                            }
-                            crate::window_egui::AccountDialogTab::Security => {
-                                render_account_security_tab(tabular, ui);
-                            }
-                        }
-                    });
-
-                // Fixed Bottom Action Bar (Footer) — always visible without scrolling
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(6.0);
+        egui::Window::new("account_profile_dialog")
+            .id(egui::Id::new("account_profile_dialog"))
+            .open(&mut open_flag)
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(screen_rect.center())
+            .min_width(dialog_w)
+            .max_width(dialog_w)
+            .default_width(dialog_w)
+            .max_height(screen_rect.height() - 32.0)
+            .frame(
+                egui::Frame::window(&ctx.global_style())
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 20,
+                        top: 16,
+                        bottom: 18,
+                    })
+                    .shadow(egui::Shadow {
+                        offset: [0, 16],
+                        blur: 48,
+                        spread: 4,
+                        color: egui::Color32::from_black_alpha(200),
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if ctx.global_style().visuals.dark_mode {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+                        },
+                    )),
+            )
+            .show(ctx, |ui| {
+                // Header row: Tabs on the left, Close (X) button on the right
                 ui.horizontal(|ui| {
-                    let saving = tabular.profile_update_receiver.is_some();
-                    if saving {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Saving changes…")
-                                .size(12.0)
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                    }
+                    render_account_tab_bar(tabular, ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_enabled_ui(!saving, |ui| {
-                            if ui
-                                .add(style::btn_primary_ctx(
-                                    ui.ctx(),
-                                    if saving { "💾  Saving…" } else { "💾  Save Changes" },
-                                ))
-                                .clicked()
-                            {
-                                save_profile(tabular);
-                            }
-                        });
-
-                        ui.add_space(8.0);
-                        if ui.add(style::btn_secondary("Close")).clicked() {
+                        let close_btn = egui::Button::new(
+                            egui_icons::icons::ICON_CLOSE
+                                .rich_text()
+                                .size(16.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(close_btn)
+                            .on_hover_text("Close (Esc)")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             tabular.show_account_dialog = false;
                         }
                     });
                 });
-            } else {
-                let content_h = (ui.available_height() - 44.0).max(180.0);
+
+                ui.add_space(14.0);
+
+                // Scrollable main content with auto_shrink [false, true] to prevent infinite height expansion
+                egui::ScrollArea::vertical()
+                    .id_salt("account_dialog_content_scroll")
+                    .max_height(max_scroll_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| match tabular.account_dialog_tab {
+                        crate::window_egui::AccountDialogTab::Profile => {
+                            render_account_profile_tab(tabular, ui);
+                        }
+                        crate::window_egui::AccountDialogTab::Security => {
+                            render_account_security_tab(tabular, ui);
+                        }
+                    });
+
+                // Fixed Bottom Action Bar — clean without separator or redundant close button
+                if tabular.account_dialog_tab == crate::window_egui::AccountDialogTab::Profile {
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        let saving = tabular.profile_update_receiver.is_some();
+                        if saving {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Saving changes…")
+                                    .size(12.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_enabled_ui(!saving, |ui| {
+                                let save_label = if saving {
+                                    format!("{}  Saving…", egui_icons::icons::ICON_SAVE.codepoint)
+                                } else {
+                                    format!("{}  Save Changes", egui_icons::icons::ICON_SAVE.codepoint)
+                                };
+                                if ui
+                                    .add(style::btn_primary_ctx(ui.ctx(), &save_label))
+                                    .clicked()
+                                {
+                                    save_profile(tabular);
+                                }
+                            });
+                        });
+                    });
+                }
+            });
+    } else {
+        let login_w = 400.0f32.min(screen_rect.width() - 32.0);
+        let max_scroll_h = (screen_rect.height() - 120.0).max(200.0);
+
+        egui::Window::new("account_login_dialog")
+            .id(egui::Id::new("account_login_dialog"))
+            .open(&mut open_flag)
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(screen_rect.center())
+            .min_width(login_w)
+            .max_width(login_w)
+            .default_width(login_w)
+            .max_height(screen_rect.height() - 32.0)
+            .frame(
+                egui::Frame::window(&ctx.global_style())
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 12,
+                        top: 12,
+                        bottom: 16,
+                    })
+                    .shadow(egui::Shadow {
+                        offset: [0, 16],
+                        blur: 48,
+                        spread: 4,
+                        color: egui::Color32::from_black_alpha(200),
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if ctx.global_style().visuals.dark_mode {
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30)
+                        },
+                    )),
+            )
+            .show(ctx, |ui| {
+                // Header row: Title on the left, Close (X) button right in the top-right corner
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new("Sign In to Tabular")
+                            .size(17.0)
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close_btn = egui::Button::new(
+                            egui_icons::icons::ICON_CLOSE
+                                .rich_text()
+                                .size(16.0)
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .frame(false);
+                        if ui
+                            .add(close_btn)
+                            .on_hover_text("Close")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            tabular.show_account_dialog = false;
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+
                 egui::ScrollArea::vertical()
                     .id_salt("account_login_dialog_scroll")
-                    .max_height(content_h)
-                    .auto_shrink([false, false])
+                    .max_height(max_scroll_h)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         render_account_login_view(tabular, ui);
                     });
+            });
+    }
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(style::btn_secondary("Close")).clicked() {
-                            tabular.show_account_dialog = false;
-                        }
-                    });
-                });
-            }
-        });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        tabular.show_account_dialog = false;
+    }
 
     if !open_flag {
         tabular.show_account_dialog = false;
@@ -401,9 +494,11 @@ fn render_account_tab_bar(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
+        let profile_label = format!("{}  Profile & Info", egui_icons::icons::ICON_PERSON.codepoint);
+        let security_label = format!("{}  Security & Privacy", egui_icons::icons::ICON_SHIELD.codepoint);
         let tabs = [
-            (AccountDialogTab::Profile, "👤  Profile & Info"),
-            (AccountDialogTab::Security, "🛡️  Security & Privacy"),
+            (AccountDialogTab::Profile, profile_label),
+            (AccountDialogTab::Security, security_label),
         ];
 
         for (tab, label) in tabs {
@@ -500,40 +595,152 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    // Left: Avatar with quick photo actions
+                    // Left: Avatar with hover-to-change overlay
                     ui.vertical(|ui| {
-                        draw_circular_avatar(
-                            ui,
+                        let avatar_size = 72.0;
+                        let (rect, resp) = ui.allocate_exact_size(
+                            egui::vec2(avatar_size, avatar_size),
+                            egui::Sense::click(),
+                        );
+                        let center = rect.center();
+                        let radius = avatar_size / 2.0;
+
+                        // Gambar avatar utama
+                        paint_circular_avatar(
+                            ui.painter(),
                             tabular,
-                            72.0,
+                            center,
+                            radius,
                             &account.email,
                             if tabular.profile_display_name_input.is_empty() {
                                 account.display_name.as_deref()
                             } else {
                                 Some(&tabular.profile_display_name_input)
                             },
+                            false,
+                            dark,
                         );
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    style::btn_secondary("📁 Change")
-                                        .min_size(egui::vec2(60.0, 24.0)),
-                                )
-                                .on_hover_text("Choose an image from your computer")
-                                .clicked()
-                            {
-                                choose_avatar_file(tabular);
-                            }
-                            if !tabular.profile_avatar_url_input.is_empty() {
-                                if ui.button("🗑").on_hover_text("Remove photo").clicked() {
-                                    tabular.profile_avatar_url_input.clear();
-                                    tabular.avatar_texture = None;
-                                    tabular.avatar_texture_url = None;
+
+                        // Hover overlay: lingkaran semi-transparan dengan teks "Change"
+                        if resp.hovered() || tabular.show_avatar_change_menu {
+                            // Overlay gelap semi-transparan
+                            let overlay_color = egui::Color32::from_black_alpha(150);
+                            ui.painter().circle_filled(center, radius, overlay_color);
+
+                            // Border highlight saat hover
+                            ui.painter().circle_stroke(
+                                center,
+                                radius - 0.5,
+                                egui::Stroke::new(2.0, style::theme_accent(ui.ctx())),
+                            );
+
+                            // Icon kamera dan teks "Change" di tengah / bawah
+                            ui.painter().text(
+                                center - egui::vec2(0.0, 7.0),
+                                egui::Align2::CENTER_CENTER,
+                                egui_icons::icons::ICON_PHOTO_CAMERA.codepoint,
+                                egui::FontId::proportional(20.0),
+                                egui::Color32::WHITE,
+                            );
+                            ui.painter().text(
+                                center + egui::vec2(0.0, 13.0),
+                                egui::Align2::CENTER_CENTER,
+                                "Change",
+                                egui::FontId::proportional(10.5),
+                                egui::Color32::from_white_alpha(230),
+                            );
+                        }
+
+                        let resp = resp
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Change profile photo");
+
+                        // Klik avatar → toggle popup menu
+                        if resp.clicked() {
+                            tabular.show_avatar_change_menu = !tabular.show_avatar_change_menu;
+                        }
+
+                        // Popup menu di bawah avatar
+                        let popup_id = ui.id().with("avatar_change_popup");
+                        if tabular.show_avatar_change_menu {
+                            let popup_pos = rect.left_bottom() + egui::vec2(0.0, 4.0);
+                            let popup_area = egui::Area::new(popup_id)
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(popup_pos)
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::new()
+                                        .fill(if dark {
+                                            egui::Color32::from_rgb(36, 38, 48)
+                                        } else {
+                                            egui::Color32::from_rgb(255, 255, 255)
+                                        })
+                                        .stroke(egui::Stroke::new(
+                                            1.0,
+                                            if dark {
+                                                egui::Color32::from_rgb(60, 65, 80)
+                                            } else {
+                                                egui::Color32::from_rgb(200, 205, 215)
+                                            },
+                                        ))
+                                        .corner_radius(egui::CornerRadius::same(8))
+                                        .inner_margin(egui::Margin::same(4))
+                                        .shadow(egui::Shadow {
+                                            offset: [0, 4],
+                                            blur: 12,
+                                            spread: 2,
+                                            color: egui::Color32::from_black_alpha(40),
+                                        })
+                                        .show(ui, |ui| {
+                                            ui.set_min_width(140.0);
+                                            // Opsi 1: Upload Image
+                                            let upload_label = format!(
+                                                "{}  Upload Image",
+                                                egui_icons::icons::ICON_UPLOAD_FILE.codepoint
+                                            );
+                                            let upload_resp = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(upload_label).size(12.5),
+                                                )
+                                                .min_size(egui::vec2(140.0, 28.0))
+                                                .frame(false),
+                                            );
+                                            if upload_resp.clicked() {
+                                                tabular.show_avatar_change_menu = false;
+                                                tabular.show_avatar_url_input = false;
+                                                choose_avatar_file(tabular);
+                                            }
+
+                                            // Opsi 2: Enter URL
+                                            let url_label = format!(
+                                                "{}  Image URL",
+                                                egui_icons::icons::ICON_LINK.codepoint
+                                            );
+                                            let url_resp = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(url_label).size(12.5),
+                                                )
+                                                .min_size(egui::vec2(140.0, 28.0))
+                                                .frame(false),
+                                            );
+                                            if url_resp.clicked() {
+                                                tabular.show_avatar_change_menu = false;
+                                                tabular.show_avatar_url_input =
+                                                    !tabular.show_avatar_url_input;
+                                            }
+                                        });
+                                });
+
+                            // Klik di luar popup dan avatar → tutup
+                            if ui.input(|i| i.pointer.any_click()) {
+                                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                    if !rect.contains(pos) && !popup_area.response.rect.contains(pos) {
+                                        tabular.show_avatar_change_menu = false;
+                                    }
                                 }
                             }
-                        });
+                        }
                     });
 
                     ui.add_space(16.0);
@@ -567,13 +774,17 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             } else {
                                 egui::Color32::from_rgb(16, 130, 60)
                             };
+                            let verified_label = format!(
+                                "{} Verified",
+                                egui_icons::icons::ICON_VERIFIED.codepoint
+                            );
                             egui::Frame::new()
                                 .fill(badge_bg)
                                 .corner_radius(egui::CornerRadius::same(10))
                                 .inner_margin(egui::Margin::symmetric(8, 2))
                                 .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new("✓ Verified")
+                                        egui::RichText::new(verified_label)
                                             .color(badge_fg)
                                             .size(11.0)
                                             .strong(),
@@ -608,9 +819,13 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                     .size(11.5)
                                     .color(ui.visuals().weak_text_color()),
                             );
+                            let copy_label = format!(
+                                "{} Copy",
+                                egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                            );
                             if ui
                                 .add(
-                                    egui::Button::new(egui::RichText::new("📋 Copy").size(10.5))
+                                    egui::Button::new(egui::RichText::new(copy_label).size(10.5))
                                         .small(),
                                 )
                                 .clicked()
@@ -622,21 +837,42 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     });
                 });
 
-                // Collapsible Image URL input
-                ui.add_space(8.0);
-                ui.collapsing("🔗 Custom Image URL or Base64", |ui| {
+                // Inline Image URL input (muncul saat user pilih "Image URL" dari popup)
+                if tabular.show_avatar_url_input {
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let avatar_edit = ui.add(
+                        ui.label(
+                            egui::RichText::new(egui_icons::icons::ICON_LINK.codepoint)
+                                .size(13.0),
+                        );
+                        let avatar_w = ui.available_width() - 40.0;
+                        let avatar_edit = style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_avatar_url_input)
-                                .hint_text("https://example.com/photo.png or data:image/...")
-                                .desired_width(ui.available_width() - 10.0),
+                                .hint_text("https://example.com/photo.png or data:image/..."),
+                            avatar_w,
+                            None,
                         );
                         if avatar_edit.changed() {
                             tabular.avatar_texture = None;
                             tabular.avatar_texture_url = None;
                         }
+                        // Tombol untuk menutup input URL
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(egui_icons::icons::ICON_CLOSE.codepoint)
+                                        .size(12.0),
+                                )
+                                .small(),
+                            )
+                            .on_hover_text("Close URL input")
+                            .clicked()
+                        {
+                            tabular.show_avatar_url_input = false;
+                        }
                     });
-                });
+                }
             });
 
         ui.add_space(14.0);
@@ -648,7 +884,14 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("Personal Information").strong().size(14.0));
+                ui.set_min_width(ui.available_width());
+                let field_w = (ui.available_width() - 130.0).max(280.0);
+
+                ui.label(
+                    egui::RichText::new("Personal Information")
+                        .strong()
+                        .size(14.0),
+                );
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new("Update your personal details and public profile info.")
@@ -662,19 +905,23 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     .spacing([18.0, 14.0])
                     .show(ui, |ui| {
                         ui.label(egui::RichText::new("Display Name:").strong().size(12.5));
-                        ui.add(
+                        style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_display_name_input)
-                                .hint_text("e.g. John Doe")
-                                .desired_width(340.0),
+                                .hint_text("e.g. John Doe"),
+                            field_w,
+                            None,
                         );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Username:").strong().size(12.5));
                         ui.vertical(|ui| {
-                            ui.add(
+                            style::render_text_field(
+                                ui,
                                 egui::TextEdit::singleline(&mut tabular.profile_username_input)
-                                    .hint_text("e.g. johndoe")
-                                    .desired_width(340.0),
+                                    .hint_text("e.g. johndoe"),
+                                field_w,
+                                None,
                             );
                             ui.label(
                                 egui::RichText::new("Used for team invites and mentions")
@@ -685,18 +932,24 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Phone Number:").strong().size(12.5));
-                        ui.add(
+                        style::render_text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut tabular.profile_phone_input)
-                                .hint_text("e.g. +62 812 3456 7890")
-                                .desired_width(340.0),
+                                .hint_text("e.g. +62 812 3456 7890"),
+                            field_w,
+                            None,
                         );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Email Address:").strong().size(12.5));
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&account.email).size(12.5));
+                            let lock_label = format!(
+                                "{} Linked to account",
+                                egui_icons::icons::ICON_LOCK.codepoint
+                            );
                             ui.label(
-                                egui::RichText::new("🔒 Linked to account")
+                                egui::RichText::new(lock_label)
                                     .size(11.0)
                                     .color(ui.visuals().weak_text_color()),
                             );
@@ -738,11 +991,16 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Active Session").strong().size(14.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let signout_label = format!(
+                            "{}  Sign Out",
+                            egui_icons::icons::ICON_LOGOUT.codepoint
+                        );
                         if ui
-                            .add(style::btn_danger_ctx(ui.ctx(), "🚪  Sign Out"))
+                            .add(style::btn_danger_ctx(ui.ctx(), &signout_label))
                             .clicked()
                         {
                             do_logout(tabular);
@@ -759,11 +1017,6 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("Sync Server:");
-                    ui.monospace(&tabular.sync_server_url);
-                });
-                ui.add_space(3.0);
-                ui.horizontal(|ui| {
                     ui.label("Signed in as:");
                     ui.label(egui::RichText::new(&account.email).strong());
                 });
@@ -778,16 +1031,22 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    let block_icon = egui_icons::icons::ICON_BLOCK.codepoint;
                     let count_text = if tabular.blocked_users.is_empty() {
-                        "🚫 Blocked Users".to_string()
+                        format!("{} Blocked Users", block_icon)
                     } else {
-                        format!("🚫 Blocked Users ({})", tabular.blocked_users.len())
+                        format!("{} Blocked Users ({})", block_icon, tabular.blocked_users.len())
                     };
                     ui.label(egui::RichText::new(count_text).strong().size(14.0));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(style::btn_secondary("🔄 Refresh")).clicked() {
+                        let refresh_label = format!(
+                            "{} Refresh",
+                            egui_icons::icons::ICON_REFRESH.codepoint
+                        );
+                        if ui.add(style::btn_secondary(&refresh_label)).clicked() {
                             refresh_blocked_users(tabular);
                         }
                     });
@@ -846,8 +1105,10 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let danger_title = format!("{} Danger Zone", egui_icons::icons::ICON_WARNING.codepoint);
                 ui.label(
-                    egui::RichText::new("⚠️ Danger Zone")
+                    egui::RichText::new(danger_title)
                         .strong()
                         .size(14.0)
                         .color(egui::Color32::from_rgb(220, 70, 70)),
@@ -863,7 +1124,11 @@ fn render_account_security_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     .color(ui.visuals().weak_text_color()),
                 );
                 ui.add_space(10.0);
-                if ui.add(style::btn_danger_ctx(ui.ctx(), "🗑  Delete Account")).clicked() {
+                let del_account_label = format!(
+                    "{}  Delete Account",
+                    egui_icons::icons::ICON_DELETE.codepoint
+                );
+                if ui.add(style::btn_danger_ctx(ui.ctx(), &del_account_label)).clicked() {
                     tabular.show_delete_account_dialog = true;
                     tabular.delete_account_confirm_input.clear();
                     tabular.delete_account_error = None;
@@ -890,56 +1155,77 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
     };
 
     let in_progress = tabular.delete_account_receiver.is_some();
+    let mut close = false;
+
+    style::render_modal_backdrop(
+        ctx,
+        "delete_account_backdrop",
+        tabular.show_delete_account_dialog,
+    );
 
     egui::Window::new("Delete Account")
+        .title_bar(false)
+        .frame(style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(440.0)
         .show(ctx, |ui| {
             ui.set_min_width(420.0);
-            ui.add_space(4.0);
-
-            ui.label(
-                egui::RichText::new("⚠  This permanently deletes your Tabular account")
-                    .strong()
-                    .color(egui::Color32::from_rgb(220, 90, 90)),
-            );
+            style::render_modal_header(ui, "Delete Account", &mut close);
             ui.add_space(8.0);
 
-            ui.label("The following is erased from the server and cannot be recovered:");
-            ui.add_space(4.0);
-            for line in [
-                "• Synced database connections",
-                "• Saved queries and query history",
-                "• Saved HTTP requests",
-                "• Vault keys — encrypted credentials become unrecoverable",
-                "• Teams you own, including for their other members",
-            ] {
-                ui.label(egui::RichText::new(line).size(12.0));
-            }
+            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                let modal_warn = format!(
+                    "{}  This permanently deletes your Tabular account",
+                    egui_icons::icons::ICON_WARNING.codepoint
+                );
+                ui.label(
+                    egui::RichText::new(modal_warn)
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 90, 90)),
+                );
+                ui.add_space(6.0);
+
+                ui.label("The following is erased from the server and cannot be recovered:");
+                ui.add_space(4.0);
+                for line in [
+                    "• Synced database connections",
+                    "• Saved queries and query history",
+                    "• Saved HTTP requests",
+                    "• Vault keys — encrypted credentials become unrecoverable",
+                    "• Teams you own, including for their other members",
+                ] {
+                    ui.label(egui::RichText::new(line).size(12.0));
+                }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Your databases themselves are untouched — this only removes what Tabular \
+                         stores for your account. Local data on this device is cleared too.",
+                    )
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
 
             ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(
-                    "Your databases themselves are untouched — this only removes what Tabular \
-                     stores for your account. Local data on this device is cleared too.",
-                )
-                .size(11.0)
-                .color(ui.visuals().weak_text_color()),
-            );
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            ui.label(format!("Type {} to confirm:", account.email));
-            ui.add_space(4.0);
-            ui.add_enabled(
-                !in_progress,
-                egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
-                    .hint_text(account.email.clone())
-                    .desired_width(f32::INFINITY),
-            );
+            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Type {} to confirm:", account.email));
+                ui.add_space(4.0);
+                // Nonaktifkan input saat proses hapus akun sedang berjalan
+                ui.add_enabled_ui(!in_progress, |ui| {
+                    style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut tabular.delete_account_confirm_input)
+                            .hint_text(account.email.clone()),
+                        f32::INFINITY,
+                        None,
+                    );
+                });
+            });
 
             let confirmed = tabular.delete_account_confirm_input.trim() == account.email;
 
@@ -950,14 +1236,6 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(!in_progress, |ui| {
-                    if ui.add(style::btn_secondary("Cancel")).clicked() {
-                        tabular.show_delete_account_dialog = false;
-                        tabular.delete_account_confirm_input.clear();
-                        tabular.delete_account_error = None;
-                    }
-                });
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(confirmed && !in_progress, |ui| {
                         let label = if in_progress {
@@ -971,9 +1249,13 @@ pub fn render_delete_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) 
                     });
                 });
             });
-
-            ui.add_space(4.0);
         });
+
+    if close && !in_progress {
+        tabular.show_delete_account_dialog = false;
+        tabular.delete_account_confirm_input.clear();
+        tabular.delete_account_error = None;
+    }
 }
 
 /// Fire the DELETE and let `poll_delete_account_receiver` finish the teardown.
@@ -1005,64 +1287,118 @@ fn do_delete_account(tabular: &mut Tabular) {
     tabular.delete_account_receiver = Some(rx);
 }
 
+/// Helper to render an OAuth provider tile button with icon on top and small label underneath.
+fn render_oauth_tile(
+    ui: &mut egui::Ui,
+    icon: egui_icons::MaterialIcon,
+    label: &str,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let accent = style::theme_accent(ui.ctx());
+        let is_hovered = response.hovered();
+        let is_pressed = response.is_pointer_button_down_on();
+
+        let bg_fill = if is_pressed {
+            accent.gamma_multiply(0.8)
+        } else if is_hovered {
+            accent.gamma_multiply(0.9)
+        } else {
+            accent
+        };
+
+        ui.painter().rect_filled(rect, 6.0, bg_fill);
+
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        child_ui.vertical_centered(|ui| {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(
+                icon.rich_text().size(20.0).color(egui::Color32::WHITE),
+            ));
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(
+                egui::RichText::new(label)
+                    .size(10.0)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            ));
+        });
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Render logged-out login / create account view.
 fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.vertical(|ui| {
-        ui.add_space(6.0);
-        ui.heading("👤 Sign In to Tabular");
-        ui.add_space(4.0);
-        ui.label("Connect your account to sync connections, queries, and collaborate in real-time.");
-        ui.small("💡 Note: An account is completely optional. Tabular is offline-first and fully functional without login.");
-        ui.add_space(12.0);
-
-        // Server URL input
-        ui.label(egui::RichText::new("Server URL:").strong());
-        let server_url = &mut tabular.sync_server_url;
-        let url_resp = ui.add(
-            egui::TextEdit::singleline(server_url)
-                .hint_text("https://api.tabular.id")
-                .desired_width(f32::INFINITY),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("Connect your account to sync connections, queries, and collaborate in real-time.")
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
         );
-        if url_resp.lost_focus() || url_resp.changed() {
-            tabular.prefs_dirty = true;
-        }
-        if !tabular.sync_server_url.trim().is_empty() && !is_server_url_acceptable(&tabular.sync_server_url) {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 193, 7),
-                "⚠ Use https:// — plain http:// is only accepted for localhost",
-            );
-        }
-        ui.add_space(12.0);
+        ui.add_space(3.0);
+        let note_text = format!(
+            "{} Note: An account is completely optional. Tabular is offline-first and fully functional without login.",
+            egui_icons::icons::ICON_LIGHTBULB.codepoint
+        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(note_text)
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
+        );
+        ui.add_space(14.0);
 
-        // Sign in with Apple sits above the others: Guideline 4.8 wants it at
-        // least as prominent as the third-party options it stands in for.
-        let apple_btn = style::btn_primary_ctx(ui.ctx(), "  Sign in with Apple  ")
-            .min_size(egui::vec2(328.0, 36.0));
-        if ui.add(apple_btn).clicked() {
-            start_oauth(tabular, OAuthProvider::Apple);
+        // Ensure default sync server url is set even when input is hidden
+        if tabular.sync_server_url.trim().is_empty() {
+            tabular.sync_server_url = "https://api.tabular.id".to_string();
         }
 
-        ui.add_space(8.0);
+        // OAuth buttons: Apple, Google, GitHub side-by-side in one row with increased height and label
+        let total_spacing = 8.0 * 2.0;
+        let btn_w = ((ui.available_width() - total_spacing) / 3.0).max(60.0);
+        let btn_size = egui::vec2(btn_w, 54.0);
 
-        // OAuth buttons
         ui.horizontal(|ui| {
-            let google_btn = style::btn_primary_ctx(
-                ui.ctx(),
-                "  Sign in with Google  "
-            ).min_size(egui::vec2(160.0, 36.0));
+            // 1. Apple
+            let apple_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_APPLE,
+                "Sign with Apple",
+                btn_size,
+            );
+            if apple_resp.on_hover_text("Sign in with Apple").clicked() {
+                start_oauth(tabular, OAuthProvider::Apple);
+            }
 
-            if ui.add(google_btn).clicked() {
+            ui.add_space(8.0);
+
+            // 2. Google
+            let google_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_GOOGLE,
+                "Sign with Google",
+                btn_size,
+            );
+            if google_resp.on_hover_text("Sign in with Google").clicked() {
                 start_oauth(tabular, OAuthProvider::Google);
             }
 
             ui.add_space(8.0);
 
-            let github_btn = style::btn_primary_ctx(
-                ui.ctx(),
-                "  Sign in with GitHub  "
-            ).min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add(github_btn).clicked() {
+            // 3. GitHub
+            let github_resp = render_oauth_tile(
+                ui,
+                egui_icons::icons::ICON_GITHUB,
+                "Sign with GitHub",
+                btn_size,
+            );
+            if github_resp.on_hover_text("Sign in with GitHub").clicked() {
                 start_oauth(tabular, OAuthProvider::GitHub);
             }
         });
@@ -1075,7 +1411,11 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("🌐 Opening browser... Complete sign-in in your browser.");
+                let browser_msg = format!(
+                    "{} Opening browser... Complete sign-in in your browser.",
+                    egui_icons::icons::ICON_OPEN_IN_BROWSER.codepoint
+                );
+                ui.label(browser_msg);
             });
             ui.add_space(4.0);
 
@@ -1095,7 +1435,11 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     ui.add(token_edit);
 
                     ui.add_space(4.0);
-                    if ui.add(style::btn_primary_ctx(ui.ctx(), "✅  Submit Token")).clicked() {
+                    let submit_label = format!(
+                        "{}  Submit Token",
+                        egui_icons::icons::ICON_CHECK.codepoint
+                    );
+                    if ui.add(style::btn_primary_ctx(ui.ctx(), &submit_label)).clicked() {
                         try_submit_token(tabular);
                     }
                 });
@@ -1112,12 +1456,23 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
         // Error display
         if let Some(err) = &tabular.sync_login_error.clone() {
             ui.add_space(4.0);
-            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), format!("❌ {}", err));
+            let err_msg = format!("{} {}", egui_icons::icons::ICON_ERROR.codepoint, err);
+            ui.colored_label(egui::Color32::from_rgb(255, 80, 80), err_msg);
         }
 
         ui.add_space(10.0);
-        ui.separator();
-        ui.small("Your connection credentials remain encrypted locally before being sent to the server.");
+        let cred_note = format!(
+            "{} Your connection credentials remain encrypted locally before being sent to the server.",
+            egui_icons::icons::ICON_LOCK.codepoint
+        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(cred_note)
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
+        );
     });
 }
 
@@ -1139,12 +1494,12 @@ fn is_server_url_acceptable(url: &str) -> bool {
 
 fn start_oauth(tabular: &mut Tabular, provider: OAuthProvider) {
     if tabular.sync_server_url.trim().is_empty() {
-        tabular.sync_login_error = Some("Please enter a server URL first".to_string());
-        return;
+        tabular.sync_server_url = "https://api.tabular.id".to_string();
     }
     if !is_server_url_acceptable(&tabular.sync_server_url) {
         tabular.sync_login_error = Some(
-            "Server URL must use https:// (plain http:// is only allowed for localhost/127.0.0.1)".to_string(),
+            "Server URL must use https:// (plain http:// is only allowed for localhost/127.0.0.1)"
+                .to_string(),
         );
         return;
     }
@@ -1178,7 +1533,8 @@ fn try_submit_token(tabular: &mut Tabular) {
             let phone = root["user"]["phone"].as_str().map(|s| s.to_string());
 
             if access_token.is_empty() || email.is_empty() {
-                tabular.sync_login_error = Some("Invalid token JSON — missing access_token or email".to_string());
+                tabular.sync_login_error =
+                    Some("Invalid token JSON — missing access_token or email".to_string());
                 return;
             }
 
@@ -1284,7 +1640,6 @@ pub fn wipe_local_session(tabular: &mut Tabular) {
     tabular.vault_recovery_code_display = None;
     tabular.vault_error = None;
 }
-
 
 /// Fetch the blocked-user list for the unblock UI (App Store Guideline 1.2).
 pub fn refresh_blocked_users(tabular: &mut Tabular) {

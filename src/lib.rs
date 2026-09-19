@@ -1,35 +1,19 @@
+// Lint yang sengaja diizinkan global karena perbaikannya struktural (fungsi
+// UI dengan banyak parameter, tipe callback kompleks) atau menyentuh ratusan
+// lokasi sekaligus (collapsible_if). Lint lain wajib lolos `clippy -D warnings`.
 #![allow(
     clippy::collapsible_if,
     clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::field_reassign_with_default,
-    clippy::needless_borrows_for_generic_args,
-    clippy::unnecessary_cast,
-    clippy::manual_clamp,
-    clippy::unnecessary_map_or,
-    clippy::manual_is_multiple_of,
-    clippy::manual_div_ceil,
-    clippy::derivable_impls,
-    clippy::manual_unwrap_or_default,
-    clippy::vec_init_then_push,
-    clippy::get_first,
-    clippy::single_char_add_str,
-    clippy::redundant_closure,
-    clippy::needless_borrow,
-    clippy::needless_late_init,
-    clippy::nonminimal_bool,
-    clippy::collapsible_str_replace,
-    clippy::doc_lazy_continuation,
-    clippy::redundant_pattern_matching,
-    clippy::unnecessary_sort_by,
-    clippy::useless_conversion,
-    clippy::unwrap_or_default,
+    clippy::type_complexity
 )]
 
 use eframe::egui;
 
+pub mod agent;
 pub mod ai_assistant;
+pub mod app_logging;
 pub mod auto_updater;
+pub mod autocomplete;
 pub mod backup_restore;
 pub mod cache_data;
 pub mod config;
@@ -37,6 +21,11 @@ pub mod connection;
 pub mod curl_import;
 pub mod data_table;
 pub mod dba_monitor;
+pub mod diagram_links;
+pub mod diagram_mermaid;
+pub mod diagram_relations;
+pub mod diagram_schema;
+pub mod diagram_storage;
 pub mod diagram_view;
 pub mod dialog;
 pub mod dialog_backup_restore;
@@ -59,18 +48,21 @@ pub mod export_import_all;
 pub mod http_client;
 pub mod http_code_export;
 pub mod http_collection;
+pub mod keymap;
 pub mod models;
 pub mod modules;
+pub mod obsidian;
 pub mod plugin_runtime;
 pub mod query_profiler;
 pub mod query_tools;
 pub mod quick_open;
 pub mod redis_browser;
 pub mod safety_guard;
-pub mod secrets;
 pub mod sample_data;
+pub mod search_match;
+pub mod secrets;
 pub mod self_update;
-pub mod url_opener;
+pub mod session_restore;
 pub mod sidebar_collection;
 pub mod sidebar_database;
 pub mod sidebar_history;
@@ -78,7 +70,9 @@ pub mod sidebar_query;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
+pub mod url_opener;
 pub mod user_manager;
+pub mod vector_index;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
 pub mod query_ast;
@@ -174,19 +168,30 @@ pub fn log_startup_step(step: &str) {
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
+    // Mode CLI (`tabular mcp`, `--help`, `--version`) tidak membuka jendela.
+    // Argumen lain (mis. `-psn_*` dari Finder) tetap jatuh ke GUI.
+    #[cfg(not(target_os = "ios"))]
+    if let Some(result) = agent::cli::try_run_from_args() {
+        return match result {
+            Ok(()) => Ok(()),
+            Err(message) => {
+                eprintln!("tabular: {message}");
+                std::process::exit(1);
+            }
+        };
+    }
+
     log_startup_step("run() entrypoint started");
+    // Harus sebelum pool SQLite pertama dibuka agar vec_* tersedia di semua koneksi.
+    vector_index::register_sqlite_vec();
     dotenvy::dotenv().ok();
     log_startup_step("dotenv loaded");
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
 
-    let _ = env_logger::Builder::from_default_env()
-        // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log::LevelFilter::Info)
-        .filter_module("winit", log::LevelFilter::Warn)
-        .filter_module("tracing", log::LevelFilter::Warn)
-        .is_test(false)
-        .try_init();
+    // Log ke file + crash report; setelah init_data_dir agar folder log benar.
+    app_logging::init();
+    app_logging::install_panic_hook();
 
     log::debug!(
         "Application starting with data directory: {}",
@@ -196,17 +201,45 @@ pub fn run() -> Result<(), eframe::Error> {
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
+    if let Some(geometry) = session_restore::saved_window_geometry() {
+        options.viewport.inner_size = Some(egui::vec2(geometry.width, geometry.height));
+        options.viewport.maximized = Some(geometry.maximized);
+    }
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }
     log_startup_step("starting eframe::run_native");
+
+    let fast_prefs = config::load_fast_preferences();
+    let initial_sys_theme = match fast_prefs.theme {
+        config::AppTheme::Dark => egui::SystemTheme::Dark,
+        config::AppTheme::Light | config::AppTheme::LightSoft => egui::SystemTheme::Light,
+    };
+
+    // `egui_icons::initialize` hanya mendaftarkan font ikon ke family Proportional,
+    // jadi teks dengan family Monospace (mis. badge shortcut) menampilkan ikon sebagai
+    // kotak pengganti. Daftarkan sendiri supaya kedua family terlayani. Prioritas
+    // Lowest menjaga font teks utama tetap dipakai lebih dulu.
+    fn initialize_icon_fonts(ctx: &egui::Context) {
+        use egui::epaint::text::{FontPriority, InsertFontFamily};
+
+        for mut insert in [egui_icons::font_insert(), egui_icons::font_insert_mdi()] {
+            insert.families.push(InsertFontFamily {
+                family: egui::FontFamily::Monospace,
+                priority: FontPriority::Lowest,
+            });
+            ctx.add_font(insert);
+        }
+    }
 
     eframe::run_native(
         "Tabular",
         options,
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
-            egui_icons::initialize(&cc.egui_ctx);
+            initialize_icon_fonts(&cc.egui_ctx);
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
             Ok(Box::new(app))
@@ -226,13 +259,11 @@ pub extern "C" fn tabular_version() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tabular_run() -> i32 {
-    let result = std::panic::catch_unwind(|| {
-        match run() {
-            Ok(_) => 0,
-            Err(e) => {
-                log::error!("eframe run error: {:?}", e);
-                1
-            }
+    let result = std::panic::catch_unwind(|| match run() {
+        Ok(_) => 0,
+        Err(e) => {
+            log::error!("eframe run error: {:?}", e);
+            1
         }
     });
     match result {

@@ -184,14 +184,11 @@ impl ToastManager {
                                 egui::Label::new(egui::RichText::new(&toast.message).size(13.0))
                                     .wrap(),
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::TOP),
-                                |ui| {
-                                    if super::style::render_close_icon_button(ui).clicked() {
-                                        dismiss = Some(idx);
-                                    }
-                                },
-                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                if super::style::render_close_icon_button(ui).clicked() {
+                                    dismiss = Some(idx);
+                                }
+                            });
                         });
                     });
                 }

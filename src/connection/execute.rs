@@ -1,23 +1,111 @@
-use crate::{
-    driver_mssql, driver_mysql, driver_sqlite, models, modules,
-    window_egui::Tabular,
-};
+use crate::{driver_mssql, driver_mysql, driver_sqlite, models, modules, window_egui::Tabular};
 use log::debug;
-use sqlx::{Column, Row, TypeInfo};
 use sqlx::Connection as SqlxConnection;
 use sqlx::mysql::MySqlConnection;
-use std::sync::Arc;
+use sqlx::{Column, Row, TypeInfo};
 use std::time::Instant;
 
-use super::pool::{resolve_connection_target_async, try_get_connection_pool};
+use super::pool::resolve_connection_target_async;
 use super::sql::{
-    infer_column_origins, infer_select_headers, is_simple_select_statement,
-    query_contains_pagination, should_enable_auto_pagination,
+    infer_column_origins, infer_select_headers, is_comment_only_statement,
+    is_simple_select_statement, query_contains_pagination, split_sql_statements,
+    statement_returns_rows, strip_leading_sql_comments,
 };
 use super::types::{
-    QueryExecutionError, QueryExecutionOptions, QueryJob, QueryJobOutput, QueryPreparationError,
-    QueryResultMessage,
+    BackendPidGuard, QueryExecutionError, QueryExecutionOptions, QueryJob, QueryJobOutput,
+    QueryPreparationError, QueryResultMessage,
 };
+use futures_util::TryStreamExt;
+
+/// Membaca result set lewat stream dan berhenti setelah `$max` baris.
+/// Menghasilkan `Result<(Vec<Row>, bool /* terpotong */), sqlx::Error>`.
+macro_rules! fetch_rows_limited {
+    ($query:expr, $executor:expr, $max:expr) => {
+        async {
+            let mut stream = $query.fetch($executor);
+            let mut rows = Vec::new();
+            let mut truncated = false;
+            while let Some(row) = stream.try_next().await? {
+                if rows.len() >= $max {
+                    truncated = true;
+                    break;
+                }
+                rows.push(row);
+            }
+            Ok::<_, sqlx::Error>((rows, truncated))
+        }
+    };
+}
+
+/// Menjalankan future dengan batas waktu opsional. `Err(())` berarti timeout.
+async fn run_with_timeout<F: std::future::Future>(
+    timeout: Option<std::time::Duration>,
+    fut: F,
+) -> Result<F::Output, ()> {
+    match timeout {
+        Some(limit) => tokio::time::timeout(limit, fut).await.map_err(|_| ()),
+        None => Ok(fut.await),
+    }
+}
+
+/// Pesan error timeout yang konsisten untuk semua driver.
+fn timeout_message(options: &QueryExecutionOptions) -> String {
+    match options.query_timeout {
+        Some(limit) => format!(
+            "Query timed out after {}s and was cancelled. Adjust the limit in Settings → Performance → Query timeout.",
+            limit.as_secs()
+        ),
+        None => "Query timed out".to_string(),
+    }
+}
+
+/// Memecah query job menjadi statement dengan splitter yang paham quote,
+/// dollar-quote, dan komentar; statement yang hanya berisi komentar dibuang.
+fn job_statements(options: &QueryExecutionOptions) -> Vec<String> {
+    let hash_is_comment = matches!(
+        options.connection.connection_type,
+        models::enums::DatabaseType::MySQL
+    );
+    split_sql_statements(&options.query, hash_is_comment)
+        .into_iter()
+        .filter(|s| !is_comment_only_statement(s))
+        .collect()
+}
+
+/// Potong teks untuk pratinjau tanpa memotong di tengah karakter multibyte.
+fn preview_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() > max_chars {
+        format!("{}...", text.chars().take(max_chars).collect::<String>())
+    } else {
+        text.to_string()
+    }
+}
+
+/// Minta server menghentikan statement yang sedang berjalan pada sesi `pid`.
+/// Dipakai saat user menekan cancel atau saat timeout tercapai.
+pub(crate) async fn cancel_backend_query(pool: models::enums::DatabasePool, pid: i64) {
+    match pool {
+        models::enums::DatabasePool::PostgreSQL(pg) => {
+            let result = sqlx::query("SELECT pg_cancel_backend($1)")
+                .bind(pid as i32)
+                .execute(pg.as_ref())
+                .await;
+            if let Err(e) = result {
+                log::warn!("[CANCEL] pg_cancel_backend({}) failed: {}", pid, e);
+            }
+        }
+        models::enums::DatabasePool::MySQL(my) => {
+            let kill = format!("KILL QUERY {}", pid);
+            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(kill.as_str()))
+                .execute(my.as_ref())
+                .await
+            {
+                log::warn!("[CANCEL] KILL QUERY {} failed: {}", pid, e);
+            }
+        }
+        _ => {}
+    }
+}
 
 pub(crate) fn prepare_query_job(
     tabular: &mut Tabular,
@@ -65,6 +153,11 @@ pub(crate) fn prepare_query_job(
         connection,
         query,
         selected_database,
+        schema_name: tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.schema_name.clone())
+            .filter(|s| !s.trim().is_empty()),
         use_server_pagination: tabular.use_server_pagination,
         current_page: tabular.current_page,
         page_size: tabular.page_size,
@@ -72,10 +165,21 @@ pub(crate) fn prepare_query_job(
         dba_special_mode,
         save_to_history: true,
         ast_enabled: cfg!(feature = "query_ast"),
+        job_id,
+        query_timeout: (tabular.query_timeout_secs > 0)
+            .then(|| std::time::Duration::from_secs(tabular.query_timeout_secs as u64)),
+        max_rows: tabular.max_result_rows.max(1) as usize,
+        backend_pids: tabular.jobs.backend_pids.clone(),
     };
+
+    let tab_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
 
     Ok(QueryJob {
         job_id,
+        tab_id,
         options,
         connection_pool,
         started_at: Instant::now(),
@@ -138,6 +242,7 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
     let message = "Skipped: a previous statement in this batch failed".to_string();
     QueryResultMessage {
         job_id: job.job_id,
+        tab_id: job.tab_id,
         connection_id: job.options.connection_id,
         success: false,
         headers: vec!["Error".to_string()],
@@ -150,11 +255,16 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
         ast_headers: None,
         affected_rows: None,
         column_metadata: None,
+        truncated: false,
+        error_location: None,
     }
 }
 
-async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
+/// Jalankan satu job query sampai selesai. Dipakai GUI (via `spawn_query_job`)
+/// dan lapisan headless `crate::agent`.
+pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let start = job.started_at;
+    let tab_id = job.tab_id;
     let connection_id = job.options.connection_id;
     let query = job.options.query.clone();
     let dba_special_mode = job.options.dba_special_mode.clone();
@@ -186,6 +296,7 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     match outcome {
         Ok(output) => QueryResultMessage {
             job_id: job.job_id,
+            tab_id,
             connection_id,
             success: true,
             headers: output.headers.clone(),
@@ -196,13 +307,16 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
             dba_special_mode,
             ast_debug_sql: output.ast_debug_sql,
             ast_headers: output.ast_headers,
-            affected_rows: Some(output.rows.len()),
+            affected_rows: output.affected_rows.map(|n| n as usize),
             column_metadata: output.column_metadata,
+            truncated: output.truncated,
+            error_location: None,
         },
         Err(err) => {
-            let message = describe_execution_error(err);
+            let (message, error_location) = describe_execution_error(err);
             QueryResultMessage {
                 job_id: job.job_id,
+                tab_id,
                 connection_id,
                 success: false,
                 headers: vec!["Error".to_string()],
@@ -215,14 +329,38 @@ async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
                 ast_headers: None,
                 affected_rows: None,
                 column_metadata: None,
+                truncated: false,
+                error_location,
             }
         }
     }
 }
 
-fn describe_execution_error(err: QueryExecutionError) -> String {
+fn describe_execution_error(
+    err: QueryExecutionError,
+) -> (String, Option<super::types::ErrorLocation>) {
     match err {
-        QueryExecutionError::Message(msg) => msg,
+        QueryExecutionError::Message(msg) => (msg, None),
+        QueryExecutionError::Located(msg, location) => (msg, Some(location)),
+    }
+}
+
+/// Posisi error dari PostgreSQL (field `position`, dalam karakter, 1-based).
+fn postgres_error_location(
+    err: &sqlx::Error,
+    statement: &str,
+) -> Option<super::types::ErrorLocation> {
+    let sqlx::Error::Database(db_err) = err else {
+        return None;
+    };
+    let pg = db_err.try_downcast_ref::<sqlx::postgres::PgDatabaseError>()?;
+    match pg.position()? {
+        sqlx::postgres::PgErrorPosition::Original(position) => Some(super::types::ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: Some(position.saturating_sub(1)),
+            line: None,
+        }),
+        _ => None,
     }
 }
 
@@ -232,7 +370,7 @@ fn describe_execution_error(err: QueryExecutionError) -> String {
 
 async fn execute_mysql_query_job(
     options: &QueryExecutionOptions,
-    _pool: models::enums::DatabasePool,
+    pool: models::enums::DatabasePool,
 ) -> Result<QueryJobOutput, QueryExecutionError> {
     debug!(
         "[async] Executing MySQL query (conn_id={})",
@@ -243,12 +381,8 @@ async fn execute_mysql_query_job(
         .await
         .map_err(QueryExecutionError::Message)?;
 
-    let statements_raw: Vec<&str> = options
-        .query
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let statements_owned = job_statements(options);
+    let statements_raw: Vec<&str> = statements_owned.iter().map(|s| s.as_str()).collect();
 
     #[cfg(feature = "query_ast")]
     let mut inferred_headers_from_ast: Option<Vec<String>> = None;
@@ -344,6 +478,7 @@ async fn execute_mysql_query_job(
     let max_attempts = 3;
     let mut last_error: Option<String> = None;
     let mut failing_stmt_preview: Option<String> = None;
+    let mut error_location: Option<super::types::ErrorLocation> = None;
 
     while attempts < max_attempts {
         attempts += 1;
@@ -380,24 +515,31 @@ async fn execute_mysql_query_job(
             .execute(&mut conn)
             .await;
 
+        // Catat connection id supaya cancel/timeout bisa mengirim KILL QUERY.
+        let mut _pid_guard = sqlx::query_scalar::<_, u64>("SELECT CONNECTION_ID()")
+            .fetch_one(&mut conn)
+            .await
+            .ok()
+            .map(|pid| {
+                BackendPidGuard::register(&options.backend_pids, options.job_id, pid as i64)
+            });
+
         let mut final_headers: Vec<String> = Vec::new();
         let mut final_data: Vec<Vec<String>> = Vec::new();
         let mut final_column_metadata: Option<Vec<models::structs::ColumnMetadata>> = None;
+        let mut final_affected: Option<u64> = None;
+        let mut final_truncated = false;
         let mut execution_success = true;
 
         for (idx, statement) in statements_ref.iter().enumerate() {
             let trimmed = statement.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("--")
-                || trimmed.starts_with('#')
-                || trimmed.starts_with("/*")
-            {
+            if is_comment_only_statement(trimmed) {
                 continue;
             }
 
             debug!("[mysql] about to run statement[{}]: {:?}", idx + 1, trimmed);
 
-            let upper = trimmed.to_uppercase();
+            let upper = strip_leading_sql_comments(trimmed).to_uppercase();
 
             let is_admin_command = {
                 upper.starts_with("PURGE BINARY LOGS")
@@ -411,7 +553,7 @@ async fn execute_mysql_query_job(
             };
 
             if upper.starts_with("USE ") {
-                let db_part = trimmed[3..].trim();
+                let db_part = strip_leading_sql_comments(trimmed)[3..].trim();
                 let db_name = db_part
                     .trim_matches('`')
                     .trim_matches('"')
@@ -420,7 +562,11 @@ async fn execute_mysql_query_job(
                     .trim();
 
                 let use_stmt = format!("USE `{}`", db_name);
-                if sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str())).execute(&mut conn).await.is_err() {
+                if sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str()))
+                    .execute(&mut conn)
+                    .await
+                    .is_err()
+                {
                     let new_dsn = format!(
                         "mysql://{}:{}@{}:{}/{}",
                         encoded_username, encoded_password, target_host, target_port, db_name
@@ -447,6 +593,17 @@ async fn execute_mysql_query_job(
                                 .execute(&mut new_conn)
                                 .await;
                             conn = new_conn;
+                            _pid_guard = sqlx::query_scalar::<_, u64>("SELECT CONNECTION_ID()")
+                                .fetch_one(&mut conn)
+                                .await
+                                .ok()
+                                .map(|pid| {
+                                    BackendPidGuard::register(
+                                        &options.backend_pids,
+                                        options.job_id,
+                                        pid as i64,
+                                    )
+                                });
                         }
                         Err(e) => {
                             last_error = Some(format!("USE failed (reconnect): {}", e));
@@ -458,15 +615,30 @@ async fn execute_mysql_query_job(
                 continue;
             }
 
-            let query_result = tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(&mut conn),
-            )
+            let returns_rows = statement_returns_rows(trimmed);
+            let query_result = run_with_timeout(options.query_timeout, async {
+                if returns_rows {
+                    fetch_rows_limited!(
+                        sqlx::query(sqlx::AssertSqlSafe(trimmed)),
+                        &mut conn,
+                        options.max_rows
+                    )
+                    .await
+                    .map(|(rows, truncated)| (rows, truncated, None))
+                } else {
+                    sqlx::query(sqlx::AssertSqlSafe(trimmed))
+                        .execute(&mut conn)
+                        .await
+                        .map(|r| (Vec::new(), false, Some(r.rows_affected())))
+                }
+            })
             .await;
 
             match query_result {
-                Ok(Ok(rows)) => {
+                Ok(Ok((rows, truncated, affected))) => {
                     if idx == statements_ref.len() - 1 {
+                        final_affected = affected;
+                        final_truncated = truncated;
                         if !rows.is_empty() {
                             final_headers = rows[0]
                                 .columns()
@@ -476,11 +648,14 @@ async fn execute_mysql_query_job(
 
                             let mut meta_vec = Vec::new();
                             let mut inferred_table_name = None;
-                            if let Ok(ast) = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, trimmed)
-                                && let Some(sqlparser::ast::Statement::Query(q)) = ast.first()
+                            if let Ok(ast) = sqlparser::parser::Parser::parse_sql(
+                                &sqlparser::dialect::MySqlDialect {},
+                                trimmed,
+                            ) && let Some(sqlparser::ast::Statement::Query(q)) = ast.first()
                                 && let sqlparser::ast::SetExpr::Select(select) = &*q.body
                                 && let Some(table_with_joins) = select.from.first()
-                                && let sqlparser::ast::TableFactor::Table { name, .. } = &table_with_joins.relation
+                                && let sqlparser::ast::TableFactor::Table { name, .. } =
+                                    &table_with_joins.relation
                             {
                                 inferred_table_name = Some(name.to_string());
                                 log::debug!("🔥 Inferred table name: {}", name);
@@ -499,11 +674,15 @@ async fn execute_mysql_query_job(
                                 unique_tables.insert(t.clone());
                             }
 
-                            let mut table_pks: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+                            let mut table_pks: std::collections::HashMap<
+                                String,
+                                std::collections::HashSet<String>,
+                            > = std::collections::HashMap::new();
 
                             let data_dir = crate::directory::get_data_dir();
                             let db_path = data_dir.join("connections.db");
-                            let cache_conn_str = format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
+                            let cache_conn_str =
+                                format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
 
                             match sqlx::sqlite::SqlitePool::connect(&cache_conn_str).await {
                                 Ok(cache_pool) => {
@@ -521,35 +700,55 @@ async fn execute_mysql_query_job(
                                              AND table_name LIKE ? \
                                              AND index_name = 'PRIMARY'";
 
-                                        let result: Result<Option<(String,)>, _> = sqlx::query_as(query)
-                                            .bind(options.connection.id.unwrap_or(0))
-                                            .bind(target_db)
-                                            .bind(target_table)
-                                            .fetch_optional(&cache_pool)
-                                            .await;
+                                        let result: Result<Option<(String,)>, _> =
+                                            sqlx::query_as(query)
+                                                .bind(options.connection.id.unwrap_or(0))
+                                                .bind(target_db)
+                                                .bind(target_table)
+                                                .fetch_optional(&cache_pool)
+                                                .await;
 
                                         match result {
                                             Ok(Some((json_str,))) => {
-                                                if let Ok(cols) = serde_json::from_str::<Vec<String>>(&json_str)
+                                                if let Ok(cols) =
+                                                    serde_json::from_str::<Vec<String>>(&json_str)
                                                     && !cols.is_empty()
                                                 {
                                                     let pks: std::collections::HashSet<String> =
-                                                        cols.into_iter().map(|s| s.to_lowercase()).collect();
-                                                    debug!("Found cached PKs for '{}': {:?}", table_full_name, pks);
-                                                    table_pks.insert(table_full_name.to_lowercase(), pks);
+                                                        cols.into_iter()
+                                                            .map(|s| s.to_lowercase())
+                                                            .collect();
+                                                    debug!(
+                                                        "Found cached PKs for '{}': {:?}",
+                                                        table_full_name, pks
+                                                    );
+                                                    table_pks.insert(
+                                                        table_full_name.to_lowercase(),
+                                                        pks,
+                                                    );
                                                 }
                                             }
                                             Ok(None) => {
-                                                debug!("No cached PK found for '{}' (db={}, tbl={})", table_full_name, target_db, target_table);
+                                                debug!(
+                                                    "No cached PK found for '{}' (db={}, tbl={})",
+                                                    table_full_name, target_db, target_table
+                                                );
                                             }
                                             Err(e) => {
-                                                debug!("Error fetching PK from cache for '{}': {}", table_full_name, e);
+                                                debug!(
+                                                    "Error fetching PK from cache for '{}': {}",
+                                                    table_full_name, e
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    debug!("Failed to connect to local cache at {}: {}", db_path.display(), e);
+                                    debug!(
+                                        "Failed to connect to local cache at {}: {}",
+                                        db_path.display(),
+                                        e
+                                    );
                                 }
                             }
 
@@ -565,18 +764,21 @@ async fn execute_mysql_query_job(
                             };
 
                             if !exact_match_possible && !involved_tables.is_empty() {
-                                log::debug!("🔥 Fetching ordered schema for involved tables: {:?}", involved_tables);
+                                log::debug!(
+                                    "🔥 Fetching ordered schema for involved tables: {:?}",
+                                    involved_tables
+                                );
                                 for table in &involved_tables {
                                     let col_query = format!("SHOW COLUMNS FROM {}", table);
                                     if let Ok(col_rows) =
-                                        sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(&mut conn).await
+                                        sqlx::query(sqlx::AssertSqlSafe(col_query.as_str()))
+                                            .fetch_all(&mut conn)
+                                            .await
                                     {
                                         for row in col_rows {
-                                            if let Ok(col_name) =
-                                                row.try_get::<String, _>("Field")
+                                            if let Ok(col_name) = row.try_get::<String, _>("Field")
                                             {
-                                                expanded_schema
-                                                    .push((col_name, table.clone()));
+                                                expanded_schema.push((col_name, table.clone()));
                                             }
                                         }
                                     }
@@ -597,8 +799,14 @@ async fn execute_mysql_query_job(
                                 let type_info = col.type_info();
                                 let t_name = String::new();
 
-                                log::debug!("🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
-                                    col.name(), t_name, use_fine_grained, involved_tables, expanded_schema.len());
+                                log::debug!(
+                                    "🔥 [debug] inferring table for col '{}': t_name='{}', use_fine_grained={}, involved_tables={:?}, expanded_len={}",
+                                    col.name(),
+                                    t_name,
+                                    use_fine_grained,
+                                    involved_tables,
+                                    expanded_schema.len()
+                                );
 
                                 let table_name = if !t_name.is_empty() {
                                     Some(t_name.clone())
@@ -630,9 +838,10 @@ async fn execute_mysql_query_job(
                                         && let Some(pks) = table_pks.get(simple_name)
                                     {
                                         pks.contains(&col.name().to_lowercase())
-                                    } else if let Some((_k, pks)) = table_pks.iter().find(|(k, _)| {
-                                        k.ends_with(&format!(".{}", key))
-                                    }) {
+                                    } else if let Some((_k, pks)) = table_pks
+                                        .iter()
+                                        .find(|(k, _)| k.ends_with(&format!(".{}", key)))
+                                    {
                                         pks.contains(&col.name().to_lowercase())
                                     } else {
                                         false
@@ -664,20 +873,15 @@ async fn execute_mysql_query_job(
                                     .fetch_one(&mut conn)
                                     .await
                                 {
-                                    Ok(vrow) => {
-                                        vrow.try_get::<String, _>("v").unwrap_or_default()
-                                    }
+                                    Ok(vrow) => vrow.try_get::<String, _>("v").unwrap_or_default(),
                                     Err(_) => String::new(),
                                 };
-                                let is_mariadb =
-                                    version_str.to_lowercase().contains("mariadb");
+                                let is_mariadb = version_str.to_lowercase().contains("mariadb");
 
                                 if replication_status_mode
                                     && final_data.is_empty()
                                     && let Ok(fallback_rows) =
-                                        sqlx::query("SHOW SLAVE STATUS")
-                                            .fetch_all(&mut conn)
-                                            .await
+                                        sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
                                     && !fallback_rows.is_empty()
                                 {
                                     final_headers = fallback_rows[0]
@@ -685,10 +889,9 @@ async fn execute_mysql_query_job(
                                         .iter()
                                         .map(|c| c.name().to_string())
                                         .collect();
-                                    final_data =
-                                        driver_mysql::convert_mysql_rows_to_table_data(
-                                            fallback_rows,
-                                        );
+                                    final_data = driver_mysql::convert_mysql_rows_to_table_data(
+                                        fallback_rows,
+                                    );
                                 }
 
                                 if !final_headers.is_empty() && !final_data.is_empty() {
@@ -701,25 +904,18 @@ async fn execute_mysql_query_job(
                                     let mut summary: Vec<(String, String)> = Vec::new();
 
                                     if replication_status_mode {
-                                        if let Some(idx) =
-                                            header_index("Replica_IO_Running")
-                                                .or_else(|| header_index("Slave_IO_Running"))
+                                        if let Some(idx) = header_index("Replica_IO_Running")
+                                            .or_else(|| header_index("Slave_IO_Running"))
                                         {
                                             summary.push(("IO Thread".into(), first[idx].clone()));
                                         }
-                                        if let Some(idx) =
-                                            header_index("Replica_SQL_Running")
-                                                .or_else(|| header_index("Slave_SQL_Running"))
+                                        if let Some(idx) = header_index("Replica_SQL_Running")
+                                            .or_else(|| header_index("Slave_SQL_Running"))
                                         {
-                                            summary.push((
-                                                "SQL Thread".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary.push(("SQL Thread".into(), first[idx].clone()));
                                         }
-                                        if let Some(idx) =
-                                            header_index("Seconds_Behind_Source").or_else(|| {
-                                                header_index("Seconds_Behind_Master")
-                                            })
+                                        if let Some(idx) = header_index("Seconds_Behind_Source")
+                                            .or_else(|| header_index("Seconds_Behind_Master"))
                                         {
                                             summary.push((
                                                 "Seconds Behind".into(),
@@ -736,10 +932,8 @@ async fn execute_mysql_query_job(
                                             ));
                                         }
                                         if let Some(idx) = header_index("Executed_Gtid_Set") {
-                                            summary.push((
-                                                "Executed GTID".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary
+                                                .push(("Executed GTID".into(), first[idx].clone()));
                                         }
                                     }
 
@@ -751,14 +945,11 @@ async fn execute_mysql_query_job(
                                             ));
                                         }
                                         if let Some(idx) = header_index("Position") {
-                                            summary
-                                                .push(("Position".into(), first[idx].clone()));
+                                            summary.push(("Position".into(), first[idx].clone()));
                                         }
                                         if let Some(idx) = header_index("Binlog_Do_DB") {
-                                            summary.push((
-                                                "Binlog Do DB".into(),
-                                                first[idx].clone(),
-                                            ));
+                                            summary
+                                                .push(("Binlog Do DB".into(), first[idx].clone()));
                                         }
                                         if let Some(idx) = header_index("Binlog_Ignore_DB") {
                                             summary.push((
@@ -820,26 +1011,31 @@ async fn execute_mysql_query_job(
                         && (err_str.contains("1295")
                             || err_str.contains("prepared statement protocol"))
                     {
-                        debug!("Admin command executed successfully (error 1295 expected for prepared statements)");
+                        debug!(
+                            "Admin command executed successfully (error 1295 expected for prepared statements)"
+                        );
                         if idx == statements_ref.len() - 1 {
                             final_headers = vec!["Status".to_string()];
-                            final_data =
-                                vec![vec!["Command executed successfully".to_string()]];
+                            final_data = vec![vec!["Command executed successfully".to_string()]];
                         }
                     } else {
                         if failing_stmt_preview.is_none() {
-                            let prev = if trimmed.len() > 200 {
-                                format!("{}...", &trimmed[..200])
-                            } else {
-                                trimmed.to_string()
-                            };
-                            failing_stmt_preview = Some(prev);
+                            failing_stmt_preview = Some(preview_text(trimmed, 200));
+                        }
+                        if let Some(line) = super::sql::mysql_error_line(&err_str) {
+                            error_location = Some(super::types::ErrorLocation {
+                                statement: trimmed.to_string(),
+                                char_offset: None,
+                                line: Some(line),
+                            });
                         }
                         if err_str.contains("1146")
                             || err_str.to_lowercase().contains("doesn't exist")
                         {
                             let mut hint = String::new();
-                            hint.push_str("Hint: Check the database/schema qualifier in your SQL. ");
+                            hint.push_str(
+                                "Hint: Check the database/schema qualifier in your SQL. ",
+                            );
                             hint.push_str(&format!(
                                 "Current default database is '{}'. If your query references a different schema (e.g., 'foxlogger' vs actual '{}'), it can fail even if SELECT * FROM table works in the default DB. ",
                                 default_db, default_db
@@ -855,7 +1051,18 @@ async fn execute_mysql_query_job(
                     }
                 }
                 Err(_) => {
-                    last_error = Some("Query timeout after 60s".to_string());
+                    // Future yang di-drop tidak menghentikan query di server,
+                    // jadi kirim KILL QUERY lewat koneksi lain dari pool.
+                    let pid = options
+                        .backend_pids
+                        .lock()
+                        .ok()
+                        .and_then(|m| m.get(&options.job_id).copied());
+                    if let Some(pid) = pid {
+                        cancel_backend_query(pool.clone(), pid).await;
+                    }
+                    last_error = Some(timeout_message(options));
+                    failing_stmt_preview.get_or_insert_with(|| preview_text(trimmed, 200));
                     execution_success = false;
                     break;
                 }
@@ -881,15 +1088,27 @@ async fn execute_mysql_query_job(
                 ast_debug_sql,
                 ast_headers,
                 column_metadata: final_column_metadata,
+                affected_rows: final_affected,
+                truncated: final_truncated,
             });
         }
+
+        // Koneksi sudah terbentuk tetapi statement gagal atau timeout. Jangan
+        // diulang: statement sebelumnya (atau statement yang timeout itu
+        // sendiri) mungkin sudah berefek, sehingga retry bisa menjalankan DML
+        // dua kali. Retry hanya untuk kegagalan membuka koneksi (lihat `continue`
+        // di atas).
+        break;
     }
 
     let mut final_err = last_error.unwrap_or_else(|| "Unknown MySQL error".to_string());
     if let Some(stmt) = failing_stmt_preview {
         final_err = format!("{}\n\nFailed statement (preview): {}", final_err, stmt);
     }
-    Err(QueryExecutionError::Message(final_err))
+    Err(match error_location {
+        Some(location) => QueryExecutionError::Located(final_err, location),
+        None => QueryExecutionError::Message(final_err),
+    })
 }
 
 async fn execute_postgres_query_job(
@@ -905,12 +1124,8 @@ async fn execute_postgres_query_job(
         }
     };
 
-    let statements_raw: Vec<&str> = options
-        .query
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let statements_owned = job_statements(options);
+    let statements_raw: Vec<&str> = statements_owned.iter().map(|s| s.as_str()).collect();
 
     #[cfg(feature = "query_ast")]
     let mut inferred_headers_from_ast: Option<Vec<String>> = None;
@@ -963,52 +1178,80 @@ async fn execute_postgres_query_job(
     #[cfg(not(feature = "query_ast"))]
     let statements_ref: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
 
+    // Semua statement dalam job memakai satu koneksi yang sama, sehingga SET /
+    // search_path dan statement berikutnya konsisten, dan backend pid-nya
+    // diketahui untuk keperluan cancel.
+    let mut conn = pg_pool
+        .acquire()
+        .await
+        .map_err(|e| QueryExecutionError::Message(format!("PostgreSQL connection error: {}", e)))?;
+    let _pid_guard = sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+        .fetch_one(&mut *conn)
+        .await
+        .ok()
+        .map(|pid| BackendPidGuard::register(&options.backend_pids, options.job_id, pid as i64));
+
+    // Terapkan schema aktif tab di koneksi ini juga. `SET search_path` yang
+    // dijalankan terpisah bisa mendarat di koneksi pool lain dan tidak berefek.
+    if let Some(schema) = options.schema_name.as_deref() {
+        let set_path = format!(
+            "SET search_path TO \"{}\", public",
+            schema.replace('"', "\"\"")
+        );
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(set_path.as_str()))
+            .execute(&mut *conn)
+            .await
+        {
+            return Err(QueryExecutionError::Message(format!(
+                "Cannot switch to schema '{}': {}",
+                schema, e
+            )));
+        }
+    }
+
     let mut final_headers = Vec::new();
     let mut final_data = Vec::new();
+    let mut final_affected: Option<u64> = None;
+    let mut final_truncated = false;
 
     for (i, statement) in statements_ref.iter().enumerate() {
         let trimmed = statement.trim();
-        if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
+        if is_comment_only_statement(trimmed) {
             continue;
         }
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(pg_pool.as_ref()),
-        )
+        let returns_rows = statement_returns_rows(trimmed);
+        let result = run_with_timeout(options.query_timeout, async {
+            if returns_rows {
+                fetch_rows_limited!(
+                    sqlx::query(sqlx::AssertSqlSafe(trimmed)),
+                    &mut *conn,
+                    options.max_rows
+                )
+                .await
+                .map(|(rows, truncated)| (rows, truncated, None))
+            } else {
+                sqlx::query(sqlx::AssertSqlSafe(trimmed))
+                    .execute(&mut *conn)
+                    .await
+                    .map(|r| (Vec::new(), false, Some(r.rows_affected())))
+            }
+        })
         .await;
 
         match result {
-            Ok(Ok(rows)) => {
+            Ok(Ok((rows, truncated, affected))) => {
                 if i == statements_ref.len() - 1 {
+                    final_affected = affected;
+                    final_truncated = truncated;
                     if !rows.is_empty() {
                         final_headers = rows[0]
                             .columns()
                             .iter()
                             .map(|c| c.name().to_string())
                             .collect();
-                        final_data = rows
-                            .into_iter()
-                            .map(|row| {
-                                (0..row.len())
-                                    .map(|idx| match row.try_get::<Option<String>, _>(idx) {
-                                        Ok(Some(v)) => v,
-                                        Ok(None) => "NULL".to_string(),
-                                        Err(_) => {
-                                            if let Ok(val) = row.try_get::<i64, _>(idx) {
-                                                val.to_string()
-                                            } else if let Ok(val) = row.try_get::<f64, _>(idx) {
-                                                val.to_string()
-                                            } else if let Ok(val) = row.try_get::<bool, _>(idx) {
-                                                val.to_string()
-                                            } else {
-                                                "[unsupported]".to_string()
-                                            }
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .collect();
+                        final_data =
+                            crate::driver_postgres::convert_postgres_rows_to_table_data(rows);
                     } else {
                         #[cfg(feature = "query_ast")]
                         if final_headers.is_empty()
@@ -1018,7 +1261,9 @@ async fn execute_postgres_query_job(
                             final_headers = hh;
                         }
                         if final_headers.is_empty()
-                            && trimmed.to_uppercase().starts_with("SELECT")
+                            && strip_leading_sql_comments(trimmed)
+                                .to_uppercase()
+                                .starts_with("SELECT")
                         {
                             let inferred = infer_select_headers(trimmed);
                             if !inferred.is_empty() {
@@ -1030,15 +1275,31 @@ async fn execute_postgres_query_job(
                 }
             }
             Ok(Err(e)) => {
-                return Err(QueryExecutionError::Message(format!(
-                    "PostgreSQL error: {}",
-                    e
-                )));
+                let message = format!("PostgreSQL error: {}", e);
+                return Err(match postgres_error_location(&e, trimmed) {
+                    Some(location) => QueryExecutionError::Located(message, location),
+                    None => QueryExecutionError::Message(message),
+                });
             }
             Err(_) => {
-                return Err(QueryExecutionError::Message(
-                    "PostgreSQL query timed out".to_string(),
-                ));
+                // Drop future tidak menghentikan query di server; kirim
+                // pg_cancel_backend lewat koneksi lain dari pool.
+                let pid = options
+                    .backend_pids
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&options.job_id).copied());
+                // Koneksi ini masih menunggu hasil query yang dibatalkan;
+                // lepaskan (tutup) supaya tidak dikembalikan ke pool.
+                drop(conn.detach());
+                if let Some(pid) = pid {
+                    cancel_backend_query(
+                        models::enums::DatabasePool::PostgreSQL(pg_pool.clone()),
+                        pid,
+                    )
+                    .await;
+                }
+                return Err(QueryExecutionError::Message(timeout_message(options)));
             }
         }
     }
@@ -1049,6 +1310,8 @@ async fn execute_postgres_query_job(
         ast_debug_sql,
         ast_headers,
         column_metadata: None,
+        affected_rows: final_affected,
+        truncated: final_truncated,
     })
 }
 
@@ -1065,12 +1328,8 @@ async fn execute_sqlite_query_job(
         }
     };
 
-    let statements_raw: Vec<&str> = options
-        .query
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let statements_owned = job_statements(options);
+    let statements_raw: Vec<&str> = statements_owned.iter().map(|s| s.as_str()).collect();
 
     #[cfg(feature = "query_ast")]
     let mut inferred_headers_from_ast: Option<Vec<String>> = None;
@@ -1125,50 +1384,46 @@ async fn execute_sqlite_query_job(
 
     let mut final_headers = Vec::new();
     let mut final_data = Vec::new();
+    let mut final_affected: Option<u64> = None;
+    let mut final_truncated = false;
 
     for (i, statement) in statements_ref.iter().enumerate() {
         let trimmed = statement.trim();
-        if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
+        if is_comment_only_statement(trimmed) {
             continue;
         }
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(sqlite_pool.as_ref()),
-        )
+        let returns_rows = statement_returns_rows(trimmed);
+        let result = run_with_timeout(options.query_timeout, async {
+            if returns_rows {
+                fetch_rows_limited!(
+                    sqlx::query(sqlx::AssertSqlSafe(trimmed)),
+                    sqlite_pool.as_ref(),
+                    options.max_rows
+                )
+                .await
+                .map(|(rows, truncated)| (rows, truncated, None))
+            } else {
+                sqlx::query(sqlx::AssertSqlSafe(trimmed))
+                    .execute(sqlite_pool.as_ref())
+                    .await
+                    .map(|r| (Vec::new(), false, Some(r.rows_affected())))
+            }
+        })
         .await;
 
         match result {
-            Ok(Ok(rows)) => {
+            Ok(Ok((rows, truncated, affected))) => {
                 if i == statements_ref.len() - 1 {
+                    final_affected = affected;
+                    final_truncated = truncated;
                     if !rows.is_empty() {
                         final_headers = rows[0]
                             .columns()
                             .iter()
                             .map(|c| c.name().to_string())
                             .collect();
-                        final_data = rows
-                            .into_iter()
-                            .map(|row| {
-                                (0..row.len())
-                                    .map(|idx| match row.try_get::<Option<String>, _>(idx) {
-                                        Ok(Some(v)) => v,
-                                        Ok(None) => "NULL".to_string(),
-                                        Err(_) => {
-                                            if let Ok(val) = row.try_get::<i64, _>(idx) {
-                                                val.to_string()
-                                            } else if let Ok(val) = row.try_get::<f64, _>(idx) {
-                                                val.to_string()
-                                            } else if let Ok(val) = row.try_get::<bool, _>(idx) {
-                                                val.to_string()
-                                            } else {
-                                                "[unsupported]".to_string()
-                                            }
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .collect();
+                        final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
                     } else {
                         #[cfg(feature = "query_ast")]
                         if final_headers.is_empty()
@@ -1178,7 +1433,9 @@ async fn execute_sqlite_query_job(
                             final_headers = hh;
                         }
                         if final_headers.is_empty()
-                            && trimmed.to_uppercase().starts_with("SELECT")
+                            && strip_leading_sql_comments(trimmed)
+                                .to_uppercase()
+                                .starts_with("SELECT")
                         {
                             let inferred = infer_select_headers(trimmed);
                             if !inferred.is_empty() {
@@ -1193,9 +1450,7 @@ async fn execute_sqlite_query_job(
                 return Err(QueryExecutionError::Message(format!("SQLite error: {}", e)));
             }
             Err(_) => {
-                return Err(QueryExecutionError::Message(
-                    "SQLite query timed out".to_string(),
-                ));
+                return Err(QueryExecutionError::Message(timeout_message(options)));
             }
         }
     }
@@ -1206,6 +1461,8 @@ async fn execute_sqlite_query_job(
         ast_debug_sql,
         ast_headers,
         column_metadata: None,
+        affected_rows: final_affected,
+        truncated: final_truncated,
     })
 }
 
@@ -1282,6 +1539,8 @@ async fn execute_redis_query_job(
                     ast_debug_sql: None,
                     ast_headers: None,
                     column_metadata: None,
+                    affected_rows: None,
+                    truncated: false,
                 }),
                 Ok(Ok(None)) => Ok(QueryJobOutput {
                     headers: vec!["Key".to_string(), "Value".to_string()],
@@ -1289,6 +1548,8 @@ async fn execute_redis_query_job(
                     ast_debug_sql: None,
                     ast_headers: None,
                     column_metadata: None,
+                    affected_rows: None,
+                    truncated: false,
                 }),
                 _ => Err(QueryExecutionError::Message(
                     "Redis GET timed out or failed".to_string(),
@@ -1308,14 +1569,15 @@ async fn execute_redis_query_job(
             .await
             {
                 Ok(Ok(keys)) => {
-                    let table_data: Vec<Vec<String>> =
-                        keys.into_iter().map(|k| vec![k]).collect();
+                    let table_data: Vec<Vec<String>> = keys.into_iter().map(|k| vec![k]).collect();
                     Ok(QueryJobOutput {
                         headers: vec!["Key".to_string()],
                         rows: table_data,
                         ast_debug_sql: None,
                         ast_headers: None,
                         column_metadata: None,
+                        affected_rows: None,
+                        truncated: false,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1405,8 +1667,7 @@ async fn execute_redis_query_job(
                                 .await
                             && !sample_keys.is_empty()
                         {
-                            table_data
-                                .push(vec!["Sample Keys Found".to_string(), "".to_string()]);
+                            table_data.push(vec!["Sample Keys Found".to_string(), "".to_string()]);
                             for (i, key) in sample_keys.iter().take(5).enumerate() {
                                 table_data.push(vec![format!("Sample {}", i + 1), key.clone()]);
                             }
@@ -1423,6 +1684,8 @@ async fn execute_redis_query_job(
                         ast_debug_sql: None,
                         ast_headers: None,
                         column_metadata: None,
+                        affected_rows: None,
+                        truncated: false,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1456,6 +1719,8 @@ async fn execute_redis_query_job(
                         ast_debug_sql: None,
                         ast_headers: None,
                         column_metadata: None,
+                        affected_rows: None,
+                        truncated: false,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1496,6 +1761,8 @@ async fn execute_redis_query_job(
                         ast_debug_sql: None,
                         ast_headers: None,
                         column_metadata: None,
+                        affected_rows: None,
+                        truncated: false,
                     })
                 }
                 _ => Err(QueryExecutionError::Message(
@@ -1541,6 +1808,8 @@ async fn execute_mssql_query_job(
             ast_debug_sql: None,
             ast_headers: None,
             column_metadata: None,
+            affected_rows: None,
+            truncated: false,
         }),
         Err(e) => Err(QueryExecutionError::Message(format!("Query error: {}", e))),
     }
@@ -1560,6 +1829,8 @@ async fn execute_mongodb_query_job(
             ast_debug_sql: None,
             ast_headers: None,
             column_metadata: None,
+            affected_rows: None,
+            truncated: false,
         }),
         _ => Err(QueryExecutionError::Message(
             "Invalid pool type for MongoDB".to_string(),
@@ -1567,906 +1838,90 @@ async fn execute_mongodb_query_job(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Synchronous execution entry points
-// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
 
-pub(crate) fn execute_query_with_connection(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    query: String,
-) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    debug!(
-        "Query execution requested for connection {} with query: {}",
-        connection_id, query
-    );
-
-    if let Some(connection) = tabular
-        .connections
-        .iter()
-        .find(|c| c.id == Some(connection_id))
-        .cloned()
-    {
-        let selected_db = tabular
-            .query_tabs
-            .get(tabular.active_tab_index)
-            .and_then(|t| t.database_name.clone())
-            .filter(|s| !s.is_empty());
-
-        let mut final_query = query.clone();
-        if let Some(db_name) = selected_db {
-            match connection.connection_type {
-                models::enums::DatabaseType::MsSQL => {
-                    let upper = final_query.to_uppercase();
-                    if !upper.starts_with("USE ") {
-                        final_query = format!("USE [{}];\n{}", db_name, final_query);
-                    }
-                }
-                models::enums::DatabaseType::MySQL => {
-                    let upper = final_query.to_uppercase();
-                    if !upper.starts_with("USE ") {
-                        final_query = format!("USE `{}`;\n{}", db_name, final_query);
-                    }
-                }
-                _ => {}
-            }
+    async fn sqlite_job(query: &str, max_rows: usize) -> QueryResultMessage {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        for stmt in [
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+            "INSERT INTO t (name) VALUES ('a'), ('b;c'), ('d')",
+        ] {
+            sqlx::query(stmt).execute(&pool).await.expect("seed");
         }
-
-        {
-            let should_auto_paginate = should_enable_auto_pagination(&final_query);
-
-            if should_auto_paginate {
-                match connection.connection_type {
-                    models::enums::DatabaseType::MySQL
-                    | models::enums::DatabaseType::PostgreSQL
-                    | models::enums::DatabaseType::SQLite => {
-                        let base = final_query.trim().trim_end_matches(';').to_string();
-                        tabular.use_server_pagination = true;
-                        tabular.current_base_query = base.clone();
-                        tabular.current_page = 0;
-                        tabular.actual_total_rows = Some(10_000);
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.base_query = base.clone();
-                            tab.current_page = tabular.current_page;
-                            tab.page_size = tabular.page_size;
-                        }
-                        let offset = tabular.current_page * tabular.page_size;
-                        final_query =
-                            format!("{} LIMIT {} OFFSET {}", base, tabular.page_size, offset);
-                        debug!(
-                            "🛑 Auto server-pagination (connection layer) applied. Rewritten query: {}",
-                            final_query
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        debug!("Final query to execute: {}", final_query);
-        execute_table_query_sync(tabular, connection_id, &connection, &final_query)
-    } else {
-        debug!("Connection not found for ID: {}", connection_id);
-        None
-    }
-}
-
-pub(crate) fn execute_table_query_sync(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    connection: &models::structs::ConnectionConfig,
-    query: &str,
-) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    debug!("Executing query synchronously: {}", query);
-
-    let runtime = match &tabular.runtime {
-        Some(rt) => rt.clone(),
-        None => {
-            debug!("No runtime available, creating temporary one");
-            match tokio::runtime::Runtime::new() {
-                Ok(rt) => Arc::new(rt),
-                Err(e) => {
-                    debug!("Failed to create runtime: {}", e);
-                    return None;
-                }
-            }
-        }
-    };
-
-    runtime.block_on(async {
-        match try_get_connection_pool(tabular, connection_id).await {
-            Some(pool) => {
-                match pool {
-                    models::enums::DatabasePool::MySQL(_mysql_pool) => {
-                        debug!("Executing MySQL query: {}", query);
-
-                        let (target_host, target_port) = match resolve_connection_target_async(
-                            connection,
-                        )
-                        .await
-                        {
-                            Ok(tuple) => tuple,
-                            Err(err) => {
-                                return Some((
-                                    vec!["Error".to_string()],
-                                    vec![vec![format!(
-                                        "Failed to resolve MySQL connection target: {}",
-                                        err
-                                    )]],
-                                ));
-                            }
-                        };
-
-                        let statements: Vec<&str> = query
-                            .split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        #[cfg(feature = "query_ast")]
-                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = {
-                            let allow_ast_rewrite = statements.len() == 1
-                                && statements[0].to_uppercase().starts_with("SELECT")
-                                && is_simple_select_statement(statements[0]);
-
-                            if allow_ast_rewrite {
-                                let should_paginate = tabular.use_server_pagination
-                                    && !query_contains_pagination(statements[0]);
-                                let pagination_opt = if should_paginate {
-                                    Some((tabular.current_page as u64, tabular.page_size as u64))
-                                } else {
-                                    None
-                                };
-                                let inject_auto_limit = should_paginate;
-                                match crate::query_ast::compile_single_select(
-                                    statements[0],
-                                    &connection.connection_type,
-                                    pagination_opt,
-                                    inject_auto_limit,
-                                ) {
-                                    Ok((new_sql, hdrs)) => {
-                                        if !hdrs.is_empty() {
-                                            _inferred_headers_from_ast = Some(hdrs.clone());
-                                        }
-                                        tabular.last_compiled_sql = Some(new_sql.clone());
-                                        tabular.last_compiled_headers = hdrs.clone();
-                                        if let Ok(plan_txt) =
-                                            crate::query_ast::debug_plan(statements[0], &connection.connection_type)
-                                        {
-                                            tabular.last_debug_plan = Some(plan_txt);
-                                        }
-                                        let (h, m) = crate::query_ast::cache_stats();
-                                        tabular.last_cache_hits = h;
-                                        tabular.last_cache_misses = m;
-                                        vec![new_sql]
-                                    }
-                                    Err(_e) => statements.iter().map(|s| s.to_string()).collect(),
-                                }
-                            } else {
-                                statements.iter().map(|s| s.to_string()).collect()
-                            }
-                        };
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        debug!("Found {} SQL statements to execute", statements.len());
-
-                        let mut final_headers = Vec::new();
-                        let mut final_data = Vec::new();
-                        let (replication_status_mode, master_status_mode) = {
-                            if let Some(active_tab) = tabular.query_tabs.get(tabular.active_tab_index) {
-                                match active_tab.dba_special_mode {
-                                    Some(models::enums::DBASpecialMode::ReplicationStatus) => (true, false),
-                                    Some(models::enums::DBASpecialMode::MasterStatus) => (false, true),
-                                    _ => (false, false),
-                                }
-                            } else {
-                                (false, false)
-                            }
-                        };
-
-                        let mut attempts = 0;
-                        let max_attempts = 3;
-                        while attempts < max_attempts {
-                            attempts += 1;
-                            let mut execution_success = true;
-                            let mut error_message = String::new();
-                            let encoded_username = modules::url_encode(&connection.username);
-                            let encoded_password = modules::url_encode(&connection.password);
-                            let dsn = format!(
-                                "mysql://{}:{}@{}:{}/{}",
-                                encoded_username,
-                                encoded_password,
-                                target_host,
-                                target_port,
-                                connection.database
-                            );
-                            let mut conn = match MySqlConnection::connect(&dsn).await {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error_message = e.to_string();
-                                    debug!("Failed to open MySQL connection: {}", error_message);
-                                    if attempts >= max_attempts {
-                                        break;
-                                    } else {
-                                        continue;
-                                    }
-                                }
-                            };
-                            let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut conn).await;
-                            let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut conn).await;
-                            let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut conn).await;
-                            let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut conn).await;
-                            let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut conn).await;
-                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut conn).await;
-
-                            for (i, statement) in statements.iter().enumerate() {
-                                let trimmed = statement.trim();
-                                if trimmed.is_empty()
-                                    || trimmed.starts_with("--")
-                                    || trimmed.starts_with('#')
-                                    || trimmed.starts_with("/*")
-                                {
-                                    debug!("Skipping statement {}: '{}'", i + 1, trimmed);
-                                    continue;
-                                }
-                                debug!("Executing statement {}: '{}'", i + 1, trimmed);
-                                let upper = trimmed.to_uppercase();
-
-                                if upper.starts_with("USE ") {
-                                    let db_part = trimmed[3..].trim();
-                                    let db_name = db_part
-                                        .trim_matches('`')
-                                        .trim_matches('"')
-                                        .trim_matches('[')
-                                        .trim_matches(']')
-                                        .trim();
-
-                                    match sqlx::query(sqlx::AssertSqlSafe(format!("USE `{}`", db_name)))
-                                        .execute(&mut conn)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            debug!("✅ Switched MySQL database using USE to '{}'.", db_name);
-                                        }
-                                        Err(_) => {
-                                            debug!("⚠️ USE statement failed, falling back to reconnection...");
-                                            let new_dsn = format!(
-                                                "mysql://{}:{}@{}:{}/{}",
-                                                encoded_username,
-                                                encoded_password,
-                                                target_host,
-                                                target_port,
-                                                db_name
-                                            );
-                                            match MySqlConnection::connect(&new_dsn).await {
-                                                Ok(new_conn) => {
-                                                    let mut new_conn = new_conn;
-                                                    let _ = sqlx::query("SET SESSION wait_timeout = 600").execute(&mut new_conn).await;
-                                                    let _ = sqlx::query("SET SESSION interactive_timeout = 600").execute(&mut new_conn).await;
-                                                    let _ = sqlx::query("SET SESSION net_read_timeout = 120").execute(&mut new_conn).await;
-                                                    let _ = sqlx::query("SET SESSION net_write_timeout = 120").execute(&mut new_conn).await;
-                                                    let _ = sqlx::query("SET SESSION max_allowed_packet = 1073741824").execute(&mut new_conn).await;
-                                                    let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'").execute(&mut new_conn).await;
-                                                    conn = new_conn;
-                                                }
-                                                Err(e) => {
-                                                    error_message =
-                                                        format!("USE failed (reconnect): {}", e);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    continue;
-                                }
-
-                                let is_admin_command = {
-                                    let cmd_upper = trimmed.to_uppercase();
-                                    cmd_upper.starts_with("PURGE BINARY LOGS")
-                                        || cmd_upper.starts_with("PURGE MASTER LOGS")
-                                        || cmd_upper.starts_with("RESET MASTER")
-                                        || cmd_upper.starts_with("RESET SLAVE")
-                                        || cmd_upper.starts_with("RESET REPLICA")
-                                        || cmd_upper.starts_with("CHANGE MASTER")
-                                        || cmd_upper.starts_with("CHANGE REPLICATION SOURCE")
-                                        || cmd_upper.starts_with("FLUSH")
-                                };
-
-                                let query_result = tokio::time::timeout(
-                                    std::time::Duration::from_secs(60),
-                                    sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(&mut conn),
-                                )
-                                .await;
-
-                                let handle_admin_error =
-                                    |e: sqlx::Error| -> Result<Vec<sqlx::mysql::MySqlRow>, sqlx::Error> {
-                                        let err_str = e.to_string();
-                                        if err_str.contains("1295")
-                                            || err_str.contains("prepared statement protocol")
-                                        {
-                                            debug!("Admin command executed via sqlx (1295 expected)");
-                                            Ok(vec![])
-                                        } else {
-                                            Err(e)
-                                        }
-                                    };
-
-                                let query_result = query_result.map(|result| {
-                                    result.or_else(|e| {
-                                        if is_admin_command {
-                                            handle_admin_error(e)
-                                        } else {
-                                            Err(e)
-                                        }
-                                    })
-                                });
-
-                                match query_result {
-                                    Ok(Ok(rows)) => {
-                                        debug!("Query executed successfully: {} rows", rows.len());
-                                        if i == statements.len() - 1 {
-                                            if !rows.is_empty() {
-                                                final_headers = rows[0]
-                                                    .columns()
-                                                    .iter()
-                                                    .map(|c| c.name().to_string())
-                                                    .collect();
-                                                final_data = driver_mysql::convert_mysql_rows_to_table_data(rows);
-                                                if replication_status_mode || master_status_mode {
-                                                    let version_str = match sqlx::query("SELECT VERSION() AS v").fetch_one(&mut conn).await {
-                                                        Ok(vrow) => vrow.try_get::<String, _>("v").unwrap_or_default(),
-                                                        Err(_) => String::new(),
-                                                    };
-                                                    let is_mariadb = version_str.to_lowercase().contains("mariadb");
-                                                    if replication_status_mode
-                                                        && final_data.is_empty()
-                                                        && let Ok(fallback_rows) = sqlx::query("SHOW SLAVE STATUS").fetch_all(&mut conn).await
-                                                        && !fallback_rows.is_empty()
-                                                    {
-                                                        final_headers = fallback_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                        final_data = driver_mysql::convert_mysql_rows_to_table_data(fallback_rows);
-                                                    }
-                                                    if !final_headers.is_empty() && !final_data.is_empty() {
-                                                        let header_index = |name: &str| final_headers.iter().position(|h| h.eq_ignore_ascii_case(name));
-                                                        let mut summary: Vec<(String, String)> = Vec::new();
-                                                        if replication_status_mode {
-                                                            let first = &final_data[0];
-                                                            if let Some(idx) = header_index("Replica_IO_Running").or_else(|| header_index("Slave_IO_Running")) { summary.push(("IO Thread".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Replica_SQL_Running").or_else(|| header_index("Slave_SQL_Running")) { summary.push(("SQL Thread".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Seconds_Behind_Source").or_else(|| header_index("Seconds_Behind_Master")) { summary.push(("Seconds Behind".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Channel_Name") { summary.push(("Channel".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Retrieved_Gtid_Set") { summary.push(("Retrieved GTID".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Executed_Gtid_Set") { summary.push(("Executed GTID".into(), first[idx].clone())); }
-                                                        }
-                                                        if master_status_mode {
-                                                            let first = &final_data[0];
-                                                            if let Some(idx) = header_index("File") { summary.push(("Binary Log File".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Position") { summary.push(("Position".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Binlog_Do_DB") { summary.push(("Binlog Do DB".into(), first[idx].clone())); }
-                                                            if let Some(idx) = header_index("Binlog_Ignore_DB") { summary.push(("Binlog Ignore DB".into(), first[idx].clone())); }
-                                                        }
-                                                        if !summary.is_empty() {
-                                                            let mut summary_table: Vec<Vec<String>> = summary.into_iter().map(|(m, v)| vec![m, v]).collect();
-                                                            summary_table.push(vec!["Server Version".into(), version_str.clone()]);
-                                                            summary_table.push(vec!["Engine".into(), if is_mariadb { "MariaDB".into() } else { "MySQL".into() }]);
-                                                            final_headers = vec!["Metric".into(), "Value".into()];
-                                                            final_data = summary_table;
-                                                        }
-                                                    }
-                                                }
-                                            } else if is_admin_command {
-                                                    debug!("Admin command executed successfully");
-                                                    final_headers = vec!["Status".to_string()];
-                                                    final_data = vec![vec!["Command executed successfully".to_string()]];
-                                            } else {
-                                                    #[cfg(feature = "query_ast")]
-                                                    if final_headers.is_empty()
-                                                        && let Some(hh) = _inferred_headers_from_ast.clone()
-                                                        && !hh.is_empty()
-                                                    {
-                                                        final_headers = hh;
-                                                    }
-                                                    if trimmed.to_uppercase().starts_with("SELECT") {
-                                                        let inferred = infer_select_headers(trimmed);
-                                                        if !inferred.is_empty() {
-                                                            final_headers = inferred;
-                                                        }
-                                                    }
-                                                    if trimmed.to_uppercase().contains("FROM") {
-                                                        let words: Vec<&str> = trimmed.split_whitespace().collect();
-                                                        if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
-                                                            && let Some(table_name) = words.get(from_idx + 1)
-                                                        {
-                                                            let describe_query = format!("DESCRIBE {}", table_name);
-                                                            match tokio::time::timeout(
-                                                                std::time::Duration::from_secs(30),
-                                                                sqlx::query(sqlx::AssertSqlSafe(describe_query.as_str())).fetch_all(&mut conn),
-                                                            ).await {
-                                                                Ok(Ok(desc_rows)) => {
-                                                                    if !desc_rows.is_empty() {
-                                                                        final_headers = desc_rows.iter().map(|row| {
-                                                                            row.try_get::<String, _>(0).unwrap_or_else(|_| "Field".to_string())
-                                                                        }).collect();
-                                                                    }
-                                                                }
-                                                                _ => {
-                                                                    let info_query = format!("{} LIMIT 0", trimmed);
-                                                                    match tokio::time::timeout(
-                                                                        std::time::Duration::from_secs(30),
-                                                                        sqlx::query(sqlx::AssertSqlSafe(info_query.as_str())).fetch_all(&mut conn),
-                                                                    ).await {
-                                                                        Ok(Ok(info_rows)) => {
-                                                                            if !info_rows.is_empty() {
-                                                                                final_headers = info_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                                            }
-                                                                        }
-                                                                        _ => { final_headers = Vec::new(); }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        final_headers = Vec::new();
-                                                    }
-                                                    final_data = Vec::new();
-                                                }
-                                        }
-                                    }
-                                    Ok(Err(e)) => {
-                                        error_message = e.to_string();
-                                        execution_success = false;
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        error_message = "Query timeout after 60s".to_string();
-                                        execution_success = false;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if execution_success {
-                                return Some((final_headers, final_data));
-                            } else {
-                                debug!("MySQL query failed on attempt {}: {}", attempts, error_message);
-                                if (error_message.contains("timeout") || error_message.contains("pool")) && attempts < max_attempts {
-                                    tabular.connection_pools.remove(&connection_id);
-                                    continue;
-                                }
-                                if attempts >= max_attempts {
-                                    return Some((
-                                        vec!["Error".to_string()],
-                                        vec![vec![format!("Query error: {}", error_message)]],
-                                    ));
-                                }
-                            }
-                        }
-
-                        Some((
-                            vec!["Error".to_string()],
-                            vec![vec!["Failed to execute query after multiple attempts".to_string()]],
-                        ))
-                    }
-                    models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-                        debug!("Executing PostgreSQL query: {}", query);
-                        let statements: Vec<&str> = query
-                            .split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        #[cfg(feature = "query_ast")]
-                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = {
-                            let allow_ast_rewrite = statements.len() == 1
-                                && statements[0].to_uppercase().starts_with("SELECT")
-                                && is_simple_select_statement(statements[0]);
-
-                            if allow_ast_rewrite {
-                                let should_paginate = tabular.use_server_pagination
-                                    && !query_contains_pagination(statements[0]);
-                                let pagination_opt = if should_paginate {
-                                    Some((tabular.current_page as u64, tabular.page_size as u64))
-                                } else {
-                                    None
-                                };
-                                let inject_auto_limit = should_paginate;
-                                match crate::query_ast::compile_single_select(
-                                    statements[0],
-                                    &connection.connection_type,
-                                    pagination_opt,
-                                    inject_auto_limit,
-                                ) {
-                                    Ok((new_sql, hdrs)) => {
-                                        if !hdrs.is_empty() {
-                                            _inferred_headers_from_ast = Some(hdrs.clone());
-                                        }
-                                        tabular.last_compiled_sql = Some(new_sql.clone());
-                                        tabular.last_compiled_headers = hdrs.clone();
-                                        if let Ok(plan_txt) = crate::query_ast::debug_plan(statements[0], &connection.connection_type) {
-                                            tabular.last_debug_plan = Some(plan_txt);
-                                        }
-                                        let (h, m) = crate::query_ast::cache_stats();
-                                        tabular.last_cache_hits = h;
-                                        tabular.last_cache_misses = m;
-                                        vec![new_sql]
-                                    }
-                                    Err(_) => statements.iter().map(|s| s.to_string()).collect(),
-                                }
-                            } else {
-                                statements.iter().map(|s| s.to_string()).collect()
-                            }
-                        };
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        debug!("Found {} SQL statements to execute", statements.len());
-
-                        let mut final_headers = Vec::new();
-                        let mut final_data = Vec::new();
-
-                        for (i, statement) in statements.iter().enumerate() {
-                            let trimmed = statement.trim();
-                            if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
-                                continue;
-                            }
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(pg_pool.as_ref()),
-                            )
-                            .await
-                            {
-                                Ok(Ok(rows)) => {
-                                    if i == statements.len() - 1 {
-                                        if !rows.is_empty() {
-                                            final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                            final_data = rows.iter().map(|row| {
-                                                (0..row.len()).map(|j| match row.try_get::<Option<String>, _>(j) {
-                                                    Ok(Some(v)) => v,
-                                                    Ok(None) => "NULL".to_string(),
-                                                    Err(_) => "Error".to_string(),
-                                                }).collect()
-                                            }).collect();
-                                        } else {
-                                            #[cfg(feature = "query_ast")]
-                                            if final_headers.is_empty()
-                                                && let Some(hh) = _inferred_headers_from_ast.clone()
-                                                && !hh.is_empty()
-                                            {
-                                                final_headers = hh;
-                                            }
-                                            if statement.to_uppercase().starts_with("SELECT") {
-                                                let inferred = infer_select_headers(statement);
-                                                if !inferred.is_empty() { final_headers = inferred; }
-                                            }
-                                            if statement.to_uppercase().contains("FROM") {
-                                                let words: Vec<&str> = statement.split_whitespace().collect();
-                                                if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
-                                                    && let Some(table_name) = words.get(from_idx + 1)
-                                                {
-                                                    let clean_table = table_name.trim_matches('"').trim_matches('`');
-                                                    let info_query = format!(
-                                                        "SELECT column_name FROM information_schema.columns WHERE table_name = '{}' ORDER BY ordinal_position",
-                                                        clean_table
-                                                    );
-                                                    match tokio::time::timeout(
-                                                        std::time::Duration::from_secs(10),
-                                                        sqlx::query(sqlx::AssertSqlSafe(info_query.as_str())).fetch_all(pg_pool.as_ref()),
-                                                    ).await {
-                                                        Ok(Ok(info_rows)) => {
-                                                            final_headers = info_rows.iter().map(|row| {
-                                                                match row.try_get::<String, _>(0) {
-                                                                    Ok(col_name) => col_name,
-                                                                    Err(_) => "Column".to_string(),
-                                                                }
-                                                            }).collect();
-                                                        }
-                                                        _ => {
-                                                            let limit_query = format!("{} LIMIT 0", statement);
-                                                            match tokio::time::timeout(
-                                                                std::time::Duration::from_secs(10),
-                                                                sqlx::query(sqlx::AssertSqlSafe(limit_query.as_str())).fetch_all(pg_pool.as_ref()),
-                                                            ).await {
-                                                                Ok(Ok(limit_rows)) => {
-                                                                    if !limit_rows.is_empty() {
-                                                                        final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                                    }
-                                                                }
-                                                                _ => {
-                                                                    if final_headers.is_empty() { final_headers = infer_select_headers(statement); }
-                                                                    if final_headers.is_empty() { final_headers = Vec::new(); }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                final_headers = Vec::new();
-                                            }
-                                            final_data = Vec::new();
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Some((
-                                        vec!["Error".to_string()],
-                                        vec![vec!["Query timed out or failed".to_string()]],
-                                    ));
-                                }
-                            }
-                        }
-                        Some((final_headers, final_data))
-                    }
-                    models::enums::DatabasePool::SQLite(sqlite_pool) => {
-                        debug!("Executing SQLite query: {}", query);
-                        let statements: Vec<&str> = query
-                            .split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        #[cfg(feature = "query_ast")]
-                        let mut _inferred_headers_from_ast: Option<Vec<String>> = None;
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<String> = {
-                            let allow_ast_rewrite = statements.len() == 1
-                                && statements[0].to_uppercase().starts_with("SELECT")
-                                && is_simple_select_statement(statements[0]);
-
-                            if allow_ast_rewrite {
-                                let should_paginate = tabular.use_server_pagination
-                                    && !query_contains_pagination(statements[0]);
-                                let pagination_opt = if should_paginate {
-                                    Some((tabular.current_page as u64, tabular.page_size as u64))
-                                } else {
-                                    None
-                                };
-                                let inject_auto_limit = should_paginate;
-                                match crate::query_ast::compile_single_select(
-                                    statements[0],
-                                    &connection.connection_type,
-                                    pagination_opt,
-                                    inject_auto_limit,
-                                ) {
-                                    Ok((new_sql, hdrs)) => {
-                                        if !hdrs.is_empty() {
-                                            _inferred_headers_from_ast = Some(hdrs.clone());
-                                        }
-                                        vec![new_sql]
-                                    }
-                                    Err(_) => statements.iter().map(|s| s.to_string()).collect(),
-                                }
-                            } else {
-                                statements.iter().map(|s| s.to_string()).collect()
-                            }
-                        };
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<String> = statements.iter().map(|s| s.to_string()).collect();
-                        #[cfg(feature = "query_ast")]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        #[cfg(not(feature = "query_ast"))]
-                        let statements: Vec<&str> = statements.iter().map(|s| s.as_str()).collect();
-                        debug!("Found {} SQL statements to execute", statements.len());
-
-                        let mut final_headers = Vec::new();
-                        let mut final_data = Vec::new();
-
-                        for (i, statement) in statements.iter().enumerate() {
-                            let trimmed = statement.trim();
-                            if trimmed.is_empty() || trimmed.starts_with("--") || trimmed.starts_with("/*") {
-                                continue;
-                            }
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                sqlx::query(sqlx::AssertSqlSafe(trimmed)).fetch_all(sqlite_pool.as_ref()),
-                            )
-                            .await
-                            {
-                                Ok(Ok(rows)) => {
-                                    if i == statements.len() - 1 {
-                                        if !rows.is_empty() {
-                                            final_headers = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                            final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
-                                        } else {
-                                            #[cfg(feature = "query_ast")]
-                                            if final_headers.is_empty()
-                                                && let Some(hh) = _inferred_headers_from_ast.clone()
-                                                && !hh.is_empty()
-                                            {
-                                                final_headers = hh;
-                                            }
-                                            if statement.to_uppercase().starts_with("SELECT") {
-                                                let inferred = infer_select_headers(statement);
-                                                if !inferred.is_empty() { final_headers = inferred; }
-                                            }
-                                            if statement.to_uppercase().contains("FROM") {
-                                                let words: Vec<&str> = statement.split_whitespace().collect();
-                                                if let Some(from_idx) = words.iter().position(|&w| w.to_uppercase() == "FROM")
-                                                    && let Some(table_name) = words.get(from_idx + 1)
-                                                {
-                                                    let clean_table = table_name.trim_matches('"').trim_matches('`').trim_matches('[').trim_matches(']');
-                                                    let pragma_query = format!("PRAGMA table_info(\"{}\")", clean_table.replace('\"', "\"\""));
-                                                    match tokio::time::timeout(
-                                                        std::time::Duration::from_secs(10),
-                                                        sqlx::query(sqlx::AssertSqlSafe(pragma_query.as_str())).fetch_all(sqlite_pool.as_ref()),
-                                                    ).await {
-                                                        Ok(Ok(pragma_rows)) => {
-                                                            final_headers = pragma_rows.iter().map(|row| {
-                                                                match row.try_get::<String, _>(1) {
-                                                                    Ok(col_name) => col_name,
-                                                                    Err(_) => "Column".to_string(),
-                                                                }
-                                                            }).collect();
-                                                        }
-                                                        _ => {
-                                                            let limit_query = format!("{} LIMIT 0", statement);
-                                                            match tokio::time::timeout(
-                                                                std::time::Duration::from_secs(10),
-                                                                sqlx::query(sqlx::AssertSqlSafe(limit_query.as_str())).fetch_all(sqlite_pool.as_ref()),
-                                                            ).await {
-                                                                Ok(Ok(limit_rows)) => {
-                                                                    if !limit_rows.is_empty() {
-                                                                        final_headers = limit_rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                                                                    }
-                                                                }
-                                                                _ => { final_headers = Vec::new(); }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                final_headers = Vec::new();
-                                            }
-                                            final_data = Vec::new();
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Some((
-                                        vec!["Error".to_string()],
-                                        vec![vec!["Query timed out or failed".to_string()]],
-                                    ));
-                                }
-                            }
-                        }
-                        Some((final_headers, final_data))
-                    }
-                    models::enums::DatabasePool::Redis(redis_manager) => {
-                        debug!("Executing Redis command: {}", query);
-                        let mut conn = redis_manager.as_ref().clone();
-                        use redis::AsyncCommands;
-
-                        let parts: Vec<&str> = query.split_whitespace().collect();
-                        if parts.is_empty() {
-                            return Some((
-                                vec!["Error".to_string()],
-                                vec![vec!["Empty command".to_string()]],
-                            ));
-                        }
-
-                        match parts[0].to_uppercase().as_str() {
-                            "GET" => {
-                                if parts.len() != 2 {
-                                    return Some((vec!["Error".to_string()], vec![vec!["GET requires exactly one key".to_string()]]));
-                                }
-                                match tokio::time::timeout(std::time::Duration::from_secs(10), conn.get::<&str, Option<String>>(parts[1])).await {
-                                    Ok(Ok(Some(value))) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), value]])),
-                                    Ok(Ok(None)) => Some((vec!["Key".to_string(), "Value".to_string()], vec![vec![parts[1].to_string(), "NULL".to_string()]])),
-                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis GET timed out or failed".to_string()]])),
-                                }
-                            }
-                            "KEYS" => {
-                                if parts.len() != 2 {
-                                    return Some((vec!["Error".to_string()], vec![vec!["KEYS requires exactly one pattern".to_string()]]));
-                                }
-                                match tokio::time::timeout(std::time::Duration::from_secs(10), conn.keys::<&str, Vec<String>>(parts[1])).await {
-                                    Ok(Ok(keys)) => Some((vec!["Key".to_string()], keys.into_iter().map(|k| vec![k]).collect())),
-                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis KEYS timed out or failed".to_string()]])),
-                                }
-                            }
-                            "INFO" => {
-                                let section = if parts.len() > 1 { parts[1] } else { "default" };
-                                match tokio::time::timeout(std::time::Duration::from_secs(10), redis::cmd("INFO").arg(section).query_async::<String>(&mut conn)).await {
-                                    Ok(Ok(info_result)) => {
-                                        let mut table_data = Vec::new();
-                                        for line in info_result.lines() {
-                                            if line.trim().is_empty() || line.starts_with('#') { continue; }
-                                            if let Some((key, value)) = line.split_once(':') { table_data.push(vec![key.to_string(), value.to_string()]); }
-                                        }
-                                        Some((vec!["Property".to_string(), "Value".to_string()], table_data))
-                                    }
-                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis INFO timed out or failed".to_string()]])),
-                                }
-                            }
-                            "HGETALL" => {
-                                if parts.len() != 2 { return Some((vec!["Error".to_string()], vec![vec!["HGETALL requires exactly one key".to_string()]])); }
-                                match tokio::time::timeout(std::time::Duration::from_secs(10), redis::cmd("HGETALL").arg(parts[1]).query_async::<Vec<String>>(&mut conn)).await {
-                                    Ok(Ok(hash_data)) => {
-                                        let mut table_data = Vec::new();
-                                        for chunk in hash_data.chunks(2) { if chunk.len() == 2 { table_data.push(vec![chunk[0].clone(), chunk[1].clone()]); } }
-                                        if table_data.is_empty() { table_data.push(vec!["No data".to_string(), "Hash is empty or key does not exist".to_string()]); }
-                                        Some((vec!["Field".to_string(), "Value".to_string()], table_data))
-                                    }
-                                    _ => Some((vec!["Error".to_string()], vec![vec!["Redis HGETALL timed out or failed".to_string()]])),
-                                }
-                            }
-                            _ => Some((vec!["Error".to_string()], vec![vec![format!("Unsupported Redis command: {}", parts[0])]])),
-                        }
-                    }
-                    models::enums::DatabasePool::MsSQL(mssql_cfg) => {
-                        debug!("Executing MsSQL query: {}", query);
-                        let mut query_str = query.to_string();
-                        if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
-                            query_str = query_str.replace("TOP 10000", "");
-                        }
-                        match driver_mssql::execute_query(mssql_cfg.clone(), &query_str).await {
-                            Ok((h, d)) => Some((h, d)),
-                            Err(e) => Some((
-                                vec!["Error".to_string()],
-                                vec![vec![format!("Query error: {}", e)]],
-                            )),
-                        }
-                    }
-                    models::enums::DatabasePool::MongoDB(_client) => Some((
-                        vec!["Info".to_string()],
-                        vec![vec!["MongoDB query execution is not supported. Use tree to browse collections.".to_string()]],
-                    )),
-                }
-            }
-            None => {
-                debug!(
-                    "Failed to get connection pool for connection_id: {}",
-                    connection_id
-                );
-                Some((
-                    vec!["Error".to_string()],
-                    vec![vec!["Failed to connect to database".to_string()]],
-                ))
-            }
-        }
-    })
-}
-
-/// Execute multiple queries concurrently (non-blocking for slow connections).
-#[allow(dead_code)]
-pub(crate) async fn execute_multiple_queries_concurrently(
-    tabular: &mut Tabular,
-    query_requests: Vec<(i64, String)>,
-) -> Vec<Option<(Vec<String>, Vec<Vec<String>>)>> {
-    let mut results = Vec::new();
-
-    for (connection_id, query) in query_requests {
-        match try_get_connection_pool(tabular, connection_id).await {
-            Some(_pool) => {
-                if let Some(connection) = tabular
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(connection_id))
-                    .cloned()
-                {
-                    let result =
-                        execute_table_query_sync(tabular, connection_id, &connection, &query);
-                    results.push(result);
-                } else {
-                    results.push(None);
-                }
-            }
-            None => {
-                debug!(
-                    "⏳ Skipping query for connection {} as pool is not ready",
-                    connection_id
-                );
-                results.push(None);
-            }
-        }
+        let connection = models::structs::ConnectionConfig {
+            connection_type: models::enums::DatabaseType::SQLite,
+            ..Default::default()
+        };
+        let job = QueryJob {
+            job_id: 7,
+            tab_id: Some(3),
+            options: QueryExecutionOptions {
+                connection_id: 1,
+                connection,
+                query: query.to_string(),
+                selected_database: None,
+                schema_name: None,
+                use_server_pagination: false,
+                current_page: 0,
+                page_size: 100,
+                base_query: None,
+                dba_special_mode: None,
+                save_to_history: false,
+                ast_enabled: false,
+                job_id: 7,
+                query_timeout: None,
+                max_rows,
+                backend_pids: Default::default(),
+            },
+            connection_pool: models::enums::DatabasePool::SQLite(Arc::new(pool)),
+            started_at: Instant::now(),
+        };
+        execute_query_job(job).await
     }
 
-    results
+    #[tokio::test]
+    async fn statement_with_leading_comment_is_executed() {
+        let msg = sqlite_job("-- ambil semua\nSELECT name FROM t ORDER BY id", 100).await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.tab_id, Some(3));
+        assert_eq!(msg.rows.len(), 3);
+        assert_eq!(msg.affected_rows, None);
+    }
+
+    #[tokio::test]
+    async fn semicolon_inside_string_is_not_split() {
+        let msg = sqlite_job("SELECT id FROM t WHERE name = 'b;c'", 100).await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.rows, vec![vec!["2".to_string()]]);
+    }
+
+    #[tokio::test]
+    async fn update_reports_driver_affected_rows() {
+        let msg = sqlite_job("UPDATE t SET name = 'z' WHERE id >= 2", 100).await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.affected_rows, Some(2));
+        assert!(msg.rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn result_set_is_truncated_at_row_limit() {
+        let msg = sqlite_job("SELECT * FROM t", 2).await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.rows.len(), 2);
+        assert!(msg.truncated);
+    }
+
+    #[tokio::test]
+    async fn sql_error_is_reported_as_failure() {
+        let msg = sqlite_job("SELECT * FROM missing_table", 100).await;
+        assert!(!msg.success);
+        assert!(msg.error.unwrap_or_default().contains("missing_table"));
+    }
 }

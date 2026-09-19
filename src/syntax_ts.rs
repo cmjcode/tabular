@@ -424,7 +424,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -536,7 +536,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -734,7 +734,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -798,7 +798,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -957,7 +957,7 @@ mod ts {
                 }
 
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -1044,7 +1044,7 @@ mod ts {
                     });
                 }
                 for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i as u32) {
+                    if let Some(child) = node.child(i) {
                         stack.push(child);
                     }
                 }
@@ -1550,7 +1550,11 @@ pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
                 line,
                 0.0,
                 TextFormat {
-                    color: if dark { Color32::from_rgb(140, 90, 220) } else { Color32::from_rgb(150, 60, 210) },
+                    color: if dark {
+                        Color32::from_rgb(140, 90, 220)
+                    } else {
+                        Color32::from_rgb(150, 60, 210)
+                    },
                     italics: true,
                     ..Default::default()
                 },
@@ -1634,16 +1638,19 @@ fn highlight_single_line(line: &str, lang: LanguageKind, dark: bool, job: &mut L
             );
         } else {
             // Check for SQL comment start "--"
-            if matches!(lang, LanguageKind::Sql) && ch == '-' && matches!(chars.peek(), Some(&(_, '-'))) {
-                    job.append(
-                        &line[start_idx..],
-                        0.0,
-                        TextFormat {
-                            color: comment_color(dark),
-                            ..Default::default()
-                        },
-                    );
-                    break;
+            if matches!(lang, LanguageKind::Sql)
+                && ch == '-'
+                && matches!(chars.peek(), Some(&(_, '-')))
+            {
+                job.append(
+                    &line[start_idx..],
+                    0.0,
+                    TextFormat {
+                        color: comment_color(dark),
+                        ..Default::default()
+                    },
+                );
+                break;
             }
             job.append(
                 &ch.to_string(),

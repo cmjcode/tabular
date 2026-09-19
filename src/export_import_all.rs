@@ -81,9 +81,15 @@ impl ConflictStrategy {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::MergeKeepExisting => "Adds new data from archive without modifying items that already exist.",
-            Self::MergeOverwrite => "Updates existing data with archive versions and adds new data.",
-            Self::CleanRestore => "Wipes existing connections, queries, HTTP APIs, and history before restoring.",
+            Self::MergeKeepExisting => {
+                "Adds new data from archive without modifying items that already exist."
+            }
+            Self::MergeOverwrite => {
+                "Updates existing data with archive versions and adds new data."
+            }
+            Self::CleanRestore => {
+                "Wipes existing connections, queries, HTTP APIs, and history before restoring."
+            }
         }
     }
 }
@@ -238,8 +244,8 @@ pub fn export_all_data_payload(
 
     let file = File::create(target_path)?;
     let mut zip = ZipWriter::new(file);
-    let file_opts = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let file_opts =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     let mut counts = ExportCounts::default();
 
@@ -260,7 +266,8 @@ pub fn export_all_data_payload(
     if options.include_queries {
         let query_dir = crate::directory::get_query_dir();
         if query_dir.exists() {
-            let count = add_directory_recursive(&mut zip, &query_dir, &query_dir, "queries", file_opts)?;
+            let count =
+                add_directory_recursive(&mut zip, &query_dir, &query_dir, "queries", file_opts)?;
             counts.queries = count;
         }
     }
@@ -271,7 +278,13 @@ pub fn export_all_data_payload(
         let mut exported_ids = std::collections::HashSet::new();
 
         if http_dir.exists() {
-            let count = add_directory_recursive(&mut zip, &http_dir, &http_dir, "http_collections", file_opts)?;
+            let count = add_directory_recursive(
+                &mut zip,
+                &http_dir,
+                &http_dir,
+                "http_collections",
+                file_opts,
+            )?;
             counts.http_workspaces = count;
             if let Ok(entries) = std::fs::read_dir(&http_dir) {
                 for e in entries.flatten() {
@@ -437,7 +450,10 @@ pub fn import_all_data(
     options: &ImportAllOptions,
 ) -> Result<ImportSummary, ExportImportError> {
     eprintln!("[RESTORE] ========================================================");
-    eprintln!("[RESTORE] Starting import_all_data from: {}", archive_path.display());
+    eprintln!(
+        "[RESTORE] Starting import_all_data from: {}",
+        archive_path.display()
+    );
     eprintln!(
         "[RESTORE] Options: include_connections={}, include_queries={}, include_http_api={}, include_history={}, strategy={:?}",
         options.include_connections,
@@ -455,20 +471,39 @@ pub fn import_all_data(
     let file = match File::open(archive_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[RESTORE] ❌ Failed to open archive file '{}': {}", archive_path.display(), e);
-            error!("[RESTORE] Failed to open archive file '{}': {}", archive_path.display(), e);
+            eprintln!(
+                "[RESTORE] ❌ Failed to open archive file '{}': {}",
+                archive_path.display(),
+                e
+            );
+            error!(
+                "[RESTORE] Failed to open archive file '{}': {}",
+                archive_path.display(),
+                e
+            );
             return Err(ExportImportError::Io(e));
         }
     };
 
     let mut archive = match ZipArchive::new(file) {
         Ok(a) => {
-            eprintln!("[RESTORE] ZIP archive opened successfully. Total entries: {}", a.len());
+            eprintln!(
+                "[RESTORE] ZIP archive opened successfully. Total entries: {}",
+                a.len()
+            );
             a
         }
         Err(e) => {
-            eprintln!("[RESTORE] ❌ Failed to parse ZIP archive '{}': {}", archive_path.display(), e);
-            error!("[RESTORE] Failed to parse ZIP archive '{}': {}", archive_path.display(), e);
+            eprintln!(
+                "[RESTORE] ❌ Failed to parse ZIP archive '{}': {}",
+                archive_path.display(),
+                e
+            );
+            error!(
+                "[RESTORE] Failed to parse ZIP archive '{}': {}",
+                archive_path.display(),
+                e
+            );
             return Err(ExportImportError::Zip(e));
         }
     };
@@ -479,13 +514,19 @@ pub fn import_all_data(
         let entry = match archive.by_index(i) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("[RESTORE] ❌ Failed to read entry index {} from ZIP: {}", i, e);
+                eprintln!(
+                    "[RESTORE] ❌ Failed to read entry index {} from ZIP: {}",
+                    i, e
+                );
                 return Err(ExportImportError::Zip(e));
             }
         };
         if entry.enclosed_name().is_none() {
             let name = entry.name().to_string();
-            eprintln!("[RESTORE] ❌ Potential zip slip detected on entry: '{}'", name);
+            eprintln!(
+                "[RESTORE] ❌ Potential zip slip detected on entry: '{}'",
+                name
+            );
             error!("[RESTORE] Potential zip slip detected on entry: '{}'", name);
             return Err(ExportImportError::ZipSlip(name));
         }
@@ -518,9 +559,11 @@ pub fn import_all_data(
 
     // ── 1. Restore Connections & Folders ──
     if options.include_connections {
-        let pool = pool_opt
-            .as_ref()
-            .ok_or_else(|| ExportImportError::NoDatabasePool("Database pool missing for connections restore".to_string()))?;
+        let pool = pool_opt.as_ref().ok_or_else(|| {
+            ExportImportError::NoDatabasePool(
+                "Database pool missing for connections restore".to_string(),
+            )
+        })?;
 
         eprintln!("[RESTORE] ── Step 1: Restoring Connections & Folders ──");
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
@@ -556,7 +599,10 @@ pub fn import_all_data(
             Ok(mut entry) => {
                 let mut content = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut content) {
-                    eprintln!("[RESTORE] ⚠️ Failed reading 'connections/folders.json': {}", e);
+                    eprintln!(
+                        "[RESTORE] ⚠️ Failed reading 'connections/folders.json': {}",
+                        e
+                    );
                 } else {
                     match serde_json::from_slice::<Vec<String>>(&content) {
                         Ok(folders) => {
@@ -577,11 +623,20 @@ pub fn import_all_data(
                                 }
                                 summary.folders_restored += 1;
                             }
-                            eprintln!("[RESTORE] Restored {} folders successfully.", summary.folders_restored);
+                            eprintln!(
+                                "[RESTORE] Restored {} folders successfully.",
+                                summary.folders_restored
+                            );
                         }
                         Err(e) => {
-                            eprintln!("[RESTORE] ❌ Failed to parse 'connections/folders.json': {}", e);
-                            error!("[RESTORE] Failed to parse 'connections/folders.json': {}", e);
+                            eprintln!(
+                                "[RESTORE] ❌ Failed to parse 'connections/folders.json': {}",
+                                e
+                            );
+                            error!(
+                                "[RESTORE] Failed to parse 'connections/folders.json': {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -596,12 +651,21 @@ pub fn import_all_data(
             Ok(mut entry) => {
                 let mut content = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut content) {
-                    eprintln!("[RESTORE] ❌ Failed reading 'connections/connections.json': {}", e);
-                    error!("[RESTORE] Failed reading 'connections/connections.json': {}", e);
+                    eprintln!(
+                        "[RESTORE] ❌ Failed reading 'connections/connections.json': {}",
+                        e
+                    );
+                    error!(
+                        "[RESTORE] Failed reading 'connections/connections.json': {}",
+                        e
+                    );
                 } else {
                     match serde_json::from_slice::<Vec<ConnectionConfig>>(&content) {
                         Ok(conns) => {
-                            eprintln!("[RESTORE] Parsed {} connections from 'connections/connections.json'", conns.len());
+                            eprintln!(
+                                "[RESTORE] Parsed {} connections from 'connections/connections.json'",
+                                conns.len()
+                            );
                             for conn in conns {
                                 let old_id = conn.id;
                                 let conn_name = conn.name.clone();
@@ -610,23 +674,31 @@ pub fn import_all_data(
                                 let pool_clone = pool.clone();
                                 let check_name = conn_name.clone();
                                 let existing_id: Option<i64> = rt.block_on(async {
-                                    sqlx::query_scalar::<_, i64>("SELECT id FROM connections WHERE name = ?")
-                                        .bind(&check_name)
-                                        .fetch_optional(pool_clone.as_ref())
-                                        .await
-                                        .unwrap_or(None)
+                                    sqlx::query_scalar::<_, i64>(
+                                        "SELECT id FROM connections WHERE name = ?",
+                                    )
+                                    .bind(&check_name)
+                                    .fetch_optional(pool_clone.as_ref())
+                                    .await
+                                    .unwrap_or(None)
                                 });
 
                                 match (options.conflict_strategy, existing_id) {
                                     (ConflictStrategy::MergeKeepExisting, Some(eid)) => {
-                                        eprintln!("[RESTORE] Connection '{}' already exists (id={}). Keeping existing.", conn_name, eid);
+                                        eprintln!(
+                                            "[RESTORE] Connection '{}' already exists (id={}). Keeping existing.",
+                                            conn_name, eid
+                                        );
                                         if let Some(oid) = old_id {
                                             old_id_to_new_id.insert(oid, eid);
                                         }
                                         name_to_new_id.insert(conn_name, eid);
                                     }
                                     (ConflictStrategy::MergeOverwrite, Some(eid)) => {
-                                        eprintln!("[RESTORE] Connection '{}' exists (id={}). Overwriting...", conn_name, eid);
+                                        eprintln!(
+                                            "[RESTORE] Connection '{}' exists (id={}). Overwriting...",
+                                            conn_name, eid
+                                        );
                                         let pool_clone = pool.clone();
                                         let conn_clone = conn.clone();
                                         let update_res = rt.block_on(async {
@@ -666,7 +738,7 @@ pub fn import_all_data(
                                             Ok(_) => {
                                                 crate::sidebar_database::externalize_connection_secrets(
                                                     &rt,
-                                                    &pool,
+                                                    pool,
                                                     eid,
                                                     &conn.password,
                                                     &conn.ssh_private_key,
@@ -678,11 +750,20 @@ pub fn import_all_data(
                                                 }
                                                 name_to_new_id.insert(conn_name, eid);
                                                 summary.connections_restored += 1;
-                                                eprintln!("[RESTORE] ✅ Connection '{}' updated (id={}).", conn.name, eid);
+                                                eprintln!(
+                                                    "[RESTORE] ✅ Connection '{}' updated (id={}).",
+                                                    conn.name, eid
+                                                );
                                             }
                                             Err(e) => {
-                                                eprintln!("[RESTORE] ❌ Failed to update connection '{}' (id={}): {}", conn_name, eid, e);
-                                                error!("[RESTORE] Failed to update connection '{}' (id={}): {}", conn_name, eid, e);
+                                                eprintln!(
+                                                    "[RESTORE] ❌ Failed to update connection '{}' (id={}): {}",
+                                                    conn_name, eid, e
+                                                );
+                                                error!(
+                                                    "[RESTORE] Failed to update connection '{}' (id={}): {}",
+                                                    conn_name, eid, e
+                                                );
                                             }
                                         }
                                     }
@@ -728,7 +809,7 @@ pub fn import_all_data(
                                                 let new_id = res.last_insert_rowid();
                                                 crate::sidebar_database::externalize_connection_secrets(
                                                     &rt,
-                                                    &pool,
+                                                    pool,
                                                     new_id,
                                                     &conn.password,
                                                     &conn.ssh_private_key,
@@ -740,21 +821,39 @@ pub fn import_all_data(
                                                 }
                                                 name_to_new_id.insert(conn_name.clone(), new_id);
                                                 summary.connections_restored += 1;
-                                                eprintln!("[RESTORE] ✅ Connection '{}' inserted with new id={}.", conn_name, new_id);
+                                                eprintln!(
+                                                    "[RESTORE] ✅ Connection '{}' inserted with new id={}.",
+                                                    conn_name, new_id
+                                                );
                                             }
                                             Err(e) => {
-                                                eprintln!("[RESTORE] ❌ Failed to insert connection '{}': {}", conn_name, e);
-                                                error!("[RESTORE] Failed to insert connection '{}': {}", conn_name, e);
+                                                eprintln!(
+                                                    "[RESTORE] ❌ Failed to insert connection '{}': {}",
+                                                    conn_name, e
+                                                );
+                                                error!(
+                                                    "[RESTORE] Failed to insert connection '{}': {}",
+                                                    conn_name, e
+                                                );
                                             }
                                         }
                                     }
                                 }
                             }
-                            eprintln!("[RESTORE] Step 1 finished. Restored {} connections.", summary.connections_restored);
+                            eprintln!(
+                                "[RESTORE] Step 1 finished. Restored {} connections.",
+                                summary.connections_restored
+                            );
                         }
                         Err(e) => {
-                            eprintln!("[RESTORE] ❌ Failed to parse 'connections/connections.json': {}", e);
-                            error!("[RESTORE] Failed to parse 'connections/connections.json': {}", e);
+                            eprintln!(
+                                "[RESTORE] ❌ Failed to parse 'connections/connections.json': {}",
+                                e
+                            );
+                            error!(
+                                "[RESTORE] Failed to parse 'connections/connections.json': {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -768,15 +867,29 @@ pub fn import_all_data(
     // ── 2. Restore Saved Queries ──
     if options.include_queries {
         let query_dir = crate::directory::get_query_dir();
-        eprintln!("[RESTORE] ── Step 2: Restoring Saved Queries to '{}' ──", query_dir.display());
+        eprintln!(
+            "[RESTORE] ── Step 2: Restoring Saved Queries to '{}' ──",
+            query_dir.display()
+        );
         if let Err(e) = std::fs::create_dir_all(&query_dir) {
-            eprintln!("[RESTORE] ❌ Failed to create queries directory '{}': {}", query_dir.display(), e);
-            error!("[RESTORE] Failed to create queries directory '{}': {}", query_dir.display(), e);
+            eprintln!(
+                "[RESTORE] ❌ Failed to create queries directory '{}': {}",
+                query_dir.display(),
+                e
+            );
+            error!(
+                "[RESTORE] Failed to create queries directory '{}': {}",
+                query_dir.display(),
+                e
+            );
             return Err(ExportImportError::Io(e));
         }
 
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            eprintln!("[RESTORE] CleanRestore: Clearing existing contents of '{}'...", query_dir.display());
+            eprintln!(
+                "[RESTORE] CleanRestore: Clearing existing contents of '{}'...",
+                query_dir.display()
+            );
             let _ = clear_directory_contents(&query_dir);
         }
 
@@ -784,7 +897,10 @@ pub fn import_all_data(
             let mut entry = match archive.by_index(i) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("[RESTORE] ❌ Failed to read query entry at index {}: {}", i, e);
+                    eprintln!(
+                        "[RESTORE] ❌ Failed to read query entry at index {}: {}",
+                        i, e
+                    );
                     return Err(ExportImportError::Zip(e));
                 }
             };
@@ -805,8 +921,13 @@ pub fn import_all_data(
                 if entry.is_dir() || name.ends_with('/') {
                     let _ = std::fs::create_dir_all(&target);
                 } else {
-                    if options.conflict_strategy == ConflictStrategy::MergeKeepExisting && target.exists() {
-                        eprintln!("[RESTORE] Query '{}' exists. Skipping (MergeKeepExisting).", rel);
+                    if options.conflict_strategy == ConflictStrategy::MergeKeepExisting
+                        && target.exists()
+                    {
+                        eprintln!(
+                            "[RESTORE] Query '{}' exists. Skipping (MergeKeepExisting).",
+                            rel
+                        );
                         continue;
                     }
                     if let Some(parent) = target.parent() {
@@ -815,29 +936,51 @@ pub fn import_all_data(
                     match File::create(&target) {
                         Ok(mut out) => {
                             if let Err(e) = std::io::copy(&mut entry, &mut out) {
-                                eprintln!("[RESTORE] ❌ Failed writing query file '{}': {}", target.display(), e);
+                                eprintln!(
+                                    "[RESTORE] ❌ Failed writing query file '{}': {}",
+                                    target.display(),
+                                    e
+                                );
                                 return Err(ExportImportError::Io(e));
                             }
                             summary.queries_restored += 1;
                         }
                         Err(e) => {
-                            eprintln!("[RESTORE] ❌ Failed creating query file '{}': {}", target.display(), e);
+                            eprintln!(
+                                "[RESTORE] ❌ Failed creating query file '{}': {}",
+                                target.display(),
+                                e
+                            );
                             return Err(ExportImportError::Io(e));
                         }
                     }
                 }
             }
         }
-        eprintln!("[RESTORE] Step 2 finished. Restored {} query files.", summary.queries_restored);
+        eprintln!(
+            "[RESTORE] Step 2 finished. Restored {} query files.",
+            summary.queries_restored
+        );
     }
 
     // ── 3. Restore HTTP API Collections ──
     if options.include_http_api {
         let http_dir = crate::directory::get_app_data_dir().join("http_collections");
-        eprintln!("[RESTORE] ── Step 3: Restoring HTTP API Collections to '{}' ──", http_dir.display());
+        eprintln!(
+            "[RESTORE] ── Step 3: Restoring HTTP API Collections to '{}' ──",
+            http_dir.display()
+        );
         if let Err(e) = std::fs::create_dir_all(&http_dir) {
-            eprintln!("[RESTORE] ❌ Failed creating http_collections directory '{}': {}", http_dir.display(), e);
-            error!("[RESTORE] Failed creating http_collections directory '{}': {}", http_dir.display(), e);
+            eprintln!(
+                "[RESTORE] ❌ Failed creating http_collections directory '{}': {}",
+                http_dir.display(),
+                e
+            );
+            error!(
+                "[RESTORE] Failed creating http_collections directory '{}': {}",
+                http_dir.display(),
+                e
+            );
             return Err(ExportImportError::Io(e));
         }
 
@@ -850,7 +993,10 @@ pub fn import_all_data(
             let mut entry = match archive.by_index(i) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("[RESTORE] ❌ Failed reading http entry at index {}: {}", i, e);
+                    eprintln!(
+                        "[RESTORE] ❌ Failed reading http entry at index {}: {}",
+                        i, e
+                    );
                     return Err(ExportImportError::Zip(e));
                 }
             };
@@ -864,15 +1010,23 @@ pub fn import_all_data(
 
                 // Zip slip defense
                 if !target.starts_with(&http_dir) {
-                    eprintln!("[RESTORE] ❌ Zip slip detected for http_collections path: {}", name);
+                    eprintln!(
+                        "[RESTORE] ❌ Zip slip detected for http_collections path: {}",
+                        name
+                    );
                     return Err(ExportImportError::ZipSlip(name));
                 }
 
                 if entry.is_dir() || name.ends_with('/') {
                     let _ = std::fs::create_dir_all(&target);
                 } else {
-                    if options.conflict_strategy == ConflictStrategy::MergeKeepExisting && target.exists() {
-                        eprintln!("[RESTORE] HTTP collection '{}' exists. Skipping (MergeKeepExisting).", rel);
+                    if options.conflict_strategy == ConflictStrategy::MergeKeepExisting
+                        && target.exists()
+                    {
+                        eprintln!(
+                            "[RESTORE] HTTP collection '{}' exists. Skipping (MergeKeepExisting).",
+                            rel
+                        );
                         continue;
                     }
                     if let Some(parent) = target.parent() {
@@ -881,33 +1035,48 @@ pub fn import_all_data(
                     match File::create(&target) {
                         Ok(mut out) => {
                             if let Err(e) = std::io::copy(&mut entry, &mut out) {
-                                eprintln!("[RESTORE] ❌ Failed writing HTTP collection '{}': {}", target.display(), e);
+                                eprintln!(
+                                    "[RESTORE] ❌ Failed writing HTTP collection '{}': {}",
+                                    target.display(),
+                                    e
+                                );
                                 return Err(ExportImportError::Io(e));
                             }
                             summary.http_workspaces_restored += 1;
                         }
                         Err(e) => {
-                            eprintln!("[RESTORE] ❌ Failed creating HTTP collection file '{}': {}", target.display(), e);
+                            eprintln!(
+                                "[RESTORE] ❌ Failed creating HTTP collection file '{}': {}",
+                                target.display(),
+                                e
+                            );
                             return Err(ExportImportError::Io(e));
                         }
                     }
                 }
             }
         }
-        eprintln!("[RESTORE] Step 3 finished. Restored {} HTTP collection files.", summary.http_workspaces_restored);
+        eprintln!(
+            "[RESTORE] Step 3 finished. Restored {} HTTP collection files.",
+            summary.http_workspaces_restored
+        );
     }
 
     // ── 4. Restore History ──
     if options.include_history {
-        let pool = pool_opt
-            .as_ref()
-            .ok_or_else(|| ExportImportError::NoDatabasePool("Database pool missing for history restore".to_string()))?;
+        let pool = pool_opt.as_ref().ok_or_else(|| {
+            ExportImportError::NoDatabasePool(
+                "Database pool missing for history restore".to_string(),
+            )
+        })?;
 
         eprintln!("[RESTORE] ── Step 4: Restoring Query History ──");
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
             eprintln!("[RESTORE] CleanRestore: Clearing query_history table...");
             let res = rt.block_on(async {
-                sqlx::query("DELETE FROM query_history").execute(pool.as_ref()).await
+                sqlx::query("DELETE FROM query_history")
+                    .execute(pool.as_ref())
+                    .await
             });
             if let Err(e) = res {
                 eprintln!("[RESTORE] ⚠️ Warning: Failed to clear query_history: {}", e);
@@ -923,7 +1092,10 @@ pub fn import_all_data(
                 } else {
                     match serde_json::from_slice::<Vec<HistoryItem>>(&content) {
                         Ok(items) => {
-                            eprintln!("[RESTORE] Parsed {} history items from archive.", items.len());
+                            eprintln!(
+                                "[RESTORE] Parsed {} history items from archive.",
+                                items.len()
+                            );
                             // Fallback connection if needed to satisfy foreign keys
                             let default_conn_id: Option<i64> = rt.block_on(async {
                                 sqlx::query_scalar::<_, i64>("SELECT id FROM connections LIMIT 1")
@@ -931,7 +1103,10 @@ pub fn import_all_data(
                                     .await
                                     .unwrap_or(None)
                             });
-                            eprintln!("[RESTORE] Fallback connection ID for history: {:?}", default_conn_id);
+                            eprintln!(
+                                "[RESTORE] Fallback connection ID for history: {:?}",
+                                default_conn_id
+                            );
 
                             for item in items {
                                 let target_conn_id = old_id_to_new_id
@@ -987,12 +1162,18 @@ pub fn import_all_data(
                                     match res {
                                         Ok(_) => summary.history_restored += 1,
                                         Err(e) => {
-                                            eprintln!("[RESTORE] ⚠️ Warning: Failed to insert history item: {}", e);
+                                            eprintln!(
+                                                "[RESTORE] ⚠️ Warning: Failed to insert history item: {}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
                             }
-                            eprintln!("[RESTORE] Step 4 finished. Restored {} history items.", summary.history_restored);
+                            eprintln!(
+                                "[RESTORE] Step 4 finished. Restored {} history items.",
+                                summary.history_restored
+                            );
                         }
                         Err(e) => {
                             eprintln!("[RESTORE] ❌ Failed to parse 'history/history.json': {}", e);
@@ -1044,12 +1225,13 @@ pub fn import_all_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zip::write::SimpleFileOptions;
     use zip::ZipArchive;
+    use zip::write::SimpleFileOptions;
 
     #[test]
     fn test_zip_options() {
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(&mut buf);
         writer.start_file("test.txt", options).unwrap();
@@ -1071,7 +1253,13 @@ mod tests {
         // Check inspection of normal file
         let mut archive = ZipArchive::new(buf).unwrap();
         assert!(archive.by_name("manifest.json").is_ok());
-        assert!(archive.by_name("manifest.json").unwrap().enclosed_name().is_some());
+        assert!(
+            archive
+                .by_name("manifest.json")
+                .unwrap()
+                .enclosed_name()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1122,7 +1310,13 @@ mod tests {
 
     #[test]
     fn test_archive_creation_and_inspection() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let zip_path = temp_dir.join("test_export.zip");
 
@@ -1130,7 +1324,8 @@ mod tests {
         {
             let file = File::create(&zip_path).unwrap();
             let mut zip = ZipWriter::new(file);
-            let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             let manifest = ExportAllManifest {
                 version: "1.0".to_string(),
@@ -1151,7 +1346,8 @@ mod tests {
                 },
             };
             zip.start_file("manifest.json", opts).unwrap();
-            zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes()).unwrap();
+            zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
+                .unwrap();
 
             // Connections
             let conns = vec![ConnectionConfig {
@@ -1182,16 +1378,20 @@ mod tests {
                 custom_views: Vec::new(),
                 replication_master_id: None,
             }];
-            zip.start_file("connections/connections.json", opts).unwrap();
-            zip.write_all(serde_json::to_string_pretty(&conns).unwrap().as_bytes()).unwrap();
+            zip.start_file("connections/connections.json", opts)
+                .unwrap();
+            zip.write_all(serde_json::to_string_pretty(&conns).unwrap().as_bytes())
+                .unwrap();
 
             // Folders
             let folders = vec!["Production".to_string()];
             zip.start_file("connections/folders.json", opts).unwrap();
-            zip.write_all(serde_json::to_string_pretty(&folders).unwrap().as_bytes()).unwrap();
+            zip.write_all(serde_json::to_string_pretty(&folders).unwrap().as_bytes())
+                .unwrap();
 
             // Queries
-            zip.start_file("queries/analytics/summary.sql", opts).unwrap();
+            zip.start_file("queries/analytics/summary.sql", opts)
+                .unwrap();
             zip.write_all(b"SELECT COUNT(*) FROM users;").unwrap();
 
             // HTTP Collections
@@ -1207,7 +1407,8 @@ mod tests {
                 executed_at: "2026-09-09 12:00:00".to_string(),
             }];
             zip.start_file("history/history.json", opts).unwrap();
-            zip.write_all(serde_json::to_string_pretty(&history).unwrap().as_bytes()).unwrap();
+            zip.write_all(serde_json::to_string_pretty(&history).unwrap().as_bytes())
+                .unwrap();
 
             zip.finish().unwrap();
         }
@@ -1231,7 +1432,13 @@ mod tests {
 
     #[test]
     fn test_zip_slip_rejection() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_slip_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_slip_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let evil_zip_path = temp_dir.join("evil.zip");
 
@@ -1247,7 +1454,10 @@ mod tests {
         }
 
         let result = inspect_archive(&evil_zip_path);
-        assert!(result.is_err(), "Expected zip slip detection to fail inspection");
+        assert!(
+            result.is_err(),
+            "Expected zip slip detection to fail inspection"
+        );
         match result {
             Err(ExportImportError::ZipSlip(path)) => {
                 assert!(path.contains("../../etc/malicious.txt"));
@@ -1260,7 +1470,13 @@ mod tests {
 
     #[test]
     fn test_roundtrip_export_import() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_roundtrip_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_roundtrip_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test_tabular.db");
         let zip_path = temp_dir.join("full_backup.zip");
@@ -1273,8 +1489,9 @@ mod tests {
         let pool = rt.block_on(async {
             use sqlx::sqlite::SqliteConnectOptions;
             use std::str::FromStr;
-            let options = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path.display()))
-                .unwrap();
+            let options =
+                SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path.display()))
+                    .unwrap();
             let p = sqlx::SqlitePool::connect_with(options).await.unwrap();
 
             sqlx::query(
@@ -1305,7 +1522,7 @@ mod tests {
                     ssl_client_key TEXT DEFAULT '',
                     ssl_key_passphrase TEXT DEFAULT '',
                     ssl_verify_server INTEGER DEFAULT 1
-                );"
+                );",
             )
             .execute(&p)
             .await
@@ -1324,7 +1541,7 @@ mod tests {
                     connection_name TEXT NOT NULL,
                     executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE
-                );"
+                );",
             )
             .execute(&p)
             .await
@@ -1369,13 +1586,15 @@ mod tests {
         tabular.connection_folders.push("Development".to_string());
 
         // Add dummy HTTP workspace
-        tabular.yaak_workspaces.push(crate::http_collection::HttpWorkspace {
-            id: "ws_test_123".to_string(),
-            name: "Internal APIs".to_string(),
-            requests: Vec::new(),
-            folders: Vec::new(),
-            environments: Vec::new(),
-        });
+        tabular
+            .yaak_workspaces
+            .push(crate::http_collection::HttpWorkspace {
+                id: "ws_test_123".to_string(),
+                name: "Internal APIs".to_string(),
+                requests: Vec::new(),
+                folders: Vec::new(),
+                environments: Vec::new(),
+            });
 
         // Add dummy history item
         tabular.history_items.push(HistoryItem {
@@ -1415,11 +1634,18 @@ mod tests {
 
         // 2. Inspect archive
         let inspect_res = inspect_archive(&zip_path);
-        assert!(inspect_res.is_ok(), "Inspect failed: {:?}", inspect_res.err());
+        assert!(
+            inspect_res.is_ok(),
+            "Inspect failed: {:?}",
+            inspect_res.err()
+        );
         let manifest = inspect_res.unwrap();
         assert_eq!(manifest.counts.connections, summary.connections_count);
         assert_eq!(manifest.counts.connection_folders, summary.folders_count);
-        assert_eq!(manifest.counts.http_workspaces, summary.http_workspaces_count);
+        assert_eq!(
+            manifest.counts.http_workspaces,
+            summary.http_workspaces_count
+        );
         assert_eq!(manifest.counts.history_items, summary.history_count);
         assert_eq!(manifest.counts.queries, summary.queries_count);
 
@@ -1444,9 +1670,19 @@ mod tests {
 
         // Verify in-memory state was reloaded
         assert!(!tabular.connections.is_empty());
-        assert!(tabular.connections.iter().any(|c| c.name == "Demo Database"));
+        assert!(
+            tabular
+                .connections
+                .iter()
+                .any(|c| c.name == "Demo Database")
+        );
         assert!(!tabular.connection_folders.is_empty());
-        assert!(tabular.connection_folders.iter().any(|f| f == "Development"));
+        assert!(
+            tabular
+                .connection_folders
+                .iter()
+                .any(|f| f == "Development")
+        );
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1454,7 +1690,13 @@ mod tests {
 
     #[test]
     fn test_import_queries_only_without_db_pool() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_queries_only_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_queries_only_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let zip_path = temp_dir.join("queries_backup.zip");
 
@@ -1466,7 +1708,8 @@ mod tests {
         {
             let file = File::create(&zip_path).unwrap();
             let mut zip = ZipWriter::new(file);
-            let file_opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let file_opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             zip.start_file("queries/test_query.sql", file_opts).unwrap();
             zip.write_all(b"SELECT 1;").unwrap();
@@ -1503,7 +1746,11 @@ mod tests {
         };
 
         let result = import_all_data(&mut tabular, &zip_path, &options);
-        assert!(result.is_ok(), "Import queries only should succeed without db_pool: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Import queries only should succeed without db_pool: {:?}",
+            result.err()
+        );
         let summary = result.unwrap();
         assert_eq!(summary.queries_restored, 1);
         assert_eq!(summary.connections_restored, 0);
@@ -1513,7 +1760,13 @@ mod tests {
 
     #[test]
     fn test_import_with_uninitialized_db_pool_isolated() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_isolated_restore_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_isolated_restore_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("isolated.db");
         let zip_path = temp_dir.join("isolated_backup.zip");
@@ -1527,8 +1780,9 @@ mod tests {
         let pool = rt.block_on(async {
             use sqlx::sqlite::SqliteConnectOptions;
             use std::str::FromStr;
-            let options = SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path.display()))
-                .unwrap();
+            let options =
+                SqliteConnectOptions::from_str(&format!("sqlite://{}?mode=rwc", db_path.display()))
+                    .unwrap();
             let p = sqlx::SqlitePool::connect_with(options).await.unwrap();
 
             sqlx::query(
@@ -1559,16 +1813,18 @@ mod tests {
                     ssl_client_key TEXT DEFAULT '',
                     ssl_key_passphrase TEXT DEFAULT '',
                     ssl_verify_server INTEGER DEFAULT 1
-                );"
+                );",
             )
             .execute(&p)
             .await
             .unwrap();
 
-            sqlx::query("CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);")
-                .execute(&p)
-                .await
-                .unwrap();
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);",
+            )
+            .execute(&p)
+            .await
+            .unwrap();
 
             p
         });
@@ -1577,7 +1833,8 @@ mod tests {
         {
             let file = File::create(&zip_path).unwrap();
             let mut zip = ZipWriter::new(file);
-            let file_opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let file_opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             let conns = vec![ConnectionConfig {
                 id: Some(1),
@@ -1608,12 +1865,14 @@ mod tests {
                 replication_master_id: None,
             }];
             let conns_json = serde_json::to_string_pretty(&conns).unwrap();
-            zip.start_file("connections/connections.json", file_opts).unwrap();
+            zip.start_file("connections/connections.json", file_opts)
+                .unwrap();
             zip.write_all(conns_json.as_bytes()).unwrap();
 
             let folders = vec!["Testing".to_string()];
             let folders_json = serde_json::to_string_pretty(&folders).unwrap();
-            zip.start_file("connections/folders.json", file_opts).unwrap();
+            zip.start_file("connections/folders.json", file_opts)
+                .unwrap();
             zip.write_all(folders_json.as_bytes()).unwrap();
 
             let manifest = ExportAllManifest {
@@ -1652,7 +1911,11 @@ mod tests {
         };
 
         let result = import_all_data(&mut tabular, &zip_path, &options);
-        assert!(result.is_ok(), "Import with uninitialized pool should recover: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Import with uninitialized pool should recover: {:?}",
+            result.err()
+        );
         let summary = result.unwrap();
         assert_eq!(summary.connections_restored, 1);
         assert_eq!(summary.folders_restored, 1);
@@ -1680,8 +1943,15 @@ mod tests {
         };
 
         let result = import_all_data(&mut tabular, &zip_path, &options);
-        assert!(result.is_ok(), "Restoring actual desktop backup failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Restoring actual desktop backup failed: {:?}",
+            result.err()
+        );
         let summary = result.unwrap();
-        assert!(summary.connections_restored > 0 || !tabular.connections.is_empty(), "Expected connections restored");
+        assert!(
+            summary.connections_restored > 0 || !tabular.connections.is_empty(),
+            "Expected connections restored"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use crate::{connection, models, window_egui::Tabular};
+use crate::{models, window_egui::Tabular};
 use log::debug;
 use std::collections::HashMap;
 
@@ -65,7 +65,7 @@ pub trait SpreadsheetOperations {
         overrides: Option<&std::collections::HashMap<String, String>>,
         target_table_for_update: Option<&str>,
     ) -> Option<String>;
-    
+
     fn spreadsheet_generate_sql(&self) -> Option<String>;
 
     fn spreadsheet_row_where_all_columns(
@@ -251,7 +251,7 @@ pub trait SpreadsheetOperations {
             let all_data = self.get_all_table_data().clone();
             let total = self.get_total_rows();
             let idx = self.get_active_tab_index();
-            
+
             if let Some(active_tab) = self.get_query_tabs_mut().get_mut(idx) {
                 active_tab.result_rows = current_data;
                 active_tab.result_all_rows = all_data;
@@ -274,12 +274,14 @@ pub trait SpreadsheetOperations {
 
             // Insert the duplicated row right after the selected row
             let insert_index = selected_row_idx + 1;
-            
+
             // Insert into data structures
-            self.get_current_table_data_mut().insert(insert_index, row_data.clone());
+            self.get_current_table_data_mut()
+                .insert(insert_index, row_data.clone());
             // Safe insert into all_table_data
             if insert_index <= self.get_all_table_data().len() {
-                self.get_all_table_data_mut().insert(insert_index, row_data.clone());
+                self.get_all_table_data_mut()
+                    .insert(insert_index, row_data.clone());
             } else {
                 self.get_all_table_data_mut().push(row_data.clone());
             }
@@ -298,7 +300,7 @@ pub trait SpreadsheetOperations {
                     rows_to_shift.push(row_idx);
                 }
             }
-            
+
             for row_idx in rows_to_shift {
                 self.get_newly_created_rows_mut().remove(&row_idx);
                 self.get_newly_created_rows_mut().insert(row_idx + 1);
@@ -307,18 +309,18 @@ pub trait SpreadsheetOperations {
             // Select the new duplicated row
             self.set_selected_row(Some(insert_index));
             self.set_selected_cell(Some((insert_index, 0)));
-            
+
             // Mark spreadsheet as dirty
             let state = self.get_spreadsheet_state_mut();
             state.is_dirty = true;
 
             // Create an insert operation for tracking
-            state.pending_operations.push(
-                crate::models::structs::CellEditOperation::InsertRow {
+            state
+                .pending_operations
+                .push(crate::models::structs::CellEditOperation::InsertRow {
                     row_index: insert_index,
                     values: row_data,
-                },
-            );
+                });
 
             // Update tab state
             let current_data = self.get_current_table_data().clone();
@@ -389,8 +391,6 @@ pub trait SpreadsheetOperations {
 
         None
     }
-
-
 
     fn spreadsheet_quote_ident(
         &self,
@@ -490,10 +490,6 @@ pub trait SpreadsheetOperations {
             _ => format!("'{}'", v.replace('\'', "''")),
         }
     }
-
-
-
-
 
     fn spreadsheet_save_changes(&mut self);
 
@@ -704,47 +700,50 @@ impl SpreadsheetOperations for Tabular {
     }
 
     fn execute_spreadsheet_sql(&mut self, sql: String) {
-        if let Some(conn_id) = self.current_connection_id {
-            if let Some((headers, data)) =
-                connection::execute_query_with_connection(self, conn_id, sql)
-            {
-                // Detect error tables returned by executor (headers == ["Error"]) and treat as failure
-                let is_error_table = headers.len() == 1 && headers[0].eq_ignore_ascii_case("error");
-                if is_error_table {
-                    let msg = data
-                        .first()
-                        .and_then(|r| r.first())
-                        .cloned()
-                        .unwrap_or_else(|| "Unknown query error".to_string());
-                    debug!("❌ SQL execution returned error table: {}", msg);
-                    self.error_message = msg;
-                    self.show_error_message = true;
-                    // Do NOT clear pending operations on failure
-                } else {
-                    debug!("🔥 SQL executed successfully, clearing pending operations");
-                    self.spreadsheet_state.pending_operations.clear();
-                    self.spreadsheet_state.is_dirty = false;
-
-                    // Clear newly created rows highlight after successful save
-                    self.newly_created_rows.clear();
-
-                    // Refresh grid after save so inserted rows become visible
-                    if self.is_table_browse_mode {
-                        if self.use_server_pagination && !self.current_base_query.is_empty() {
-                            // Re-run current page of the base query
-                            self.execute_paginated_query();
-                        } else {
-                            // Client-side mode: simply re-sync current page slice
-                            self.update_current_page_data();
-                        }
-                    }
-                }
-            } else {
-                debug!("🔥 SQL execution failed");
-                self.error_message = "Failed to save table changes".to_string();
-                self.show_error_message = true;
+        let Some(conn_id) = self.current_connection_id else {
+            return;
+        };
+        // Jumlah operasi yang ikut disimpan. Edit yang dibuat selama proses
+        // simpan berjalan tidak boleh ikut terhapus saat simpan sukses.
+        let submitted_ops = self.spreadsheet_state.pending_operations.len();
+        self.run_query_with_callback(conn_id, sql, move |tabular, message| {
+            if !message.success {
+                let msg = message
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Unknown query error".to_string());
+                debug!("❌ Spreadsheet save failed: {}", msg);
+                // Operasi tetap disimpan agar user bisa memperbaiki lalu mencoba lagi.
+                tabular
+                    .toasts
+                    .error(format!("Failed to save table changes: {}", msg));
+                return;
             }
-        }
+            debug!("🔥 SQL executed successfully, clearing saved pending operations");
+            let state = &mut tabular.spreadsheet_state;
+            let saved = submitted_ops.min(state.pending_operations.len());
+            state.pending_operations.drain(..saved);
+            state.is_dirty = !state.pending_operations.is_empty();
+            if state.pending_operations.is_empty() {
+                // Clear newly created rows highlight after successful save
+                tabular.newly_created_rows.clear();
+            }
+            match message.affected_rows {
+                Some(n) => tabular
+                    .toasts
+                    .success(format!("Saved changes ({} row(s) affected)", n)),
+                None => tabular.toasts.success("Saved changes"),
+            }
+
+            // Refresh grid after save so inserted rows become visible
+            if tabular.is_table_browse_mode {
+                if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
+                    tabular.execute_paginated_query();
+                } else {
+                    tabular.update_current_page_data();
+                }
+            }
+        });
     }
 
     fn reset_spreadsheet_state(&mut self) {
@@ -860,10 +859,6 @@ impl SpreadsheetOperations for Tabular {
         }
     }
 
-
-
-
-
     fn spreadsheet_extract_table_name(&self) -> Option<String> {
         debug!(
             "🔥 spreadsheet_extract_table_name called with current_table_name: '{}'",
@@ -933,43 +928,52 @@ impl SpreadsheetOperations for Tabular {
         let use_metadata_filtering = target_table_for_update.is_some() && metadata.is_some();
 
         if use_metadata_filtering {
-             let target_table = target_table_for_update.unwrap();
-             let meta = metadata.as_ref().unwrap();
-             debug!("🔥 spreadsheet_build_where_clause: filtering for target_table='{}'", target_table);
-             
-             for (i, col_meta) in meta.iter().enumerate() {
-                 let belongs_to_table = col_meta.table_name.as_deref().unwrap_or("") == target_table;
-                 
-                 if belongs_to_table && col_meta.is_primary_key {
-                     if let Some(col_name) = headers.get(i) {
-                         debug!("🔥 Found matching PK: '{}' at index {}", col_name, i);
-                         let id_name = col_meta.original_name.clone().unwrap_or(col_name.clone());
-                         let mut val = row_data.get(i).cloned().unwrap_or_default();
-                         if let Some(ov) = overrides
-                             && let Some(v) = ov.get(&col_name.to_lowercase())
-                         {
-                             val = v.clone();
-                         }
-                         
-                         let clause = if val.to_uppercase() == "NULL" {
-                             format!("{} IS NULL", qt(&id_name))
-                         } else {
-                             format!("{} = {}", qt(&id_name), qv(&val))
-                         };
-                         where_parts.push(clause);
-                     }
-                 } else if belongs_to_table {
-                     // Debug why non-PK was skipped
-                     // debug!("🔥 Skipping column '{}' (is_pk={}) for table match", col_meta.name, col_meta.is_primary_key);
-                 }
-             }
+            let target_table = target_table_for_update.unwrap();
+            let meta = metadata.as_ref().unwrap();
+            debug!(
+                "🔥 spreadsheet_build_where_clause: filtering for target_table='{}'",
+                target_table
+            );
+
+            for (i, col_meta) in meta.iter().enumerate() {
+                let belongs_to_table = col_meta.table_name.as_deref().unwrap_or("") == target_table;
+
+                if belongs_to_table && col_meta.is_primary_key {
+                    if let Some(col_name) = headers.get(i) {
+                        debug!("🔥 Found matching PK: '{}' at index {}", col_name, i);
+                        let id_name = col_meta.original_name.clone().unwrap_or(col_name.clone());
+                        let mut val = row_data.get(i).cloned().unwrap_or_default();
+                        if let Some(ov) = overrides
+                            && let Some(v) = ov.get(&col_name.to_lowercase())
+                        {
+                            val = v.clone();
+                        }
+
+                        let clause = if val.to_uppercase() == "NULL" {
+                            format!("{} IS NULL", qt(&id_name))
+                        } else {
+                            format!("{} = {}", qt(&id_name), qv(&val))
+                        };
+                        where_parts.push(clause);
+                    }
+                } else if belongs_to_table {
+                    // Debug why non-PK was skipped
+                    // debug!("🔥 Skipping column '{}' (is_pk={}) for table match", col_meta.name, col_meta.is_primary_key);
+                }
+            }
         } else {
-             debug!("🔥 spreadsheet_build_where_clause: NO metadata filtering (target={:?}, meta={})", target_table_for_update, metadata.is_some());
+            debug!(
+                "🔥 spreadsheet_build_where_clause: NO metadata filtering (target={:?}, meta={})",
+                target_table_for_update,
+                metadata.is_some()
+            );
         }
 
         if where_parts.is_empty() {
-             debug!("🔥 spreadsheet_build_where_clause: where_parts was empty, using FALLBACK logic");
-             for (i, header) in headers.iter().enumerate() {
+            debug!(
+                "🔥 spreadsheet_build_where_clause: where_parts was empty, using FALLBACK logic"
+            );
+            for (i, header) in headers.iter().enumerate() {
                 // NEW: Security check - if we have metadata, ensure this column belongs to target table
                 // This prevents adding columns from joined tables (e.g. date_time) to the WHERE clause
                 // when updating a specific table (e.g. user_data).
@@ -981,7 +985,10 @@ impl SpreadsheetOperations for Tabular {
                     // Only skip if table name is explicitly known and differs from target.
                     // Use case-insensitive check to be safe.
                     if !tbl.is_empty() && !tbl.eq_ignore_ascii_case(target) {
-                        debug!("🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')", header, tbl, target);
+                        debug!(
+                            "🔥 Fallback skipping column '{}' because it belongs to table '{}' (target='{}')",
+                            header, tbl, target
+                        );
                         continue;
                     }
                 }
@@ -1014,21 +1021,22 @@ impl SpreadsheetOperations for Tabular {
         }
 
         if where_parts.is_empty() {
-             // Second fallback logic (implicit ID detection from old code)
-             if primary_keys.is_empty()
+            // Second fallback logic (implicit ID detection from old code)
+            if primary_keys.is_empty()
                 && let (Some(first_header), Some(first_value)) = (headers.first(), row_data.first())
             {
                 let lower = first_header.to_lowercase();
                 if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                     let clause = if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
-                         format!("{} IS NULL", qt(first_header))
-                     } else {
-                         format!("{} = {}", qt(first_header), qv(first_value))
-                     };
-                     return Some(clause);
+                    let clause =
+                        if first_value.is_empty() || first_value.eq_ignore_ascii_case("null") {
+                            format!("{} IS NULL", qt(first_header))
+                        } else {
+                            format!("{} = {}", qt(first_header), qv(first_value))
+                        };
+                    return Some(clause);
                 }
             }
-             None
+            None
         } else {
             Some(where_parts.join(" AND "))
         }
@@ -1106,8 +1114,6 @@ impl SpreadsheetOperations for Tabular {
         }
     }
 
-
-
     fn spreadsheet_quote_value(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
@@ -1161,7 +1167,13 @@ impl SpreadsheetOperations for Tabular {
         if let Some(meta) = metadata {
             log::debug!("🔥 metadata present with {} columns", meta.len());
             for (i, m) in meta.iter().enumerate() {
-                log::debug!("🔥 Col {}: name='{}', table='{:?}', orig='{:?}'", i, m.name, m.table_name, m.original_name);
+                log::debug!(
+                    "🔥 Col {}: name='{}', table='{:?}', orig='{:?}'",
+                    i,
+                    m.name,
+                    m.table_name,
+                    m.original_name
+                );
             }
         } else {
             log::warn!("🔥 No metadata found in spreadsheet_generate_sql override");
@@ -1236,8 +1248,11 @@ impl SpreadsheetOperations for Tabular {
                     let table_name_str = match table_name_opt {
                         Some(t) => t,
                         None => {
-                             debug!("🔥 Unable to determine table name for update at col {}", col_index);
-                             continue;
+                            debug!(
+                                "🔥 Unable to determine table name for update at col {}",
+                                col_index
+                            );
+                            continue;
                         }
                     };
 
@@ -1245,13 +1260,13 @@ impl SpreadsheetOperations for Tabular {
                     let col_name_str = col_meta
                         .and_then(|m| m.original_name.clone())
                         .or_else(|| headers.get(*col_index).cloned());
-                    
+
                     let col = match col_name_str {
-                         Some(n) => n,
-                         None => {
-                             debug!("🔥 Missing header for column index {}", col_index);
-                             continue;
-                         }
+                        Some(n) => n,
+                        None => {
+                            debug!("🔥 Missing header for column index {}", col_index);
+                            continue;
+                        }
                     };
                     let row_data = current_rows
                         .get(*row_index)
@@ -1265,7 +1280,12 @@ impl SpreadsheetOperations for Tabular {
                     };
                     let overrides = row_overrides.get(row_index);
                     let where_clause = match self.spreadsheet_build_where_clause(
-                        &conn, row_data, headers, pk_columns, overrides, Some(&table_name_str),
+                        &conn,
+                        row_data,
+                        headers,
+                        pk_columns,
+                        overrides,
+                        Some(&table_name_str),
                     ) {
                         Some(clause) => clause,
                         None => {
@@ -1301,11 +1321,11 @@ impl SpreadsheetOperations for Tabular {
                     };
                     let vals: Vec<String> = vals_vec.iter().map(|v| qv(v)).collect();
                     let table_for_insert = match &table {
-                         Some(t) => t,
-                         None => {
-                             debug!("🔥 Skipping insert: no global table identified");
-                             continue;
-                         }
+                        Some(t) => t,
+                        None => {
+                            debug!("🔥 Skipping insert: no global table identified");
+                            continue;
+                        }
                     };
                     let sql = std::format!(
                         "INSERT INTO {} ({}) VALUES ({})",
@@ -1333,14 +1353,17 @@ impl SpreadsheetOperations for Tabular {
                         }
                     };
                     let table_for_delete = match &table {
-                         Some(t) => t,
-                         None => {
-                             debug!("🔥 Skipping delete: no global table identified");
-                             continue;
-                         }
+                        Some(t) => t,
+                        None => {
+                            debug!("🔥 Skipping delete: no global table identified");
+                            continue;
+                        }
                     };
-                    let sql =
-                        std::format!("DELETE FROM {} WHERE {}", qt_table(table_for_delete), where_clause);
+                    let sql = std::format!(
+                        "DELETE FROM {} WHERE {}",
+                        qt_table(table_for_delete),
+                        where_clause
+                    );
                     debug!("🔥 Using DELETE WHERE clause: {}", where_clause);
                     stmts.push(sql);
                 }
@@ -1378,10 +1401,9 @@ impl SpreadsheetOperations for Tabular {
 
             if let (Some(conn_id), Some(ref tbl)) = (conn_id_opt, tbl_opt) {
                 // 1. Try index_cache first (fastest, no network round-trip)
-                let mut pks = crate::cache_data::get_primary_keys_from_cache(
-                    self, conn_id, &db_str, tbl,
-                )
-                .unwrap_or_default();
+                let mut pks =
+                    crate::cache_data::get_primary_keys_from_cache(self, conn_id, &db_str, tbl)
+                        .unwrap_or_default();
 
                 // 2. Cache miss → query the live database directly
                 if pks.is_empty()
@@ -1391,16 +1413,17 @@ impl SpreadsheetOperations for Tabular {
                         .find(|c| c.id == Some(conn_id))
                         .cloned()
                 {
-                    pks = self.fetch_primary_key_columns_for_table(
-                        conn_id, &conn, &db_str, tbl,
-                    );
+                    pks = self.fetch_primary_key_columns_for_table(conn_id, &conn, &db_str, tbl);
                 }
 
                 if !pks.is_empty() {
                     debug!("Pre-loaded PKs for '{}': {:?}", tbl, pks);
                     self.spreadsheet_state.primary_key_columns = pks;
                 } else {
-                    debug!("Warning: could not determine PKs for table '{}' — WHERE clause will use all columns", tbl);
+                    debug!(
+                        "Warning: could not determine PKs for table '{}' — WHERE clause will use all columns",
+                        tbl
+                    );
                 }
             }
         }

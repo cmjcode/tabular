@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::window_egui;
+use eframe::egui;
 
 pub(crate) fn clear_table_selection(tabular: &mut window_egui::Tabular) {
     tabular.selected_row = None;
@@ -214,9 +214,13 @@ pub(crate) fn get_selected_subtable(
     // 1. Check block selection (table_sel_anchor + selected_cell)
     if let (Some((ar, ac)), Some((br, bc))) = (tabular.table_sel_anchor, tabular.selected_cell) {
         let rmin = ar.min(br);
-        let rmax = ar.max(br).min(tabular.current_table_data.len().saturating_sub(1));
+        let rmax = ar
+            .max(br)
+            .min(tabular.current_table_data.len().saturating_sub(1));
         let cmin = ac.min(bc);
-        let cmax = ac.max(bc).min(tabular.current_table_headers.len().saturating_sub(1));
+        let cmax = ac
+            .max(bc)
+            .min(tabular.current_table_headers.len().saturating_sub(1));
 
         if rmin <= rmax && cmin <= cmax {
             let headers = tabular.current_table_headers[cmin..=cmax].to_vec();
@@ -270,12 +274,17 @@ pub(crate) fn get_selected_subtable(
 
     // 4. Check single cell selection
     if let Some((r, c)) = tabular.selected_cell
-        && r < tabular.current_table_data.len() && c < tabular.current_table_headers.len() {
-            let headers = vec![tabular.current_table_headers[c].clone()];
-            let val = tabular.current_table_data[r].get(c).cloned().unwrap_or_default();
-            let rows = vec![vec![val]];
-            return Some((headers, rows));
-        }
+        && r < tabular.current_table_data.len()
+        && c < tabular.current_table_headers.len()
+    {
+        let headers = vec![tabular.current_table_headers[c].clone()];
+        let val = tabular.current_table_data[r]
+            .get(c)
+            .cloned()
+            .unwrap_or_default();
+        let rows = vec![vec![val]];
+        return Some((headers, rows));
+    }
 
     None
 }
@@ -295,16 +304,17 @@ pub(crate) fn calculate_grid_summary(tabular: &window_egui::Tabular) -> Option<G
             summary.total_cells += 1;
             let clean = cell.replace(',', "").trim().to_string();
             if let Ok(num) = clean.parse::<f64>()
-                && !num.is_nan() {
-                    summary.numeric_count += 1;
-                    summary.sum += num;
-                    if num < min_val {
-                        min_val = num;
-                    }
-                    if num > max_val {
-                        max_val = num;
-                    }
+                && !num.is_nan()
+            {
+                summary.numeric_count += 1;
+                summary.sum += num;
+                if num < min_val {
+                    min_val = num;
                 }
+                if num > max_val {
+                    max_val = num;
+                }
+            }
         }
     }
 
@@ -361,6 +371,8 @@ pub(crate) fn export_selected_to_markdown(tabular: &window_egui::Tabular) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -404,5 +416,3 @@ mod tests {
         assert!(md.contains("| 1 | 10.5 | Alice |"));
     }
 }
-
-

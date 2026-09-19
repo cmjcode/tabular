@@ -1,6 +1,6 @@
+use super::{infer_current_table_name, update_current_page_data};
+use crate::{driver_mssql, models, window_egui};
 use log::debug;
-use crate::{connection, driver_mssql, models, window_egui};
-use super::{update_current_page_data, infer_current_table_name};
 
 pub use crate::models::structs::SqlValue;
 
@@ -123,7 +123,11 @@ pub fn build_server_side_where_clause(
     conditions: &[models::structs::FilterCondition],
     db_type: &models::enums::DatabaseType,
 ) -> (String, Vec<SqlValue>) {
-    build_server_side_where_clause_with_group(conditions, models::structs::FilterGroup::And, db_type)
+    build_server_side_where_clause_with_group(
+        conditions,
+        models::structs::FilterGroup::And,
+        db_type,
+    )
 }
 
 /// Builds a parameterized server-side SQL WHERE clause with an explicit `FilterGroup` (AND / OR).
@@ -161,7 +165,8 @@ pub fn build_server_side_where_clause_with_group(
                 params.push(parse_sql_param_value(val));
                 parts.push(format!("{} = {}", q_col, ph));
             }
-            models::structs::FilterOperator::NotEqual | models::structs::FilterOperator::NotEquals => {
+            models::structs::FilterOperator::NotEqual
+            | models::structs::FilterOperator::NotEquals => {
                 let ph = make_placeholder(param_index);
                 param_index += 1;
                 params.push(parse_sql_param_value(val));
@@ -387,26 +392,31 @@ pub fn build_where_from_visual_filter(
             models::structs::FilterOperator::Equal | models::structs::FilterOperator::Equals => {
                 format!("{} = {}", q_col, quote_val(val))
             }
-            models::structs::FilterOperator::NotEqual | models::structs::FilterOperator::NotEquals => {
+            models::structs::FilterOperator::NotEqual
+            | models::structs::FilterOperator::NotEquals => {
                 format!("{} != {}", q_col, quote_val(val))
             }
             models::structs::FilterOperator::Like => {
                 format!("{} LIKE {}", q_col, quote_val(val))
             }
-            models::structs::FilterOperator::ILike => {
-                match db_type {
-                    Some(models::enums::DatabaseType::PostgreSQL) => {
-                        format!("{} ILIKE {}", q_col, quote_val(val))
-                    }
-                    Some(models::enums::DatabaseType::MySQL) | Some(models::enums::DatabaseType::SQLite) => {
-                        format!("LOWER({}) LIKE LOWER({})", q_col, quote_val(val))
-                    }
-                    _ => format!("{} LIKE {}", q_col, quote_val(val)),
+            models::structs::FilterOperator::ILike => match db_type {
+                Some(models::enums::DatabaseType::PostgreSQL) => {
+                    format!("{} ILIKE {}", q_col, quote_val(val))
                 }
-            }
+                Some(models::enums::DatabaseType::MySQL)
+                | Some(models::enums::DatabaseType::SQLite) => {
+                    format!("LOWER({}) LIKE LOWER({})", q_col, quote_val(val))
+                }
+                _ => format!("{} LIKE {}", q_col, quote_val(val)),
+            },
             models::structs::FilterOperator::Between => {
                 if let Some(ref v2) = cond.value2 {
-                    format!("{} BETWEEN {} AND {}", q_col, quote_val(val), quote_val(v2.trim()))
+                    format!(
+                        "{} BETWEEN {} AND {}",
+                        q_col,
+                        quote_val(val),
+                        quote_val(v2.trim())
+                    )
                 } else if val.contains(" AND ") || val.contains(" and ") {
                     let parts: Vec<&str> = if val.contains(" AND ") {
                         val.split(" AND ").collect()
@@ -414,14 +424,24 @@ pub fn build_where_from_visual_filter(
                         val.split(" and ").collect()
                     };
                     if parts.len() == 2 {
-                        format!("{} BETWEEN {} AND {}", q_col, quote_val(parts[0].trim()), quote_val(parts[1].trim()))
+                        format!(
+                            "{} BETWEEN {} AND {}",
+                            q_col,
+                            quote_val(parts[0].trim()),
+                            quote_val(parts[1].trim())
+                        )
                     } else {
                         format!("{} = {}", q_col, quote_val(val))
                     }
                 } else if val.contains(',') {
                     let parts: Vec<&str> = val.split(',').collect();
                     if parts.len() == 2 {
-                        format!("{} BETWEEN {} AND {}", q_col, quote_val(parts[0].trim()), quote_val(parts[1].trim()))
+                        format!(
+                            "{} BETWEEN {} AND {}",
+                            q_col,
+                            quote_val(parts[0].trim()),
+                            quote_val(parts[1].trim())
+                        )
                     } else {
                         format!("{} = {}", q_col, quote_val(val))
                     }
@@ -435,7 +455,8 @@ pub fn build_where_from_visual_filter(
                     Some(models::enums::DatabaseType::PostgreSQL) => {
                         format!("{} ILIKE {}", q_col, escape_like_val(&pattern))
                     }
-                    Some(models::enums::DatabaseType::MySQL) | Some(models::enums::DatabaseType::SQLite) => {
+                    Some(models::enums::DatabaseType::MySQL)
+                    | Some(models::enums::DatabaseType::SQLite) => {
                         format!("LOWER({}) LIKE LOWER({})", q_col, escape_like_val(&pattern))
                     }
                     _ => format!("{} LIKE {}", q_col, escape_like_val(&pattern)),
@@ -447,7 +468,8 @@ pub fn build_where_from_visual_filter(
                     Some(models::enums::DatabaseType::PostgreSQL) => {
                         format!("{} ILIKE {}", q_col, escape_like_val(&pattern))
                     }
-                    Some(models::enums::DatabaseType::MySQL) | Some(models::enums::DatabaseType::SQLite) => {
+                    Some(models::enums::DatabaseType::MySQL)
+                    | Some(models::enums::DatabaseType::SQLite) => {
                         format!("LOWER({}) LIKE LOWER({})", q_col, escape_like_val(&pattern))
                     }
                     _ => format!("{} LIKE {}", q_col, escape_like_val(&pattern)),
@@ -459,7 +481,8 @@ pub fn build_where_from_visual_filter(
                     Some(models::enums::DatabaseType::PostgreSQL) => {
                         format!("{} ILIKE {}", q_col, escape_like_val(&pattern))
                     }
-                    Some(models::enums::DatabaseType::MySQL) | Some(models::enums::DatabaseType::SQLite) => {
+                    Some(models::enums::DatabaseType::MySQL)
+                    | Some(models::enums::DatabaseType::SQLite) => {
                         format!("LOWER({}) LIKE LOWER({})", q_col, escape_like_val(&pattern))
                     }
                     _ => format!("{} LIKE {}", q_col, escape_like_val(&pattern)),
@@ -488,7 +511,7 @@ pub fn build_where_from_visual_filter(
                     .split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .map(|s| quote_val(s))
+                    .map(&quote_val)
                     .collect();
                 if items.is_empty() {
                     continue;
@@ -508,7 +531,11 @@ pub fn build_where_from_visual_filter(
         let glue = match filter.group {
             models::structs::FilterGroup::Or => " OR ",
             models::structs::FilterGroup::And => {
-                if filter.match_all { " AND " } else { " OR " }
+                if filter.match_all {
+                    " AND "
+                } else {
+                    " OR "
+                }
             }
         };
         parts.join(glue)
@@ -640,7 +667,7 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
         tabular.use_server_pagination = true; // force server pagination for filtered browse
         tabular.current_base_query = base_query.clone();
         tabular.current_page = 0;
-        tabular.actual_total_rows = Some(10_000); // assume total rows for paging (default 10k)
+        tabular.actual_total_rows = None; // total belum diketahui sampai user menekan Count rows
         // Persist into active tab for consistent paging
         if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             tab.base_query = base_query;
@@ -657,12 +684,18 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
         crate::connection::add_auto_limit_if_needed(&sql_query, &connection.connection_type);
     debug!("🚀 Final query with auto-limit: {}", final_query);
 
-    if let Some((headers, data)) =
-        connection::execute_query_with_connection(tabular, connection_id, final_query)
-    {
-        tabular.current_table_headers = headers;
-        tabular.current_table_data = data.clone();
-        tabular.all_table_data = data;
+    tabular.run_query_with_callback(connection_id, final_query, |tabular, message| {
+        if !message.success {
+            debug!("❌ Failed to apply SQL filter");
+            tabular.toasts.error(format!(
+                "Failed to apply filter: {}",
+                message.error.clone().unwrap_or_default()
+            ));
+            return;
+        }
+        tabular.current_table_headers = message.headers.clone();
+        tabular.current_table_data = message.rows.clone();
+        tabular.all_table_data = message.rows.clone();
         tabular.total_rows = tabular.all_table_data.len();
         tabular.current_page = 0;
         update_current_page_data(tabular);
@@ -670,16 +703,14 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
             "✅ Filter applied successfully, {} rows returned",
             tabular.total_rows
         );
-    } else {
-        tabular.error_message =
-            "Failed to apply filter. Please check your WHERE clause syntax.".to_string();
-        tabular.show_error_message = true;
-        debug!("❌ Failed to apply SQL filter");
-    }
+    });
 }
 
 /// Renders the modular visual filter builder bar and condition rows directly above the data grid
-pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui: &mut eframe::egui::Ui) {
+pub(crate) fn render_visual_filter_panel(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut eframe::egui::Ui,
+) {
     if !tabular.visual_filter.is_open {
         return;
     }
@@ -858,26 +889,32 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                                     }
                                     models::structs::FilterOperator::Between => {
                                         let v2_ref = cond.value2.get_or_insert_with(String::new);
-                                        let r1 = ui.add(
+                                        let r1 = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text("From (min)")
-                                                .desired_width(100.0),
+                                                .hint_text("From (min)"),
+                                            100.0,
+                                            None,
                                         );
                                         ui.label(eframe::egui::RichText::new("and").color(muted).small());
-                                        let r2 = ui.add(
+                                        let r2 = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(v2_ref)
-                                                .hint_text("To (max)")
-                                                .desired_width(100.0),
+                                                .hint_text("To (max)"),
+                                            100.0,
+                                            None,
                                         );
                                         if (r1.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
                                         }
                                     }
                                     models::structs::FilterOperator::In => {
-                                        let resp = ui.add(
+                                        let resp = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text("val1, val2, val3...")
-                                                .desired_width(180.0),
+                                                .hint_text("val1, val2, val3..."),
+                                            180.0,
+                                            None,
                                         );
                                         if resp.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
@@ -892,10 +929,12 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                                             models::structs::FilterOperator::ILike => "pattern (case-insensitive)",
                                             _ => "value...",
                                         };
-                                        let resp = ui.add(
+                                        let resp = window_egui::style::render_text_field(
+                                            ui,
                                             eframe::egui::TextEdit::singleline(&mut cond.value)
-                                                .hint_text(hint)
-                                                .desired_width(160.0),
+                                                .hint_text(hint),
+                                            160.0,
+                                            None,
                                         );
                                         if resp.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter)) {
                                             apply_filter_now = true;
@@ -903,6 +942,7 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
                                     }
                                 }
 
+                                ui.add_space(4.0);
                                 // Remove condition button
                                 if ui.button("✖").on_hover_text("Remove this condition").clicked() {
                                     remove_idx = Some(idx);
@@ -949,7 +989,11 @@ pub(crate) fn render_visual_filter_panel(tabular: &mut window_egui::Tabular, ui:
 
     if apply_filter_now {
         let db_type = tabular.current_connection_id.and_then(|cid| {
-            tabular.connections.iter().find(|c| c.id == Some(cid)).map(|c| &c.connection_type)
+            tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(cid))
+                .map(|c| &c.connection_type)
         });
         tabular.sql_filter_text = build_where_from_visual_filter(&tabular.visual_filter, db_type);
         apply_sql_filter(tabular);
@@ -964,13 +1008,34 @@ mod tests {
 
     #[test]
     fn test_quote_identifier_safety() {
-        assert_eq!(quote_identifier("user_name", &DatabaseType::MySQL), "`user_name`");
-        assert_eq!(quote_identifier("user`name", &DatabaseType::MySQL), "`user``name`");
-        assert_eq!(quote_identifier("user_name", &DatabaseType::PostgreSQL), "\"user_name\"");
-        assert_eq!(quote_identifier("user\"name", &DatabaseType::PostgreSQL), "\"user\"\"name\"");
-        assert_eq!(quote_identifier("user_name", &DatabaseType::SQLite), "\"user_name\"");
-        assert_eq!(quote_identifier("user_name", &DatabaseType::MsSQL), "[user_name]");
-        assert_eq!(quote_identifier("user]name", &DatabaseType::MsSQL), "[user]]name]");
+        assert_eq!(
+            quote_identifier("user_name", &DatabaseType::MySQL),
+            "`user_name`"
+        );
+        assert_eq!(
+            quote_identifier("user`name", &DatabaseType::MySQL),
+            "`user``name`"
+        );
+        assert_eq!(
+            quote_identifier("user_name", &DatabaseType::PostgreSQL),
+            "\"user_name\""
+        );
+        assert_eq!(
+            quote_identifier("user\"name", &DatabaseType::PostgreSQL),
+            "\"user\"\"name\""
+        );
+        assert_eq!(
+            quote_identifier("user_name", &DatabaseType::SQLite),
+            "\"user_name\""
+        );
+        assert_eq!(
+            quote_identifier("user_name", &DatabaseType::MsSQL),
+            "[user_name]"
+        );
+        assert_eq!(
+            quote_identifier("user]name", &DatabaseType::MsSQL),
+            "[user]]name]"
+        );
     }
 
     #[test]
@@ -981,8 +1046,12 @@ mod tests {
             FilterCondition::new("email", FilterOperator::Like, "%@example.com"),
         ];
 
-        let (where_clause, params) = build_server_side_where_clause(&conditions, &DatabaseType::PostgreSQL);
-        assert_eq!(where_clause, "\"age\" > $1 AND \"status\" = $2 AND \"email\" LIKE $3");
+        let (where_clause, params) =
+            build_server_side_where_clause(&conditions, &DatabaseType::PostgreSQL);
+        assert_eq!(
+            where_clause,
+            "\"age\" > $1 AND \"status\" = $2 AND \"email\" LIKE $3"
+        );
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], SqlValue::Integer(25));
         assert_eq!(params[1], SqlValue::Text("active".to_string()));
@@ -997,8 +1066,12 @@ mod tests {
             FilterCondition::new("title", FilterOperator::Contains, "rust"),
         ];
 
-        let (where_clause, params) = build_server_side_where_clause(&conditions, &DatabaseType::MySQL);
-        assert_eq!(where_clause, "`category_id` = ? AND `deleted_at` IS NULL AND LOWER(`title`) LIKE LOWER(?)");
+        let (where_clause, params) =
+            build_server_side_where_clause(&conditions, &DatabaseType::MySQL);
+        assert_eq!(
+            where_clause,
+            "`category_id` = ? AND `deleted_at` IS NULL AND LOWER(`title`) LIKE LOWER(?)"
+        );
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], SqlValue::Integer(10));
         assert_eq!(params[1], SqlValue::Text("%rust%".to_string()));
@@ -1011,7 +1084,8 @@ mod tests {
             FilterCondition::new("is_active", FilterOperator::Equal, "true"),
         ];
 
-        let (where_clause, params) = build_server_side_where_clause(&conditions, &DatabaseType::MsSQL);
+        let (where_clause, params) =
+            build_server_side_where_clause(&conditions, &DatabaseType::MsSQL);
         assert_eq!(where_clause, "[price] <= @p1 AND [is_active] = @p2");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], SqlValue::Number(99.99));
@@ -1025,8 +1099,12 @@ mod tests {
             FilterCondition::new("role", FilterOperator::In, "admin, manager, dev"),
         ];
 
-        let (where_clause, params) = build_server_side_where_clause(&conditions, &DatabaseType::PostgreSQL);
-        assert_eq!(where_clause, "\"created_at\" BETWEEN $1 AND $2 AND \"role\" IN ($3, $4, $5)");
+        let (where_clause, params) =
+            build_server_side_where_clause(&conditions, &DatabaseType::PostgreSQL);
+        assert_eq!(
+            where_clause,
+            "\"created_at\" BETWEEN $1 AND $2 AND \"role\" IN ($3, $4, $5)"
+        );
         assert_eq!(params.len(), 5);
         assert_eq!(params[0], SqlValue::Text("2026-01-01".to_string()));
         assert_eq!(params[1], SqlValue::Text("2026-12-31".to_string()));
@@ -1086,6 +1164,9 @@ mod tests {
         };
 
         let clause = build_where_from_visual_filter(&filter, Some(&DatabaseType::PostgreSQL));
-        assert_eq!(clause, "\"deleted_at\" IS NULL AND \"status\" IN ('active', 'pending')");
+        assert_eq!(
+            clause,
+            "\"deleted_at\" IS NULL AND \"status\" IN ('active', 'pending')"
+        );
     }
 }

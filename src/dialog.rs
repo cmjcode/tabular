@@ -82,73 +82,93 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
         load_logo_texture(tabular, ctx);
 
         let mut should_check_updates = false;
+        let mut close = false;
 
-        egui::Window::new("About Tabular")
+        egui::Window::new("about_dialog_window")
+            .id(egui::Id::new("about_dialog_window"))
             .collapsible(false)
             .resizable(false)
+            .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .default_width(400.0)
-            .open(&mut tabular.show_about_dialog)
+            .default_width(420.0)
+            .frame(window_egui::style::modal_window_frame(ctx))
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(10.0);
+                window_egui::style::render_modal_header(
+                    ui,
+                    "About Tabular",
+                    &mut close,
+                );
+                ui.add_space(12.0);
 
-                    // App icon/logo - use actual logo if loaded, fallback to emoji
-                    if let Some(logo_texture) = &tabular.logo_texture {
-                        ui.add(
-                            egui::Image::from_texture(logo_texture)
-                                .max_size(egui::vec2(180.0, 180.0)),
+                window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(6.0);
+
+                        // App icon/logo - use actual logo if loaded, fallback to emoji
+                        if let Some(logo_texture) = &tabular.logo_texture {
+                            ui.add(
+                                egui::Image::from_texture(logo_texture)
+                                    .max_size(egui::vec2(140.0, 140.0)),
+                            );
+                        } else {
+                            ui.label(egui::RichText::new("📊").size(48.0));
+                        }
+                        ui.add_space(8.0);
+
+                        // App name and version
+                        ui.label(egui::RichText::new("Tabular").size(24.0).strong());
+                        ui.label(
+                            egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                                .size(15.0)
+                                .color(egui::Color32::GRAY),
                         );
-                    } else {
-                        ui.label(egui::RichText::new("📊").size(48.0));
-                    }
-                    ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new("Built with ❤️ using Rust")
+                                .size(13.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        ui.add_space(10.0);
 
-                    // App name and version
-                    ui.label(egui::RichText::new("Tabular").size(26.0).strong());
-                    ui.label(
-                        egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
-                            .size(18.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                    ui.label(
-                        egui::RichText::new("Built with ❤️ using Rust")
-                            .size(14.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                    ui.add_space(15.0);
+                        // Description
+                        ui.label(
+                            egui::RichText::new(
+                                "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.",
+                            )
+                            .size(13.0),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("Credit : Pamungkas Jayuda, Mualip Suhal, Davin Adesta Putra, Mohamad Ardiansah Pratama")
+                                .size(11.0)
+                                .weak(),
+                        );
+                        ui.add_space(10.0);
 
-                    // Description
-                    ui.label(
-                        egui::RichText::new(
-                            "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient.",
-                        )
-                        .size(14.0),
-                    );
-                    ui.label(
-                        "Credit : Pamungkas Jayuda (https://github.com/Jayuda), Mualip Suhal (https://github.com/msuhal),  Davin Adesta Putra (https://github.com/Davin-adesta), Mohamad Ardiansah Pratama (https://github.com/ardiansyah20007) ",
-                    );
-                    ui.add_space(10.0);
+                        // Update check button
+                        if ui.button("🔄 Check for Updates").clicked() {
+                            should_check_updates = true;
+                        }
+                        ui.add_space(8.0);
 
-                    // Update check button
-                    if ui.button("🔄 Check for Updates").clicked() {
-                        should_check_updates = true;
-                    }
-                    ui.add_space(10.0);
-
-                    ui.hyperlink_to(
-                        "https://github.com/tabular-id/tabular",
-                        "https://github.com/tabular-id/tabular",
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia ")
-                            .size(10.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                    ui.add_space(15.0);
+                        ui.hyperlink_to(
+                            "https://github.com/tabular-id/tabular",
+                            "https://github.com/tabular-id/tabular",
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("© 2025 PT. Vneu Teknologi Indonesia")
+                                .size(10.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                        ui.add_space(4.0);
+                    });
                 });
             });
+
+        if close {
+            tabular.show_about_dialog = false;
+        }
 
         if should_check_updates {
             tabular.check_for_updates(true); // Manual check from About dialog
@@ -159,37 +179,60 @@ pub(crate) fn render_about_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
 pub(crate) fn render_error_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.show_error_message {
         window_egui::style::render_modal_backdrop(ctx, "error_dialog", tabular.show_error_message);
-        egui::Window::new("Error")
+        let mut close = false;
+        egui::Window::new("error_dialog_window")
+            .id(egui::Id::new("error_dialog_window"))
             .collapsible(false)
             .resizable(false)
+            .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(400.0)
+            .frame(window_egui::style::modal_window_frame(ctx))
             .show(ctx, |ui| {
-                ui.label(&tabular.error_message);
-                ui.separator();
+                window_egui::style::render_modal_header(
+                    ui,
+                    egui::RichText::new("⚠️ Error").color(window_egui::style::theme_danger(ctx)),
+                    &mut close,
+                );
+                ui.add_space(12.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        tabular.show_error_message = false;
-                        tabular.error_message.clear();
-                    }
+                window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.label(&tabular.error_message);
                 });
             });
+
+        if close {
+            tabular.show_error_message = false;
+            tabular.error_message.clear();
+        }
     }
 }
 
 pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if tabular.show_save_dialog {
-        egui::Window::new("Save Query")
+        window_egui::style::render_modal_backdrop(ctx, "save_dialog", tabular.show_save_dialog);
+        let mut close = false;
+        let mut save_clicked = false;
+
+        egui::Window::new("save_dialog_window")
+            .id(egui::Id::new("save_dialog_window"))
             .collapsible(false)
             .resizable(false)
+            .title_bar(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .default_width(500.0)
+            .default_width(480.0)
+            .frame(window_egui::style::modal_window_frame(ctx))
             .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(5.0);
+                window_egui::style::render_modal_header(ui, "💾 Save Query", &mut close);
+                ui.add_space(12.0);
+
+                window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
 
                     // Current save directory display
-                    ui.label("Save location:");
+                    ui.label(egui::RichText::new("Save Location").strong().size(12.5));
+                    ui.add_space(2.0);
                     ui.horizontal(|ui| {
                         let display_path = if !tabular.save_directory.is_empty() {
                             &tabular.save_directory
@@ -203,46 +246,55 @@ pub(crate) fn render_save_dialog(tabular: &mut window_egui::Tabular, ctx: &egui:
                         }
                     });
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(5.0);
+                    ui.add_space(12.0);
 
                     // Filename input
-                    ui.label("Enter filename:");
-                    let filename_resp = ui.add(
-                        egui::TextEdit::singleline(&mut tabular.save_filename).cursor_at_end(false),
+                    ui.label(egui::RichText::new("Enter Filename:").strong().size(12.5));
+                    ui.add_space(2.0);
+                    let filename_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut tabular.save_filename)
+                            .hint_text("e.g. query.sql")
+                            .cursor_at_end(false),
+                        f32::INFINITY,
+                        None,
                     );
                     if filename_resp.clicked() || filename_resp.gained_focus() {
                         filename_resp.request_focus();
                         ui.ctx().request_repaint();
                     }
+                });
 
-                    ui.add_space(10.0);
+                ui.add_space(14.0);
 
-                    // Action buttons
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() && !tabular.save_filename.is_empty() {
-                            if let Err(err) = editor::save_current_tab_with_name(
-                                tabular,
-                                tabular.save_filename.clone(),
-                            ) {
-                                error!("Failed to save: {}", err);
-                            }
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                            // Reset save directory for next save
-                            tabular.save_directory.clear();
-                        }
-
-                        if ui.button("Cancel").clicked() {
-                            tabular.show_save_dialog = false;
-                            tabular.save_filename.clear();
-                            // Reset save directory for next save
-                            tabular.save_directory.clear();
+                // Action button: Save only (X on top-right handles cancel)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let can_save = !tabular.save_filename.trim().is_empty();
+                    ui.add_enabled_ui(can_save, |ui| {
+                        if ui
+                            .add(window_egui::style::btn_primary_ctx(ui.ctx(), "💾 Save"))
+                            .clicked()
+                        {
+                            save_clicked = true;
                         }
                     });
                 });
             });
+
+        if save_clicked {
+            if let Err(err) =
+                editor::save_current_tab_with_name(tabular, tabular.save_filename.clone())
+            {
+                error!("Failed to save: {}", err);
+            }
+            tabular.show_save_dialog = false;
+            tabular.save_filename.clear();
+            tabular.save_directory.clear();
+        } else if close {
+            tabular.show_save_dialog = false;
+            tabular.save_filename.clear();
+            tabular.save_directory.clear();
+        }
     }
 }
 
@@ -260,23 +312,34 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
     let mut open_tab_request: Option<(String /*title*/, String /*sql*/)> = None;
 
     let mut should_close = false;
-    egui::Window::new("Generate Query Index")
+    window_egui::style::render_modal_backdrop(ctx, "index_dialog", tabular.show_index_dialog);
+    egui::Window::new("generate_index_window")
+        .id(egui::Id::new("generate_index_window"))
         .collapsible(false)
         .resizable(false)
+        .title_bar(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(450.0)
-        .max_height(150.0)
+        .default_width(480.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
         .open(&mut open_flag)
         .show(ctx, |ui| {
-            ui.vertical(|ui| {
+            window_egui::style::render_modal_header(
+                ui,
+                "Generate Query Index",
+                &mut should_close,
+            );
+            ui.add_space(12.0);
+
+            window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 // Fields - aligned using a two-column Grid
-                ui.add_space(4.0);
-                egui::Grid::new("index_form_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    ui.label("Index name");
-                    let name_resp = ui.add(
-                        egui::TextEdit::singleline(&mut working.index_name)
-                            .desired_width(360.0)
-                            .cursor_at_end(false)
+                egui::Grid::new("index_form_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                    ui.label("Index name:");
+                    let name_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut working.index_name).cursor_at_end(false),
+                        320.0,
+                        None,
                     );
                     if name_resp.clicked() || name_resp.gained_focus() {
                         name_resp.request_focus();
@@ -284,11 +347,12 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                     }
                     ui.end_row();
 
-                    ui.label("Columns");
-                    let cols_resp = ui.add(
-                        egui::TextEdit::singleline(&mut working.columns)
-                            .desired_width(360.0)
-                            .cursor_at_end(false)
+                    ui.label("Columns:");
+                    let cols_resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut working.columns).cursor_at_end(false),
+                        320.0,
+                        None,
                     );
                     if cols_resp.clicked() || cols_resp.gained_focus() {
                         cols_resp.request_focus();
@@ -296,12 +360,7 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                     }
                     ui.end_row();
 
-                    ui.label("Unique");
-                    ui.checkbox(&mut working.unique, "");
-                    ui.end_row();
-
-                    ui.label("Method");
-                    // Determine db type for appropriate method options
+                    ui.label("Method:");
                     let db_type = tabular
                         .connections
                         .iter()
@@ -351,9 +410,12 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                             working.method = Some(selected);
                         }
                         crate::models::enums::DatabaseType::MongoDB => {
-                            // MongoDB index "method" is the key spec (1/-1 per field), handled via Columns text.
-                            // Show a small hint instead of an algorithm picker.
-                            ui.label("Use Columns as 'field1:1, field2:-1'");
+                            ui.label(
+                                egui::RichText::new("Field: 1 for asc, -1 for desc")
+                                    .italics()
+                                    .color(egui::Color32::GRAY),
+                            );
+                            working.method = None;
                         }
                         crate::models::enums::DatabaseType::ApiHttp => {
                             ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
@@ -361,218 +423,225 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         }
                     }
                     ui.end_row();
-                });
 
-                ui.add_space(8.0);
-
-                // Build SQL preview string depending on the connection type.
-                let sql_preview = {
-                    let conn = tabular
-                        .connections
-                        .iter()
-                        .find(|c| c.id == Some(working.connection_id));
-                    if let Some(conn) = conn {
-                        use crate::models::enums::DatabaseType;
-                        match (working.mode.clone(), conn.connection_type.clone()) {
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
-                                let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                format!(
-                                    "CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                    method = method
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
-                                let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
-                                let method = working.method.clone().unwrap_or("btree".to_string());
-                                format!(
-                                    "CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    schema = schema,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                    method = method
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
-                                format!(
-                                    "CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MsSQL) => {
-                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
-                                format!(
-                                    "USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    db = db,
-                                    clustered = clustered,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
-                                "-- Not applicable for Redis".to_string()
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
-                                let idx = working
-                                    .existing_index_name
-                                    .clone()
-                                    .unwrap_or(working.index_name.clone());
-                                let method = working.method.clone().unwrap_or("BTREE".to_string());
-                                format!(
-                                    "-- MySQL has no ALTER INDEX; typically DROP then CREATE\nALTER TABLE `{table}` DROP INDEX `{idx}`;\nCREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                    method = method,
-                                    idx = idx,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
-                                let idx = working
-                                    .existing_index_name
-                                    .clone()
-                                    .unwrap_or(working.index_name.clone());
-                                format!(
-                                    "-- PostgreSQL example edits\nALTER INDEX IF EXISTS \"{idx}\" RENAME TO \"{new}\";\n-- or REBUILD/SET options\n-- ALTER INDEX IF EXISTS \"{new}\" SET (fillfactor = 90);",
-                                    idx = idx,
-                                    new = working.index_name,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
-                                let idx = working
-                                    .existing_index_name
-                                    .clone()
-                                    .unwrap_or(working.index_name.clone());
-                                format!(
-                                    "-- SQLite has no ALTER INDEX; DROP and CREATE\nDROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX \"{name}\" ON \"{table}\"({cols});",
-                                    unique = if working.unique { "UNIQUE" } else { "" },
-                                    name = working.index_name,
-                                    table = working.table_name,
-                                    cols = working.columns,
-                                    idx = idx,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MsSQL) => {
-                                let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
-                                let idx = working
-                                    .existing_index_name
-                                    .clone()
-                                    .unwrap_or(working.index_name.clone());
-                                format!(
-                                    "USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
-                                    db = db,
-                                    idx = idx,
-                                    table = working.table_name,
-                                    new = working.index_name,
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
-                                "-- Not applicable for Redis".to_string()
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
-                                // Build MongoDB createIndex JavaScript snippet
-                                let db = working
-                                    .database_name
-                                    .clone()
-                                    .unwrap_or_else(|| conn.database.clone());
-                                // Parse columns into key doc: "a:1, b:-1" or plain "a,b" => "a:1,b:1"
-                                let cols_raw = working.columns.clone();
-                                let keys: Vec<String> = cols_raw
-                                    .split(',')
-                                    .map(|s| s.trim())
-                                    .filter(|s| !s.is_empty())
-                                    .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
-                                    .collect();
-                                let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
-                                format!(
-                                    "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
-                                    db,
-                                    working.table_name,
-                                    keys_doc,
-                                    working.index_name,
-                                    if working.unique { "true" } else { "false" }
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => {
-                                let db = working
-                                    .database_name
-                                    .clone()
-                                    .unwrap_or_else(|| conn.database.clone());
-                                let target_idx = working
-                                    .existing_index_name
-                                    .clone()
-                                    .unwrap_or_else(|| working.index_name.clone());
-                                let cols_raw = working.columns.clone();
-                                let keys: Vec<String> = cols_raw
-                                    .split(',')
-                                    .map(|s| s.trim())
-                                    .filter(|s| !s.is_empty())
-                                    .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
-                                    .collect();
-                                let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
-                                let drop_cmd = format!(
-                                    "db.{}.{}.dropIndex(\"{}\");",
-                                    db, working.table_name, target_idx
-                                );
-                                let create_cmd = format!(
-                                    "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
-                                    db,
-                                    working.table_name,
-                                    keys_doc,
-                                    working.index_name,
-                                    if working.unique { "true" } else { "false" }
-                                );
-                                format!(
-                                    "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}\n{}",
-                                    drop_cmd,
-                                    create_cmd
-                                )
-                            }
-                            (crate::models::structs::IndexDialogMode::Create, DatabaseType::ApiHttp)
-                            | (crate::models::structs::IndexDialogMode::Edit, DatabaseType::ApiHttp) => {
-                                "-- Not applicable for API-HTTP connections".to_string()
-                            }
-                        }
-                    } else {
-                        "-- No connection selected".to_string()
-                    }
-                };
-
-                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                    ui.code(sql_preview.clone());
-                });
-
-                ui.add_space(10.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let big_btn = egui::Button::new(egui::RichText::new("Open in Editor").strong())
-                        .min_size(egui::vec2(150.0, 30.0));
-                    if ui.add(big_btn).clicked() {
-                        let title = match working.mode {
-                            crate::models::structs::IndexDialogMode::Create => {
-                                format!("Create Index on {}", working.table_name)
-                            }
-                            crate::models::structs::IndexDialogMode::Edit => {
-                                format!("Edit Index {}", working.index_name)
-                            }
-                        };
-                        open_tab_request = Some((title, sql_preview.clone()));
-                        should_close = true; // close dialog after UI
-                    }
+                    ui.label("Unique:");
+                    ui.checkbox(&mut working.unique, "");
+                    ui.end_row();
                 });
             });
+
+            // Construct preview SQL
+            let sql_preview = {
+                if let Some(conn) = tabular
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(working.connection_id))
+                {
+                    use crate::models::enums::DatabaseType;
+                    match (working.mode.clone(), conn.connection_type.clone()) {
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::MySQL) => {
+                            let method = working.method.clone().unwrap_or("BTREE".to_string());
+                            format!(
+                                "CREATE {unique} INDEX `{name}` ON `{table}` ({cols}) USING {method};",
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                name = working.index_name,
+                                table = working.table_name,
+                                cols = working.columns,
+                                method = method
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::PostgreSQL) => {
+                            let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
+                            let method = working.method.clone().unwrap_or("btree".to_string());
+                            format!(
+                                "CREATE {unique} INDEX {name} ON \"{schema}\".\"{table}\" USING {method} ({cols});",
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                name = working.index_name,
+                                schema = schema,
+                                table = working.table_name,
+                                cols = working.columns,
+                                method = method
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::SQLite) => {
+                            format!(
+                                "CREATE {unique} INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({cols});",
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                name = working.index_name,
+                                table = working.table_name,
+                                cols = working.columns,
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::MsSQL) => {
+                            let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                            let clustered = working.method.clone().unwrap_or("NONCLUSTERED".to_string());
+                            format!(
+                                "USE [{db}];\nCREATE {unique} {clustered} INDEX [{name}] ON [dbo].[{table}] ({cols});",
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                db = db,
+                                name = working.index_name,
+                                table = working.table_name,
+                                cols = working.columns,
+                                clustered = clustered
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MySQL) => {
+                            let method = working.method.clone().unwrap_or("BTREE".to_string());
+                            let idx = working
+                                .existing_index_name
+                                .clone()
+                                .unwrap_or(working.index_name.clone());
+                            format!(
+                                "ALTER TABLE `{table}` DROP INDEX `{idx}`,\nADD {unique} INDEX `{new}` ({cols}) USING {method};",
+                                table = working.table_name,
+                                idx = idx,
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                new = working.index_name,
+                                cols = working.columns,
+                                method = method
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::PostgreSQL) => {
+                            let schema = working.database_name.clone().unwrap_or_else(|| "public".to_string());
+                            let idx = working
+                                .existing_index_name
+                                .clone()
+                                .unwrap_or(working.index_name.clone());
+                            format!(
+                                "ALTER INDEX \"{schema}\".\"{idx}\" RENAME TO \"{new}\";",
+                                schema = schema,
+                                idx = idx,
+                                new = working.index_name,
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::SQLite) => {
+                            let idx = working
+                                .existing_index_name
+                                .clone()
+                                .unwrap_or(working.index_name.clone());
+                            format!(
+                                "DROP INDEX IF EXISTS \"{idx}\";\nCREATE {unique} INDEX IF NOT EXISTS \"{new}\" ON \"{table}\"({cols});",
+                                idx = idx,
+                                unique = if working.unique { "UNIQUE" } else { "" },
+                                new = working.index_name,
+                                table = working.table_name,
+                                cols = working.columns,
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MsSQL) => {
+                            let db = working.database_name.clone().unwrap_or_else(|| conn.database.clone());
+                            let idx = working
+                                .existing_index_name
+                                .clone()
+                                .unwrap_or(working.index_name.clone());
+                            format!(
+                                "USE [{db}];\nALTER INDEX [{idx}] ON [dbo].[{table}] REBUILD;\n-- To rename: EXEC sp_rename N'[dbo].[{idx}]', N'{new}', N'INDEX';",
+                                db = db,
+                                idx = idx,
+                                table = working.table_name,
+                                new = working.index_name,
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
+                            "-- Not applicable for Redis".to_string()
+                        }
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
+                            let db = working
+                                .database_name
+                                .clone()
+                                .unwrap_or_else(|| conn.database.clone());
+                            let cols_raw = working.columns.clone();
+                            let keys: Vec<String> = cols_raw
+                                .split(',')
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                .collect();
+                            let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                            format!(
+                                "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                db,
+                                working.table_name,
+                                keys_doc,
+                                working.index_name,
+                                if working.unique { "true" } else { "false" }
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Edit, DatabaseType::MongoDB) => {
+                            let db = working
+                                .database_name
+                                .clone()
+                                .unwrap_or_else(|| conn.database.clone());
+                            let target_idx = working
+                                .existing_index_name
+                                .clone()
+                                .unwrap_or_else(|| working.index_name.clone());
+                            let cols_raw = working.columns.clone();
+                            let keys: Vec<String> = cols_raw
+                                .split(',')
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|tok| if tok.contains(':') { tok.to_string() } else { format!("{}: 1", tok) })
+                                .collect();
+                            let keys_doc = if keys.is_empty() { "_id: 1".to_string() } else { keys.join(", ") };
+                            let drop_cmd = format!(
+                                "db.{}.{}.dropIndex(\"{}\");",
+                                db, working.table_name, target_idx
+                            );
+                            let create_cmd = format!(
+                                "db.{}.{}.createIndex({{{}}}, {{ name: \"{}\", unique: {} }});",
+                                db,
+                                working.table_name,
+                                keys_doc,
+                                working.index_name,
+                                if working.unique { "true" } else { "false" }
+                            );
+                            format!(
+                                "// MongoDB has no ALTER INDEX; typically drop and recreate\n{}\n{}",
+                                drop_cmd,
+                                create_cmd
+                            )
+                        }
+                        (crate::models::structs::IndexDialogMode::Create, DatabaseType::ApiHttp)
+                        | (crate::models::structs::IndexDialogMode::Edit, DatabaseType::ApiHttp)
+                        | (crate::models::structs::IndexDialogMode::Create, DatabaseType::Redis) => {
+                            "-- Not applicable for this connection type".to_string()
+                        }
+                    }
+                } else {
+                    "-- No connection selected".to_string()
+                }
+            };
+
+            ui.add_space(10.0);
+            window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(egui::RichText::new("SQL Preview").strong().size(12.0));
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+                    ui.code(sql_preview.clone());
+                });
+            });
+
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let big_btn = window_egui::style::btn_primary_ctx(ui.ctx(), "Open in Editor")
+                    .min_size(egui::vec2(140.0, 30.0));
+                if ui.add(big_btn).clicked() {
+                    let title = match working.mode {
+                        crate::models::structs::IndexDialogMode::Create => {
+                            format!("Create Index on {}", working.table_name)
+                        }
+                        crate::models::structs::IndexDialogMode::Edit => {
+                            format!("Edit Index {}", working.index_name)
+                        }
+                    };
+                    open_tab_request = Some((title, sql_preview.clone()));
+                    should_close = true; // close dialog after UI
+                }
+            });
         });
+
     // Persist user edits back into app state
     tabular.index_dialog = Some(working);
     // Update dialog visibility from open_flag set in UI
@@ -638,15 +707,28 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
     let mut action = WizardAction::None;
     let mut copy_preview: Option<String> = None;
     let mut keep_open = tabular.show_create_table_dialog;
+    let mut close = false;
 
-    egui::Window::new("Create Table Wizard")
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "create_table_wizard",
+        tabular.show_create_table_dialog,
+    );
+
+    egui::Window::new("create_table_wizard_window")
+        .id(egui::Id::new("create_table_wizard_window"))
         .collapsible(false)
         .resizable(true)
+        .title_bar(false)
         .default_width(680.0)
         .min_width(640.0)
         .min_height(420.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
         .open(&mut keep_open)
         .show(ctx, |ui| {
+            window_egui::style::render_modal_header(ui, "Create Table Wizard", &mut close);
+            ui.add_space(12.0);
+
             let Some(state) = tabular.create_table_wizard.as_mut() else {
                 action = WizardAction::Cancel;
                 ui.label("Wizard state unavailable.");
@@ -791,11 +873,14 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                         }
                                         _ => {
                                             let db_field_width = ui.available_width();
-                                            let db_response = ui.add_sized(
-                                                [db_field_width, 0.0],
-                                                egui::TextEdit::singleline(&mut target_text)
-                                                    .cursor_at_end(false),
-                                            );
+                                            let db_response =
+                                                crate::window_egui::style::render_text_field(
+                                                    ui,
+                                                    egui::TextEdit::singleline(&mut target_text)
+                                                        .cursor_at_end(false),
+                                                    db_field_width,
+                                                    None,
+                                                );
                                             if db_response.clicked() || db_response.gained_focus() {
                                                 db_response.request_focus();
                                                 ui.ctx().request_repaint();
@@ -1153,65 +1238,59 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                 });
             }
 
-            ui.add_space(12.0);
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Vec2::new(14.0, 12.0))
-                .corner_radius(egui::CornerRadius::same(10))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Cancel"))
-                            .clicked()
-                        {
-                            action = WizardAction::Cancel;
-                        }
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if current_step.previous().is_some()
+                    && ui
+                        .add_sized(
+                            egui::vec2(100.0, 30.0),
+                            crate::window_egui::style::btn_secondary("Back"),
+                        )
+                        .clicked()
+                {
+                    action = WizardAction::Back;
+                }
 
-                        if current_step.previous().is_some()
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if current_step == models::structs::CreateTableWizardStep::Review {
+                        let create_enabled = preview_result
+                            .as_ref()
+                            .map(|res| res.is_ok())
+                            .unwrap_or(false);
+                        let create_button =
+                            crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Create Table")
+                                .min_size(egui::vec2(110.0, 30.0));
+                        if ui.add_enabled(create_enabled, create_button).clicked() {
+                            action = WizardAction::Create;
+                        }
+                        if let Some(Ok(sql)) = preview_result.as_ref()
                             && ui
-                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_secondary("Back"))
+                                .add_sized(
+                                    egui::vec2(100.0, 30.0),
+                                    crate::window_egui::style::btn_secondary("Copy SQL"),
+                                )
                                 .clicked()
                         {
-                            action = WizardAction::Back;
+                            copy_preview = Some(sql.clone());
                         }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if current_step == models::structs::CreateTableWizardStep::Review {
-                                let create_enabled = preview_result
-                                    .as_ref()
-                                    .map(|res| res.is_ok())
-                                    .unwrap_or(false);
-                                let create_button =
-                                    crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Create Table")
-                                        .min_size(egui::vec2(110.0, 32.0));
-                                if ui.add_enabled(create_enabled, create_button).clicked() {
-                                    action = WizardAction::Create;
-                                }
-                                if let Some(Ok(sql)) = preview_result.as_ref()
-                                    && ui
-                                        .add_sized(
-                                            egui::vec2(110.0, 32.0),
-                                            crate::window_egui::style::btn_secondary("Copy SQL"),
-                                        )
-                                        .clicked()
-                                {
-                                    copy_preview = Some(sql.clone());
-                                }
-                            } else if ui
-                                .add_sized(egui::vec2(110.0, 32.0), crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Next"))
-                                .clicked()
-                            {
-                                action = WizardAction::Next;
-                            }
-                        });
-                    });
+                    } else if ui
+                        .add_sized(
+                            egui::vec2(100.0, 30.0),
+                            crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Next"),
+                        )
+                        .clicked()
+                    {
+                        action = WizardAction::Next;
+                    }
                 });
+            });
         });
 
     if let Some(sql) = copy_preview {
         ctx.copy_text(sql);
     }
 
-    if !keep_open {
+    if !keep_open || close {
         action = WizardAction::Cancel;
     }
 
@@ -1272,7 +1351,11 @@ fn parse_csv_preview(
         .map_err(|e| e.to_string())?;
 
     let headers: Vec<String> = if has_header_row {
-        rdr.headers().map_err(|e| e.to_string())?.iter().map(|s| s.to_string()).collect()
+        rdr.headers()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         vec![]
     };
@@ -1305,7 +1388,11 @@ fn parse_csv_all(
     Ok(rows)
 }
 
-fn csv_quote_value(v: &str, null_value: &str, db_type: &crate::models::enums::DatabaseType) -> String {
+fn csv_quote_value(
+    v: &str,
+    null_value: &str,
+    db_type: &crate::models::enums::DatabaseType,
+) -> String {
     if v == null_value || (null_value.is_empty() && v.is_empty()) {
         return "NULL".to_string();
     }
@@ -1346,10 +1433,18 @@ fn build_csv_insert_batches(
 
     let full_table = match (db_type, database_name) {
         (crate::models::enums::DatabaseType::MySQL, Some(db)) => {
-            format!("{}.{}", csv_quote_ident(db, db_type), csv_quote_ident(table_name, db_type))
+            format!(
+                "{}.{}",
+                csv_quote_ident(db, db_type),
+                csv_quote_ident(table_name, db_type)
+            )
         }
         (crate::models::enums::DatabaseType::PostgreSQL, Some(schema)) => {
-            format!("{}.{}", csv_quote_ident(schema, db_type), csv_quote_ident(table_name, db_type))
+            format!(
+                "{}.{}",
+                csv_quote_ident(schema, db_type),
+                csv_quote_ident(table_name, db_type)
+            )
         }
         (crate::models::enums::DatabaseType::MsSQL, Some(db)) => {
             format!("[{}].dbo.{}", db, csv_quote_ident(table_name, db_type))
@@ -1380,7 +1475,9 @@ fn build_csv_insert_batches(
             .collect();
         batches.push(format!(
             "INSERT INTO {} ({}) VALUES\n{};",
-            full_table, col_list, rows_sql.join(",\n")
+            full_table,
+            col_list,
+            rows_sql.join(",\n")
         ));
     }
     batches
@@ -1395,9 +1492,18 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         return;
     }
 
-    window_egui::style::render_modal_backdrop(ctx, "csv_import_modal", tabular.show_csv_import_dialog);
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "csv_import_modal",
+        tabular.show_csv_import_dialog,
+    );
 
-    let table_name = tabular.csv_import_state.as_ref().unwrap().table_name.clone();
+    let table_name = tabular
+        .csv_import_state
+        .as_ref()
+        .unwrap()
+        .table_name
+        .clone();
     let title = format!("Import Data into \"{}\"", table_name);
     let mut open_flag = tabular.show_csv_import_dialog;
     let mut should_close = false;
@@ -1408,9 +1514,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
     let mut auto_match_all = false;
     let mut skip_all = false;
 
-    egui::Window::new(&title)
+    egui::Window::new("csv_import_dialog_window")
+        .id(egui::Id::new("csv_import_dialog_window"))
         .collapsible(false)
         .resizable(true)
+        .title_bar(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(740.0)
         .min_width(580.0)
@@ -1418,8 +1526,12 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         .default_height(560.0)
         .min_height(380.0)
         .max_height(780.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
         .open(&mut open_flag)
         .show(ctx, |ui| {
+            window_egui::style::render_modal_header(ui, &title, &mut should_close);
+            ui.add_space(12.0);
+
             let state = tabular.csv_import_state.as_mut().unwrap();
             let accent = window_egui::style::theme_accent(ctx);
             let muted = window_egui::style::theme_muted_text(ctx);
@@ -1639,10 +1751,12 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                 }
                                 ui.add_space(16.0);
                                 ui.label(egui::RichText::new("NULL representation:").color(muted));
-                                ui.add(
+                                crate::window_egui::style::render_text_field(
+                                    ui,
                                     egui::TextEdit::singleline(&mut state.null_value)
-                                        .desired_width(110.0)
                                         .hint_text("e.g. NULL or \\N"),
+                                    110.0,
+                                    None,
                                 );
                             });
                         });
@@ -1815,8 +1929,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 });
 
             // ── Footer: Status Bar + Action Buttons ───────────────────────────
-            ui.separator();
-            ui.add_space(6.0);
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
                 // Status message on the left
                 if !state.progress_message.is_empty() {
@@ -1842,11 +1955,6 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
 
                 // Buttons aligned to the right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(window_egui::style::btn_secondary("Close")).clicked() {
-                        should_close = true;
-                    }
-                    ui.add_space(6.0);
-
                     let has_valid_mapping = state
                         .column_mappings
                         .iter()
@@ -1886,7 +1994,10 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         let state = tabular.csv_import_state.as_mut().unwrap();
         let table_cols = state.table_columns.clone();
         for mapping in &mut state.column_mappings {
-            if let Some(matched) = table_cols.iter().find(|c| c.eq_ignore_ascii_case(&mapping.csv_header)) {
+            if let Some(matched) = table_cols
+                .iter()
+                .find(|c| c.eq_ignore_ascii_case(&mapping.csv_header))
+            {
                 mapping.target_column = matched.clone();
             }
         }
@@ -1918,27 +2029,27 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         && let Some(path) = rfd::FileDialog::new()
             .add_filter("CSV / TSV", &["csv", "tsv", "txt"])
             .pick_file()
-        {
-            let state = tabular.csv_import_state.as_mut().unwrap();
-            let delim = state.delimiter;
-            let has_hdr = state.has_header_row;
-            match parse_csv_preview(&path, delim, has_hdr) {
-                Ok((headers, preview)) => {
-                    let table_cols = state.table_columns.clone();
-                    let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
-                    state.preview_headers = headers;
-                    state.preview_rows = preview;
-                    state.column_mappings = mappings;
-                    state.file_path = Some(path);
-                    state.status = crate::models::structs::CsvImportStatus::Idle;
-                    state.progress_message = String::new();
-                }
-                Err(e) => {
-                    state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                    state.progress_message = format!("Parse error: {}", e);
-                }
+    {
+        let state = tabular.csv_import_state.as_mut().unwrap();
+        let delim = state.delimiter;
+        let has_hdr = state.has_header_row;
+        match parse_csv_preview(&path, delim, has_hdr) {
+            Ok((headers, preview)) => {
+                let table_cols = state.table_columns.clone();
+                let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
+                state.preview_headers = headers;
+                state.preview_rows = preview;
+                state.column_mappings = mappings;
+                state.file_path = Some(path);
+                state.status = crate::models::structs::CsvImportStatus::Idle;
+                state.progress_message = String::new();
+            }
+            Err(e) => {
+                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+                state.progress_message = format!("Parse error: {}", e);
             }
         }
+    }
 
     if trigger_import {
         let state = tabular.csv_import_state.as_ref().unwrap();
@@ -1965,19 +2076,25 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 );
                 if batches.is_empty() {
                     let state = tabular.csv_import_state.as_mut().unwrap();
-                    state.status = crate::models::structs::CsvImportStatus::Failed("No data or all columns skipped.".into());
+                    state.status = crate::models::structs::CsvImportStatus::Failed(
+                        "No data or all columns skipped.".into(),
+                    );
                     state.progress_message = "No data or all columns skipped.".into();
                 } else {
                     let batch_count = batches.len();
                     let mut jobs = Vec::new();
                     let mut all_ok = true;
                     for (i, sql) in batches.into_iter().enumerate() {
-                        let job_id = tabular.next_query_job_id;
-                        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
-                        match crate::connection::prepare_query_job(tabular, connection_id, sql, job_id) {
+                        let job_id = tabular.jobs.allocate_id();
+                        match crate::connection::prepare_query_job(
+                            tabular,
+                            connection_id,
+                            sql,
+                            job_id,
+                        ) {
                             Ok(job) => {
                                 let preview = format!("CSV import batch {}/{}", i + 1, batch_count);
-                                tabular.active_query_jobs.insert(
+                                tabular.jobs.active.insert(
                                     job_id,
                                     crate::connection::QueryJobStatus {
                                         job_id,
@@ -1991,8 +2108,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             }
                             Err(e) => {
                                 let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
-                                state.progress_message = format!("Failed to prepare batch: {:?}", e);
+                                state.status = crate::models::structs::CsvImportStatus::Failed(
+                                    format!("{:?}", e),
+                                );
+                                state.progress_message =
+                                    format!("Failed to prepare batch: {:?}", e);
                                 all_ok = false;
                                 break;
                             }
@@ -2011,7 +2131,9 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             }
                             Err(e) => {
                                 let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(format!("{:?}", e));
+                                state.status = crate::models::structs::CsvImportStatus::Failed(
+                                    format!("{:?}", e),
+                                );
                                 state.progress_message = format!("Failed to start import: {:?}", e);
                             }
                         }
@@ -2039,19 +2161,34 @@ fn build_auto_mappings(
     table_cols: &[String],
 ) -> Vec<crate::models::structs::CsvColumnMapping> {
     if has_header_row {
-        headers.iter().map(|h| {
-            let target = table_cols.iter()
-                .find(|c| c.to_lowercase() == h.to_lowercase())
-                .cloned()
-                .unwrap_or_else(|| "__skip__".to_string());
-            crate::models::structs::CsvColumnMapping { csv_header: h.clone(), target_column: target }
-        }).collect()
+        headers
+            .iter()
+            .map(|h| {
+                let target = table_cols
+                    .iter()
+                    .find(|c| c.to_lowercase() == h.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| "__skip__".to_string());
+                crate::models::structs::CsvColumnMapping {
+                    csv_header: h.clone(),
+                    target_column: target,
+                }
+            })
+            .collect()
     } else {
         let ncols = preview.first().map(|r| r.len()).unwrap_or(0);
-        (0..ncols).map(|i| {
-            let target = table_cols.get(i).cloned().unwrap_or_else(|| "__skip__".to_string());
-            crate::models::structs::CsvColumnMapping { csv_header: format!("col_{}", i + 1), target_column: target }
-        }).collect()
+        (0..ncols)
+            .map(|i| {
+                let target = table_cols
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "__skip__".to_string());
+                crate::models::structs::CsvColumnMapping {
+                    csv_header: format!("col_{}", i + 1),
+                    target_column: target,
+                }
+            })
+            .collect()
     }
 }
 
@@ -2059,64 +2196,75 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
     if !tabular.show_parameter_dialog {
         return;
     }
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "parameter_dialog",
+        tabular.show_parameter_dialog,
+    );
 
     let mut execute_clicked = false;
-    let mut cancel_clicked = false;
+    let mut close = false;
 
-    egui::Window::new("Parameter Bindings Required")
+    egui::Window::new("parameter_bindings_window")
+        .id(egui::Id::new("parameter_bindings_window"))
         .collapsible(false)
         .resizable(false)
+        .title_bar(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(450.0)
-        .open(&mut tabular.show_parameter_dialog)
+        .default_width(480.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
         .show(ctx, |ui| {
-            ui.vertical(|ui| {
+            window_egui::style::render_modal_header(ui, "Parameter Bindings Required", &mut close);
+            ui.add_space(12.0);
+
+            window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new("Query ini memiliki parameter placeholder. Masukkan nilai parameter:")
-                        .strong(),
+                    egui::RichText::new("Enter parameter values for this query:")
+                        .size(12.0)
+                        .weak(),
                 );
                 ui.add_space(8.0);
 
                 egui::Grid::new("parameter_input_grid")
                     .num_columns(2)
-                    .spacing([10.0, 8.0])
+                    .spacing([14.0, 10.0])
                     .show(ui, |ui| {
                         for (param_name, val) in &mut tabular.parameter_inputs {
-                            ui.label(egui::RichText::new(param_name.as_str()).monospace().strong());
-                            ui.add(
-                                egui::TextEdit::singleline(val)
-                                    .hint_text("Masukkan nilai...")
-                                    .desired_width(260.0),
+                            ui.label(
+                                egui::RichText::new(param_name.as_str())
+                                    .monospace()
+                                    .strong(),
+                            );
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(val).hint_text("Enter value..."),
+                                260.0,
+                                None,
                             );
                             ui.end_row();
                         }
                     });
+            });
 
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(8.0);
+            ui.add_space(14.0);
 
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                egui::RichText::new("🚀 Eksekusi Query")
-                                    .strong()
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .clicked()
-                        {
-                            execute_clicked = true;
-                        }
-                        if ui.button("Batal").clicked() {
-                            cancel_clicked = true;
-                        }
-                    });
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(window_egui::style::btn_primary_ctx(
+                            ui.ctx(),
+                            "🚀 Run Query",
+                        ))
+                        .clicked()
+                    {
+                        execute_clicked = true;
+                    }
                 });
             });
         });
 
-    if cancel_clicked {
+    if close {
         tabular.show_parameter_dialog = false;
     } else if execute_clicked {
         tabular.show_parameter_dialog = false;
@@ -2130,67 +2278,88 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
     if !tabular.show_unsafe_dml_dialog {
         return;
     }
-    window_egui::style::render_modal_backdrop(ctx, "unsafe_dml_dialog", tabular.show_unsafe_dml_dialog);
+    window_egui::style::render_modal_backdrop(
+        ctx,
+        "unsafe_dml_dialog",
+        tabular.show_unsafe_dml_dialog,
+    );
 
     let mut confirm_clicked = false;
-    let mut cancel_clicked = false;
+    let mut close = false;
 
-    egui::Window::new("⚠️ Peringatan: Query Berbahaya (Unsafe DML)")
+    egui::Window::new("unsafe_dml_dialog_window")
+        .id(egui::Id::new("unsafe_dml_dialog_window"))
         .collapsible(false)
         .resizable(false)
+        .title_bar(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(480.0)
-        .open(&mut tabular.show_unsafe_dml_dialog)
+        .default_width(500.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
         .show(ctx, |ui| {
-            ui.vertical(|ui| {
+            window_egui::style::render_modal_header(
+                ui,
+                egui::RichText::new("⚠️ Unsafe Statement").color(window_egui::style::theme_danger(ctx)),
+                &mut close,
+            );
+            ui.add_space(12.0);
+
+            window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.label(
                     egui::RichText::new(format!(
-                        "Perintah {} ini TIDAK memiliki klausa WHERE!",
+                        "This {} statement has NO WHERE clause!",
                         tabular.unsafe_dml_type
                     ))
                     .color(window_egui::style::theme_danger(ctx))
                     .strong()
-                    .size(15.0),
+                    .size(14.0),
                 );
-                ui.add_space(6.0);
+                ui.add_space(4.0);
                 ui.label(
-                    "Mengeksekusi perintah ini akan mengubah atau menghapus SELURUH baris data pada tabel target. Apakah Anda yakin ingin melanjutkan?",
+                    egui::RichText::new(
+                        "Running it will change or delete EVERY row in the target table. Are you sure you want to continue?",
+                    )
+                    .size(12.0)
+                    .weak(),
                 );
-                ui.add_space(8.0);
+                ui.add_space(10.0);
 
-                ui.group(|ui| {
-                    ui.label(
-                        egui::RichText::new(&tabular.unsafe_dml_query)
-                            .monospace()
-                            .size(12.0),
-                    );
-                });
-
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                egui::RichText::new("Ya, Eksekusi Perintah")
-                                    .strong()
-                                    .color(egui::Color32::WHITE),
-                            )
-                            .clicked()
-                        {
-                            confirm_clicked = true;
-                        }
-                        if ui.button("Batal").clicked() {
-                            cancel_clicked = true;
-                        }
+                egui::Frame::new()
+                    .fill(if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(18, 20, 26)
+                    } else {
+                        egui::Color32::from_rgb(240, 242, 246)
+                    })
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(&tabular.unsafe_dml_query)
+                                .monospace()
+                                .size(11.5),
+                        );
                     });
+            });
+
+            ui.add_space(14.0);
+
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let run_btn = egui::Button::new(
+                        egui::RichText::new("Yes, Run It")
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(window_egui::style::theme_danger(ctx));
+                    if ui.add(run_btn).clicked() {
+                        confirm_clicked = true;
+                    }
                 });
             });
         });
 
-    if cancel_clicked {
+    if close {
         tabular.show_unsafe_dml_dialog = false;
     } else if confirm_clicked {
         tabular.show_unsafe_dml_dialog = false;
@@ -2198,4 +2367,3 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
         editor::execute_query_bypass_checks(tabular, query);
     }
 }
-

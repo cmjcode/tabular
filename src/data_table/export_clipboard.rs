@@ -1,5 +1,5 @@
-/// Utilities for exporting query result sets to clipboard in various formats:
-/// Markdown Table, JSON, CSV, and SQL INSERT statements.
+//! Utilities for exporting query result sets to clipboard in various formats:
+//! Markdown Table, JSON, CSV, and SQL INSERT statements.
 
 pub fn format_as_markdown_table(headers: &[String], rows: &[Vec<String>]) -> String {
     if headers.is_empty() {
@@ -51,7 +51,8 @@ pub fn format_as_json(headers: &[String], rows: &[Vec<String>]) -> String {
         objects.push(serde_json::Value::Object(map));
     }
 
-    serde_json::to_string_pretty(&serde_json::Value::Array(objects)).unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_string_pretty(&serde_json::Value::Array(objects))
+        .unwrap_or_else(|_| "[]".to_string())
 }
 
 pub fn format_as_csv(headers: &[String], rows: &[Vec<String>]) -> String {

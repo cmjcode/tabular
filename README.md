@@ -30,6 +30,7 @@ Tabular is a lightweight, native database client built with the `eframe`/`egui` 
 - **End-to-End Encrypted Cloud Sync (Zero-Knowledge Vault)**: Argon2id KDF, AES-256-GCM encrypted connections and HTTP secrets synced securely across devices and teams
 - **Integrated HTTP Client**: REST API tester supporting JSON, form-data, custom auth, headers, and code export
 - **Smart Sidebar Tree Search**: Case-insensitive instant filtering across Connections, Queries, History, and HTTP Collections. When searching for a folder name, the folder and all of its contents (connections, queries, history entries, subfolders) remain fully displayed and automatically expanded.
+- **MCP Server for AI Agents (`tabular mcp`)**: Built-in Model Context Protocol server so Claude Code, Cursor, Codex and other agent harnesses can list connections, describe schemas (relevance-ranked), run read-only queries, get EXPLAIN plans and lint SQL. Credentials never leave Tabular, writes are refused, every agent query is audited in history. See [docs/MCP.md](docs/MCP.md).
 - **AI Assistant (`Cmd+Shift+A`)**: Schema-aware SQL completion with OpenAI, Anthropic Claude, Groq, GitHub Copilot, or custom endpoints
 - **Editor Tab Drag & Drop Reordering & Pin Tab**: Group and reorder tabs via intuitive horizontal drag-and-drop, pin important queries/tables with 📌, prevent accidental closures, and manage tabs with full context menus
 - **Modern Developer SQL Editor**: Context-aware alias resolution (`u.`), Foreign Key auto-join completions, statement-level execution (`Ctrl+Enter`), quick query formatting (`Ctrl+Shift+F`), line comments (`Ctrl+/`), line duplication & moving (`Alt+Up/Down`), active line highlight, and multi-format result clipboard exports (Markdown, JSON, CSV, SQL INSERTs).
@@ -133,9 +134,14 @@ Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
 
 
 ### AI Assistant (Cmd+Shift+A)
-Context‑aware AI assistant integrated directly into the query editor.
-- Supported providers: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, and **Custom OpenAI‑compatible** endpoints.
-- Automatically injects active schema (tables + columns) as context.
+Context‑aware AI chat integrated directly into the query editor.
+- Two backends (Settings → AI Assistant):
+  - **HTTP API** with your own key: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, or any **OpenAI‑compatible** endpoint.
+  - **CLI agent** — reuse a coding agent already installed and logged in on your machine, no API key needed: **Antigravity (`agy`)**, **Claude Code (`claude`)**, **Gemini CLI (`gemini`)**, or a custom command. Output is streamed live; conversations continue across turns.
+- With a CLI agent, the agent can inspect your databases through Tabular's own read‑only MCP server (`tabular mcp`): Claude Code gets it per request, `agy`/`gemini` register it once with the **Register** button.
+- **Editor context**: the active tab (and its selection) is always sent; attach any other open SQL tabs with **+ Attach tab**.
+- **Live edit**: when the agent writes a query for a tab it lands in that tab while streaming; every edit has **Revert**, and live edit can be turned off in favour of an **Apply** button.
+- Automatically injects the relevant schema (tables + columns, vector‑ranked) as context.
 
 ### Redis Browser
 Dedicated visual key explorer for Redis connections.

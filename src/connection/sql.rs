@@ -339,15 +339,11 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
     }
 
     let mut simple_select_count = 0;
-    for stmt in sql.split(';') {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() {
+    for stmt in split_sql_statements(sql, false) {
+        if is_comment_only_statement(&stmt) {
             continue;
         }
-
-        if trimmed.trim_start().starts_with(['-', '#']) {
-            continue;
-        }
+        let trimmed = strip_leading_sql_comments(&stmt);
 
         if trimmed.to_uppercase().starts_with("SELECT") {
             let is_simple = is_simple_select_statement(trimmed);
@@ -633,9 +629,183 @@ pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
     statements
 }
 
+/// Lewati spasi, komentar baris `-- …` / `# …`, dan komentar blok `/* … */` di
+/// awal statement supaya statement bisa diklasifikasi dari keyword pertamanya.
+pub fn strip_leading_sql_comments(sql: &str) -> &str {
+    let mut rest = sql.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix("--").or_else(|| rest.strip_prefix('#')) {
+            rest = match after.find('\n') {
+                Some(pos) => after[pos + 1..].trim_start(),
+                None => "",
+            };
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = match after.find("*/") {
+                Some(pos) => after[pos + 2..].trim_start(),
+                None => "",
+            };
+        } else {
+            return rest;
+        }
+    }
+}
+
+/// True jika statement hanya berisi komentar dan spasi.
+pub fn is_comment_only_statement(sql: &str) -> bool {
+    strip_leading_sql_comments(sql)
+        .trim_end_matches(';')
+        .trim()
+        .is_empty()
+}
+
+/// Menentukan apakah statement diharapkan menghasilkan result set.
+///
+/// Perubahan data/skema tanpa `RETURNING`/`OUTPUT` dijalankan lewat `execute()`
+/// agar jumlah baris terdampak dari driver bisa dilaporkan. Selain itu (termasuk
+/// statement yang tidak bisa diklasifikasi) diambil sebagai baris, yang selalu aman.
+pub fn statement_returns_rows(sql: &str) -> bool {
+    const MODIFYING: &[&str] = &[
+        "INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE", "UPSERT", "TRUNCATE", "CREATE", "ALTER",
+        "DROP", "GRANT", "REVOKE", "RENAME", "COMMENT",
+    ];
+    let body = strip_leading_sql_comments(sql);
+    let first = body
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    if !MODIFYING.contains(&first.as_str()) {
+        return true;
+    }
+    body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|word| word.eq_ignore_ascii_case("RETURNING") || word.eq_ignore_ascii_case("OUTPUT"))
+}
+
+/// Ambil nomor baris dari pesan error MySQL/MariaDB, misalnya
+/// "... near 'FORM users' at line 2".
+pub fn mysql_error_line(message: &str) -> Option<usize> {
+    let idx = message.rfind("at line ")?;
+    message[idx + "at line ".len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+/// Ubah lokasi error menjadi offset byte di dalam teks editor. Statement dicari
+/// apa adanya di teks editor; mengembalikan None jika statement tidak ditemukan
+/// (misalnya teks sudah diubah setelah query dijalankan).
+pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) -> Option<usize> {
+    let statement = location.statement.as_str();
+    if statement.is_empty() {
+        return None;
+    }
+    let start = text.find(statement)?;
+    let relative = if let Some(char_offset) = location.char_offset {
+        statement
+            .char_indices()
+            .nth(char_offset)
+            .map(|(byte, _)| byte)
+            .unwrap_or(statement.len())
+    } else if let Some(line) = location.line {
+        let mut byte = 0;
+        for (index, piece) in statement.split_inclusive('\n').enumerate() {
+            if index + 1 == line {
+                // Lompat ke karakter non-spasi pertama di baris tersebut.
+                let indent = piece.len() - piece.trim_start().len();
+                return Some(start + byte + indent.min(piece.trim_end_matches('\n').len()));
+            }
+            byte += piece.len();
+        }
+        0
+    } else {
+        0
+    };
+    Some(start + relative)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_mysql_error_line() {
+        assert_eq!(
+            mysql_error_line(
+                "You have an error in your SQL syntax; check the manual ... near 'FORM t' at line 3"
+            ),
+            Some(3)
+        );
+        assert_eq!(mysql_error_line("Table 'x.y' doesn't exist"), None);
+    }
+
+    #[test]
+    fn locates_error_by_char_offset_and_line() {
+        use crate::connection::types::ErrorLocation;
+        let text = "SELECT 1;\n\n-- ✓ komentar\nSELECT naem\nFROM users;";
+        let statement = "-- ✓ komentar\nSELECT naem\nFROM users";
+        let by_offset = ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: Some(21),
+            line: None,
+        };
+        let pos = locate_error_in_text(text, &by_offset).unwrap();
+        assert!(text[pos..].starts_with("naem"));
+
+        let by_line = ErrorLocation {
+            statement: statement.to_string(),
+            char_offset: None,
+            line: Some(3),
+        };
+        let pos = locate_error_in_text(text, &by_line).unwrap();
+        assert!(text[pos..].starts_with("FROM users"));
+
+        let missing = ErrorLocation {
+            statement: "SELECT gone".to_string(),
+            char_offset: Some(0),
+            line: None,
+        };
+        assert_eq!(locate_error_in_text(text, &missing), None);
+    }
+
+    #[test]
+    fn leading_comments_are_stripped() {
+        assert_eq!(strip_leading_sql_comments("-- note\nSELECT 1"), "SELECT 1");
+        assert_eq!(
+            strip_leading_sql_comments("/* a */ /* b */\n  UPDATE t"),
+            "UPDATE t"
+        );
+        assert_eq!(
+            strip_leading_sql_comments("# mysql\nDELETE FROM t"),
+            "DELETE FROM t"
+        );
+        assert!(is_comment_only_statement("-- just a note"));
+        assert!(is_comment_only_statement("/* unterminated"));
+        assert!(!is_comment_only_statement("-- note\nSELECT 1"));
+    }
+
+    #[test]
+    fn classifies_row_returning_statements() {
+        assert!(statement_returns_rows("SELECT * FROM t"));
+        assert!(statement_returns_rows(
+            "-- c\nWITH x AS (SELECT 1) SELECT * FROM x"
+        ));
+        assert!(statement_returns_rows("SHOW TABLES"));
+        assert!(statement_returns_rows("EXPLAIN UPDATE t SET a = 1"));
+        assert!(!statement_returns_rows("update t set a = 1 where id = 2"));
+        assert!(!statement_returns_rows(
+            "/* bulk */ INSERT INTO t VALUES (1)"
+        ));
+        assert!(!statement_returns_rows("CREATE TABLE t (id int)"));
+        assert!(statement_returns_rows(
+            "INSERT INTO t VALUES (1) RETURNING id"
+        ));
+        assert!(statement_returns_rows("DELETE FROM t OUTPUT deleted.id"));
+        assert!(!statement_returns_rows(
+            "UPDATE t SET returning_customer = 1"
+        ));
+    }
 
     #[test]
     fn simple_select_allows_auto_pagination() {

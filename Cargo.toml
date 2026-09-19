@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2024"
 
 [lib]
@@ -35,11 +35,15 @@ sqlx = { version = "0.9", features = [
 # NOTE: capped at 0.37 — sqlx-sqlite 0.9 requires libsqlite3-sys <0.38 and the
 # `links = "sqlite3"` constraint allows only one version in the tree.
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+# Vector search (vec_distance_cosine, dll.) untuk retrieval skema AI & history.
+# Dikompilasi dengan SQLITE_CORE, jadi memakai SQLite bundled di atas — tanpa
+# library SQLite kedua; jalan di desktop, iOS, dan Android.
+sqlite-vec = "0.1.9"
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
 redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.9.0", features = ["zlib-compression"] }
+mongodb = { version = "3.9.1", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.36", features = ["datepicker"] }
@@ -53,21 +57,17 @@ dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.99"                                # Pure-Rust xlsx writer (no libclang/C toolchain)
+rust_xlsxwriter = "0.99"                                          # Pure-Rust xlsx writer (no libclang/C toolchain)
 hex = "0.4.3"
 rust_decimal = "1.43.0"
 wasmi = "2.0.0"
-log = { version = "0.4", features = ["max_level_off"] }
+log = { version = "0.4", features = ["release_max_level_debug"] }
 env_logger = "0.11"
 dotenvy = "0.15.7"
 md5 = "0.8"
-# Pinned exact: pre-1.0 API moves between minors (replaces tiberius + deadpool-tiberius)
-mssql-client = { version = ">=0.20.0", features = [
-       "chrono",
-       "decimal",
-       "uuid",
-] }
-mssql-driver-pool = ">=0.20.0"
+# Dikunci ke 0.20.x: API pre-1.0 berubah antar minor (pengganti tiberius + deadpool-tiberius)
+mssql-client = { version = "0.20", features = ["chrono", "decimal", "uuid"] }
+mssql-driver-pool = "0.20"
 futures-util = "0.3"
 # Self-update dependencies
 reqwest = { version = "0.13", features = [
@@ -92,7 +92,6 @@ anyhow = { version = "1", optional = true }
 once_cell = "1"
 thiserror = "2"
 async-trait = "0.1.92"
-cargo-deb = "3.8.0"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);
 # the primary OS-keychain backends are declared per-target below.
 chacha20poly1305 = "0.11"
@@ -135,6 +134,10 @@ keyring = "4"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 rfd = "0.17"
+# Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
+# Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
+# sering mengubah API antar rilis.
+rmcp = { version = "3.4", features = ["transport-io"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }
@@ -144,7 +147,11 @@ keyring = "4"
 # Pinned to the versions winit already pulls in (see patches/winit/Cargo.toml) so
 # the iOS build does not end up compiling two objc2 trees.
 objc2 = "0.5.2"
-objc2-foundation = { version = "0.2.2", features = ["NSString", "NSURL", "NSDictionary"] }
+objc2-foundation = { version = "0.2.2", features = [
+       "NSString",
+       "NSURL",
+       "NSDictionary",
+] }
 # `block2` gates -[UIApplication openURL:options:completionHandler:]; without it
 # only the deprecated openURL: is generated.
 objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "block2"] }
@@ -226,6 +233,14 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Proc-macro dan build script dikompilasi sebagai dylib yang di-dlopen oleh rustc.
+# `strip = true` (strip simbol penuh) memakai `strip` dari Xcode 27 yang membuat
+# LINKEDIT string pool tidak sejajar, sehingga dyld macOS 27 menolak memuatnya
+# ("mis-aligned LINKEDIT string pool" -> E0463 can't find crate serde_derive dll).
+# Untuk artefak host ini cukup buang debuginfo saja; binary akhir tetap strip penuh.
+[profile.release.build-override]
+strip = "debuginfo"
 
 [patch.crates-io]
 winit = { path = "patches/winit" }

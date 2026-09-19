@@ -1,9 +1,13 @@
-/// Pure functions for ergonomic text manipulation in SQL editor.
+//! Pure functions for ergonomic text manipulation in SQL editor.
 
 /// Toggle SQL line comments (`-- `) on lines spanned by selection.
 /// If all non-empty selected lines already start with `--`, comments are removed.
 /// Otherwise, `-- ` is added to each line.
-pub fn toggle_line_comments(text: &str, selection_start: usize, selection_end: usize) -> (String, usize, usize) {
+pub fn toggle_line_comments(
+    text: &str,
+    selection_start: usize,
+    selection_end: usize,
+) -> (String, usize, usize) {
     let reversed = selection_start > selection_end;
     let (sel_min, sel_max) = if reversed {
         (selection_end, selection_start)
@@ -67,15 +71,10 @@ pub fn toggle_line_comments(text: &str, selection_start: usize, selection_end: u
             if all_commented {
                 // Uncomment: remove leading `-- ` or `--`
                 let trimmed = line.trim_start();
-                if trimmed.starts_with("--") {
+                if let Some(after_dashes) = trimmed.strip_prefix("--") {
                     let indent_len = line.len() - trimmed.len();
                     let indent = &line[..indent_len];
-                    let after_dashes = &trimmed[2..];
-                    let rest = if after_dashes.starts_with(' ') {
-                        &after_dashes[1..]
-                    } else {
-                        after_dashes
-                    };
+                    let rest = after_dashes.strip_prefix(' ').unwrap_or(after_dashes);
                     let modified = format!("{}{}", indent, rest);
                     let diff = modified.len() as isize - line.len() as isize;
                     if l_start < sel_min {
@@ -172,7 +171,12 @@ pub fn duplicate_lines(text: &str, start_pos: usize, end_pos: usize) -> (String,
 }
 
 /// Move selected lines up or down (Alt+Up / Alt+Down).
-pub fn move_lines(text: &str, start_pos: usize, end_pos: usize, move_up: bool) -> (String, usize, usize) {
+pub fn move_lines(
+    text: &str,
+    start_pos: usize,
+    end_pos: usize,
+    move_up: bool,
+) -> (String, usize, usize) {
     let reversed = start_pos > end_pos;
     let (sel_min, sel_max) = if reversed {
         (end_pos, start_pos)

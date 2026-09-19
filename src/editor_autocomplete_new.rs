@@ -1,10 +1,20 @@
-//! Temporary clean replacement for editor_autocomplete while original is corrupted.
+//! Glue autocomplete SQL: menghubungkan engine murni (`crate::autocomplete`)
+//! dengan cache metadata `Tabular` dan popup egui.
+//!
+//! Alur per keystroke:
+//! 1. `analyze` menentukan klausa, `Expect`, dan scope di posisi kursor.
+//! 2. Metadata tabel/kolom/FK yang dibutuhkan diambil dari cache in-memory
+//!    (cache miss memicu warming di background — tidak pernah blocking).
+//! 3. `complete` menghasilkan kandidat terurut; hasilnya disalin ke state popup.
+use crate::autocomplete::{self, Catalog, ColumnMeta, Dialect, Expect, ItemKind};
+use crate::models::enums::AutocompleteKind;
 use crate::query_tools;
 use crate::window_egui::Tabular;
 use eframe::egui;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+/// Keyword cadangan untuk tab non-SQL saat autocomplete dipanggil manual.
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
     "TABLE", "DROP", "ALTER", "ADD", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "GROUP",
@@ -29,487 +39,12 @@ fn current_prefix(text: &str, cursor: usize) -> (String, usize) {
     (text[start..cursor.min(text.len())].to_string(), start)
 }
 
-fn find_statement_bounds(text: &str, cursor: usize) -> (usize, usize) {
-    if text.is_empty() {
-        return (0, 0);
-    }
-    let bytes = text.as_bytes();
-    let n = bytes.len();
-    let cursor = cursor.min(n);
-
-    // Scan backwards from cursor
-    let mut start = cursor;
-    while start > 0 {
-        if bytes[start - 1] == b';' {
-            break;
-        }
-        start -= 1;
-    }
-
-    // Scan forwards from cursor
-    let mut end = cursor;
-    while end < n {
-        if bytes[end] == b';' {
-            break;
-        }
-        end += 1;
-    }
-
-    (start, end)
-}
 fn active_connection_and_db(app: &Tabular) -> Option<(i64, String)> {
     app.query_tabs.get(app.active_tab_index).and_then(|tab| {
         tab.connection_id
             .map(|cid| (cid, tab.database_name.clone().unwrap_or_default()))
     })
 }
-fn is_word_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn strip_wrapping_pair(s: &str) -> &str {
-    if s.len() >= 2 {
-        let bytes = s.as_bytes();
-        match (bytes[0], bytes[s.len() - 1]) {
-            (b'"', b'"') | (b'`', b'`') | (b'[', b']') => return &s[1..s.len() - 1],
-            _ => {}
-        }
-    }
-    s
-}
-
-fn parse_table_name(sql: &str, mut idx: usize) -> Option<(usize, String)> {
-    let bytes = sql.as_bytes();
-    let len = bytes.len();
-    while idx < len && bytes[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
-    if idx >= len {
-        return None;
-    }
-    if bytes[idx] == b'(' {
-        return None;
-    }
-    let start = idx;
-    while idx < len {
-        let b = bytes[idx];
-        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']') {
-            idx += 1;
-        } else {
-            break;
-        }
-    }
-    if start == idx {
-        return None;
-    }
-    let mut token = sql[start..idx].trim();
-    token = token.trim_end_matches([',', ';']);
-    if token.is_empty() {
-        return None;
-    }
-    let mut final_seg = None;
-    for seg in token.split('.') {
-        let stripped = strip_wrapping_pair(seg.trim());
-        if !stripped.is_empty() {
-            final_seg = Some(strip_wrapping_pair(stripped));
-        }
-    }
-    let final_name = final_seg?.trim();
-    if final_name.is_empty() {
-        return None;
-    }
-    Some((start, final_name.to_string()))
-}
-
-fn collect_table_hits(sql: &str) -> Vec<(usize, String)> {
-    let lower = sql.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut hits = Vec::new();
-    let mut i = 0;
-    while i + 4 <= bytes.len() {
-        if bytes[i..].starts_with(b"from")
-            && (i == 0 || !is_word_char(bytes[i - 1]))
-            && (i + 4 >= bytes.len() || !is_word_char(bytes[i + 4]))
-        {
-            if let Some((pos, name)) = parse_table_name(sql, i + 4) {
-                hits.push((pos, name));
-            }
-            i += 4;
-            continue;
-        }
-        if bytes[i..].starts_with(b"join")
-            && (i == 0 || !is_word_char(bytes[i - 1]))
-            && (i + 4 >= bytes.len() || !is_word_char(bytes[i + 4]))
-        {
-            if let Some((pos, name)) = parse_table_name(sql, i + 4) {
-                hits.push((pos, name));
-            }
-            i += 4;
-            continue;
-        }
-        i += 1;
-    }
-    hits
-}
-
-fn tables_near_cursor(sql: &str, cursor: usize) -> Vec<String> {
-    let hits = collect_table_hits(sql);
-    if hits.is_empty() {
-        return Vec::new();
-    }
-    
-    // Constrain to current statement to avoid pollution from other queries
-    let (stmt_start, stmt_end) = find_statement_bounds(sql, cursor);
-    
-    let cursor = cursor.min(sql.len());
-    let mut below: Vec<_> = hits
-        .iter()
-        .filter(|(pos, _)| *pos >= cursor && *pos < stmt_end)
-        .cloned()
-        .collect();
-    below.sort_by_key(|(pos, _)| *pos);
-    let mut above: Vec<_> = hits
-        .iter()
-        .filter(|(pos, _)| *pos < cursor && *pos >= stmt_start)
-        .cloned()
-        .collect();
-    above.sort_by_key(|(pos, _)| cursor - *pos);
-    let mut seen = HashSet::new();
-    let mut result = Vec::new();
-    for (_, name) in below.into_iter().chain(above) {
-        if seen.insert(name.clone()) {
-            result.push(name);
-        }
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_find_statement_bounds() {
-        let sql = "SELECT * FROM t1; SELECT * FROM t2 WHERE id = 1; INSERT INTO t3 VALUES(1)";
-        //         01234567890123456 7890123456789012345678901234567 8901234567890123456789012
-        //         0                 1                  2                  3                  4
-
-        // Cursor in first statement
-        assert_eq!(find_statement_bounds(sql, 5), (0, 16));
-        
-        // Cursor in second statement
-        assert_eq!(find_statement_bounds(sql, 25), (17, 47)); // after first ; (16) to second ; (47)
-        
-        // Cursor in third statement
-        assert_eq!(find_statement_bounds(sql, 60), (48, 73));
-    }
-
-    #[test]
-    fn test_detect_ctx_comma_separated_select() {
-        // `SELECT id,name FROM` must still read as column context, not be
-        // glued into one token by whitespace splitting.
-        let sql = "SELECT id,name  FROM users";
-        assert_eq!(detect_ctx(sql, 14), SqlContext::AfterSelect);
-        // After FROM → table context
-        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterFrom);
-    }
-
-    #[test]
-    fn test_detect_ctx_subquery_scope() {
-        // Cursor inside the inner SELECT-list should be AfterSelect; the outer
-        // FROM context is restored after the closing paren.
-        let sql = "SELECT * FROM (SELECT x  FROM t) sub WHERE ";
-        let inner = sql.find("x ").unwrap() + 2;
-        assert_eq!(detect_ctx(sql, inner), SqlContext::AfterSelect);
-        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterWhere);
-    }
-
-    #[test]
-    fn test_detect_ctx_ignores_string_and_comment() {
-        let sql = "SELECT * FROM t WHERE name = 'SELECT' -- FROM x\n AND ";
-        // Keyword inside a string literal / comment must not flip context.
-        assert_eq!(detect_ctx(sql, sql.len()), SqlContext::AfterWhere);
-    }
-
-    #[test]
-    fn test_fuzzy_match_camelhump_and_subsequence() {
-        // Prefix match wins (high score) over a scattered subsequence.
-        let prefix = fuzzy_match("cust", "customer_name").unwrap();
-        let subseq = fuzzy_match("cnm", "customer_name").unwrap();
-        assert!(prefix > subseq);
-        // CamelHump: cnm matches the c/n/m word-boundary letters.
-        assert!(fuzzy_match("cnm", "customer_name").is_some());
-        // Non-subsequence → no match.
-        assert!(fuzzy_match("zzz", "customer_name").is_none());
-        // Empty prefix matches anything.
-        assert_eq!(fuzzy_match("", "anything"), Some(0));
-    }
-
-    #[test]
-    fn test_tables_near_cursor_isolation() {
-        let sql = "SELECT * FROM users; SELECT * FROM orders WHERE user_id = 1";
-        
-        // Cursor in first query (at end of 'users')
-        let tables1 = tables_near_cursor(sql, 19); 
-        assert_eq!(tables1, vec!["users"]);
-
-        // Cursor in second query (at 'orders')
-        let tables2 = tables_near_cursor(sql, 40);
-        assert_eq!(tables2, vec!["orders"]);
-    }
-
-    #[test]
-    fn test_context_relevance_prefers_clause_specific_candidates() {
-        assert!(context_relevance_score(SqlContext::AfterSelect, "customer_id", "cu")
-            > context_relevance_score(SqlContext::AfterSelect, "users", "us"));
-        assert!(context_relevance_score(SqlContext::AfterFrom, "users", "us")
-            > context_relevance_score(SqlContext::AfterFrom, "customer_id", "cu"));
-        assert!(context_relevance_score(SqlContext::AfterJoinOn, "orders.id = users.id", "o")
-            > context_relevance_score(SqlContext::AfterJoinOn, "orders", "o"));
-    }
-
-    #[test]
-    fn test_collect_tables_from_tree() {
-        use crate::models::enums::NodeType;
-        use crate::models::structs::TreeNode;
-
-        let mut table1 = TreeNode::new("users".to_string(), NodeType::Table);
-        table1.connection_id = Some(1);
-        table1.database_name = Some("mydb".to_string());
-
-        let mut view1 = TreeNode::new("v_active_users".to_string(), NodeType::View);
-        view1.connection_id = Some(1);
-        view1.database_name = Some("mydb".to_string());
-
-        let mut other_db_table = TreeNode::new("other_users".to_string(), NodeType::Table);
-        other_db_table.connection_id = Some(1);
-        other_db_table.database_name = Some("otherdb".to_string());
-
-        let mut other_conn_table = TreeNode::new("remote_users".to_string(), NodeType::Table);
-        other_conn_table.connection_id = Some(2);
-        other_conn_table.database_name = Some("mydb".to_string());
-
-        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
-        root.children = vec![table1, view1, other_db_table, other_conn_table];
-
-        let mut out = Vec::new();
-        collect_tables_from_tree(&[root], Some(1), Some("mydb"), &mut out);
-
-        assert_eq!(out, vec!["users", "v_active_users"]);
-    }
-
-    #[test]
-    fn test_collect_columns_from_tree() {
-        use crate::models::enums::NodeType;
-        use crate::models::structs::TreeNode;
-
-        let col1 = TreeNode::new("id".to_string(), NodeType::Column);
-        let col2 = TreeNode::new("email".to_string(), NodeType::Column);
-        let col3 = TreeNode::new("name".to_string(), NodeType::Column);
-
-        let mut table = TreeNode::new("customers".to_string(), NodeType::Table);
-        table.connection_id = Some(1);
-        table.children = vec![col1, col2, col3];
-
-        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
-        root.children = vec![table];
-
-        let root_slice = std::slice::from_ref(&root);
-
-        let mut cols = Vec::new();
-        // Case-insensitive match check
-        collect_columns_from_tree(root_slice, 1, "CUSTOMERS", &mut cols);
-        assert_eq!(cols, vec!["id", "email", "name"]);
-
-        // Unknown table returns empty without error
-        let mut unknown_cols = Vec::new();
-        collect_columns_from_tree(root_slice, 1, "nonexistent", &mut unknown_cols);
-        assert!(unknown_cols.is_empty());
-    }
-
-    #[test]
-    fn test_collect_loaded_fks_memory_lookup() {
-        use crate::models::structs::ForeignKey;
-        use std::collections::HashMap;
-
-        let mut mem_fks: HashMap<(i64, String), Vec<ForeignKey>> = HashMap::new();
-        mem_fks.insert(
-            (1, "mydb".to_string()),
-            vec![
-                ForeignKey {
-                    constraint_name: "fk_orders_customer".to_string(),
-                    table_name: "orders".to_string(),
-                    column_name: "customer_id".to_string(),
-                    referenced_table_name: "customers".to_string(),
-                    referenced_column_name: "id".to_string(),
-                },
-                ForeignKey {
-                    constraint_name: "fk_items_order".to_string(),
-                    table_name: "order_items".to_string(),
-                    column_name: "order_id".to_string(),
-                    referenced_table_name: "orders".to_string(),
-                    referenced_column_name: "id".to_string(),
-                },
-            ],
-        );
-
-        // Verify that memory map lookup by (connection_id, db) is instant
-        let key = (1, "mydb".to_string());
-        let all_fks = mem_fks.get(&key).expect("FKs must be found in memory");
-        assert_eq!(all_fks.len(), 2);
-        assert_eq!(all_fks[0].table_name, "orders");
-        assert_eq!(all_fks[0].referenced_table_name, "customers");
-        assert_eq!(all_fks[1].table_name, "order_items");
-    }
-}
-
-
-fn extract_tables(sql: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for (_, name) in collect_table_hits(sql) {
-        if seen.insert(name.clone()) {
-            out.push(name);
-        }
-    }
-    out
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SqlContext {
-    AfterSelect,
-    AfterFrom,
-    AfterWhere,
-    AfterJoinOn,
-    General,
-}
-/// Determine the clause context at `cursor` using a small SQL-aware scanner.
-///
-/// Unlike a naive `split_whitespace`, this:
-/// - tokenizes on word boundaries, so `select id,name from` is read correctly;
-/// - skips string/quoted-identifier literals and `--` / `/* */` comments;
-/// - tracks parenthesis depth so a subquery `(SELECT ... )` scopes its own
-///   context and restores the outer clause on `)`.
-fn detect_ctx(sql: &str, cursor: usize) -> SqlContext {
-    let slice = &sql[..cursor.min(sql.len())];
-    let bytes = slice.as_bytes();
-    let n = bytes.len();
-    let mut last = SqlContext::General;
-    let mut stack: Vec<SqlContext> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let b = bytes[i];
-        // line comment
-        if b == b'-' && i + 1 < n && bytes[i + 1] == b'-' {
-            while i < n && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        // block comment
-        if b == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            continue;
-        }
-        // string / quoted identifier (quotes are ASCII, safe to scan by byte)
-        if b == b'\'' || b == b'"' || b == b'`' {
-            i += 1;
-            while i < n && bytes[i] != b {
-                i += 1;
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'(' {
-            stack.push(last);
-            last = SqlContext::General;
-            i += 1;
-            continue;
-        }
-        if b == b')' {
-            if let Some(prev) = stack.pop() {
-                last = prev;
-            }
-            i += 1;
-            continue;
-        }
-        if b.is_ascii_alphanumeric() || b == b'_' {
-            let start = i;
-            while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            match slice[start..i].to_ascii_uppercase().as_str() {
-                "SELECT" => last = SqlContext::AfterSelect,
-                "FROM" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "CROSS" | "NATURAL" => {
-                    last = SqlContext::AfterFrom
-                }
-                "WHERE" | "HAVING" => last = SqlContext::AfterWhere,
-                "AND" | "OR" => {
-                    // AND/OR inside a JOIN ON condition stays in AfterJoinOn context
-                    if last != SqlContext::AfterJoinOn {
-                        last = SqlContext::AfterWhere;
-                    }
-                }
-                "ON"
-                    // ON after a JOIN (AfterFrom) is a join condition clause
-                    if last == SqlContext::AfterFrom => {
-                        last = SqlContext::AfterJoinOn;
-                    }
-                _ => {}
-            }
-            continue;
-        }
-        i += 1;
-    }
-    last
-}
-
-/// CamelHump + subsequence fuzzy match (DataGrip-style). Returns `Some(score)`
-/// when every char of `pref` appears in order within `cand`; higher score is a
-/// better match. An exact case-insensitive prefix wins big; matches landing on
-/// word boundaries (start, after `_`/`.`, or a CamelCase hump) score higher.
-/// An empty `pref` matches everything with score 0.
-fn fuzzy_match(pref: &str, cand: &str) -> Option<i32> {
-    let p: Vec<char> = pref
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(|c| c.to_lowercase())
-        .collect();
-    if p.is_empty() {
-        return Some(0);
-    }
-    let orig: Vec<char> = cand.chars().collect();
-    let lower: Vec<char> = orig.iter().flat_map(|c| c.to_lowercase()).collect();
-
-    // Exact prefix → strong bonus, shorter candidates preferred.
-    let pref_str: String = p.iter().collect();
-    let lower_str: String = lower.iter().collect();
-    if lower_str.starts_with(&pref_str) {
-        return Some(1000 - orig.len() as i32);
-    }
-
-    let mut pi = 0usize;
-    let mut score = 0i32;
-    for (idx, &ch) in lower.iter().enumerate() {
-        if pi >= p.len() {
-            break;
-        }
-        if ch == p[pi] {
-            let prev_sep = idx == 0
-                || orig
-                    .get(idx - 1)
-                    .is_some_and(|&c| c == '_' || c == '.' || c == ' ');
-            let hump = orig.get(idx).is_some_and(|&c| c.is_uppercase());
-            score += if prev_sep || hump { 10 } else { 1 };
-            pi += 1;
-        }
-    }
-    if pi == p.len() { Some(score) } else { None }
-}
-
 fn collect_tables_from_tree(
     nodes: &[crate::models::structs::TreeNode],
     target_cid: Option<i64>,
@@ -517,10 +52,16 @@ fn collect_tables_from_tree(
     out: &mut Vec<String>,
 ) {
     for node in nodes {
-        let matches_conn = target_cid.is_none() || node.connection_id.is_none() || node.connection_id == target_cid;
-        let matches_db = target_db.is_none() || node.database_name.is_none() || node.database_name.as_deref() == target_db;
-        if (node.node_type == crate::models::enums::NodeType::Table || node.node_type == crate::models::enums::NodeType::View)
-            && matches_conn && matches_db
+        let matches_conn = target_cid.is_none()
+            || node.connection_id.is_none()
+            || node.connection_id == target_cid;
+        let matches_db = target_db.is_none()
+            || node.database_name.is_none()
+            || node.database_name.as_deref() == target_db;
+        if (node.node_type == crate::models::enums::NodeType::Table
+            || node.node_type == crate::models::enums::NodeType::View)
+            && matches_conn
+            && matches_db
         {
             if !node.name.is_empty() && !out.contains(&node.name) {
                 out.push(node.name.clone());
@@ -538,7 +79,8 @@ fn collect_columns_from_tree(
 ) {
     for node in nodes {
         if (node.connection_id.is_none() || node.connection_id == Some(target_cid))
-            && (node.node_type == crate::models::enums::NodeType::Table || node.node_type == crate::models::enums::NodeType::View)
+            && (node.node_type == crate::models::enums::NodeType::Table
+                || node.node_type == crate::models::enums::NodeType::View)
             && node.name.eq_ignore_ascii_case(target_table)
         {
             for child in &node.children {
@@ -571,7 +113,12 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
 
     // 2. Extract from in-memory items_tree without I/O
     let mut tree_tables = Vec::new();
-    collect_tables_from_tree(&app.items_tree, Some(cid), if db.is_empty() { None } else { Some(db) }, &mut tree_tables);
+    collect_tables_from_tree(
+        &app.items_tree,
+        Some(cid),
+        if db.is_empty() { None } else { Some(db) },
+        &mut tree_tables,
+    );
     if !tree_tables.is_empty() {
         tree_tables.sort_unstable();
         tree_tables.dedup();
@@ -666,14 +213,11 @@ pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
     all
 }
 
-fn get_cached_columns(
-    app: &mut Tabular,
-    cid: i64,
-    db: &str,
-    tables: Vec<String>,
-) -> Option<Vec<String>> {
+/// Kolom satu tabel dari cache in-memory (urutan ordinal dipertahankan).
+/// Cache miss memicu warming di background; hasilnya tersedia di keystroke berikutnya.
+fn get_cached_columns(app: &mut Tabular, cid: i64, db: &str, table: &str) -> Option<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
-    for t in tables {
+    for t in [table.to_string()] {
         let key = (cid, t.to_ascii_lowercase());
         if let Some(cols) = app.autocomplete_cols_mem.get(&key) {
             for c in cols {
@@ -700,7 +244,7 @@ fn get_cached_columns(
         // 3) If missing in memory: mark warmed and insert placeholder immediately to prevent repeated lookups
         if !app.autocomplete_cols_warmed.contains(&key) {
             app.autocomplete_cols_warmed.insert(key.clone());
-            app.autocomplete_cols_mem.entry(key.clone()).or_insert_with(Vec::new);
+            app.autocomplete_cols_mem.entry(key.clone()).or_default();
 
             if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
                 let warm_tx = app.autocomplete_warm_sender.clone();
@@ -782,27 +326,7 @@ fn get_cached_columns(
             }
         }
     }
-    out.sort_unstable();
-    out.dedup();
     if out.is_empty() { None } else { Some(out) }
-}
-
-fn add_keywords(out: &mut Vec<String>, pref: &str, casing: crate::models::enums::KeywordCasing) {
-    // With no prefix yet (e.g. right after `FROM `), don't flood the popup with
-    // every keyword — let tables/columns lead. Keywords return once the user types.
-    if pref.is_empty() {
-        return;
-    }
-    for kw in SQL_KEYWORDS {
-        if kw.to_ascii_lowercase().starts_with(pref) {
-            let s = match casing {
-                crate::models::enums::KeywordCasing::Upper => kw.to_ascii_uppercase(),
-                crate::models::enums::KeywordCasing::Lower => kw.to_ascii_lowercase(),
-                crate::models::enums::KeywordCasing::Preserve => (*kw).to_string(),
-            };
-            out.push(s);
-        }
-    }
 }
 
 /// Collect ForeignKey metadata for autocomplete. Prefers in-memory
@@ -942,471 +466,38 @@ fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignK
         .collect()
 }
 
-/// Parse alias → real-table-name mappings from a SQL string.
-/// Handles `FROM table alias`, `FROM table AS alias`, `JOIN table alias`, etc.
-/// Returns `HashMap<alias_lowercase, real_table_name_as_written>`.
-fn collect_alias_map(sql: &str) -> std::collections::HashMap<String, String> {
-    let bytes = sql.as_bytes();
-    let lower = sql.to_ascii_lowercase();
-    let lb = lower.as_bytes();
-    let len = bytes.len();
-    let mut map = std::collections::HashMap::new();
-    let mut i = 0;
-    while i < len {
-        let kw_end = if i + 4 <= len
-            && (lb[i..i + 4] == *b"from" || lb[i..i + 4] == *b"join" || lb[i..i + 4] == *b"into")
-            && (i == 0 || !is_word_char(bytes[i - 1]))
-            && (i + 4 >= len || !is_word_char(bytes[i + 4]))
-        {
-            Some(i + 4)
-        } else if i + 6 <= len
-            && lb[i..i + 6] == *b"update"
-            && (i == 0 || !is_word_char(bytes[i - 1]))
-            && (i + 6 >= len || !is_word_char(bytes[i + 6]))
-        {
-            Some(i + 6)
-        } else {
-            None
-        };
-        if let Some(mut j) = kw_end {
-            loop {
-                while j < len && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                // Skip subqueries
-                if j >= len || bytes[j] == b'(' {
-                    break;
-                }
-                // Read table name (may include schema prefix and/or quotes)
-                let tname_start = j;
-                while j < len {
-                    let b = bytes[j];
-                    if b.is_ascii_alphanumeric()
-                        || matches!(b, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
-                    {
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if j == tname_start {
-                    break;
-                }
-                let raw_tname = &sql[tname_start..j];
-                // Use only the last segment (drop schema prefix)
-                let table_name: String = raw_tname
-                    .split('.')
-                    .next_back()
-                    .map(|s| strip_wrapping_pair(s).to_string())
-                    .unwrap_or_else(|| raw_tname.to_string());
-                // Always map the table itself
-                map.entry(table_name.to_ascii_lowercase())
-                    .or_insert(table_name.clone());
-                // Skip whitespace
-                while j < len && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                // Optional AS keyword
-                if j + 2 <= len
-                    && lb[j..j + 2] == *b"as"
-                    && (j + 2 >= len || !is_word_char(bytes[j + 2]))
-                {
-                    j += 2;
-                    while j < len && bytes[j].is_ascii_whitespace() {
-                        j += 1;
-                    }
-                }
-                // Read alias (must be a word token and not a SQL keyword)
-                if j < len && is_word_char(bytes[j]) {
-                    let alias_start = j;
-                    while j < len && is_word_char(bytes[j]) {
-                        j += 1;
-                    }
-                    let alias = &sql[alias_start..j];
-                    let alias_upper = alias.to_ascii_uppercase();
-                    let is_kw = SQL_KEYWORDS.contains(&alias_upper.as_str());
-                    if !is_kw {
-                        map.insert(alias.to_ascii_lowercase(), table_name.clone());
-                    } else {
-                        j = alias_start;
-                    }
-                }
-
-                // Check for comma-separated table list (e.g. FROM users u, orders o)
-                while j < len && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < len && bytes[j] == b',' {
-                    j += 1;
-                    continue;
-                }
-                break;
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-    map
+/// Katalog metadata dari cache `Tabular` untuk satu kali pemanggilan engine.
+struct AppCatalog {
+    tables: Vec<String>,
+    /// Key: nama tabel lowercase.
+    columns: HashMap<String, Vec<ColumnMeta>>,
+    fks: Vec<crate::models::structs::ForeignKey>,
+    usage: HashMap<String, u32>,
 }
 
-/// Build join condition suggestions for `JOIN <table> ON` context.
-/// Returns `table1.col = table2.col` style strings using FK data (when available)
-/// and heuristic column-name matching as fallback.
-fn suggest_join_conditions(
-    app: &mut Tabular,
-    cid: i64,
-    db: &str,
-    tables: &[String],
-    alias_map: &std::collections::HashMap<String, String>,
-) -> Vec<String> {
-    if tables.len() < 2 {
-        return Vec::new();
+impl Catalog for AppCatalog {
+    fn tables(&self) -> &[String] {
+        &self.tables
     }
 
-    // Build display name map: real_table_lowercase → alias (or table name if no alias)
-    let mut real_to_display: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for t in tables {
-        real_to_display
-            .entry(t.to_ascii_lowercase())
-            .or_insert(t.clone());
-    }
-    for (alias, real) in alias_map {
-        let real_lower = real.to_ascii_lowercase();
-        if alias != &real_lower {
-            // True alias — use it as the display name
-            real_to_display.insert(real_lower, alias.clone());
-        }
-    }
-    let dn = |name: &str| -> String {
-        real_to_display
-            .get(&name.to_ascii_lowercase())
-            .cloned()
-            .unwrap_or_else(|| name.to_string())
-    };
-
-    // Collect FK info from any open diagram state
-    let fks = collect_loaded_fks(app);
-
-    // Fetch columns for every table involved in the query
-    let mut table_cols: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for t in tables {
-        if let Some(cols) = get_cached_columns(app, cid, db, vec![t.clone()]) {
-            table_cols.insert(t.clone(), cols);
-        }
+    fn columns(&self, table: &str) -> Option<&[ColumnMeta]> {
+        self.columns
+            .get(&table.to_ascii_lowercase())
+            .map(|v| v.as_slice())
     }
 
-    let mut suggestions: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let push = |s: String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
-        let key = s.to_lowercase();
-        if seen.insert(key) {
-            out.push(s);
-        }
-    };
-
-    // --- FK-based suggestions --------------------------------------------
-    for fk in &fks {
-        let fk_tbl = fk.table_name.to_lowercase();
-        let fk_ref = fk.referenced_table_name.to_lowercase();
-        for t1 in tables {
-            for t2 in tables {
-                if t1 == t2 {
-                    continue;
-                }
-                let t1l = t1.to_lowercase();
-                let t2l = t2.to_lowercase();
-                let d1 = dn(t1);
-                let d2 = dn(t2);
-                if fk_tbl == t1l && fk_ref == t2l {
-                    let cond = format!("{}.{} = {}.{}", d1, fk.column_name, d2, fk.referenced_column_name);
-                    push(cond, &mut seen, &mut suggestions);
-                } else if fk_tbl == t2l && fk_ref == t1l {
-                    let cond = format!("{}.{} = {}.{}", d1, fk.referenced_column_name, d2, fk.column_name);
-                    push(cond, &mut seen, &mut suggestions);
-                }
-            }
-        }
+    fn foreign_keys(&self) -> &[crate::models::structs::ForeignKey] {
+        &self.fks
     }
 
-    // --- Heuristic column-matching ---------------------------------------
-    for i in 0..tables.len() {
-        for j in (i + 1)..tables.len() {
-            let t1 = &tables[i];
-            let t2 = &tables[j];
-            let t1_cols = match table_cols.get(t1) {
-                Some(c) => c,
-                None => continue,
-            };
-            let t2_cols = match table_cols.get(t2) {
-                Some(c) => c,
-                None => continue,
-            };
-
-            // Pattern A: t1 has `<t2_name>_id` or `<t2_singular>_id`, t2 has `id`
-            let t2l = t2.to_lowercase();
-            let t2_singular = t2l.trim_end_matches('s').to_string();
-            let d1 = dn(t1);
-            let d2 = dn(t2);
-            for col1 in t1_cols {
-                let c1l = col1.to_lowercase();
-                let is_fk_col = c1l == format!("{}_id", t2l)
-                    || c1l == format!("{}_id", t2_singular)
-                    || c1l == format!("{}id", t2l)
-                    || c1l == format!("{}id", t2_singular);
-                if is_fk_col && t2_cols.iter().any(|c| c.to_lowercase() == "id") {
-                    let cond = format!("{}.{} = {}.id", d1, col1, d2);
-                    push(cond, &mut seen, &mut suggestions);
-                }
-            }
-
-            // Pattern B: t2 has `<t1_name>_id` or `<t1_singular>_id`, t1 has `id`
-            let t1l = t1.to_lowercase();
-            let t1_singular = t1l.trim_end_matches('s').to_string();
-            for col2 in t2_cols {
-                let c2l = col2.to_lowercase();
-                let is_fk_col = c2l == format!("{}_id", t1l)
-                    || c2l == format!("{}_id", t1_singular)
-                    || c2l == format!("{}id", t1l)
-                    || c2l == format!("{}id", t1_singular);
-                if is_fk_col && t1_cols.iter().any(|c| c.to_lowercase() == "id") {
-                    let cond = format!("{}.id = {}.{}", d1, d2, col2);
-                    push(cond, &mut seen, &mut suggestions);
-                }
-            }
-
-            // Pattern C: same column name in both tables (common join key)
-            for col1 in t1_cols {
-                for col2 in t2_cols {
-                    if col1.to_lowercase() == col2.to_lowercase() {
-                        let cond = format!("{}.{} = {}.{}", d1, col1, d2, col2);
-                        push(cond, &mut seen, &mut suggestions);
-                    }
-                }
-            }
-        }
-    }
-
-    suggestions
-}
-
-fn looks_like_column_name(suggestion: &str) -> bool {
-    let lower = suggestion.to_ascii_lowercase();
-    if lower == "*" || suggestion.contains('=') || suggestion.contains('.') {
-        return false;
-    }
-
-    lower.contains('_')
-        || lower.ends_with("id")
-        || lower.ends_with("name")
-        || lower.ends_with("date")
-        || lower.ends_with("count")
-        || lower.ends_with("type")
-        || lower.ends_with("status")
-        || lower.ends_with("code")
-}
-
-fn context_relevance_score(context: SqlContext, suggestion: &str, prefix: &str) -> i32 {
-    let lower = suggestion.to_ascii_lowercase();
-    let is_keyword = SQL_KEYWORDS.iter().any(|kw| lower == kw.to_ascii_lowercase()) || lower == "*";
-    let is_qualified = suggestion.contains('.') && !suggestion.contains('=');
-    let is_join_condition = suggestion.contains('=');
-    let prefix_lower = prefix.to_ascii_lowercase();
-    let prefix_bonus = if prefix_lower.is_empty() || lower.starts_with(&prefix_lower) {
-        20
-    } else {
-        0
-    };
-    let column_like = looks_like_column_name(suggestion);
-
-    match context {
-        SqlContext::AfterSelect => {
-            if is_keyword || lower == "*" {
-                120 + prefix_bonus
-            } else if is_join_condition {
-                -200
-            } else if is_qualified {
-                -80
-            } else if column_like {
-                80 + prefix_bonus
-            } else {
-                40 + prefix_bonus
-            }
-        }
-        SqlContext::AfterFrom => {
-            if is_keyword {
-                100 + prefix_bonus
-            } else if is_join_condition || is_qualified {
-                -140
-            } else if column_like {
-                60 + prefix_bonus
-            } else {
-                100 + prefix_bonus
-            }
-        }
-        SqlContext::AfterWhere => {
-            if is_keyword {
-                90 + prefix_bonus
-            } else if is_join_condition {
-                60 + prefix_bonus
-            } else if is_qualified {
-                35 + prefix_bonus
-            } else if column_like {
-                70 + prefix_bonus
-            } else {
-                40 + prefix_bonus
-            }
-        }
-        SqlContext::AfterJoinOn => {
-            if is_join_condition {
-                180 + prefix_bonus
-            } else if is_qualified {
-                90 + prefix_bonus
-            } else if is_keyword {
-                60 + prefix_bonus
-            } else if column_like {
-                55 + prefix_bonus
-            } else {
-                20 + prefix_bonus
-            }
-        }
-        SqlContext::General => {
-            if is_keyword {
-                45 + prefix_bonus
-            } else if is_qualified {
-                25 + prefix_bonus
-            } else {
-                5 + prefix_bonus
-            }
-        }
+    fn usage(&self, label: &str) -> u32 {
+        self.usage.get(label).copied().unwrap_or(0)
     }
 }
 
-fn build_suggestions(
-    app: &mut Tabular,
-    text: &str,
-    cursor: usize,
-    prefix: &str,
-    context: SqlContext,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    let pl = prefix.to_ascii_lowercase();
-    
-    // Check for dot-based table access (e.g. "users.na")
-    // If prefix contains '.', we try to split it into table_part + col_part
-    if let Some((table_part, col_part)) = pl.split_once('.') {
-        // Preserve the original-case prefix as typed by the user (for display in suggestions)
-        let display_prefix = prefix.split_once('.').map(|(t, _)| t).unwrap_or(table_part);
-
-        let conn_id = app.query_tabs.get(app.active_tab_index).and_then(|t| t.connection_id);
-        let db = active_connection_and_db(app)
-            .map(|(_, d)| d)
-            .unwrap_or_default();
-
-        if let Some(cid) = conn_id {
-            // Build alias map and resolve table_part to real cached table name.
-            // Priority: alias_map lookup → case-insensitive scope_table match
-            let alias_map = collect_alias_map(text);
-            let scope_tables = tables_near_cursor(text, cursor);
-            let real_table = alias_map
-                .get(table_part)
-                .cloned()
-                .or_else(|| {
-                    scope_tables
-                        .iter()
-                        .find(|t| t.to_ascii_lowercase() == table_part)
-                        .cloned()
-                });
-            let real_table_name = real_table.as_deref().unwrap_or(table_part);
-
-            if let Some(all_cols) = get_cached_columns(app, cid, &db, vec![real_table_name.to_string()]) {
-                // Collect FK info to rank FK-relevant columns first
-                let fks = collect_loaded_fks(app);
-                let real_tl = real_table_name.to_ascii_lowercase();
-
-                // Other tables currently in the query (resolved to real names)
-                let other_real: Vec<String> = scope_tables
-                    .iter()
-                    .filter_map(|t| {
-                        if t.to_ascii_lowercase() == real_tl {
-                            None
-                        } else {
-                            Some(
-                                alias_map
-                                    .get(&t.to_ascii_lowercase())
-                                    .cloned()
-                                    .unwrap_or_else(|| t.clone())
-                                    .to_ascii_lowercase(),
-                            )
-                        }
-                    })
-                    .collect();
-
-                // FK-priority set: columns of real_table that participate in a FK
-                // with any other table in scope (either as source or as target)
-                let priority_cols: std::collections::HashSet<String> = fks
-                    .iter()
-                    .filter_map(|fk| {
-                        let ft = fk.table_name.to_ascii_lowercase();
-                        let fr = fk.referenced_table_name.to_ascii_lowercase();
-                        if ft == real_tl && other_real.contains(&fr) {
-                            Some(fk.column_name.to_ascii_lowercase())
-                        } else if fr == real_tl && other_real.contains(&ft) {
-                            Some(fk.referenced_column_name.to_ascii_lowercase())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Heuristic priority: columns named <other_table>_id
-                let heuristic_priority: std::collections::HashSet<String> = all_cols
-                    .iter()
-                    .filter(|col| {
-                        let cl = col.to_ascii_lowercase();
-                        other_real.iter().any(|ot| {
-                            let sing = ot.trim_end_matches('s').to_string();
-                            cl == format!("{}_id", ot)
-                                || cl == format!("{}_id", sing)
-                                || cl == format!("{}id", ot)
-                        })
-                    })
-                    .map(|c| c.to_ascii_lowercase())
-                    .collect();
-
-                let mut fk_sugg: Vec<String> = Vec::new();
-                let mut reg_sugg: Vec<String> = Vec::new();
-                for c in &all_cols {
-                    if fuzzy_match(col_part, c).is_none() {
-                        continue;
-                    }
-                    let suggestion = format!("{}.{}", display_prefix, c);
-                    let cl = c.to_ascii_lowercase();
-                    if priority_cols.contains(&cl) || heuristic_priority.contains(&cl) {
-                        fk_sugg.push(suggestion);
-                    } else {
-                        reg_sugg.push(suggestion);
-                    }
-                }
-                out.extend(fk_sugg);
-                out.extend(reg_sugg);
-            }
-        }
-
-        return out;
-    }
-
-    let ctx = context;
-    let mut tables_in_scope = tables_near_cursor(text, cursor);
-    let tables_all = extract_tables(text);
-    if tables_in_scope.is_empty() {
-        tables_in_scope = tables_all.clone();
-    }
-    // Resolve the connection: prefer the active tab's binding, but fall back to
-    // the app-wide active connection (editor tabs aren't always bound to one).
-    let conn_id = app
+/// Koneksi aktif: milik tab dulu, lalu koneksi global aplikasi.
+fn active_connection(app: &Tabular) -> (Option<i64>, String) {
+    let cid = app
         .query_tabs
         .get(app.active_tab_index)
         .and_then(|t| t.connection_id)
@@ -1414,463 +505,349 @@ fn build_suggestions(
     let db = active_connection_and_db(app)
         .map(|(_, d)| d)
         .unwrap_or_default();
-    match ctx {
-        SqlContext::AfterSelect => {
-            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
-            if let Some(cid) = conn_id
-                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
-            {
-                for c in cols {
-                    if fuzzy_match(&pl, &c).is_some() {
-                        out.push(c);
-                    }
-                }
-            }
-            if "*".starts_with(&pl) {
-                out.push("*".into());
-            }
-        }
-        SqlContext::AfterFrom => {
-            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
-            let tables = conn_id
-                .and_then(|cid| get_cached_tables(app, cid, &db))
-                .unwrap_or_else(|| get_all_tables(app));
-            
-            // FK-aware Join Table + ON clause suggestions when tables are already in scope
-            if let Some(_cid) = conn_id {
-                let fks = collect_loaded_fks(app);
-                let alias_map = collect_alias_map(text);
-                if !tables_in_scope.is_empty() && !fks.is_empty() {
-                    for scope_t in &tables_in_scope {
-                        let scope_lower = scope_t.to_ascii_lowercase();
-                        let real_scope = alias_map
-                            .get(&scope_lower)
-                            .cloned()
-                            .unwrap_or_else(|| scope_t.clone());
-                        let real_scope_lower = real_scope.to_ascii_lowercase();
+    (cid, db)
+}
 
-                        let scope_display = alias_map
-                            .iter()
-                            .find(|(k, v)| v.to_ascii_lowercase() == real_scope_lower && *k != &real_scope_lower)
-                            .map(|(k, _)| k.as_str())
-                            .unwrap_or(scope_t.as_str());
+/// Dialek SQL koneksi; `None` untuk koneksi non-SQL (Redis, MongoDB, HTTP).
+fn dialect_for(app: &Tabular, cid: Option<i64>) -> Option<Dialect> {
+    use crate::models::enums::DatabaseType;
+    let Some(conn) = cid.and_then(|cid| app.connections.iter().find(|c| c.id == Some(cid))) else {
+        return Some(Dialect::Generic);
+    };
+    match conn.connection_type {
+        DatabaseType::MySQL => Some(Dialect::MySql),
+        DatabaseType::PostgreSQL => Some(Dialect::Postgres),
+        DatabaseType::SQLite => Some(Dialect::Sqlite),
+        DatabaseType::MsSQL => Some(Dialect::MsSql),
+        DatabaseType::Redis | DatabaseType::MongoDB | DatabaseType::ApiHttp => None,
+    }
+}
 
-                        for fk in &fks {
-                            let ft = fk.table_name.to_ascii_lowercase();
-                            let fr = fk.referenced_table_name.to_ascii_lowercase();
-                            if ft == real_scope_lower {
-                                let target_table = &fk.referenced_table_name;
-                                let cond = format!(
-                                    "{} ON {}.{} = {}.{}",
-                                    target_table, scope_display, fk.column_name, target_table, fk.referenced_column_name
-                                );
-                                if fuzzy_match(&pl, target_table).is_some() || fuzzy_match(&pl, &cond).is_some() {
-                                    out.push(cond);
-                                }
-                            } else if fr == real_scope_lower {
-                                let target_table = &fk.table_name;
-                                let cond = format!(
-                                    "{} ON {}.{} = {}.{}",
-                                    target_table, target_table, fk.column_name, scope_display, fk.referenced_column_name
-                                );
-                                if fuzzy_match(&pl, target_table).is_some() || fuzzy_match(&pl, &cond).is_some() {
-                                    out.push(cond);
-                                }
-                            }
-                        }
-                    }
-                }
+/// Kumpulkan metadata yang dibutuhkan hasil analisis (hanya dari memori).
+fn build_catalog(
+    app: &mut Tabular,
+    cid: Option<i64>,
+    db: &str,
+    analysis: &autocomplete::Analysis,
+) -> AppCatalog {
+    let tables = match cid {
+        Some(c) => get_cached_tables(app, c, db).unwrap_or_else(|| get_all_tables(app)),
+        None => get_all_tables(app),
+    };
+    let mut columns = HashMap::new();
+    if let Some(c) = cid {
+        let qualifier = analysis.qualifier.last().map(|s| s.to_ascii_lowercase());
+        for t in analysis.referenced_tables() {
+            // Qualifier yang bukan tabel di scope hanya dimuat bila memang nama tabel
+            // yang dikenal — hindari fetch ke DB untuk nama schema atau typo.
+            let qualifier_only = qualifier.as_deref() == Some(t.as_str())
+                && !analysis
+                    .scope
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(&t));
+            if qualifier_only && !tables.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                continue;
             }
-
-            for t in tables {
-                if fuzzy_match(&pl, &t).is_some() {
-                    out.push(t);
-                }
-            }
-        }
-        SqlContext::AfterWhere => {
-            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
-            if let Some(cid) = conn_id
-                && let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone())
-            {
-                for c in cols {
-                    if fuzzy_match(&pl, &c).is_some() {
-                        out.push(c);
-                    }
-                }
-            }
-        }
-        SqlContext::AfterJoinOn => {
-            if let Some(cid) = conn_id {
-                let alias_map = collect_alias_map(text);
-                // 1. Suggest heuristic / FK-based join conditions first for instant completion
-                let join_conds =
-                    suggest_join_conditions(app, cid, &db, &tables_in_scope, &alias_map);
-                for cond in join_conds {
-                    if cond.to_ascii_lowercase().starts_with(&pl) || fuzzy_match(&pl, &cond).is_some() || pl.is_empty() {
-                        out.push(cond);
-                    }
-                }
-                // Build real_lower → display_name map
-                let mut real_to_display: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for t in &tables_in_scope {
-                    real_to_display
-                        .entry(t.to_ascii_lowercase())
-                        .or_insert(t.clone());
-                }
-                for (alias, real) in &alias_map {
-                    let real_lower = real.to_ascii_lowercase();
-                    if alias != &real_lower {
-                        real_to_display.insert(real_lower, alias.clone());
-                    }
-                }
-                // 2. Suggest qualified `alias.column` names for all tables in scope
-                for table in &tables_in_scope {
-                    let display = real_to_display
-                        .get(&table.to_ascii_lowercase())
-                        .map(|s| s.as_str())
-                        .unwrap_or(table.as_str());
-                    if let Some(cols) = get_cached_columns(app, cid, &db, vec![table.clone()]) {
-                        for col in &cols {
-                            let qualified = format!("{}.{}", display, col);
-                            if fuzzy_match(&pl, &qualified).is_some()
-                                || fuzzy_match(&pl, col).is_some()
-                            {
-                                out.push(qualified);
-                            }
-                        }
-                    }
-                }
-            }
-            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
-        }
-        SqlContext::General => {
-            add_keywords(&mut out, &pl, app.advanced_editor.keyword_casing);
-            if let Some(cid) = conn_id {
-                if let Some(ts) = get_cached_tables(app, cid, &db) {
-                    for t in ts {
-                        if fuzzy_match(&pl, &t).is_some() {
-                            out.push(t);
-                        }
-                    }
-                }
-                if let Some(cols) = get_cached_columns(app, cid, &db, tables_in_scope.clone()) {
-                    for c in cols {
-                        if fuzzy_match(&pl, &c).is_some() {
-                            out.push(c);
-                        }
-                    }
-                }
-            } else {
-                for t in get_all_tables(app) {
-                    if fuzzy_match(&pl, &t).is_some() {
-                        out.push(t);
-                    }
-                }
+            if let Some(names) = get_cached_columns(app, c, db, &t) {
+                let metas = names
+                    .into_iter()
+                    .map(|name| {
+                        let data_type = app
+                            .autocomplete_col_types_mem
+                            .get(&(c, t.clone(), name.to_ascii_lowercase()))
+                            .cloned();
+                        ColumnMeta { name, data_type }
+                    })
+                    .collect();
+                columns.insert(t, metas);
             }
         }
     }
-    // Score each candidate once, sort by score (best first), then strip scores.
-    // This avoids the O(N log N) repeated fuzzy_match calls of sort_by.
-    let mut scored: Vec<(i32, String)> = out
-        .into_iter()
-        .map(|s| {
-            let base = fuzzy_match(&pl, &s).unwrap_or(i32::MIN);
-            let relevance = context_relevance_score(context, &s, prefix);
-            (base + relevance, s)
-        })
-        .collect();
-    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.dedup_by_key(|x| x.1.clone());
-    scored.into_iter().map(|(_, s)| s).collect()
+    let fks = if cid.is_some() {
+        collect_loaded_fks(app)
+    } else {
+        Vec::new()
+    };
+    AppCatalog {
+        tables,
+        columns,
+        fks,
+        usage: app.autocomplete_usage.clone(),
+    }
+}
+
+fn map_kind(kind: ItemKind) -> AutocompleteKind {
+    match kind {
+        ItemKind::Table | ItemKind::Cte => AutocompleteKind::Table,
+        ItemKind::Column => AutocompleteKind::Column,
+        ItemKind::Alias => AutocompleteKind::Alias,
+        ItemKind::Keyword | ItemKind::Value => AutocompleteKind::Syntax,
+        ItemKind::Operator => AutocompleteKind::Operator,
+        ItemKind::Function => AutocompleteKind::Function,
+        ItemKind::JoinCondition => AutocompleteKind::Join,
+        ItemKind::Template => AutocompleteKind::Snippet,
+    }
+}
+
+fn kind_icon(kind: Option<AutocompleteKind>) -> &'static str {
+    match kind {
+        Some(AutocompleteKind::Table) => "📦",
+        Some(AutocompleteKind::Column) => "🏷️",
+        Some(AutocompleteKind::Syntax) => "⚡",
+        Some(AutocompleteKind::Function) => "🧩",
+        Some(AutocompleteKind::Snippet) => "📄",
+        Some(AutocompleteKind::Parameter) => "🔧",
+        Some(AutocompleteKind::Join) => "🔗",
+        Some(AutocompleteKind::Alias) => "🔖",
+        Some(AutocompleteKind::Operator) => "=",
+        None => "•",
+    }
+}
+
+fn clear_popup(app: &mut Tabular) {
+    app.show_autocomplete = false;
+    app.autocomplete_suggestions.clear();
+    app.autocomplete_kinds.clear();
+    app.autocomplete_notes.clear();
+    app.autocomplete_payloads.clear();
+    app.autocomplete_prefix.clear();
+    app.last_autocomplete_trigger_len = 0;
+}
+
+/// Terapkan hasil warming metadata dari background ke cache in-memory.
+fn drain_warm_results(app: &mut Tabular) {
+    let Some(rx) = app.autocomplete_warm_receiver.as_ref() else {
+        return;
+    };
+    let results: Vec<_> = rx.try_iter().collect();
+    for res in results {
+        match res {
+            crate::window_egui::AutocompleteWarmResult::ForeignKeys {
+                connection_id,
+                database_name,
+                keys,
+            } => {
+                app.autocomplete_fks_mem
+                    .insert((connection_id, database_name), keys);
+            }
+            crate::window_egui::AutocompleteWarmResult::Columns {
+                connection_id,
+                table_name,
+                columns,
+                types,
+            } => {
+                app.autocomplete_cols_mem
+                    .insert((connection_id, table_name.clone()), columns);
+                for (cn, ct) in types {
+                    app.autocomplete_col_types_mem.insert(
+                        (connection_id, table_name.clone(), cn.to_ascii_lowercase()),
+                        ct,
+                    );
+                }
+            }
+            crate::window_egui::AutocompleteWarmResult::Tables {
+                connection_id,
+                database_name,
+                tables,
+            } => {
+                app.autocomplete_tables_mem
+                    .insert((connection_id, database_name), tables);
+            }
+        }
+    }
 }
 
 pub fn update_autocomplete(app: &mut Tabular) {
-    // Drain background autocomplete metadata warming results first
-    if let Some(ref rx) = app.autocomplete_warm_receiver {
-        while let Ok(res) = rx.try_recv() {
-            match res {
-                crate::window_egui::AutocompleteWarmResult::ForeignKeys { connection_id, database_name, keys } => {
-                    app.autocomplete_fks_mem.insert((connection_id, database_name), keys);
-                }
-                crate::window_egui::AutocompleteWarmResult::Columns { connection_id, table_name, columns, types } => {
-                    app.autocomplete_cols_mem.insert((connection_id, table_name.clone()), columns);
-                    for (cn, ct) in types {
-                        app.autocomplete_col_types_mem.insert((connection_id, table_name.clone(), cn.to_ascii_lowercase()), ct);
-                    }
-                }
-                crate::window_egui::AutocompleteWarmResult::Tables { connection_id, database_name, tables } => {
-                    app.autocomplete_tables_mem.insert((connection_id, database_name), tables);
-                }
-            }
-        }
-    }
+    drain_warm_results(app);
 
-    // Throttle autocomplete updates to avoid heavy work on every keystroke
+    // Throttle supaya tidak bekerja berat di setiap keystroke
     let now = std::time::Instant::now();
-    if let Some(last) = app.autocomplete_last_update {
-        let elapsed = now.saturating_duration_since(last);
-        if elapsed < std::time::Duration::from_millis(app.autocomplete_debounce_ms) {
-            return;
-        }
+    if let Some(last) = app.autocomplete_last_update
+        && now.saturating_duration_since(last)
+            < std::time::Duration::from_millis(app.autocomplete_debounce_ms)
+    {
+        return;
     }
     app.autocomplete_last_update = Some(now);
-    // Clone editor text first to avoid immutable + mutable borrow overlap
-    let editor_text = app.editor.text.clone();
-    let cursor = app.cursor_position.min(editor_text.len());
-    let (pref, _) = current_prefix(&editor_text, cursor);
+    refresh(app, false);
+}
 
-    // CRITICAL: Don't touch autocomplete state while typing - let text settle first
-    // This prevents freeze and caret jumping by avoiding mid-keystroke state mutations
+/// Hitung ulang saran di posisi kursor. `force` (Ctrl+Space) melewati aturan
+/// pemicu otomatis dan jatuh ke saran umum bila konteks tidak menghasilkan apa pun.
+fn refresh(app: &mut Tabular, force: bool) {
+    let text = app.editor.text.clone();
+    let mut cursor = app.cursor_position.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let (pref, pref_start) = current_prefix(&text, cursor);
+    let prev_char = text[..cursor].chars().next_back();
 
-    let prev_char = editor_text[..cursor].chars().next_back();
-    if matches!(prev_char, Some(';')) || matches!(prev_char, Some('*')) {
-        app.show_autocomplete = false;
-        app.autocomplete_suggestions.clear();
-        app.autocomplete_kinds.clear();
-        app.autocomplete_notes.clear();
-        app.autocomplete_payloads.clear();
-        app.autocomplete_prefix.clear();
-        app.last_autocomplete_trigger_len = 0;
+    if !force && matches!(prev_char, Some(';') | Some('*')) {
+        clear_popup(app);
+        return;
+    }
+    // Saran untuk prefix ini sudah tampil
+    if !force
+        && app.show_autocomplete
+        && app.autocomplete_prefix == pref
+        && app.last_autocomplete_trigger_len == pref.len()
+    {
         return;
     }
 
-    if pref.is_empty() {
-        // After a clause keyword followed by whitespace (e.g. "SELECT * FROM |"),
-        // show the full candidate list even with no prefix yet — this is how
-        // DataGrip surfaces tables right after FROM/JOIN (and columns after
-        // SELECT/WHERE/ON). Otherwise, bail.
-        let ctx_empty = detect_ctx(&editor_text, cursor);
-        let after_space = matches!(prev_char, Some(c) if c.is_whitespace());
-        let show_on_empty = after_space
-            && matches!(
-                ctx_empty,
-                SqlContext::AfterFrom
-                    | SqlContext::AfterSelect
-                    | SqlContext::AfterWhere
-                    | SqlContext::AfterJoinOn
-            );
-        if !show_on_empty {
-            app.show_autocomplete = false;
-            app.autocomplete_suggestions.clear();
-            app.autocomplete_kinds.clear();
-            app.autocomplete_notes.clear();
-            app.autocomplete_payloads.clear();
-            app.autocomplete_prefix.clear();
-            app.last_autocomplete_trigger_len = 0;
+    let (cid, db) = active_connection(app);
+    let dialect = dialect_for(app, cid);
+    let mut analysis = dialect.map(|d| autocomplete::analyze(&text, cursor, d));
+
+    if !force {
+        let expect = analysis.as_ref().map(|a| &a.expect);
+        let triggered = if pref.is_empty() {
+            // Tanpa prefix: hanya setelah spasi/koma/kurung di posisi yang jelas butuh
+            // tabel atau kolom (mis. `FROM |`, `WHERE |`, `ON |`, `SELECT a, |`).
+            let soft_boundary =
+                matches!(prev_char, Some(c) if c.is_whitespace() || c == ',' || c == '(');
+            soft_boundary
+                && matches!(
+                    expect,
+                    Some(Expect::Table | Expect::Column | Expect::JoinCondition)
+                )
+        } else {
+            let before_prefix = text[..pref_start].chars().next_back();
+            pref.contains('.')
+                || pref.len() >= 2
+                || pref.starts_with([':', '@', '$'])
+                || matches!(before_prefix, Some(c) if c.is_whitespace())
+        };
+        if !triggered {
+            clear_popup(app);
             return;
         }
     }
 
-    let pre_prefix_char = if pref.len() <= cursor {
-        editor_text[..cursor - pref.len()].chars().next_back()
-    } else {
-        None
-    };
-    let triggered_by_space = matches!(pre_prefix_char, Some(ch) if ch.is_whitespace());
-    
-    // Also trigger if the prefix contains a dot (e.g. "table."), implying user wants column suggestions
-    let triggered_by_dot = pref.contains('.');
-    let triggered_by_len = pref.len() >= 2;
-    if !triggered_by_space && !triggered_by_len && !triggered_by_dot {
-        app.show_autocomplete = false;
-        app.autocomplete_suggestions.clear();
-        app.autocomplete_kinds.clear();
-        app.autocomplete_notes.clear();
-        app.autocomplete_payloads.clear();
-        app.autocomplete_prefix.clear();
-        app.last_autocomplete_trigger_len = 0;
-        return;
-    }
-
-    // Only rebuild if prefix length changed (avoid redundant calls)
-    if app.last_autocomplete_trigger_len == pref.len()
-        && app.show_autocomplete
-        && app.autocomplete_prefix == pref
-    {
-        // Suggestions already up-to-date for this prefix
-        return;
-    }
-
-    app.autocomplete_prefix = pref.clone();
-
-    if app.last_autocomplete_trigger_len != pref.len() || !app.show_autocomplete {
-        let context = detect_ctx(&editor_text, cursor);
-        let suggestions = build_suggestions(app, &editor_text, cursor, &pref, context);
-        if suggestions.is_empty() {
-            app.show_autocomplete = false;
-            app.autocomplete_payloads.clear();
-        } else {
-            app.show_autocomplete = true;
-            let context = detect_ctx(&editor_text, cursor);
-            let (cid, db) = app
-                .query_tabs
-                .get(app.active_tab_index)
-                .and_then(|tab| {
-                    tab.connection_id
-                        .map(|c| (c, tab.database_name.clone().unwrap_or_default()))
-                })
-                .unwrap_or((0, String::new()));
-
-            // Classify suggestions by SQL context — build_suggestions() already
-            // returns them in fuzzy-score order, so no re-sort is needed here.
-            // Avoids two extra cache fetches (get_cached_tables + get_cached_columns).
-            let syntax_kw: HashSet<String> =
-                SQL_KEYWORDS.iter().map(|k| k.to_ascii_uppercase()).chain(std::iter::once("*".to_string())).collect();
-
-            let mut tables = Vec::new();
-            let mut columns = Vec::new();
-            let mut syntax = Vec::new();
-            for s in suggestions.into_iter() {
-                if syntax_kw.contains(&s.to_ascii_uppercase()) {
-                    syntax.push(s);
-                } else {
-                    match context {
-                        SqlContext::AfterFrom => tables.push(s),
-                        SqlContext::AfterSelect | SqlContext::AfterWhere | SqlContext::AfterJoinOn => {
-                            columns.push(s)
-                        }
-                        SqlContext::General => {
-                            // Qualified names (alias.col) are columns; bare names are tables.
-                            if s.contains('.') {
-                                columns.push(s);
-                            } else {
-                                tables.push(s);
-                            }
-                        }
-                    }
-                }
-            }
-            // build_suggestions() already returns suggestions sorted by fuzzy score;
-            // preserving insertion order within each category is sufficient.
-            tables.dedup();
-            columns.dedup();
-            syntax.sort_unstable();
-            syntax.dedup();
-
-            // Phase 3: column type + owning-table metadata for richer notes (purely in-memory).
-            let mut col_meta: std::collections::HashMap<String, (String, String)> =
-                std::collections::HashMap::new();
-            let mut col_ambiguous: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            if cid != 0 {
-                for t in tables_near_cursor(&editor_text, cursor) {
-                    let tl = t.to_ascii_lowercase();
-                    if let Some(cols) = app.autocomplete_cols_mem.get(&(cid, tl.clone())) {
-                        for cn in cols {
-                            let key = cn.to_ascii_lowercase();
-                            let ct = app
-                                .autocomplete_col_types_mem
-                                .get(&(cid, tl.clone(), key.clone()))
-                                .cloned()
-                                .unwrap_or_else(|| "column".to_string());
-                            match col_meta.get(&key) {
-                                Some((_, owner)) if owner != &t => {
-                                    col_ambiguous.insert(key);
-                                }
-                                Some(_) => {}
-                                None => {
-                                    col_meta.insert(key, (ct, t.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut ordered = Vec::new();
-            let mut kinds = Vec::new();
-            let mut notes = Vec::new();
-            let mut payloads = Vec::new();
-            let mut seen_labels: HashSet<String> = HashSet::new();
-            let mut push_suggestion =
-                |label: String,
-                 kind: crate::models::enums::AutocompleteKind,
-                 note: Option<String>,
-                 payload: Option<String>| {
-                    if seen_labels.insert(label.clone()) {
-                        ordered.push(label);
-                        kinds.push(kind);
-                        notes.push(note);
-                        payloads.push(payload);
-                    }
-                };
-
-            for t in tables {
-                let note = if db.is_empty() {
-                    Some("table".to_string())
-                } else {
-                    Some(format!("db: {}", db))
-                };
-                push_suggestion(t, crate::models::enums::AutocompleteKind::Table, note, None);
-            }
-
-            for c in columns {
-                // Join conditions contain '=' and get a distinct note
-                let (kind, note) = if context == SqlContext::AfterJoinOn && c.contains('=') {
-                    (crate::models::enums::AutocompleteKind::Column, Some("join".to_string()))
-                } else {
-                    // Show type + owning table (strip any `alias.` qualifier first).
-                    let bare = c.rsplit('.').next().unwrap_or(&c).to_ascii_lowercase();
-                    let note = match col_meta.get(&bare) {
-                        Some((ty, _)) if col_ambiguous.contains(&bare) => {
-                            Some(format!("{} · ambiguous", ty))
-                        }
-                        Some((ty, owner)) => Some(format!("{} · {}", ty, owner)),
-                        None => Some("column".to_string()),
-                    };
-                    (crate::models::enums::AutocompleteKind::Column, note)
-                };
-                push_suggestion(c, kind, note, None);
-            }
-
-            for param in query_tools::parameter_candidates(&pref) {
-                push_suggestion(
-                    param.label.to_string(),
-                    crate::models::enums::AutocompleteKind::Parameter,
-                    Some(param.note.to_string()),
-                    Some(param.template.to_string()),
-                );
-            }
-
-            for kw in syntax {
-                let is_wc = kw == "*";
-                push_suggestion(
-                    kw,
-                    crate::models::enums::AutocompleteKind::Syntax,
-                    Some(if is_wc {
-                        "wildcard".to_string()
-                    } else {
-                        "keyword".to_string()
-                    }),
-                    None,
-                );
-            }
-
-            let snippet_context = match context {
-                SqlContext::AfterSelect => query_tools::SnippetContext::SelectList,
-                SqlContext::AfterFrom => query_tools::SnippetContext::FromClause,
-                SqlContext::AfterWhere | SqlContext::AfterJoinOn => query_tools::SnippetContext::WhereClause,
-                SqlContext::General => query_tools::SnippetContext::Any,
-            };
-
-            for snippet in query_tools::snippet_candidates(&pref, snippet_context) {
-                push_suggestion(
-                    snippet.label.to_string(),
-                    crate::models::enums::AutocompleteKind::Snippet,
-                    Some(snippet.note.to_string()),
-                    Some(snippet.template.to_string()),
-                );
-            }
-
-            app.autocomplete_suggestions = ordered;
-            app.autocomplete_kinds = kinds;
-            app.autocomplete_notes = notes;
-            app.autocomplete_payloads = payloads;
-            app.selected_autocomplete_index = 0;
+    let casing = app.advanced_editor.keyword_casing;
+    let mut items = Vec::new();
+    if let (Some(d), Some(a)) = (dialect, analysis.as_mut()) {
+        let cat = build_catalog(app, cid, &db, a);
+        let opts = autocomplete::Options { dialect: d, casing };
+        items = autocomplete::complete(a, &cat, opts);
+        if items.is_empty() && force && a.expect != Expect::None {
+            a.expect = Expect::Generic;
+            items = autocomplete::complete(a, &cat, opts);
         }
-        app.last_autocomplete_trigger_len = pref.len();
+    }
+
+    let mut labels = Vec::new();
+    let mut kinds = Vec::new();
+    let mut notes = Vec::new();
+    let mut payloads = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut push =
+        |label: String, kind: AutocompleteKind, note: Option<String>, payload: Option<String>| {
+            if seen.insert(label.clone()) {
+                labels.push(label);
+                kinds.push(kind);
+                notes.push(note);
+                payloads.push(payload);
+            }
+        };
+
+    for it in items {
+        let payload = (it.insert != it.label).then_some(it.insert);
+        push(it.label, map_kind(it.kind), it.detail, payload);
+    }
+
+    for param in query_tools::parameter_candidates(&pref) {
+        push(
+            param.label.to_string(),
+            AutocompleteKind::Parameter,
+            Some(param.note.to_string()),
+            Some(param.template.to_string()),
+        );
+    }
+
+    // Snippet hanya saat user mengetik kata di posisi "awal klausa"
+    let expect = analysis.as_ref().map(|a| a.expect.clone());
+    let snippet_ok = !pref.is_empty()
+        && !pref.contains('.')
+        && analysis.as_ref().is_some_and(|a| a.qualifier.is_empty())
+        && matches!(
+            expect,
+            Some(
+                Expect::StatementStart
+                    | Expect::AfterTable { .. }
+                    | Expect::AfterExpr
+                    | Expect::AfterSelectItem
+                    | Expect::Column
+                    | Expect::Generic
+            )
+        );
+    if snippet_ok {
+        let snippet_context = match analysis.as_ref().map(|a| a.clause) {
+            Some(autocomplete::Clause::SelectList) => query_tools::SnippetContext::SelectList,
+            Some(autocomplete::Clause::From) => query_tools::SnippetContext::FromClause,
+            Some(
+                autocomplete::Clause::Where
+                | autocomplete::Clause::JoinOn
+                | autocomplete::Clause::Having,
+            ) => query_tools::SnippetContext::WhereClause,
+            _ => query_tools::SnippetContext::Any,
+        };
+        for snippet in query_tools::snippet_candidates(&pref, snippet_context) {
+            push(
+                snippet.label.to_string(),
+                AutocompleteKind::Snippet,
+                Some(snippet.note.to_string()),
+                Some(snippet.template.to_string()),
+            );
+        }
+    }
+
+    // Tab non-SQL yang dipanggil manual: keyword dasar sebagai cadangan
+    if dialect.is_none() && force {
+        let pl = pref.to_ascii_lowercase();
+        for kw in SQL_KEYWORDS
+            .iter()
+            .filter(|k| k.to_ascii_lowercase().starts_with(&pl))
+        {
+            let s = match casing {
+                crate::models::enums::KeywordCasing::Lower => kw.to_ascii_lowercase(),
+                _ => kw.to_string(),
+            };
+            push(s, AutocompleteKind::Syntax, Some("keyword".into()), None);
+        }
+    }
+
+    if labels.is_empty() {
+        clear_popup(app);
+        return;
+    }
+    app.autocomplete_suggestions = labels;
+    app.autocomplete_kinds = kinds;
+    app.autocomplete_notes = notes;
+    app.autocomplete_payloads = payloads;
+    app.selected_autocomplete_index = 0;
+    app.show_autocomplete = true;
+    app.autocomplete_prefix = pref.clone();
+    app.last_autocomplete_trigger_len = pref.len();
+}
+
+/// Siapkan teks sisipan: buang spasi penutup bila karakter setelah kursor sudah
+/// spasi, lalu hapus penanda kursor dan kembalikan offset caret-nya.
+fn prepare_insert(raw: &str, next_is_space: bool) -> (String, usize) {
+    let mut s = raw.to_string();
+    if next_is_space && s.ends_with(' ') && !s.contains(autocomplete::CURSOR_MARK) {
+        s.pop();
+    }
+    match s.find(autocomplete::CURSOR_MARK) {
+        Some(p) => {
+            s.remove(p);
+            (s, p)
+        }
+        None => {
+            let len = s.len();
+            (s, len)
+        }
     }
 }
 
@@ -1878,34 +855,41 @@ pub fn accept_current_suggestion(app: &mut Tabular) {
     if !app.show_autocomplete {
         return;
     }
-    if let Some(display) = app
-        .autocomplete_suggestions
-        .get(app.selected_autocomplete_index)
-        .cloned()
-    {
-        let cursor = app.cursor_position.min(app.editor.text.len());
-        let (_pref, start) = current_prefix(&app.editor.text, cursor);
-        let start_idx = start;
-        let replacement = app
-            .autocomplete_payloads
-            .get(app.selected_autocomplete_index)
-            .and_then(|p| p.clone())
-            .unwrap_or_else(|| display.clone());
-        app.editor
-            .apply_single_replace(start_idx..cursor, &replacement);
-        app.cursor_position = start_idx + replacement.len();
-        app.multi_selection
-            .set_primary_range(app.cursor_position, app.cursor_position);
-        app.pending_cursor_set = Some(app.cursor_position);
-        app.autocomplete_expected_cursor = Some(app.cursor_position);
-        app.autocomplete_protection_frames = app.autocomplete_protection_frames.max(8);
-        app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
-        app.show_autocomplete = false;
-        app.autocomplete_suggestions.clear();
-        app.autocomplete_kinds.clear();
-        app.autocomplete_notes.clear();
-        app.autocomplete_payloads.clear();
+    let idx = app.selected_autocomplete_index;
+    let Some(display) = app.autocomplete_suggestions.get(idx).cloned() else {
+        return;
+    };
+    let cursor = app.cursor_position.min(app.editor.text.len());
+    let (pref, mut start) = current_prefix(&app.editor.text, cursor);
+    // `alias.kol|` → hanya segmen setelah titik terakhir yang diganti
+    if let Some(dot) = pref.rfind('.') {
+        start += dot + 1;
     }
+    let raw = app
+        .autocomplete_payloads
+        .get(idx)
+        .cloned()
+        .flatten()
+        .unwrap_or_else(|| display.clone());
+    let next_is_space = app.editor.text[cursor..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_whitespace());
+    let (replacement, caret) = prepare_insert(&raw, next_is_space);
+    app.editor.apply_single_replace(start..cursor, &replacement);
+    app.cursor_position = start + caret;
+    app.multi_selection
+        .set_primary_range(app.cursor_position, app.cursor_position);
+    app.pending_cursor_set = Some(app.cursor_position);
+    app.autocomplete_expected_cursor = Some(app.cursor_position);
+    app.autocomplete_protection_frames = app.autocomplete_protection_frames.max(8);
+    app.editor_focus_boost_frames = app.editor_focus_boost_frames.max(6);
+    *app.autocomplete_usage.entry(display).or_insert(0) += 1;
+    app.show_autocomplete = false;
+    app.autocomplete_suggestions.clear();
+    app.autocomplete_kinds.clear();
+    app.autocomplete_notes.clear();
+    app.autocomplete_payloads.clear();
 }
 
 pub fn navigate(app: &mut Tabular, delta: i32) {
@@ -1926,26 +910,18 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
     if !app.show_autocomplete || app.autocomplete_suggestions.is_empty() {
         return;
     }
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), app.ui_mode);
+    let metrics =
+        crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), app.ui_mode);
     let screen = ui.ctx().content_rect();
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let small_font_id = egui::TextStyle::Small.resolve(ui.style());
-    let heading_font_id = egui::FontId::new(
-        if metrics.is_touch { 12.5 } else { 10.5 },
-        egui::FontFamily::Proportional,
-    );
-
     let row_height = if metrics.is_touch { 32.0 } else { 22.0 };
-    let header_height = if metrics.is_touch { 26.0 } else { 18.0 };
 
     let suggestions = app.autocomplete_suggestions.clone();
     let kinds = app.autocomplete_kinds.clone();
     let notes = app.autocomplete_notes.clone();
     let mut max_label_px: f32 = 0.0;
     let mut max_note_px: f32 = 0.0;
-    let mut max_heading_px: f32 = 0.0;
-    let mut group_count = 0usize;
-    let mut last_kind: Option<crate::models::enums::AutocompleteKind> = None;
 
     ui.ctx().fonts_mut(|f| {
         for (idx, s) in suggestions.iter().enumerate() {
@@ -1957,35 +933,14 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                     f.layout_no_wrap(note.clone(), small_font_id.clone(), egui::Color32::WHITE);
                 max_note_px = max_note_px.max(ng.size().x);
             }
-
-            if let Some(&kind) = kinds.get(idx)
-                && last_kind != Some(kind)
-            {
-                group_count += 1;
-                last_kind = Some(kind);
-                let heading = match kind {
-                    crate::models::enums::AutocompleteKind::Table => "📦 Tables",
-                    crate::models::enums::AutocompleteKind::Column => "🏷️ Columns",
-                    crate::models::enums::AutocompleteKind::Syntax => "⚡ Syntax",
-                    crate::models::enums::AutocompleteKind::Function => "🧩 Functions",
-                    crate::models::enums::AutocompleteKind::Snippet => "📄 Snippets",
-                    crate::models::enums::AutocompleteKind::Parameter => "🔧 Parameters",
-                };
-                let hg = f.layout_no_wrap(
-                    heading.to_string(),
-                    heading_font_id.clone(),
-                    egui::Color32::WHITE,
-                );
-                max_heading_px = max_heading_px.max(hg.size().x);
-            }
         }
     });
 
-    let base_width = max_label_px.max(max_heading_px) + max_note_px + 24.0;
+    let base_width = max_label_px + max_note_px + 24.0;
     let popup_w = (base_width + 40.0).clamp(300.0, (screen.width() - 32.0).max(300.0));
 
     let entry_count = suggestions.len() as f32;
-    let total_content_h = entry_count * row_height + (group_count as f32) * header_height + 8.0;
+    let total_content_h = entry_count * row_height + 8.0;
 
     let screen_h = screen.height();
     let desired_cap = (screen_h * 0.55).max(120.0);
@@ -2023,7 +978,11 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
             egui::Frame::new()
                 .fill(bg_fill)
                 .stroke(egui::Stroke::new(1.0, stroke_color))
-                .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 6_u8 } else { 4_u8 }))
+                .corner_radius(egui::CornerRadius::same(if metrics.is_touch {
+                    6_u8
+                } else {
+                    4_u8
+                }))
                 .shadow(eframe::epaint::Shadow {
                     offset: [0, 6],
                     blur: 10,
@@ -2039,7 +998,6 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                     let suggestions = suggestions.clone();
                     let kinds = kinds.clone();
                     let notes = notes.clone();
-                    let mut last_kind = None;
 
                     egui::ScrollArea::vertical()
                         .max_height(max_h)
@@ -2048,39 +1006,6 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
                             for (i, s) in suggestions.iter().enumerate() {
-                                if let Some(k) = kinds.get(i).copied()
-                                    && last_kind != Some(k)
-                                {
-                                    last_kind = Some(k);
-                                    let label = match k {
-                                        crate::models::enums::AutocompleteKind::Table => "📦 Tables",
-                                        crate::models::enums::AutocompleteKind::Column => "🏷️ Columns",
-                                        crate::models::enums::AutocompleteKind::Syntax => "⚡ Syntax",
-                                        crate::models::enums::AutocompleteKind::Function => "🧩 Functions",
-                                        crate::models::enums::AutocompleteKind::Snippet => "📄 Snippets",
-                                        crate::models::enums::AutocompleteKind::Parameter => "🔧 Parameters",
-                                    };
-
-                                    let (header_rect, _) = ui.allocate_exact_size(
-                                        egui::vec2(ui.available_width(), header_height),
-                                        egui::Sense::hover(),
-                                    );
-                                    if ui.is_rect_visible(header_rect) {
-                                        let header_color = if ui.visuals().dark_mode {
-                                             egui::Color32::from_rgb(170, 175, 185)
-                                        } else {
-                                            egui::Color32::from_rgb(70, 75, 85)
-                                        };
-                                        ui.painter().text(
-                                            egui::pos2(header_rect.left() + 8.0, header_rect.center().y),
-                                            egui::Align2::LEFT_CENTER,
-                                            label,
-                                            heading_font_id.clone(),
-                                            header_color,
-                                        );
-                                    }
-                                }
-
                                 let selected = i == app.selected_autocomplete_index;
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(ui.available_width(), row_height),
@@ -2112,15 +1037,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         egui::Color32::from_rgb(25, 25, 35)
                                     };
 
-                                    let icon = match kinds.get(i).copied() {
-                                        Some(crate::models::enums::AutocompleteKind::Table) => "📦",
-                                        Some(crate::models::enums::AutocompleteKind::Column) => "🏷️",
-                                        Some(crate::models::enums::AutocompleteKind::Syntax) => "⚡",
-                                        Some(crate::models::enums::AutocompleteKind::Function) => "🧩",
-                                        Some(crate::models::enums::AutocompleteKind::Snippet) => "📄",
-                                        Some(crate::models::enums::AutocompleteKind::Parameter) => "🔧",
-                                        None => "•",
-                                    };
+                                    let icon = kind_icon(kinds.get(i).copied());
 
                                     // Left: Icon + Suggestion text
                                     ui.painter().text(
@@ -2181,45 +1098,142 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
 }
 
 pub fn trigger_manual(app: &mut Tabular) {
-    update_autocomplete(app);
-    let casing = app.advanced_editor.keyword_casing;
-    let format_kw = |s: &str| -> String {
-        match casing {
-            crate::models::enums::KeywordCasing::Upper => s.to_ascii_uppercase(),
-            crate::models::enums::KeywordCasing::Lower => s.to_ascii_lowercase(),
-            crate::models::enums::KeywordCasing::Preserve => s.to_string(),
-        }
-    };
-    if app.autocomplete_prefix.is_empty() {
-        app.autocomplete_suggestions = SQL_KEYWORDS.iter().map(|s| format_kw(s)).collect();
-        app.autocomplete_suggestions.sort_unstable();
-        app.selected_autocomplete_index = 0;
-        app.show_autocomplete = true;
-        app.autocomplete_kinds = vec![
-            crate::models::enums::AutocompleteKind::Syntax;
-            app.autocomplete_suggestions.len()
-        ];
-        app.autocomplete_notes =
-            vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
-        app.autocomplete_payloads = vec![None; app.autocomplete_suggestions.len()];
-    } else if app.autocomplete_suggestions.is_empty() {
-        app.autocomplete_suggestions = SQL_KEYWORDS
-            .iter()
-            .filter(|k| {
-                k.to_lowercase()
-                    .starts_with(&app.autocomplete_prefix.to_ascii_lowercase())
-            })
-            .map(|s| format_kw(s))
-            .collect();
-        if !app.autocomplete_suggestions.is_empty() {
-            app.show_autocomplete = true;
-            app.autocomplete_kinds = vec![
-                crate::models::enums::AutocompleteKind::Syntax;
-                app.autocomplete_suggestions.len()
-            ];
-            app.autocomplete_notes =
-                vec![Some("keyword".to_string()); app.autocomplete_suggestions.len()];
-            app.autocomplete_payloads = vec![None; app.autocomplete_suggestions.len()];
-        }
+    drain_warm_results(app);
+    app.autocomplete_last_update = Some(std::time::Instant::now());
+    refresh(app, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_current_prefix_includes_qualifier() {
+        assert_eq!(current_prefix("SELECT u.na", 11), ("u.na".to_string(), 7));
+        assert_eq!(
+            current_prefix("WHERE id = :us", 14),
+            (":us".to_string(), 11)
+        );
+        assert_eq!(current_prefix("", 0), (String::new(), 0));
+    }
+
+    #[test]
+    fn test_prepare_insert_cursor_mark_and_spacing() {
+        let m = autocomplete::CURSOR_MARK;
+        // penanda kursor dihapus, caret di posisinya
+        assert_eq!(
+            prepare_insert(&format!("COUNT({m})"), false),
+            ("COUNT()".to_string(), 6)
+        );
+        // spasi penutup dibuang bila setelah kursor sudah ada spasi
+        assert_eq!(prepare_insert("FROM ", true), ("FROM".to_string(), 4));
+        assert_eq!(prepare_insert("FROM ", false), ("FROM ".to_string(), 5));
+        // template dengan penanda tidak dipangkas
+        assert_eq!(
+            prepare_insert(&format!("BETWEEN {m} AND "), true),
+            ("BETWEEN  AND ".to_string(), 8)
+        );
+    }
+
+    #[test]
+    fn test_map_kind_covers_join_and_alias() {
+        assert_eq!(map_kind(ItemKind::JoinCondition), AutocompleteKind::Join);
+        assert_eq!(map_kind(ItemKind::Cte), AutocompleteKind::Table);
+        assert_eq!(map_kind(ItemKind::Template), AutocompleteKind::Snippet);
+        assert_eq!(kind_icon(Some(AutocompleteKind::Join)), "🔗");
+    }
+
+    #[test]
+    fn test_collect_tables_from_tree() {
+        use crate::models::enums::NodeType;
+        use crate::models::structs::TreeNode;
+
+        let mut table1 = TreeNode::new("users".to_string(), NodeType::Table);
+        table1.connection_id = Some(1);
+        table1.database_name = Some("mydb".to_string());
+
+        let mut view1 = TreeNode::new("v_active_users".to_string(), NodeType::View);
+        view1.connection_id = Some(1);
+        view1.database_name = Some("mydb".to_string());
+
+        let mut other_db_table = TreeNode::new("other_users".to_string(), NodeType::Table);
+        other_db_table.connection_id = Some(1);
+        other_db_table.database_name = Some("otherdb".to_string());
+
+        let mut other_conn_table = TreeNode::new("remote_users".to_string(), NodeType::Table);
+        other_conn_table.connection_id = Some(2);
+        other_conn_table.database_name = Some("mydb".to_string());
+
+        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
+        root.children = vec![table1, view1, other_db_table, other_conn_table];
+
+        let mut out = Vec::new();
+        collect_tables_from_tree(&[root], Some(1), Some("mydb"), &mut out);
+
+        assert_eq!(out, vec!["users", "v_active_users"]);
+    }
+
+    #[test]
+    fn test_collect_columns_from_tree() {
+        use crate::models::enums::NodeType;
+        use crate::models::structs::TreeNode;
+
+        let col1 = TreeNode::new("id".to_string(), NodeType::Column);
+        let col2 = TreeNode::new("email".to_string(), NodeType::Column);
+        let col3 = TreeNode::new("name".to_string(), NodeType::Column);
+
+        let mut table = TreeNode::new("customers".to_string(), NodeType::Table);
+        table.connection_id = Some(1);
+        table.children = vec![col1, col2, col3];
+
+        let mut root = TreeNode::new("root".to_string(), NodeType::Connection);
+        root.children = vec![table];
+
+        let root_slice = std::slice::from_ref(&root);
+
+        let mut cols = Vec::new();
+        // Case-insensitive match check
+        collect_columns_from_tree(root_slice, 1, "CUSTOMERS", &mut cols);
+        assert_eq!(cols, vec!["id", "email", "name"]);
+
+        // Unknown table returns empty without error
+        let mut unknown_cols = Vec::new();
+        collect_columns_from_tree(root_slice, 1, "nonexistent", &mut unknown_cols);
+        assert!(unknown_cols.is_empty());
+    }
+
+    #[test]
+    fn test_collect_loaded_fks_memory_lookup() {
+        use crate::models::structs::ForeignKey;
+        use std::collections::HashMap;
+
+        let mut mem_fks: HashMap<(i64, String), Vec<ForeignKey>> = HashMap::new();
+        mem_fks.insert(
+            (1, "mydb".to_string()),
+            vec![
+                ForeignKey {
+                    constraint_name: "fk_orders_customer".to_string(),
+                    table_name: "orders".to_string(),
+                    column_name: "customer_id".to_string(),
+                    referenced_table_name: "customers".to_string(),
+                    referenced_column_name: "id".to_string(),
+                },
+                ForeignKey {
+                    constraint_name: "fk_items_order".to_string(),
+                    table_name: "order_items".to_string(),
+                    column_name: "order_id".to_string(),
+                    referenced_table_name: "orders".to_string(),
+                    referenced_column_name: "id".to_string(),
+                },
+            ],
+        );
+
+        // Verify that memory map lookup by (connection_id, db) is instant
+        let key = (1, "mydb".to_string());
+        let all_fks = mem_fks.get(&key).expect("FKs must be found in memory");
+        assert_eq!(all_fks.len(), 2);
+        assert_eq!(all_fks[0].table_name, "orders");
+        assert_eq!(all_fks[0].referenced_table_name, "customers");
+        assert_eq!(all_fks[1].table_name, "order_items");
     }
 }

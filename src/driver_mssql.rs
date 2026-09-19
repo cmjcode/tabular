@@ -136,7 +136,9 @@ pub(crate) fn load_mssql_structure(
 
     let mut dba_children = Vec::new();
 
-    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL) {
+    for (name, node_type, query) in
+        crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL)
+    {
         let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
         dba_node.connection_id = Some(connection_id);
         dba_node.is_loaded = false;
@@ -165,50 +167,58 @@ pub(crate) fn fetch_tables_from_mssql_connection(
              crate::models::enums::DatabasePool::MsSQL(p) => p,
              _ => return None,
         };
-        
-        // Get a connection from the pool
-        let mut conn = match pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("MsSQL pool get error: {}", e);
-                return None;
-            }
-        };
-        let client = conn.client_mut()?;
-
-        // Choose query based on type (include schema for views)
-        let query = match table_type {
-            // Include schema for tables (some objects not in dbo)
-            "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME",
-            // Include schema for views so we can build fully-qualified names
-            "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME",
-            _ => {
-                log::debug!("Unsupported MsSQL table_type: {}", table_type);
-                return None;
-            }
-        };
-
-        let stream = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            client.query(query, &[]),
-        )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => { log::debug!("MsSQL list query error: {}", e); return None; }
-            Err(_) => { log::debug!("MsSQL list query timeout"); return None; }
-        };
-
-        let mut items = Vec::new();
-        for row in stream.collect_all().await.ok()? {
-            let schema = row.get_string(0);
-            let name = row.get_string(1);
-            if let (Some(s), Some(n)) = (schema, name) {
-                items.push(format!("[{}].[{}]", s, n));
-            }
-        }
-        Some(items)
+        list_mssql_tables(&pool, table_type).await
     })
+}
+
+/// Daftar tabel / view MsSQL (`[schema].[name]`) lewat pool yang sudah ada.
+/// Aman dipanggil dari task async (tanpa runtime baru).
+pub(crate) async fn list_mssql_tables(
+    pool: &mssql_driver_pool::Pool,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    // Get a connection from the pool
+    let mut conn = match pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            log::debug!("MsSQL pool get error: {}", e);
+            return None;
+        }
+    };
+    let client = conn.client_mut()?;
+
+    // Choose query based on type (include schema for views)
+    let query = match table_type {
+        // Include schema for tables (some objects not in dbo)
+        "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME",
+        // Include schema for views so we can build fully-qualified names
+        "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME",
+        _ => {
+            log::debug!("Unsupported MsSQL table_type: {}", table_type);
+            return None;
+        }
+    };
+
+    let stream = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.query(query, &[]),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => { log::debug!("MsSQL list query error: {}", e); return None; }
+        Err(_) => { log::debug!("MsSQL list query timeout"); return None; }
+    };
+
+    let mut items = Vec::new();
+    for row in stream.collect_all().await.ok()? {
+        let schema = row.get_string(0);
+        let name = row.get_string(1);
+        if let (Some(s), Some(n)) = (schema, name) {
+            items.push(format!("[{}].[{}]", s, n));
+        }
+    }
+    Some(items)
 }
 
 /// Fetch MsSQL objects for a specific database by type: procedure | function | trigger
@@ -221,12 +231,13 @@ pub(crate) fn fetch_objects_from_mssql_connection(
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
         // Get or create pool
-        let pool_enum = crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        let pool_enum =
+            crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
         let pool = match pool_enum {
-             crate::models::enums::DatabasePool::MsSQL(p) => p,
-             _ => return None,
+            crate::models::enums::DatabasePool::MsSQL(p) => p,
+            _ => return None,
         };
-        
+
         let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {

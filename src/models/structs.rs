@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, mpsc};
-use serde::{Deserialize, Serialize};
 
 use crate::models::{self, enums::NodeType};
 
@@ -32,8 +32,7 @@ impl HttpMethod {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpBodyType {
     // Form Data
     UrlEncoded,
@@ -49,9 +48,7 @@ pub enum HttpBodyType {
     NoBody,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpAuthType {
     ApiKey,
     AwsSignature,
@@ -66,9 +63,7 @@ pub enum HttpAuthType {
     NoAuth,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpRequestTab {
     #[default]
     Body,
@@ -77,9 +72,7 @@ pub enum HttpRequestTab {
     Auth,
 }
 
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum HttpResponseTab {
     #[default]
     Body,
@@ -124,7 +117,6 @@ impl CodeLang {
         ]
     }
 }
-
 
 /// Sent from the background thread back to the UI thread.
 pub struct HttpClientResponse {
@@ -224,9 +216,7 @@ impl Default for HttpClientState {
             body_text: String::new(),
             form_data: vec![("".to_string(), "".to_string(), true)],
             params: vec![("".to_string(), "".to_string(), true)],
-            headers: vec![
-                ("Accept".to_string(), "*/*".to_string(), true),
-            ],
+            headers: vec![("Accept".to_string(), "*/*".to_string(), true)],
             auth_type: HttpAuthType::NoAuth,
             bearer_token: String::new(),
             basic_user: String::new(),
@@ -292,15 +282,20 @@ impl RedisBrowserTypeFilter {
             RedisBrowserTypeFilter::List => key_type.eq_ignore_ascii_case("list"),
             RedisBrowserTypeFilter::Set => key_type.eq_ignore_ascii_case("set"),
             RedisBrowserTypeFilter::SortedSet => {
-                key_type.eq_ignore_ascii_case("zset")
-                    || key_type.eq_ignore_ascii_case("sorted_set")
+                key_type.eq_ignore_ascii_case("zset") || key_type.eq_ignore_ascii_case("sorted_set")
             }
             RedisBrowserTypeFilter::Stream => key_type.eq_ignore_ascii_case("stream"),
-            RedisBrowserTypeFilter::Other => {
-                !["string", "hash", "list", "set", "zset", "sorted_set", "stream"]
-                    .iter()
-                    .any(|candidate| key_type.eq_ignore_ascii_case(candidate))
-            }
+            RedisBrowserTypeFilter::Other => ![
+                "string",
+                "hash",
+                "list",
+                "set",
+                "zset",
+                "sorted_set",
+                "stream",
+            ]
+            .iter()
+            .any(|candidate| key_type.eq_ignore_ascii_case(candidate)),
         }
     }
 }
@@ -449,8 +444,9 @@ impl ForeignKeyRelation {
 }
 
 /// Zero-copy & memory-efficient cell representation for large payloads (JSON, BLOB, Text)
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum CellValue {
+    #[default]
     Null,
     Text(String),
     Number(f64),
@@ -462,12 +458,6 @@ pub enum CellValue {
 
 /// Type alias for SQL values and query parameters
 pub type SqlValue = CellValue;
-
-impl Default for CellValue {
-    fn default() -> Self {
-        CellValue::Null
-    }
-}
 
 impl std::fmt::Display for CellValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -596,7 +586,7 @@ pub struct DiagramGroup {
     #[serde(default)]
     #[serde(with = "serde_option_pos2")]
     pub manual_pos: Option<eframe::egui::Pos2>, // For empty groups or manual overriding
-    // nodes are linked by group_id in DiagramNode
+                                                // nodes are linked by group_id in DiagramNode
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -609,7 +599,104 @@ pub struct DiagramNode {
     pub size: eframe::egui::Vec2,
     pub columns: Vec<String>,
     pub foreign_keys: Vec<ForeignKey>, // FKs originating from this table
+    #[serde(default)]
+    pub group_ids: Vec<String>,
+    #[serde(default)]
     pub group_id: Option<String>,
+    /// Tipe/PK/nullable per kolom. Kosong untuk file diagram lama atau engine
+    /// yang belum mendukung; `columns` tetap sumber urutan nama kolom.
+    #[serde(default)]
+    pub column_meta: Vec<DiagramColumn>,
+    /// Tabel yang tidak ada di database (mis. hasil impor Mermaid). Tidak
+    /// dibuang saat diagram disinkronkan ulang dengan skema database.
+    #[serde(default)]
+    pub detached: bool,
+    /// Nama database asal tabel ini (opsional untuk backward compatibility).
+    #[serde(default)]
+    pub database_name: Option<String>,
+    /// ID koneksi asal tabel ini.
+    #[serde(default)]
+    pub connection_id: Option<i64>,
+    /// Nama label koneksi asal (misal "Production Postgres").
+    #[serde(default)]
+    pub connection_name: Option<String>,
+}
+
+impl Default for DiagramNode {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            pos: eframe::egui::pos2(0.0, 0.0),
+            size: eframe::egui::vec2(150.0, 100.0),
+            columns: Vec::new(),
+            foreign_keys: Vec::new(),
+            group_ids: Vec::new(),
+            group_id: None,
+            column_meta: Vec::new(),
+            detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
+        }
+    }
+}
+
+impl DiagramNode {
+    /// Metadata kolom berdasarkan nama, bila tersedia.
+    pub fn column_info(&self, name: &str) -> Option<&DiagramColumn> {
+        self.column_meta.iter().find(|c| c.name == name)
+    }
+
+    /// Kolom ini sumber foreign key dari tabel ini.
+    pub fn is_fk_column(&self, name: &str) -> bool {
+        self.foreign_keys
+            .iter()
+            .any(|fk| fk.column_name == name && fk.table_name == self.id)
+    }
+
+    /// Cek apakah tabel ini tergabung dalam group dengan ID tertentu.
+    pub fn is_in_group(&self, group_id: &str) -> bool {
+        self.group_ids.iter().any(|g| g == group_id) || self.group_id.as_deref() == Some(group_id)
+    }
+
+    /// Tambahkan tabel ke suatu group bila belum ada.
+    pub fn add_to_group(&mut self, group_id: String) {
+        self.ensure_groups_migrated();
+        if !self.group_ids.contains(&group_id) {
+            self.group_ids.push(group_id);
+        }
+        self.group_id = self.group_ids.first().cloned();
+    }
+
+    /// Hapus tabel dari suatu group.
+    pub fn remove_from_group(&mut self, group_id: &str) {
+        self.ensure_groups_migrated();
+        self.group_ids.retain(|g| g != group_id);
+        self.group_id = self.group_ids.first().cloned();
+    }
+
+    /// Migrasikan `group_id` tunggal lama ke `group_ids` bila perlu.
+    pub fn ensure_groups_migrated(&mut self) {
+        if self.group_ids.is_empty() {
+            if let Some(gid) = &self.group_id {
+                self.group_ids.push(gid.clone());
+            }
+        } else if self.group_id.is_none() {
+            self.group_id = self.group_ids.first().cloned();
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagramColumn {
+    pub name: String,
+    #[serde(default)]
+    pub type_name: String,
+    #[serde(default)]
+    pub is_pk: bool,
+    #[serde(default = "default_true")]
+    pub nullable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -617,6 +704,65 @@ pub struct DiagramEdge {
     pub source: String,
     pub target: String,
     pub label: String,
+}
+
+/// Asal relasi yang tidak berasal dari foreign key database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationOrigin {
+    /// Disarankan dari kemiripan nama kolom lalu diterima user.
+    Inferred,
+    /// Dibuat manual (Shift+klik kolom).
+    Manual,
+    /// Berasal dari impor Mermaid.
+    Imported,
+}
+
+/// Relasi `child.child_column -> parent.parent_column` tanpa FK di database.
+/// Disimpan di file diagram, jadi tetap ada saat diagram dibuka ulang.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualRelation {
+    pub child: String,
+    pub child_column: String,
+    pub parent: String,
+    pub parent_column: String,
+    pub origin: RelationOrigin,
+}
+
+/// Status materialisasi sebuah link database (runtime saja).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LinkStatus {
+    /// Belum dimuat sejak diagram dibuka.
+    #[default]
+    Pending,
+    /// Isi kontainer sudah dimuat dari diagram sumber.
+    Loaded,
+    /// Gagal dimuat (koneksi tidak ditemukan / offline). Relasi lintas
+    /// database ke link ini dibiarkan dorman, tidak dibuang.
+    Failed(String),
+}
+
+/// Referensi ke diagram database lain yang ditampilkan sebagai kontainer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkedDatabase {
+    /// Namespace stabil untuk id node/group/relasi (`{link_id}::{table}`).
+    /// Tidak bergantung pada `connection_id` supaya relasi lintas database
+    /// tetap valid saat diagram dibuka di mesin lain.
+    pub link_id: String,
+    /// ID koneksi lokal; hanya valid di mesin pembuatnya.
+    #[serde(default)]
+    pub connection_id: Option<i64>,
+    /// Nama koneksi, dipakai sebagai fallback resolusi antar mesin.
+    #[serde(default)]
+    pub connection_name: String,
+    pub database_name: String,
+    /// Posisi pojok kiri atas kontainer di kanvas host.
+    #[serde(with = "serde_pos2")]
+    pub offset: eframe::egui::Pos2,
+    #[serde(with = "serde_color")]
+    pub color: eframe::egui::Color32,
+    #[serde(skip)]
+    pub status: LinkStatus,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -650,6 +796,83 @@ pub struct DiagramState {
     pub search_query: String,
     #[serde(skip)]
     pub show_search: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_tables: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_columns: bool,
+    #[serde(skip, default = "default_true")]
+    pub search_groups: bool,
+    /// Tampilkan grid latar.
+    #[serde(default = "default_true")]
+    pub show_grid: bool,
+    /// Mencegah tabel tumpang tindih (anti-overlap / collision avoidance).
+    #[serde(default = "default_true")]
+    pub prevent_overlap: bool,
+    /// Tampilkan garis relasi / link kolom antar tabel.
+    #[serde(default = "default_true")]
+    pub show_relations: bool,
+    /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
+    #[serde(default)]
+    pub virtual_relations: Vec<VirtualRelation>,
+    #[serde(skip)]
+    pub selected_virtual: Option<usize>,
+    /// Jendela saran relasi yang sedang terbuka: (saran, dicentang).
+    #[serde(skip)]
+    pub relation_suggestions: Option<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>,
+    /// Judul / target kolom pencarian relasi (misal "devices.imei" atau "imei").
+    #[serde(skip)]
+    pub relation_suggestions_title: Option<String>,
+    /// Teks input pencarian relasi berdasarkan nama kolom.
+    #[serde(skip)]
+    pub relation_column_search_query: String,
+    /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
+    #[serde(skip)]
+    pub hand_tool: bool,
+    /// Database lain yang di-link ke diagram ini. Hanya referensinya yang
+    /// disimpan; isi kontainernya dimaterialisasi ulang dari diagram sumber.
+    #[serde(default)]
+    pub linked_databases: Vec<LinkedDatabase>,
+    /// Relasi virtual bawaan diagram sumber (read-only, tidak disimpan).
+    /// Relasi yang dibuat di diagram gabungan tetap di `virtual_relations`.
+    #[serde(skip)]
+    pub linked_relations: Vec<VirtualRelation>,
+    /// Modal dialog "Link Database" yang sedang aktif.
+    #[serde(skip)]
+    pub show_link_modal: bool,
+    /// ID koneksi yang dipilih dalam modal dialog.
+    #[serde(skip)]
+    pub link_modal_conn: Option<i64>,
+    /// Nama database yang dipilih dalam modal dialog.
+    #[serde(skip)]
+    pub link_modal_db: String,
+    /// Bila `Some`, modal mengganti koneksi link yang sudah ada (relink)
+    /// sehingga id node dan relasi lintas database tetap utuh.
+    #[serde(skip)]
+    pub link_modal_relink: Option<String>,
+    /// Daftar database koneksi terpilih di modal (dimuat sekali per koneksi).
+    #[serde(skip)]
+    pub link_modal_db_options: Vec<String>,
+    /// Koneksi asal `link_modal_db_options`; beda dengan koneksi terpilih
+    /// berarti daftar perlu dimuat ulang.
+    #[serde(skip)]
+    pub link_modal_db_options_for: Option<i64>,
+    /// Paksa muat ulang daftar database langsung dari server.
+    #[serde(skip)]
+    pub link_modal_db_reload: bool,
+    /// Judul kustom dokumen diagram (opsional).
+    #[serde(default)]
+    pub diagram_title: Option<String>,
+    /// Remote ID jika diagram ini disinkronkan ke server.
+    #[serde(default)]
+    pub remote_id: Option<String>,
+    /// Skema live sedang diambil di background; tampilan masih dari cache.
+    #[serde(skip)]
+    pub schema_syncing: bool,
+    /// Sidik layout saat tab dibuka. Beda dengan sidik terkini berarti user
+    /// sudah mengedit, jadi layout bersama dari `diagram_by_tabular` tidak
+    /// boleh menimpanya.
+    #[serde(skip)]
+    pub layout_baseline: Option<u64>,
 }
 
 impl Default for DiagramState {
@@ -672,6 +895,31 @@ impl Default for DiagramState {
             new_group_buffer: String::new(),
             search_query: String::new(),
             show_search: false,
+            search_tables: true,
+            search_columns: true,
+            search_groups: true,
+            show_grid: true,
+            prevent_overlap: true,
+            show_relations: true,
+            virtual_relations: Vec::new(),
+            selected_virtual: None,
+            relation_suggestions: None,
+            relation_suggestions_title: None,
+            relation_column_search_query: String::new(),
+            hand_tool: false,
+            linked_databases: Vec::new(),
+            linked_relations: Vec::new(),
+            show_link_modal: false,
+            link_modal_conn: None,
+            link_modal_db: String::new(),
+            link_modal_relink: None,
+            link_modal_db_options: Vec::new(),
+            link_modal_db_options_for: None,
+            link_modal_db_reload: false,
+            diagram_title: None,
+            remote_id: None,
+            schema_syncing: false,
+            layout_baseline: None,
         }
     }
 }
@@ -683,6 +931,128 @@ pub struct ColumnMetadata {
     pub table_name: Option<String>, // Source table name if available
     pub original_name: Option<String>, // Original column name if aliased
     pub is_primary_key: bool,
+}
+
+/// Jenis pernyataan SQL (SELECT, INSERT, UPDATE, DELETE, DDL, dll.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StatementType {
+    #[default]
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Ddl,
+    Transaction,
+    Show,
+    Other,
+}
+
+impl StatementType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Select => "SELECT",
+            Self::Insert => "INSERT",
+            Self::Update => "UPDATE",
+            Self::Delete => "DELETE",
+            Self::Ddl => "DDL",
+            Self::Transaction => "TRANSACTION",
+            Self::Show => "SHOW",
+            Self::Other => "QUERY",
+        }
+    }
+
+    pub fn is_mutation(&self) -> bool {
+        matches!(self, Self::Insert | Self::Update | Self::Delete | Self::Ddl)
+    }
+
+    pub fn is_select(&self) -> bool {
+        matches!(self, Self::Select)
+    }
+
+    /// Deteksi jenis pernyataan SQL dari string SQL dengan mengabaikan komentar dan spasi
+    pub fn from_sql(sql: &str) -> Self {
+        let trimmed = sql.trim();
+        let bytes = trimmed.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+
+        // Lewati komentar SQL dan spasi awal
+        while i < len {
+            // Lewati spasi
+            while i < len && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n') {
+                i += 1;
+            }
+            if i >= len {
+                break;
+            }
+
+            // Lewati komentar satu baris -- atau #
+            if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-') || bytes[i] == b'#' {
+                i += 2;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+
+            // Lewati komentar blok /* ... */
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                if i + 1 < len {
+                    i += 2;
+                }
+                continue;
+            }
+
+            break;
+        }
+
+        if i >= len {
+            return Self::Other;
+        }
+
+        // Ambil kata kunci pertama (alfanumerik)
+        let word_start = i;
+        while i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+            i += 1;
+        }
+        let word = &trimmed[word_start..i];
+
+        if word.eq_ignore_ascii_case("select") || word.eq_ignore_ascii_case("with") {
+            Self::Select
+        } else if word.eq_ignore_ascii_case("insert") || word.eq_ignore_ascii_case("upsert") || word.eq_ignore_ascii_case("replace") {
+            Self::Insert
+        } else if word.eq_ignore_ascii_case("update") {
+            Self::Update
+        } else if word.eq_ignore_ascii_case("delete") {
+            Self::Delete
+        } else if word.eq_ignore_ascii_case("create")
+            || word.eq_ignore_ascii_case("alter")
+            || word.eq_ignore_ascii_case("drop")
+            || word.eq_ignore_ascii_case("truncate")
+            || word.eq_ignore_ascii_case("rename")
+        {
+            Self::Ddl
+        } else if word.eq_ignore_ascii_case("begin")
+            || word.eq_ignore_ascii_case("commit")
+            || word.eq_ignore_ascii_case("rollback")
+            || word.eq_ignore_ascii_case("start")
+            || word.eq_ignore_ascii_case("savepoint")
+        {
+            Self::Transaction
+        } else if word.eq_ignore_ascii_case("show")
+            || word.eq_ignore_ascii_case("describe")
+            || word.eq_ignore_ascii_case("desc")
+            || word.eq_ignore_ascii_case("explain")
+        {
+            Self::Show
+        } else {
+            Self::Other
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -701,10 +1071,20 @@ pub struct QueryResult {
     pub explain_plan_json: Option<String>,
     #[serde(default)]
     pub pinned_columns: HashSet<String>,
+    #[serde(default)]
+    pub executed_sql: String,
+    #[serde(default)]
+    pub statement_type: StatementType,
+    #[serde(default)]
+    pub affected_rows: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
 pub struct QueryTab {
+    /// Identitas tab yang stabil. Berbeda dengan index di `query_tabs`, id ini
+    /// tidak berubah saat tab diurutkan ulang atau tab lain ditutup, sehingga
+    /// hasil query async bisa dikembalikan ke tab yang menjalankannya.
+    pub id: usize,
     pub title: String,
     pub content: String,
     pub file_path: Option<String>,
@@ -720,12 +1100,12 @@ pub struct QueryTab {
     pub result_all_rows: Vec<Vec<String>>, // full dataset for client pagination
     pub result_table_name: String,     // caption/status e.g. Table: ... or Query Results
     pub result_column_metadata: Option<Vec<ColumnMetadata>>, // Metadata for result columns
-    
+
     // MULTI-RESULT SUPPORT
     pub results: Vec<QueryResult>,
     pub active_result_index: usize,
 
-    pub is_table_browse_mode: bool,    // was this produced by table browse
+    pub is_table_browse_mode: bool, // was this produced by table browse
     pub current_page: usize,
     pub page_size: usize,
     pub total_rows: usize,
@@ -735,7 +1115,7 @@ pub struct QueryTab {
     pub object_ddl: Option<String>, // Optional DDL (e.g., ALTER VIEW) for browsed objects
     pub explain_plan_json: Option<String>, // Parsed/raw EXPLAIN plan output JSON
     // Query execution message (similar to TablePlus message tab)
-    pub query_message: String,      // Message text (success/error)
+    pub query_message: String,        // Message text (success/error)
     pub query_message_is_error: bool, // Whether the message is an error or success
 
     // Diagram state for "Diagrams" tab
@@ -756,6 +1136,68 @@ pub struct QueryTab {
     pub session: Option<crate::connection::session::SessionHandle>,
     pub pinned_columns: HashSet<String>,
     pub is_pinned: bool,
+    pub last_executed_sql: String,
+    pub last_statement_type: StatementType,
+    pub last_affected_rows: Option<usize>,
+}
+
+// ─── AI Assistant chat ──────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AiChatRole {
+    #[default]
+    User,
+    Assistant,
+}
+
+pub use crate::agent::harness::{ProgressStatus, ProgressStep};
+
+/// Satu gelembung di transkrip panel AI.
+#[derive(Clone, Debug, Default)]
+pub struct AiChatMessage {
+    pub role: AiChatRole,
+    /// Markdown mentah dari model (blok live edit ikut tampil di sini).
+    pub text: String,
+    /// Masih menerima delta dari backend.
+    pub streaming: bool,
+    /// Nama tool yang dipanggil agent, untuk indikator aktivitas.
+    pub tool_activity: Vec<String>,
+    /// Edit editor yang dihasilkan pesan ini (Apply / Revert).
+    pub edits: Vec<crate::agent::live_edit::LiveEditRecord>,
+    pub error: Option<String>,
+    /// Ringkasan token/biaya dari backend, bila ada.
+    pub usage: Option<String>,
+    /// Tahapan kemajuan / aktivitas yang dijalankan agent pada giliran ini.
+    pub progress_steps: Vec<crate::agent::harness::ProgressStep>,
+}
+
+/// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
+/// jadi hanya dihitung ulang saat koneksi/database berubah atau cache kedaluwarsa.
+#[derive(Clone, Debug)]
+pub struct AiSchemaBadge {
+    /// (connection id, nama database tab aktif)
+    pub key: (Option<i64>, String),
+    pub table_count: usize,
+    /// Potongan konteks skema untuk tooltip.
+    pub preview: String,
+    pub computed_at: std::time::Instant,
+}
+
+/// Blok live edit yang sedang di-stream ke sebuah tab.
+#[derive(Clone, Debug)]
+pub struct ActiveLiveEdit {
+    pub tab_id: usize,
+    pub tab_title: String,
+    pub mode: crate::agent::live_edit::LiveEditMode,
+    /// Isi tab saat blok dimulai (untuk Revert dan mode selection/append).
+    pub original: String,
+    /// Seleksi (byte) saat blok dimulai; hanya berarti untuk tab aktif.
+    pub selection: (usize, usize),
+    /// Isi terakhir yang kami tulis; bila tab berubah di luar itu, edit dibatalkan.
+    pub last_applied: String,
+    /// Edit tidak lagi ditulis ke tab (auto-apply mati, tab hilang, atau diubah user).
+    pub aborted: bool,
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1019,6 +1461,7 @@ pub struct ColumnStructInfo {
     pub nullable: Option<bool>,
     pub default_value: Option<String>,
     pub extra: Option<String>,
+    pub comment: Option<String>,
 }
 
 // Simplified index info shown in Structure -> Indexes
@@ -1382,11 +1825,13 @@ impl SchemaDiffState {
         db_name: String,
         connections: &[crate::models::structs::ConnectionConfig],
     ) -> Self {
-        let right_conn_id = connections.iter()
+        let right_conn_id = connections
+            .iter()
             .find(|c| c.id != Some(conn_id))
             .and_then(|c| c.id)
             .unwrap_or(conn_id);
-        let right_db = connections.iter()
+        let right_db = connections
+            .iter()
             .find(|c| c.id == Some(right_conn_id))
             .map(|c| c.database.clone())
             .unwrap_or_default();
@@ -1404,8 +1849,8 @@ impl SchemaDiffState {
 }
 
 mod serde_color {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Color32;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(color: &Color32, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1426,13 +1871,15 @@ mod serde_color {
         D: Deserializer<'de>,
     {
         let opt: [u8; 4] = Deserialize::deserialize(deserializer)?;
-        Ok(Color32::from_rgba_premultiplied(opt[0], opt[1], opt[2], opt[3]))
+        Ok(Color32::from_rgba_premultiplied(
+            opt[0], opt[1], opt[2], opt[3],
+        ))
     }
 }
 
 mod serde_pos2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Pos2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(pos: &Pos2, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1455,8 +1902,8 @@ mod serde_pos2 {
 }
 
 mod serde_vec2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Vec2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(vec: &Vec2, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1479,8 +1926,8 @@ mod serde_vec2 {
 }
 
 mod serde_option_pos2 {
-    use serde::{Deserialize, Deserializer, Serializer};
     use eframe::egui::Pos2;
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(pos: &Option<Pos2>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1612,7 +2059,11 @@ pub struct FilterCondition {
 }
 
 impl FilterCondition {
-    pub fn new(column: impl Into<String>, operator: FilterOperator, value: impl Into<String>) -> Self {
+    pub fn new(
+        column: impl Into<String>,
+        operator: FilterOperator,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             column: column.into(),
             operator,
@@ -1621,7 +2072,11 @@ impl FilterCondition {
         }
     }
 
-    pub fn between(column: impl Into<String>, val1: impl Into<String>, val2: impl Into<String>) -> Self {
+    pub fn between(
+        column: impl Into<String>,
+        val1: impl Into<String>,
+        val2: impl Into<String>,
+    ) -> Self {
         Self {
             column: column.into(),
             operator: FilterOperator::Between,
@@ -1786,6 +2241,7 @@ mod tests {
     #[test]
     fn test_query_tab_pinning() {
         let mut tab = QueryTab {
+            id: 1,
             title: "Test Tab".to_string(),
             content: "SELECT 1;".to_string(),
             file_path: None,
@@ -1823,10 +2279,31 @@ mod tests {
             session: None,
             pinned_columns: HashSet::new(),
             is_pinned: false,
+            last_executed_sql: String::new(),
+            last_statement_type: StatementType::Select,
+            last_affected_rows: None,
         };
 
         assert!(!tab.is_pinned);
         tab.is_pinned = true;
         assert!(tab.is_pinned);
+    }
+
+    #[test]
+    fn test_statement_type_from_sql() {
+        assert_eq!(StatementType::from_sql("SELECT * FROM users"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("  -- comment\nSELECT 1"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("/* block */ WITH cte AS (...) SELECT 1"), StatementType::Select);
+        assert_eq!(StatementType::from_sql("INSERT INTO t VALUES (1)"), StatementType::Insert);
+        assert_eq!(StatementType::from_sql("UPDATE t SET a = 1"), StatementType::Update);
+        assert_eq!(StatementType::from_sql("DELETE FROM t WHERE a = 1"), StatementType::Delete);
+        assert_eq!(StatementType::from_sql("CREATE TABLE foo (id INT)"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("ALTER TABLE foo ADD COLUMN bar TEXT"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("DROP TABLE foo"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("TRUNCATE foo"), StatementType::Ddl);
+        assert_eq!(StatementType::from_sql("BEGIN;"), StatementType::Transaction);
+        assert_eq!(StatementType::from_sql("COMMIT;"), StatementType::Transaction);
+        assert_eq!(StatementType::from_sql("SHOW TABLES;"), StatementType::Show);
+        assert_eq!(StatementType::from_sql("EXPLAIN SELECT 1;"), StatementType::Show);
     }
 }

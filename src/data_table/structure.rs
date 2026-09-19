@@ -1,5 +1,5 @@
+use crate::{driver_mssql, models, window_egui};
 use log::debug;
-use crate::{connection, driver_mssql, models, window_egui};
 
 pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::Tabular) {
     // Determine current target
@@ -82,20 +82,15 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
                                 ..Default::default()
                             });
                     }
-                } else {
-                    need_fetch = true;
                 }
-            } else {
-                need_fetch = true;
             }
+            // Selalu fetch detail kolom lengkap (comment, default, extra) dari database di background
+            need_fetch = true;
 
             // Always populate indexes from cache if available so switching to Indexes tab is instant
-            if let Some(cached) = crate::cache_data::get_indexes_from_cache(
-                tabular,
-                conn_id,
-                &database,
-                &table_guess,
-            ) {
+            if let Some(cached) =
+                crate::cache_data::get_indexes_from_cache(tabular, conn_id, &database, &table_guess)
+            {
                 if !cached.is_empty() {
                     tabular.structure_indexes = cached;
                 } else if tabular.structure_sub_view == models::structs::StructureSubView::Indexes {
@@ -126,15 +121,21 @@ pub(crate) fn load_structure_info_for_current_table(tabular: &mut window_egui::T
         if tabular.structure_indexes.is_empty() {
             let pk_col = tabular.structure_columns.iter().find(|c| {
                 c.name.eq_ignore_ascii_case("id")
-                    || c.extra.as_deref().unwrap_or("").to_lowercase().contains("auto_increment")
+                    || c.extra
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains("auto_increment")
             });
             if let Some(col) = pk_col {
-                tabular.structure_indexes.push(models::structs::IndexStructInfo {
-                    name: "PRIMARY".to_string(),
-                    method: Some("BTREE".to_string()),
-                    unique: true,
-                    columns: vec![col.name.clone()],
-                });
+                tabular
+                    .structure_indexes
+                    .push(models::structs::IndexStructInfo {
+                        name: "PRIMARY".to_string(),
+                        method: Some("BTREE".to_string()),
+                        unique: true,
+                        columns: vec![col.name.clone()],
+                    });
             }
         }
 
@@ -161,10 +162,11 @@ pub async fn fetch_partition_details_standalone_async(
 ) -> Vec<models::structs::PartitionStructInfo> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
-                Ok(tuple) => tuple,
-                Err(_) => return Vec::new(),
-            };
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
             let encoded_username = crate::modules::url_encode(&connection.username);
             let encoded_password = crate::modules::url_encode(&connection.password);
             let connection_string = format!(
@@ -189,22 +191,25 @@ pub async fn fetch_partition_details_standalone_async(
                     .collect();
 
                 let show_q = format!("SHOW CREATE TABLE `{}`", table_name.replace('`', "``"));
-                let partition_type = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(show_q.as_str()))
-                    .fetch_optional(&pool)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|(_, create_sql)| {
-                        if let Some(partition_idx) = create_sql.to_uppercase().find("PARTITION BY") {
-                            let after_partition = &create_sql[partition_idx + 12..];
-                            after_partition
-                                .split_whitespace()
-                                .next()
-                                .map(|s| s.to_uppercase())
-                        } else {
-                            None
-                        }
-                    });
+                let partition_type =
+                    sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(show_q.as_str()))
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|(_, create_sql)| {
+                            if let Some(partition_idx) =
+                                create_sql.to_uppercase().find("PARTITION BY")
+                            {
+                                let after_partition = &create_sql[partition_idx + 12..];
+                                after_partition
+                                    .split_whitespace()
+                                    .next()
+                                    .map(|s| s.to_uppercase())
+                            } else {
+                                None
+                            }
+                        });
 
                 partition_names
                     .into_iter()
@@ -220,10 +225,11 @@ pub async fn fetch_partition_details_standalone_async(
             }
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
-                Ok(tuple) => tuple,
-                Err(_) => return Vec::new(),
-            };
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
             let encoded_username = crate::modules::url_encode(&connection.username);
             let encoded_password = crate::modules::url_encode(&connection.password);
             let connection_string = format!(
@@ -261,26 +267,37 @@ pub async fn fetch_partition_details_standalone_async(
     }
 }
 
-pub async fn fetch_index_details_standalone_async(
+pub async fn fetch_column_details_standalone_async(
     connection: &models::structs::ConnectionConfig,
     database_name: &str,
     table_name: &str,
-) -> Vec<models::structs::IndexStructInfo> {
+) -> Vec<models::structs::ColumnStructInfo> {
     match connection.connection_type {
         models::enums::DatabaseType::MySQL => {
-            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
-                Ok(tuple) => tuple,
-                Err(_) => return Vec::new(),
-            };
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
             let port_num = target_port.parse::<u16>().unwrap_or(3306);
             let clean_db = if !database_name.trim().is_empty() {
-                database_name.trim().trim_matches(['`', '"', '[', ']']).to_string()
+                database_name
+                    .trim()
+                    .trim_matches(['`', '"', '[', ']'])
+                    .to_string()
             } else if !connection.database.trim().is_empty() {
-                connection.database.trim().trim_matches(['`', '"', '[', ']']).to_string()
+                connection
+                    .database
+                    .trim()
+                    .trim_matches(['`', '"', '[', ']'])
+                    .to_string()
             } else {
                 String::new()
             };
-            let clean_table = table_name.trim().trim_matches(['`', '"', '[', ']']).to_string();
+            let clean_table = table_name
+                .trim()
+                .trim_matches(['`', '"', '[', ']'])
+                .to_string();
 
             let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
                 .host(&target_host)
@@ -314,13 +331,507 @@ pub async fn fetch_index_details_standalone_async(
                 .connect_with(connect_opts)
                 .await
             {
-                let find_col_idx = |row: &sqlx::mysql::MySqlRow, col_target: &str| -> Option<usize> {
-                    use sqlx::Column;
+                let find_col_idx =
+                    |row: &sqlx::mysql::MySqlRow, col_target: &str| -> Option<usize> {
+                        use sqlx::Column;
+                        use sqlx::Row;
+                        row.columns()
+                            .iter()
+                            .position(|c| c.name().eq_ignore_ascii_case(col_target))
+                    };
+                let get_str = |row: &sqlx::mysql::MySqlRow, col: &str| -> Option<String> {
                     use sqlx::Row;
-                    row.columns()
-                        .iter()
-                        .position(|c| c.name().eq_ignore_ascii_case(col_target))
+                    let idx = find_col_idx(row, col)?;
+                    if let Ok(s) = row.try_get::<String, _>(idx) {
+                        return Some(s);
+                    }
+                    if let Ok(b) = row.try_get::<Vec<u8>, _>(idx) {
+                        return Some(String::from_utf8_lossy(&b).to_string());
+                    }
+                    None
                 };
+
+                // Method 1: information_schema.COLUMNS
+                let query = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+                if let Ok(rows) = sqlx::query(query)
+                    .bind(&clean_db)
+                    .bind(&clean_table)
+                    .fetch_all(&pool)
+                    .await
+                {
+                    if !rows.is_empty() {
+                        let mut cols = Vec::new();
+                        for r in rows {
+                            let name = get_str(&r, "COLUMN_NAME").unwrap_or_default();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            let data_type = get_str(&r, "COLUMN_TYPE")
+                                .unwrap_or_else(|| "varchar(255)".to_string());
+                            let is_null_str = get_str(&r, "IS_NULLABLE").unwrap_or_default();
+                            let nullable = Some(is_null_str.eq_ignore_ascii_case("YES"));
+                            let default_value = get_str(&r, "COLUMN_DEFAULT");
+                            let extra = get_str(&r, "EXTRA").filter(|s| !s.is_empty());
+                            let comment =
+                                get_str(&r, "COLUMN_COMMENT").filter(|s| !s.trim().is_empty());
+                            cols.push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type,
+                                nullable,
+                                default_value,
+                                extra,
+                                comment,
+                            });
+                        }
+                        return cols;
+                    }
+                }
+
+                // Method 2 (Fallback): SHOW FULL COLUMNS
+                let show_q = if !clean_db.is_empty() {
+                    format!(
+                        "SHOW FULL COLUMNS FROM `{}`.`{}`",
+                        clean_db.replace('`', ""),
+                        clean_table.replace('`', "")
+                    )
+                } else {
+                    format!("SHOW FULL COLUMNS FROM `{}`", clean_table.replace('`', ""))
+                };
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(show_q.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                {
+                    let mut cols = Vec::new();
+                    for r in rows {
+                        let name = get_str(&r, "Field").unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let data_type =
+                            get_str(&r, "Type").unwrap_or_else(|| "varchar(255)".to_string());
+                        let is_null_str = get_str(&r, "Null").unwrap_or_default();
+                        let nullable = Some(is_null_str.eq_ignore_ascii_case("YES"));
+                        let default_value = get_str(&r, "Default");
+                        let extra = get_str(&r, "Extra").filter(|s| !s.is_empty());
+                        let comment = get_str(&r, "Comment").filter(|s| !s.trim().is_empty());
+                        cols.push(models::structs::ColumnStructInfo {
+                            name,
+                            data_type,
+                            nullable,
+                            default_value,
+                            extra,
+                            comment,
+                        });
+                    }
+                    if !cols.is_empty() {
+                        return cols;
+                    }
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::PostgreSQL => {
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
+            let encoded_username = crate::modules::url_encode(&connection.username);
+            let encoded_password = crate::modules::url_encode(&connection.password);
+            let connection_string = format!(
+                "postgres://{}:{}@{}:{}/{}",
+                encoded_username, encoded_password, target_host, target_port, database_name
+            );
+            if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                let (schema_name, raw_table) = if let Some((s, t)) = table_name.split_once('.') {
+                    (s.trim_matches('"'), t.trim_matches('"'))
+                } else if !database_name.is_empty() && database_name != connection.database {
+                    (database_name, table_name.trim_matches('"'))
+                } else {
+                    ("public", table_name.trim_matches('"'))
+                };
+
+                let q = r#"
+                    SELECT
+                        a.attname AS column_name,
+                        format_type(a.atttypid, a.atttypmod) AS data_type,
+                        NOT a.attnotnull AS is_nullable,
+                        pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                        d.description
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+                    LEFT JOIN pg_description d ON d.objoid = a.attrelid AND d.objsubid = a.attnum
+                    WHERE c.relname = $1
+                      AND (n.nspname = $2 OR $2 = '')
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum;
+                "#;
+                if let Ok(rows) = sqlx::query(q)
+                    .bind(raw_table)
+                    .bind(schema_name)
+                    .fetch_all(&pool)
+                    .await
+                {
+                    use sqlx::Row;
+                    let mut cols = Vec::new();
+                    for r in rows {
+                        let name: String = r.try_get("column_name").unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let data_type: String = r
+                            .try_get("data_type")
+                            .unwrap_or_else(|_| "varchar(255)".to_string());
+                        let nullable: bool = r.try_get("is_nullable").unwrap_or(true);
+                        let default_value: Option<String> = r
+                            .try_get::<Option<String>, _>("column_default")
+                            .ok()
+                            .flatten();
+                        let comment: Option<String> = r
+                            .try_get::<Option<String>, _>("description")
+                            .ok()
+                            .flatten()
+                            .filter(|s| !s.trim().is_empty());
+                        cols.push(models::structs::ColumnStructInfo {
+                            name,
+                            data_type,
+                            nullable: Some(nullable),
+                            default_value,
+                            extra: None,
+                            comment,
+                        });
+                    }
+                    if !cols.is_empty() {
+                        return cols;
+                    }
+                }
+
+                // Fallback to information_schema if pg_attribute returned empty
+                let fallback_q = r#"
+                    SELECT
+                        c.column_name,
+                        c.data_type,
+                        c.is_nullable,
+                        c.column_default
+                    FROM information_schema.columns c
+                    WHERE c.table_name = $1 AND (c.table_schema = $2 OR $2 = '')
+                    ORDER BY c.ordinal_position;
+                "#;
+                if let Ok(rows) = sqlx::query(fallback_q)
+                    .bind(raw_table)
+                    .bind(schema_name)
+                    .fetch_all(&pool)
+                    .await
+                {
+                    use sqlx::Row;
+                    let mut cols = Vec::new();
+                    for r in rows {
+                        let name: String = r.try_get("column_name").unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let data_type: String = r
+                            .try_get("data_type")
+                            .unwrap_or_else(|_| "varchar(255)".to_string());
+                        let is_null_str: String = r.try_get("is_nullable").unwrap_or_default();
+                        let nullable = Some(is_null_str.eq_ignore_ascii_case("YES"));
+                        let default_value: Option<String> = r
+                            .try_get::<Option<String>, _>("column_default")
+                            .ok()
+                            .flatten();
+                        cols.push(models::structs::ColumnStructInfo {
+                            name,
+                            data_type,
+                            nullable,
+                            default_value,
+                            extra: None,
+                            comment: None,
+                        });
+                    }
+                    return cols;
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::MsSQL => {
+            let host = connection.host.clone();
+            let port: u16 = connection.port.parse().unwrap_or(1433);
+            let user = connection.username.clone();
+            let pass = connection.password.clone();
+            let db = database_name.to_string();
+            let tbl = table_name.to_string();
+            if let Ok(mut client) =
+                crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await
+            {
+                let parse = |name: &str| -> (Option<String>, String) {
+                    if let Some((s, t)) = name.split_once('.') {
+                        (
+                            Some(s.trim_matches(['[', ']']).to_string()),
+                            t.trim_matches(['[', ']']).to_string(),
+                        )
+                    } else {
+                        (None, name.trim_matches(['[', ']']).to_string())
+                    }
+                };
+                let (schema_opt, table_only) = parse(&tbl);
+                let table_escaped = table_only.replace('\'', "''");
+                let schema_filter = if let Some(s) = schema_opt {
+                    format!(" AND s.name = '{}'", s.replace('\'', "''"))
+                } else {
+                    String::new()
+                };
+
+                let q = format!(
+                    "SELECT \
+                        c.name AS column_name, \
+                        t.name + \
+                            CASE \
+                                WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar', 'varbinary', 'binary') THEN \
+                                    '(' + CASE WHEN c.max_length = -1 THEN 'max' \
+                                               WHEN t.name IN ('nvarchar', 'nchar') THEN CAST(c.max_length / 2 AS VARCHAR(10)) \
+                                               ELSE CAST(c.max_length AS VARCHAR(10)) END + ')' \
+                                WHEN t.name IN ('decimal', 'numeric') THEN \
+                                    '(' + CAST(c.precision AS VARCHAR(10)) + ',' + CAST(c.scale AS VARCHAR(10)) + ')' \
+                                ELSE '' \
+                            END AS data_type, \
+                        CASE WHEN c.is_nullable = 1 THEN 'YES' ELSE 'NO' END AS is_nullable, \
+                        OBJECT_DEFINITION(c.default_object_id) AS default_value, \
+                        CASE WHEN c.is_identity = 1 THEN 'IDENTITY' ELSE '' END AS extra, \
+                        CAST(ep.value AS NVARCHAR(MAX)) AS description \
+                    FROM sys.columns c \
+                    INNER JOIN sys.objects o ON o.object_id = c.object_id \
+                    INNER JOIN sys.schemas s ON s.schema_id = o.schema_id \
+                    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id \
+                    LEFT JOIN sys.extended_properties ep ON ep.major_id = c.object_id \
+                        AND ep.minor_id = c.column_id \
+                        AND ep.name = 'MS_Description' \
+                    WHERE o.name = '{}'{} \
+                    ORDER BY c.column_id",
+                    table_escaped, schema_filter
+                );
+
+                if let Ok(stream) = client.query(&q, &[]).await {
+                    if let Ok(records) = stream.collect_all().await {
+                        let mut list = Vec::new();
+                        for r in records {
+                            let name = r.get_string(0).unwrap_or_default();
+                            if name.is_empty() {
+                                continue;
+                            }
+                            let data_type = r
+                                .get_string(1)
+                                .unwrap_or_else(|| "nvarchar(255)".to_string());
+                            let is_null_str = r.get_string(2).unwrap_or_default();
+                            let nullable = Some(is_null_str == "YES");
+                            let default_val = r.get_string(3);
+                            let extra = r.get_string(4).filter(|s| !s.is_empty());
+                            let comment = r.get_string(5).filter(|s| !s.trim().is_empty());
+                            list.push(models::structs::ColumnStructInfo {
+                                name,
+                                data_type,
+                                nullable,
+                                default_value: default_val,
+                                extra,
+                                comment,
+                            });
+                        }
+                        if !list.is_empty() {
+                            return list;
+                        }
+                    }
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::SQLite => {
+            let sqlite_path = if !connection.database.trim().is_empty() {
+                connection.database.trim()
+            } else if !connection.host.trim().is_empty() && connection.host.trim() != "localhost" {
+                connection.host.trim()
+            } else {
+                connection.database.trim()
+            };
+            let connection_string = if sqlite_path.starts_with("sqlite:") {
+                sqlite_path.to_string()
+            } else {
+                format!("sqlite:{}", sqlite_path)
+            };
+            if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(3))
+                .connect(&connection_string)
+                .await
+            {
+                use sqlx::Row;
+                let clean_table = table_name
+                    .trim_matches(['`', '"', '[', ']'])
+                    .replace('\'', "''");
+                let info_q = format!("PRAGMA table_info('{}')", clean_table);
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(info_q.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                {
+                    let mut cols = Vec::new();
+                    for r in rows {
+                        let name: String = r.try_get("name").unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let data_type: String =
+                            r.try_get("type").unwrap_or_else(|_| "TEXT".to_string());
+                        let notnull: i64 = r.try_get("notnull").unwrap_or(0);
+                        let default_val: Option<String> =
+                            r.try_get::<Option<String>, _>("dflt_value").ok().flatten();
+                        let pk: i64 = r.try_get("pk").unwrap_or(0);
+                        let extra = if pk > 0 {
+                            Some("PRIMARY KEY".to_string())
+                        } else {
+                            None
+                        };
+                        cols.push(models::structs::ColumnStructInfo {
+                            name,
+                            data_type,
+                            nullable: Some(notnull == 0),
+                            default_value: default_val,
+                            extra,
+                            comment: None,
+                        });
+                    }
+                    return cols;
+                }
+            }
+            Vec::new()
+        }
+        models::enums::DatabaseType::MongoDB => {
+            let client_opts = mongodb::options::ClientOptions::parse(&connection.host)
+                .await
+                .ok();
+            if let Some(opts) = client_opts {
+                if let Ok(client) = mongodb::Client::with_options(opts) {
+                    use futures_util::TryStreamExt;
+                    let coll = client
+                        .database(database_name)
+                        .collection::<mongodb::bson::Document>(table_name);
+                    if let Ok(mut cursor) = coll.find(mongodb::bson::doc! {}).limit(1).await {
+                        if let Ok(Some(doc)) = cursor.try_next().await {
+                            use mongodb::bson::Bson;
+                            return doc
+                                .into_iter()
+                                .map(|(k, v)| {
+                                    let t = match v {
+                                        Bson::Double(_) => "double",
+                                        Bson::String(_) => "string",
+                                        Bson::Array(_) => "array",
+                                        Bson::Document(_) => "document",
+                                        Bson::Boolean(_) => "bool",
+                                        Bson::Int32(_) => "int32",
+                                        Bson::Int64(_) => "int64",
+                                        Bson::Decimal128(_) => "decimal128",
+                                        Bson::ObjectId(_) => "objectId",
+                                        Bson::DateTime(_) => "date",
+                                        Bson::Null => "null",
+                                        _ => "any",
+                                    };
+                                    models::structs::ColumnStructInfo {
+                                        name: k,
+                                        data_type: t.to_string(),
+                                        nullable: Some(true),
+                                        default_value: None,
+                                        extra: None,
+                                        comment: None,
+                                    }
+                                })
+                                .collect();
+                        }
+                    }
+                }
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub async fn fetch_index_details_standalone_async(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_name: &str,
+) -> Vec<models::structs::IndexStructInfo> {
+    match connection.connection_type {
+        models::enums::DatabaseType::MySQL => {
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
+            let port_num = target_port.parse::<u16>().unwrap_or(3306);
+            let clean_db = if !database_name.trim().is_empty() {
+                database_name
+                    .trim()
+                    .trim_matches(['`', '"', '[', ']'])
+                    .to_string()
+            } else if !connection.database.trim().is_empty() {
+                connection
+                    .database
+                    .trim()
+                    .trim_matches(['`', '"', '[', ']'])
+                    .to_string()
+            } else {
+                String::new()
+            };
+            let clean_table = table_name
+                .trim()
+                .trim_matches(['`', '"', '[', ']'])
+                .to_string();
+
+            let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
+                .host(&target_host)
+                .port(port_num)
+                .username(&connection.username)
+                .password(&connection.password);
+
+            if !clean_db.is_empty() {
+                connect_opts = connect_opts.database(&clean_db);
+            }
+
+            if connection.ssl_enabled {
+                let ssl_mode = if !connection.ssl_verify_server {
+                    sqlx::mysql::MySqlSslMode::Required
+                } else if !connection.ssl_ca_cert.trim().is_empty() {
+                    sqlx::mysql::MySqlSslMode::VerifyCa
+                } else {
+                    sqlx::mysql::MySqlSslMode::Required
+                };
+                connect_opts = connect_opts.ssl_mode(ssl_mode);
+                if !connection.ssl_ca_cert.trim().is_empty() {
+                    connect_opts = connect_opts.ssl_ca(connection.ssl_ca_cert.trim());
+                }
+            } else {
+                connect_opts = connect_opts.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+            }
+
+            if let Ok(pool) = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .connect_with(connect_opts)
+                .await
+            {
+                let find_col_idx =
+                    |row: &sqlx::mysql::MySqlRow, col_target: &str| -> Option<usize> {
+                        use sqlx::Column;
+                        use sqlx::Row;
+                        row.columns()
+                            .iter()
+                            .position(|c| c.name().eq_ignore_ascii_case(col_target))
+                    };
                 let get_str = |row: &sqlx::mysql::MySqlRow, col: &str| -> Option<String> {
                     use sqlx::Row;
                     let idx = find_col_idx(row, col)?;
@@ -335,34 +846,62 @@ pub async fn fetch_index_details_standalone_async(
                 let get_num = |row: &sqlx::mysql::MySqlRow, col: &str| -> Option<i64> {
                     use sqlx::Row;
                     let idx = find_col_idx(row, col)?;
-                    if let Ok(v) = row.try_get::<i64, _>(idx) { return Some(v); }
-                    if let Ok(v) = row.try_get::<i32, _>(idx) { return Some(v as i64); }
-                    if let Ok(v) = row.try_get::<i16, _>(idx) { return Some(v as i64); }
-                    if let Ok(v) = row.try_get::<i8, _>(idx) { return Some(v as i64); }
-                    if let Ok(v) = row.try_get::<u64, _>(idx) { return Some(v as i64); }
-                    if let Ok(v) = row.try_get::<u32, _>(idx) { return Some(v as i64); }
-                    if let Ok(v) = row.try_get::<String, _>(idx) { return v.parse::<i64>().ok(); }
+                    if let Ok(v) = row.try_get::<i64, _>(idx) {
+                        return Some(v);
+                    }
+                    if let Ok(v) = row.try_get::<i32, _>(idx) {
+                        return Some(v as i64);
+                    }
+                    if let Ok(v) = row.try_get::<i16, _>(idx) {
+                        return Some(v as i64);
+                    }
+                    if let Ok(v) = row.try_get::<i8, _>(idx) {
+                        return Some(v as i64);
+                    }
+                    if let Ok(v) = row.try_get::<u64, _>(idx) {
+                        return Some(v as i64);
+                    }
+                    if let Ok(v) = row.try_get::<u32, _>(idx) {
+                        return Some(v as i64);
+                    }
+                    if let Ok(v) = row.try_get::<String, _>(idx) {
+                        return v.parse::<i64>().ok();
+                    }
                     None
                 };
 
                 // Method 1 (Primary): SHOW INDEX FROM `db`.`table`
                 let show_q = if !clean_db.is_empty() {
-                    format!("SHOW INDEX FROM `{}`.`{}`", clean_db.replace('`', ""), clean_table.replace('`', ""))
+                    format!(
+                        "SHOW INDEX FROM `{}`.`{}`",
+                        clean_db.replace('`', ""),
+                        clean_table.replace('`', "")
+                    )
                 } else {
                     format!("SHOW INDEX FROM `{}`", clean_table.replace('`', ""))
                 };
 
-                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(show_q.as_str())).fetch_all(&pool).await {
-                    let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(show_q.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                {
+                    let mut map: std::collections::BTreeMap<
+                        String,
+                        (Option<String>, bool, Vec<(i64, String)>),
+                    > = std::collections::BTreeMap::new();
                     for r in rows {
                         let key_name = get_str(&r, "Key_name").unwrap_or_default();
-                        if key_name.is_empty() { continue; }
+                        if key_name.is_empty() {
+                            continue;
+                        }
                         let col_name = get_str(&r, "Column_name").unwrap_or_default();
                         let non_unique = get_num(&r, "Non_unique").unwrap_or(1);
                         let index_type = get_str(&r, "Index_type");
                         let seq = get_num(&r, "Seq_in_index").unwrap_or(0);
 
-                        let entry = map.entry(key_name).or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
+                        let entry = map
+                            .entry(key_name)
+                            .or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
                         if !col_name.is_empty() {
                             entry.2.push((seq, col_name));
                         }
@@ -394,17 +933,29 @@ pub async fn fetch_index_details_standalone_async(
 
                 // Method 2 (Fallback): INFORMATION_SCHEMA.STATISTICS
                 let q = r#"SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX"#;
-                if let Ok(rows) = sqlx::query(q).bind(&clean_db).bind(&clean_table).fetch_all(&pool).await {
-                    let mut map: std::collections::BTreeMap<String, (Option<String>, bool, Vec<(i64, String)>)> = std::collections::BTreeMap::new();
+                if let Ok(rows) = sqlx::query(q)
+                    .bind(&clean_db)
+                    .bind(&clean_table)
+                    .fetch_all(&pool)
+                    .await
+                {
+                    let mut map: std::collections::BTreeMap<
+                        String,
+                        (Option<String>, bool, Vec<(i64, String)>),
+                    > = std::collections::BTreeMap::new();
                     for r in rows {
                         let key_name = get_str(&r, "INDEX_NAME").unwrap_or_default();
-                        if key_name.is_empty() { continue; }
+                        if key_name.is_empty() {
+                            continue;
+                        }
                         let col_name = get_str(&r, "COLUMN_NAME").unwrap_or_default();
                         let non_unique = get_num(&r, "NON_UNIQUE").unwrap_or(1);
                         let index_type = get_str(&r, "INDEX_TYPE");
                         let seq = get_num(&r, "SEQ_IN_INDEX").unwrap_or(0);
 
-                        let entry = map.entry(key_name).or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
+                        let entry = map
+                            .entry(key_name)
+                            .or_insert_with(|| (index_type, non_unique == 0, Vec::new()));
                         if !col_name.is_empty() {
                             entry.2.push((seq, col_name));
                         }
@@ -437,10 +988,11 @@ pub async fn fetch_index_details_standalone_async(
             Vec::new()
         }
         models::enums::DatabaseType::PostgreSQL => {
-            let (target_host, target_port) = match crate::connection::pool::resolve_connection_target(connection) {
-                Ok(tuple) => tuple,
-                Err(_) => return Vec::new(),
-            };
+            let (target_host, target_port) =
+                match crate::connection::pool::resolve_connection_target(connection) {
+                    Ok(tuple) => tuple,
+                    Err(_) => return Vec::new(),
+                };
             let encoded_username = crate::modules::url_encode(&connection.username);
             let encoded_password = crate::modules::url_encode(&connection.password);
             let connection_string = format!(
@@ -461,17 +1013,51 @@ pub async fn fetch_index_details_standalone_async(
                     ("public", table_name.trim_matches('"'))
                 };
                 let q = r#"SELECT idx.relname AS index_name, pg_get_indexdef(i.indexrelid) AS index_def, i.indisunique AS is_unique FROM pg_class t JOIN pg_index i ON t.oid = i.indrelid JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE t.relname = $1 AND (n.nspname = $2 OR $2 = '') ORDER BY idx.relname"#;
-                match sqlx::query(q).bind(raw_table).bind(schema_name).fetch_all(&pool).await {
+                match sqlx::query(q)
+                    .bind(raw_table)
+                    .bind(schema_name)
+                    .fetch_all(&pool)
+                    .await
+                {
                     Ok(rows) => {
                         use sqlx::Row;
-                        rows.into_iter().map(|r| {
-                            let name: String = r.get("index_name");
-                            let def: String = r.get("index_def");
-                            let unique: bool = r.get("is_unique");
-                            let method = def.split(" USING ").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|m| if m.starts_with('('){None}else{Some(m.trim_matches('(').trim_matches(')').to_string())});
-                            let columns: Vec<String> = if let Some(start) = def.rfind('(') { if let Some(end_rel) = def[start+1..].find(')') { def[start+1..start+1+end_rel].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect() } else { Vec::new() } } else { Vec::new() };
-                            models::structs::IndexStructInfo { name, method, unique, columns }
-                        }).collect()
+                        rows.into_iter()
+                            .map(|r| {
+                                let name: String = r.get("index_name");
+                                let def: String = r.get("index_def");
+                                let unique: bool = r.get("is_unique");
+                                let method = def
+                                    .split(" USING ")
+                                    .nth(1)
+                                    .and_then(|rest| rest.split_whitespace().next())
+                                    .and_then(|m| {
+                                        if m.starts_with('(') {
+                                            None
+                                        } else {
+                                            Some(m.trim_matches('(').trim_matches(')').to_string())
+                                        }
+                                    });
+                                let columns: Vec<String> = if let Some(start) = def.rfind('(') {
+                                    if let Some(end_rel) = def[start + 1..].find(')') {
+                                        def[start + 1..start + 1 + end_rel]
+                                            .split(',')
+                                            .map(|s| s.trim().trim_matches('"').to_string())
+                                            .filter(|s| !s.is_empty())
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    }
+                                } else {
+                                    Vec::new()
+                                };
+                                models::structs::IndexStructInfo {
+                                    name,
+                                    method,
+                                    unique,
+                                    columns,
+                                }
+                            })
+                            .collect()
                     }
                     Err(_) => Vec::new(),
                 }
@@ -486,10 +1072,24 @@ pub async fn fetch_index_details_standalone_async(
             let pass = connection.password.clone();
             let db = database_name.to_string();
             let tbl = table_name.to_string();
-            if let Ok(mut client) = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await {
-                let parse = |name: &str| -> (Option<String>, String) { if let Some((s,t)) = name.split_once('.') { (Some(s.trim_matches(['[',']']).to_string()), t.trim_matches(['[',']']).to_string()) } else { (None, name.trim_matches(['[',']']).to_string()) } };
+            if let Ok(mut client) =
+                crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await
+            {
+                let parse = |name: &str| -> (Option<String>, String) {
+                    if let Some((s, t)) = name.split_once('.') {
+                        (
+                            Some(s.trim_matches(['[', ']']).to_string()),
+                            t.trim_matches(['[', ']']).to_string(),
+                        )
+                    } else {
+                        (None, name.trim_matches(['[', ']']).to_string())
+                    }
+                };
                 let (_schema_opt, table_only) = parse(&tbl);
-                let q = format!("SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name", table_only.replace('\'',"''"));
+                let q = format!(
+                    "SELECT i.name AS index_name, i.is_unique, i.type_desc, STUFF((SELECT ','+c.name FROM sys.index_columns ic2 JOIN sys.columns c ON c.object_id=ic2.object_id AND c.column_id=ic2.column_id WHERE ic2.object_id=i.object_id AND ic2.index_id=i.index_id ORDER BY ic2.key_ordinal FOR XML PATH(''), TYPE).value('.','NVARCHAR(MAX)'),1,1,'') AS columns FROM sys.indexes i INNER JOIN sys.objects o ON o.object_id=i.object_id WHERE o.name='{}' AND i.name IS NOT NULL ORDER BY i.name",
+                    table_only.replace('\'', "''")
+                );
                 if let Ok(stream) = client.query(&q, &[]).await {
                     if let Ok(records) = stream.collect_all().await {
                         let mut list = Vec::new();
@@ -499,7 +1099,17 @@ pub async fn fetch_index_details_standalone_async(
                             let type_desc = r.get_string(2);
                             let cols = r.get_string(3);
                             if let Some(nm) = name {
-                                list.push(models::structs::IndexStructInfo { name: nm, method: type_desc, unique: is_unique.unwrap_or(false), columns: cols.unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect() });
+                                list.push(models::structs::IndexStructInfo {
+                                    name: nm,
+                                    method: type_desc,
+                                    unique: is_unique.unwrap_or(false),
+                                    columns: cols
+                                        .unwrap_or_default()
+                                        .split(',')
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect(),
+                                });
                             }
                         }
                         return list;
@@ -528,13 +1138,18 @@ pub async fn fetch_index_details_standalone_async(
                 .await
             {
                 use sqlx::Row;
-                let clean_table = table_name.trim_matches(['`', '"', '[', ']']).replace('\'', "''");
+                let clean_table = table_name
+                    .trim_matches(['`', '"', '[', ']'])
+                    .replace('\'', "''");
                 let list_query = format!("PRAGMA index_list('{}')", clean_table);
                 let mut infos = Vec::new();
 
                 // 1) First check primary key from table_info
                 let info_table_q = format!("PRAGMA table_info('{}')", clean_table);
-                if let Ok(prows) = sqlx::query(sqlx::AssertSqlSafe(info_table_q.as_str())).fetch_all(&pool).await {
+                if let Ok(prows) = sqlx::query(sqlx::AssertSqlSafe(info_table_q.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                {
                     let mut pk_cols: Vec<(i64, String)> = Vec::new();
                     for pr in prows {
                         let pk_order: i64 = pr.try_get("pk").unwrap_or(0);
@@ -557,22 +1172,32 @@ pub async fn fetch_index_details_standalone_async(
                 }
 
                 // 2) Check regular & unique indexes
-                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(list_query.as_str())).fetch_all(&pool).await {
+                if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(list_query.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                {
                     for r in rows {
                         let name_opt: Option<String> = r.try_get("name").ok().flatten();
                         let unique_flag: Option<i64> = r.try_get("unique").ok().flatten();
                         if let Some(nm) = name_opt {
                             let info_q = format!("PRAGMA index_info('{}')", nm.replace('\'', "''"));
                             let mut cols_vec = Vec::new();
-                            if let Ok(crows) = sqlx::query(sqlx::AssertSqlSafe(info_q.as_str())).fetch_all(&pool).await {
+                            if let Ok(crows) = sqlx::query(sqlx::AssertSqlSafe(info_q.as_str()))
+                                .fetch_all(&pool)
+                                .await
+                            {
                                 for cr in crows {
-                                    if let Ok(Some(coln)) = cr.try_get::<Option<String>, _>("name") {
+                                    if let Ok(Some(coln)) = cr.try_get::<Option<String>, _>("name")
+                                    {
                                         cols_vec.push(coln);
                                     }
                                 }
                             }
                             // Don't duplicate if already added as PRIMARY
-                            let is_already_added = infos.iter().any(|existing| existing.name == nm || (existing.name == "PRIMARY" && existing.columns == cols_vec));
+                            let is_already_added = infos.iter().any(|existing| {
+                                existing.name == nm
+                                    || (existing.name == "PRIMARY" && existing.columns == cols_vec)
+                            });
                             if !is_already_added {
                                 infos.push(models::structs::IndexStructInfo {
                                     name: nm,
@@ -589,7 +1214,9 @@ pub async fn fetch_index_details_standalone_async(
             Vec::new()
         }
         models::enums::DatabaseType::MongoDB => {
-            let client_opts = mongodb::options::ClientOptions::parse(&connection.host).await.ok();
+            let client_opts = mongodb::options::ClientOptions::parse(&connection.host)
+                .await
+                .ok();
             if let Some(opts) = client_opts {
                 if let Ok(client) = mongodb::Client::with_options(opts) {
                     if let Ok(names) = client
@@ -670,13 +1297,33 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                 }
                 _ => String::new(),
             };
-            if !query.is_empty()
-                && let Some((headers, data)) =
-                    connection::execute_query_with_connection(tabular, conn_id, query)
-            {
-                tabular.current_table_headers = headers;
-                tabular.current_table_data = data.clone();
-                tabular.all_table_data = data;
+            if query.is_empty() {
+                return;
+            }
+            let tab_id = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .map(|t| t.id);
+            tabular.run_query_with_callback(conn_id, query, move |tabular, message| {
+                if !message.success {
+                    tabular.toasts.error(format!(
+                        "Refresh failed: {}",
+                        message.error.clone().unwrap_or_default()
+                    ));
+                    return;
+                }
+                // Abaikan hasil jika user sudah pindah ke tab lain selama refresh.
+                if tabular
+                    .query_tabs
+                    .get(tabular.active_tab_index)
+                    .map(|t| t.id)
+                    != tab_id
+                {
+                    return;
+                }
+                tabular.current_table_headers = message.headers.clone();
+                tabular.current_table_data = message.rows.clone();
+                tabular.all_table_data = message.rows.clone();
                 tabular.total_rows = tabular.all_table_data.len();
                 tabular.current_page = 0;
                 if let Some(active_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
@@ -705,7 +1352,7 @@ pub(crate) fn refresh_current_table_data(tabular: &mut window_egui::Tabular) {
                     "💾 Cached first 100 rows after manual refresh for {}/{}",
                     db_name, table
                 );
-            }
+            });
         }
     }
 }
@@ -843,5 +1490,3 @@ mod tests {
         assert_eq!(extract_table_from_caption(""), None);
     }
 }
-
-

@@ -1,4 +1,4 @@
-use super::{parse_explain, ExplainNode, ExplainSummary, ProfilerWarning};
+use super::{ExplainNode, ExplainSummary, ProfilerWarning, parse_explain};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use std::collections::HashSet;
 
@@ -129,10 +129,18 @@ fn render_profiler_header(
             ui.selectable_value(
                 &mut state.view_mode,
                 ProfilerViewMode::Advisor,
-                &format!("💡 Advisor ({})", summary.warnings_count),
+                format!("💡 Advisor ({})", summary.warnings_count),
             );
-            ui.selectable_value(&mut state.view_mode, ProfilerViewMode::TreeList, "🌲 Tree List");
-            ui.selectable_value(&mut state.view_mode, ProfilerViewMode::VisualGraph, "📊 Graph");
+            ui.selectable_value(
+                &mut state.view_mode,
+                ProfilerViewMode::TreeList,
+                "🌲 Tree List",
+            );
+            ui.selectable_value(
+                &mut state.view_mode,
+                ProfilerViewMode::VisualGraph,
+                "📊 Graph",
+            );
         });
     });
 
@@ -267,11 +275,11 @@ fn render_graph_canvas_and_inspector(
 ) {
     // Toolbar: Search filter, zoom buttons, reset
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("🔍").size(12.0));
-        ui.add(
-            egui::TextEdit::singleline(&mut state.search_query)
-                .hint_text("Search table, index, or operation...")
-                .desired_width(220.0),
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.search_query,
+            "Search table, index, or operation…",
+            220.0,
         );
 
         ui.separator();
@@ -332,15 +340,9 @@ fn render_graph_canvas_and_inspector(
     }
 }
 
-fn render_canvas_viewport(
-    ui: &mut egui::Ui,
-    root: &ExplainNode,
-    state: &mut QueryProfilerState,
-) {
-    let (response, painter) = ui.allocate_painter(
-        ui.available_size(),
-        egui::Sense::click_and_drag(),
-    );
+fn render_canvas_viewport(ui: &mut egui::Ui, root: &ExplainNode, state: &mut QueryProfilerState) {
+    let (response, painter) =
+        ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
 
     // Pan interaction
     if response.dragged_by(egui::PointerButton::Primary)
@@ -389,7 +391,7 @@ fn render_canvas_viewport(
         for &child_idx in &layout.children_indices {
             if let Some(child_layout) = layouts.get(child_idx) {
                 let child_top = Pos2::new(child_layout.rect.center().x, child_layout.rect.top());
-                
+
                 // Draw smooth bezier curve
                 let cp1 = Pos2::new(parent_bottom.x, parent_bottom.y + v_spacing * 0.4);
                 let cp2 = Pos2::new(child_top.x, child_top.y - v_spacing * 0.4);
@@ -411,7 +413,9 @@ fn render_canvas_viewport(
     for layout in &layouts {
         if let Some(node) = root.find_node_by_id(layout.id) {
             let is_selected = state.selected_node_id == Some(node.id);
-            let is_hovered = pointer_pos.map(|p| layout.rect.contains(p)).unwrap_or(false);
+            let is_hovered = pointer_pos
+                .map(|p| layout.rect.contains(p))
+                .unwrap_or(false);
 
             if clicked && is_hovered {
                 state.selected_node_id = Some(node.id);
@@ -544,10 +548,12 @@ fn render_node_card(
 
     // Search query match highlight
     if !search_query.trim().is_empty() {
-        let q = search_query.to_lowercase();
-        let matches = node.node_type.to_lowercase().contains(&q)
-            || node.relation_name.as_deref().unwrap_or("").to_lowercase().contains(&q)
-            || node.index_name.as_deref().unwrap_or("").to_lowercase().contains(&q);
+        let q = crate::search_match::SearchQuery::new(search_query);
+        let matches = q.matches_any([
+            node.node_type.as_str(),
+            node.relation_name.as_deref().unwrap_or(""),
+            node.index_name.as_deref().unwrap_or(""),
+        ]);
         if matches {
             border_color = Color32::from_rgb(255, 215, 0);
         }
@@ -558,7 +564,14 @@ fn render_node_card(
         rect,
         6.0 * zoom,
         card_bg,
-        Stroke::new(if is_selected || node.is_bottleneck { 2.0 } else { 1.0 }, border_color),
+        Stroke::new(
+            if is_selected || node.is_bottleneck {
+                2.0
+            } else {
+                1.0
+            },
+            border_color,
+        ),
         egui::StrokeKind::Outside,
     );
 
@@ -597,19 +610,30 @@ fn render_node_card(
         egui::Align2::LEFT_TOP,
         truncate_str(&node.node_type, 22),
         egui::FontId::proportional(11.0 * zoom),
-        if is_dark { Color32::WHITE } else { Color32::BLACK },
+        if is_dark {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        },
     );
 
     cur_y += 16.0 * zoom;
 
     // Cost & Timing row
-    let cost_str = format!("Cost: {:.1} ({:.0}%)", node.total_cost, node.cost_percentage);
+    let cost_str = format!(
+        "Cost: {:.1} ({:.0}%)",
+        node.total_cost, node.cost_percentage
+    );
     painter.text(
         Pos2::new(rect.left() + pad, cur_y),
         egui::Align2::LEFT_TOP,
         cost_str,
         egui::FontId::proportional(9.5 * zoom),
-        if is_dark { Color32::LIGHT_GRAY } else { Color32::DARK_GRAY },
+        if is_dark {
+            Color32::LIGHT_GRAY
+        } else {
+            Color32::DARK_GRAY
+        },
     );
 
     let rows_str = format!("Rows: {}", node.actual_rows.unwrap_or(node.plan_rows));
@@ -618,7 +642,11 @@ fn render_node_card(
         egui::Align2::RIGHT_TOP,
         rows_str,
         egui::FontId::proportional(9.5 * zoom),
-        if is_dark { Color32::LIGHT_GRAY } else { Color32::DARK_GRAY },
+        if is_dark {
+            Color32::LIGHT_GRAY
+        } else {
+            Color32::DARK_GRAY
+        },
     );
 
     cur_y += 16.0 * zoom;
@@ -670,7 +698,10 @@ fn get_badge_info(node_type: &str) -> (&'static str, Color32) {
     let lower = node_type.to_lowercase();
     if lower.contains("index") {
         ("INDEX SCAN", Color32::from_rgb(76, 175, 80))
-    } else if lower.contains("seq scan") || lower.contains("full table") || lower.contains("table scan") {
+    } else if lower.contains("seq scan")
+        || lower.contains("full table")
+        || lower.contains("table scan")
+    {
         ("SEQ SCAN", Color32::from_rgb(255, 112, 67))
     } else if lower.contains("join") || lower.contains("nested loop") {
         ("JOIN", Color32::from_rgb(33, 150, 243))
@@ -696,11 +727,7 @@ fn get_cost_color(pct: f32) -> Color32 {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        s
-    } else {
-        &s[..max_len]
-    }
+    if s.len() <= max_len { s } else { &s[..max_len] }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -712,11 +739,7 @@ fn render_node_inspector_drawer(ui: &mut egui::Ui, node: &ExplainNode) {
         .id_salt("profiler_node_inspector_scroll")
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.heading(
-                    egui::RichText::new(&node.node_type)
-                        .size(15.0)
-                        .strong(),
-                );
+                ui.heading(egui::RichText::new(&node.node_type).size(15.0).strong());
 
                 if let Some(ref rel) = node.relation_name {
                     ui.label(
@@ -765,7 +788,10 @@ fn render_node_inspector_drawer(ui: &mut egui::Ui, node: &ExplainNode) {
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label("Total Cost:");
-                        ui.label(format!("{:.2} ({:.1}%)", node.total_cost, node.cost_percentage));
+                        ui.label(format!(
+                            "{:.2} ({:.1}%)",
+                            node.total_cost, node.cost_percentage
+                        ));
                         ui.end_row();
 
                         ui.label("Startup Cost:");
@@ -796,7 +822,10 @@ fn render_node_inspector_drawer(ui: &mut egui::Ui, node: &ExplainNode) {
                     });
 
                 // Buffer I/O Details
-                if node.buffer_hit.is_some() || node.buffer_read.is_some() || node.temp_written_blocks.is_some() {
+                if node.buffer_hit.is_some()
+                    || node.buffer_read.is_some()
+                    || node.temp_written_blocks.is_some()
+                {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -936,9 +965,17 @@ fn render_tree_list_node(
 
         let is_dark = ui.visuals().dark_mode;
         let card_bg = if is_selected {
-            if is_dark { Color32::from_rgb(40, 50, 70) } else { Color32::from_rgb(225, 238, 255) }
+            if is_dark {
+                Color32::from_rgb(40, 50, 70)
+            } else {
+                Color32::from_rgb(225, 238, 255)
+            }
         } else if node.is_bottleneck {
-            if is_dark { Color32::from_rgb(45, 25, 28) } else { Color32::from_rgb(255, 235, 238) }
+            if is_dark {
+                Color32::from_rgb(45, 25, 28)
+            } else {
+                Color32::from_rgb(255, 235, 238)
+            }
         } else if is_dark {
             Color32::from_rgb(28, 30, 38)
         } else {
@@ -973,11 +1010,7 @@ fn render_tree_list_node(
                             .color(badge_color),
                     );
 
-                    ui.label(
-                        egui::RichText::new(&node.node_type)
-                            .size(12.0)
-                            .strong(),
-                    );
+                    ui.label(egui::RichText::new(&node.node_type).size(12.0).strong());
 
                     if let Some(ref rel) = node.relation_name {
                         ui.label(
@@ -1043,7 +1076,7 @@ fn render_advisor_view(
     }
 
     // Sort by severity descending
-    all_warnings.sort_by(|a, b| b.1.severity.cmp(&a.1.severity));
+    all_warnings.sort_by_key(|w| std::cmp::Reverse(w.1.severity));
 
     egui::ScrollArea::vertical()
         .id_salt("profiler_advisor_scroll")
@@ -1070,16 +1103,21 @@ fn render_advisor_view(
 
                 if all_warnings.is_empty() {
                     ui.label(
-                        egui::RichText::new("✅ Excellent! No major performance anti-patterns detected.")
-                            .color(Color32::from_rgb(76, 175, 80))
-                            .strong(),
+                        egui::RichText::new(
+                            "✅ Excellent! No major performance anti-patterns detected.",
+                        )
+                        .color(Color32::from_rgb(76, 175, 80))
+                        .strong(),
                     );
                 } else {
                     for (node, warn) in all_warnings {
                         ui.label(
-                            egui::RichText::new(format!("Operator: {} (ID #{})", node.node_type, node.id))
-                                .size(11.0)
-                                .color(Color32::GRAY),
+                            egui::RichText::new(format!(
+                                "Operator: {} (ID #{})",
+                                node.node_type, node.id
+                            ))
+                            .size(11.0)
+                            .color(Color32::GRAY),
                         );
                         ui.add_space(2.0);
                         render_warning_box(ui, warn);

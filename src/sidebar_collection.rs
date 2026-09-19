@@ -18,21 +18,12 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     render_postman_import_dialog(app, ui);
 
     // ── Search box ────────────────────────────────────────────────────────
-    let search_bg = if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(30, 32, 42)
-    } else {
-        egui::Color32::from_rgb(235, 238, 243)
-    };
-    let available_width = ui.available_width() - 5.0;
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.add_sized(
-            [available_width, 24.0],
-            egui::TextEdit::singleline(&mut app.collection_search)
-                .hint_text("🔍 Filter requests…")
-                .background_color(search_bg),
-        );
-    });
+    crate::window_egui::style::render_search_field(
+        ui,
+        &mut app.collection_search,
+        "Filter requests…",
+        f32::INFINITY,
+    );
 
     let filter = app.collection_search.trim().to_lowercase();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
@@ -129,15 +120,22 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
 
                     let is_hovered = label_response.hovered() || row_interact.hovered();
-                    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+                    let is_active = label_response.is_pointer_button_down_on()
+                        || row_interact.is_pointer_button_down_on();
                     if is_hovered || is_active {
                         let is_dark = ui.visuals().dark_mode;
                         let bg = if is_active {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                            }
                         } else {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                            }
                         };
                         let bar_rect = egui::Rect::from_min_size(
                             egui::pos2(row_rect.left(), row_rect.top() + 2.0),
@@ -438,7 +436,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             }
             RequestAction::Duplicate => {
                 duplicate_request_in_workspaces(&mut app.yaak_workspaces, &req);
-                save_workspaces(&app.yaak_workspaces);
+                if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                    app.toasts.error(e);
+                }
                 app.toasts
                     .info(format!("Duplicated request '{}'", req.display_name()));
             }
@@ -502,7 +502,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             } else {
                 ws.requests.push(new_req.clone());
             }
-            save_workspaces(&app.yaak_workspaces);
+            if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                app.toasts.error(e);
+            }
             apply_collection_request_to_active_tab(app, &new_req);
             app.toasts
                 .success(format!("Added new HTTP request to '{}'", parent_name));
@@ -728,7 +730,9 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from {} workspace(s)",
@@ -772,7 +776,9 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from Postman ({})",
@@ -864,8 +870,7 @@ fn render_folder_node(
 ) {
     let folder_matches =
         parent_matched || (!filter.is_empty() && folder.name.to_lowercase().contains(filter));
-    let is_expanded =
-        expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
+    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
     let is_being_dragged = active_dnd_source.is_some_and(
         |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
     );
@@ -934,11 +939,17 @@ fn render_folder_node(
         let is_dark = ui.visuals().dark_mode;
         let is_active = label_resp.is_pointer_button_down_on();
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(folder_row_rect.left(), folder_row_rect.top() + 2.0),
@@ -1148,15 +1159,22 @@ fn render_request_row(
     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click_and_drag());
 
     let is_hovered = label_response.hovered() || row_interact.hovered();
-    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+    let is_active =
+        label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
     if is_hovered || is_active {
         let is_dark = ui.visuals().dark_mode;
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(row_rect.left(), row_rect.top() + 2.0),

@@ -1,15 +1,15 @@
-use eframe::egui;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::collections::{BTreeSet, HashMap};
-use log::{debug, error};
-use crate::models;
+use super::PrefTab;
 use crate::connection;
 use crate::driver_redis;
-use crate::rfd;
-use crate::{sidebar_database, sidebar_query, editor};
 use crate::editor_buffer::EditorBuffer;
-use super::PrefTab;
+use crate::models;
+use crate::rfd;
+use crate::{editor, sidebar_database, sidebar_query};
+use eframe::egui;
+use log::{debug, error};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 impl super::Tabular {
     pub fn add_cursor(&mut self, pos: usize) {
@@ -41,7 +41,11 @@ impl super::Tabular {
         self.auto_refresh_last_run = None;
     }
 
-    pub fn set_initial_prefs(&mut self, prefs: crate::config::AppPreferences) {
+    /// Satu-satunya jalur `AppPreferences` → state `Tabular`. Setiap field
+    /// preferensi baru WAJIB disalin di sini: field yang terlewat akan tetap
+    /// bernilai default lalu tertimpa ke storage saat `try_save_prefs`.
+    /// Tidak menyentuh state global (data dir diterapkan oleh pemanggil).
+    pub(crate) fn set_initial_prefs(&mut self, prefs: crate::config::AppPreferences) {
         self.app_theme = prefs.theme;
         self.ui_mode = prefs.ui_mode;
         self.link_editor_theme = prefs.link_editor_theme;
@@ -58,7 +62,12 @@ impl super::Tabular {
         self.auto_check_updates = prefs.auto_check_updates;
         self.use_server_pagination = prefs.use_server_pagination;
         self.enable_debug_logging = prefs.enable_debug_logging;
-        self.redis_browser_auto_refresh_default_seconds = prefs.redis_browser_auto_refresh_seconds.max(1);
+        crate::app_logging::set_verbose(prefs.enable_debug_logging);
+        self.query_timeout_secs = prefs.query_timeout_secs;
+        self.max_result_rows = prefs.max_result_rows.max(1);
+        self.restore_session = prefs.restore_session;
+        self.redis_browser_auto_refresh_default_seconds =
+            prefs.redis_browser_auto_refresh_seconds.max(1);
         // Mirror AI settings
         self.ai_api_key = prefs.ai_api_key.clone();
         self.ai_model = prefs.ai_model.clone();
@@ -71,10 +80,25 @@ impl super::Tabular {
             prefs.ai_model.clone()
         };
         self.ai_settings_base_url_input = prefs.ai_base_url.clone();
+        self.ai_backend = prefs.ai_backend;
+        self.ai_cli_kind = prefs.ai_cli_kind;
+        self.ai_cli_bin = prefs.ai_cli_bin.clone();
+        self.ai_cli_model = prefs.ai_cli_model.clone();
+        self.ai_cli_effort = prefs.ai_cli_effort.clone();
+        self.ai_cli_extra_args = prefs.ai_cli_extra_args.clone();
+        self.ai_cli_auto_apply_edits = prefs.ai_cli_auto_apply_edits;
+        self.ai_obsidian_vault_path = prefs.ai_obsidian_vault_path.clone();
+        self.ai_obsidian_enabled = prefs.ai_obsidian_enabled;
+        self.ai_obsidian_allow_write = prefs.ai_obsidian_allow_write;
+        self.ai_settings_cli_bin_input = prefs.ai_cli_bin.clone();
+        self.ai_settings_cli_model_input = prefs.ai_cli_model.clone();
+        self.ai_settings_cli_extra_args_input = prefs.ai_cli_extra_args.clone();
         if let Some(url) = prefs.sync_server_url.clone()
-            && !url.trim().is_empty() {
-                self.sync_server_url = url;
-            }
+            && !url.trim().is_empty()
+        {
+            self.sync_server_url = url;
+        }
+        self.ai_panel_width = prefs.ai_panel_width.clamp(280.0, 800.0);
 
         // Store as last saved
         self.last_saved_prefs = Some(prefs);
@@ -83,9 +107,7 @@ impl super::Tabular {
 
     // Duplicate selected row for editing
 
-
     // Delete selected row
-
 
     // End: Spreadsheet helpers
     pub fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
@@ -123,15 +145,15 @@ impl super::Tabular {
             }
             let path = format!("assets/db_icons/{}.png", key);
             if let Ok(bytes) = std::fs::read(&path)
-                && let Ok(img) = image::load_from_memory(&bytes) {
-                    let rgba = img.to_rgba8();
-                    let size = [img.width() as usize, img.height() as usize];
-                    let pixels = rgba.as_flat_samples();
-                    let color_image =
-                        egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-                    let handle = ctx.load_texture(key, color_image, Default::default());
-                    self.db_icon_textures.insert(key.to_string(), handle);
-                }
+                && let Ok(img) = image::load_from_memory(&bytes)
+            {
+                let rgba = img.to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let pixels = rgba.as_flat_samples();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                let handle = ctx.load_texture(key, color_image, Default::default());
+                self.db_icon_textures.insert(key.to_string(), handle);
+            }
         }
     }
 
@@ -208,6 +230,8 @@ impl super::Tabular {
 
         let has_account = loaded_account.is_some();
 
+        let fast_prefs = crate::config::load_fast_preferences();
+
         let mut app = Self {
             editor: EditorBuffer::new(""),
             multi_selection: crate::editor_selection::MultiSelection::new(),
@@ -261,13 +285,11 @@ impl super::Tabular {
             dba_result_receiver,
             user_manager_result_sender,
             user_manager_result_receiver,
-            active_query_jobs: std::collections::HashMap::new(),
-            active_query_handles: std::collections::HashMap::new(),
-            cancelled_query_jobs: std::collections::HashMap::new(),
-            query_job_batches: Vec::new(),
-            pending_paginated_jobs: std::collections::HashSet::new(),
-            pending_structure_jobs: std::collections::HashMap::new(),
-            next_query_job_id: 1,
+            jobs: Default::default(),
+            last_error_location: None,
+            keymap: crate::keymap::Keymap::load(),
+            show_shortcuts_window: false,
+            shortcuts_filter: String::new(),
             refreshing_connections: std::collections::HashSet::new(),
             connection_errors: std::collections::HashMap::new(),
             fetching_redis_keys: std::collections::HashSet::new(),
@@ -318,10 +340,10 @@ impl super::Tabular {
             quick_open_state: crate::quick_open::QuickOpenState::default(),
             theme_selector_selected_index: 0,
             request_theme_selector: false,
-            // App UI theme (default dark)
-            app_theme: crate::config::AppTheme::Dark,
-            ui_mode: crate::config::UiModePreference::Auto,
-            link_editor_theme: true,
+            // App UI theme (loaded from saved preferences, default dark if none)
+            app_theme: fast_prefs.theme,
+            ui_mode: fast_prefs.ui_mode,
+            link_editor_theme: fast_prefs.link_editor_theme,
             show_settings_window: false,
             // Database search functionality
             database_search_text: String::new(),
@@ -396,6 +418,7 @@ impl super::Tabular {
             autocomplete_fks_mem: std::collections::HashMap::new(),
             autocomplete_tables_mem: std::collections::HashMap::new(),
             autocomplete_col_types_mem: std::collections::HashMap::new(),
+            autocomplete_usage: std::collections::HashMap::new(),
             autocomplete_warm_receiver: Some(autocomplete_warm_receiver),
             autocomplete_warm_sender,
             selection_force_clear: false,
@@ -439,12 +462,14 @@ impl super::Tabular {
             new_column_type: String::new(),
             new_column_nullable: true,
             new_column_default: String::new(),
+            new_column_comment: String::new(),
             editing_column: false,
             edit_column_original_name: String::new(),
             edit_column_name: String::new(),
             edit_column_type: String::new(),
             edit_column_nullable: true,
             edit_column_default: String::new(),
+            edit_column_comment: String::new(),
             adding_index: false,
             new_index_name: String::new(),
             new_index_method: String::new(),
@@ -482,6 +507,15 @@ impl super::Tabular {
             update_stage_receiver: None,
             staged_update_script: None,
             enable_debug_logging: false, // Default to false
+            query_timeout_secs: 0,
+            max_result_rows: crate::config::DEFAULT_MAX_RESULT_ROWS,
+            restore_session: true,
+            pending_tab_close: None,
+            show_quit_confirm: false,
+            quit_confirmed: false,
+            session_restore_done: false,
+            session_last_check: None,
+            session_last_fingerprint: None,
             auto_updater: crate::auto_updater::AutoUpdater::new().ok(),
             settings_active_pref_tab: PrefTab::ApplicationTheme,
             show_settings_menu: false,
@@ -535,6 +569,10 @@ impl super::Tabular {
             message_shown_at: None,
             message_panel_height: 100.0,
             query_message_display_buffer: String::new(),
+            last_executed_sql: String::new(),
+            last_statement_type: models::structs::StatementType::Select,
+            last_affected_rows: None,
+            last_execution_duration_ms: 0,
             show_add_view_dialog: false,
             new_view_name: String::new(),
             new_view_query: String::new(),
@@ -552,18 +590,48 @@ impl super::Tabular {
             connection_folders: Vec::new(),
             // AI Assistant
             show_ai_panel: false,
+            ai_panel_width: 350.0,
             ai_input: String::new(),
-            ai_suggestion: String::new(),
             ai_is_loading: false,
             ai_error: None,
-            ai_suggestion_receiver: None,
+            ai_chat: Vec::new(),
+            ai_stream_receiver: None,
+            ai_cancel: None,
+            ai_session_id: None,
+            ai_attached_tab_ids: Vec::new(),
+            ai_live_edit_parser: None,
+            ai_live_edit_active: None,
+            ai_markdown_cache: egui_commonmark::CommonMarkCache::default(),
+            ai_schema_badge: None,
+            ai_confirm_clear_until: None,
             ai_api_key: String::new(),
             ai_model: String::new(),
             ai_provider: crate::config::AiProvider::OpenAI,
             ai_base_url: String::new(),
+            ai_backend: crate::config::AiBackend::Api,
+            ai_cli_kind: crate::config::CliAgentKind::Antigravity,
+            ai_cli_bin: String::new(),
+            ai_cli_model: String::new(),
+            ai_cli_effort: String::new(),
+            ai_cli_extra_args: String::new(),
+            ai_cli_auto_apply_edits: true,
             ai_settings_api_key_input: String::new(),
             ai_settings_model_input: String::new(),
             ai_settings_base_url_input: String::new(),
+            ai_settings_cli_bin_input: String::new(),
+            ai_settings_cli_model_input: String::new(),
+            ai_settings_cli_extra_args_input: String::new(),
+            ai_cli_test_receiver: None,
+            ai_cli_test_result: None,
+            ai_cli_mcp_registered: None,
+            ai_cli_mcp_receiver: None,
+            ai_cli_mcp_message: None,
+            ai_obsidian_vault_path: String::new(),
+            ai_obsidian_enabled: false,
+            ai_obsidian_allow_write: false,
+            ai_obsidian_index: None,
+            ai_obsidian_index_receiver: None,
+            ai_obsidian_save_message: None,
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
@@ -582,6 +650,7 @@ impl super::Tabular {
             show_schema_diff_dialog: false,
             schema_diff_state: None,
             schema_diff_receiver: None,
+            diagram_schema_jobs: Vec::new(),
             show_backup_dialog: false,
             show_restore_dialog: false,
             backup_state: None,
@@ -601,6 +670,8 @@ impl super::Tabular {
             show_collab_panel: false,
             profile_display_name_input,
             profile_avatar_url_input,
+            show_avatar_change_menu: false,
+            show_avatar_url_input: false,
             profile_username_input,
             profile_phone_input,
             profile_update_receiver: None,
@@ -699,6 +770,14 @@ impl super::Tabular {
         // Clear any old cached pools
         app.connection_pools.clear();
 
+        // Beri tahu user jika sesi sebelumnya berakhir karena crash.
+        if let Some(report) = crate::app_logging::take_unseen_crash_report() {
+            app.toasts.warning(format!(
+                "Tabular closed unexpectedly last time. A crash report was saved to {} — Settings menu → “Copy Diagnostics” helps when reporting the bug.",
+                report.display()
+            ));
+        }
+
         // Asynchronously initialize database and load connections in background thread
         crate::log_startup_step("spawning async background thread for initialize_database");
         let (db_tx, db_rx) = std::sync::mpsc::channel();
@@ -710,7 +789,9 @@ impl super::Tabular {
         });
 
         // Asynchronously load saved queries from directory in background thread
-        crate::log_startup_step("spawning async background thread for sidebar_query::load_queries_tree");
+        crate::log_startup_step(
+            "spawning async background thread for sidebar_query::load_queries_tree",
+        );
         let (q_tx, q_rx) = std::sync::mpsc::channel();
         app.queries_load_receiver = Some(q_rx);
         std::thread::spawn(move || {
@@ -719,7 +800,9 @@ impl super::Tabular {
         });
 
         // Asynchronously load saved HTTP collections (Yaak imports) in background thread
-        crate::log_startup_step("spawning async background thread for http_collection::load_workspaces");
+        crate::log_startup_step(
+            "spawning async background thread for http_collection::load_workspaces",
+        );
         let (ws_tx, ws_rx) = std::sync::mpsc::channel();
         app.workspaces_load_receiver = Some(ws_rx);
         std::thread::spawn(move || {
@@ -746,14 +829,15 @@ impl super::Tabular {
                 let key = db_type.icon_key();
                 let path = format!("assets/db_icons/{}.png", key);
                 if let Ok(bytes) = std::fs::read(&path)
-                    && let Ok(img) = image::load_from_memory(&bytes) {
-                        let rgba = img.to_rgba8();
-                        let size = [img.width() as usize, img.height() as usize];
-                        let pixels = rgba.as_flat_samples();
-                        let color_image =
-                            egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-                        let _ = icons_tx.send((key.to_string(), color_image));
-                    }
+                    && let Ok(img) = image::load_from_memory(&bytes)
+                {
+                    let rgba = img.to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let pixels = rgba.as_flat_samples();
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                    let _ = icons_tx.send((key.to_string(), color_image));
+                }
             }
         });
 
@@ -818,7 +902,9 @@ impl super::Tabular {
         // 2. Check shared_db_pool in case another thread populated it
         if let Some(pool) = self.shared_db_pool.read().ok().and_then(|g| g.clone()) {
             if !pool.is_closed() {
-                eprintln!("[RESTORE-DB] Found active pool in shared_db_pool. Adopting into self.db_pool.");
+                eprintln!(
+                    "[RESTORE-DB] Found active pool in shared_db_pool. Adopting into self.db_pool."
+                );
                 self.db_pool = Some(pool.clone());
                 return Ok(pool);
             } else {
@@ -830,10 +916,14 @@ impl super::Tabular {
 
         // 3. If background initialization is pending, wait for it
         if let Some(rx) = self.db_init_receiver.take() {
-            eprintln!("[RESTORE-DB] Background db initialization is in flight. Waiting up to 5s...");
+            eprintln!(
+                "[RESTORE-DB] Background db initialization is in flight. Waiting up to 5s..."
+            );
             match rx.recv_timeout(std::time::Duration::from_secs(5)) {
                 Ok(res) => {
-                    eprintln!("[RESTORE-DB] Background db initialization receiver completed successfully.");
+                    eprintln!(
+                        "[RESTORE-DB] Background db initialization receiver completed successfully."
+                    );
                     let pool = res.db_pool.clone();
                     self.set_db_pool(Some(res.db_pool));
                     self.connections = res.connections;
@@ -855,12 +945,20 @@ impl super::Tabular {
                     self.connection_last_synced = res.connection_last_synced;
                     crate::sidebar_database::refresh_connections_tree(self);
                     crate::sidebar_history::refresh_history_tree(self);
-                    crate::log_startup_step("async background database & connections init completed via ensure_db_pool");
+                    crate::log_startup_step(
+                        "async background database & connections init completed via ensure_db_pool",
+                    );
                     return Ok(pool);
                 }
                 Err(e) => {
-                    eprintln!("[RESTORE-DB] ⚠️ Timed out or failed waiting for background db init: {:?}", e);
-                    log::warn!("Timed out or failed waiting for background db init in ensure_db_pool: {:?}", e);
+                    eprintln!(
+                        "[RESTORE-DB] ⚠️ Timed out or failed waiting for background db init: {:?}",
+                        e
+                    );
+                    log::warn!(
+                        "Timed out or failed waiting for background db init in ensure_db_pool: {:?}",
+                        e
+                    );
                 }
             }
         } else {
@@ -868,21 +966,29 @@ impl super::Tabular {
         }
 
         // 4. Synchronously initialize database as fallback
-        eprintln!("[RESTORE-DB] Triggering synchronous crate::sidebar_database::initialize_database(self)...");
+        eprintln!(
+            "[RESTORE-DB] Triggering synchronous crate::sidebar_database::initialize_database(self)..."
+        );
         crate::sidebar_database::initialize_database(self);
         if let Some(ref pool) = self.db_pool {
             if !pool.is_closed() {
                 eprintln!("[RESTORE-DB] Synchronous initialize_database succeeded.");
                 return Ok(pool.clone());
             } else {
-                eprintln!("[RESTORE-DB] Warning: self.db_pool is closed after initialize_database!");
+                eprintln!(
+                    "[RESTORE-DB] Warning: self.db_pool is closed after initialize_database!"
+                );
             }
         } else {
-            eprintln!("[RESTORE-DB] Warning: self.db_pool is still None after initialize_database!");
+            eprintln!(
+                "[RESTORE-DB] Warning: self.db_pool is still None after initialize_database!"
+            );
         }
 
         // 5. Corrupt db reset recovery as last resort
-        eprintln!("[RESTORE-DB] Triggering crate::sidebar_database::reset_corrupted_sqlite_db(self)...");
+        eprintln!(
+            "[RESTORE-DB] Triggering crate::sidebar_database::reset_corrupted_sqlite_db(self)..."
+        );
         if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
             if let Some(ref pool) = self.db_pool {
                 if !pool.is_closed() {
@@ -892,8 +998,13 @@ impl super::Tabular {
             }
         }
 
-        eprintln!("[RESTORE-DB] ❌ All 5 defense layers failed to acquire or initialize SQLite database pool!");
-        Err("No active database pool available and failed to initialize SQLite database".to_string())
+        eprintln!(
+            "[RESTORE-DB] ❌ All 5 defense layers failed to acquire or initialize SQLite database pool!"
+        );
+        Err(
+            "No active database pool available and failed to initialize SQLite database"
+                .to_string(),
+        )
     }
 
     pub fn start_background_worker(
@@ -940,14 +1051,20 @@ impl super::Tabular {
                         std::thread::spawn(move || {
                             debug!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
-                                let dbs_opt = rt.block_on(connection::fetch_databases_background_task(
+                                let dbs_opt =
+                                    rt.block_on(connection::fetch_databases_background_task(
+                                        connection_id,
+                                        pool,
+                                        &shared_pools_thread,
+                                    ));
+                                debug!(
+                                    "[FETCH-DB] FetchDatabases id={} result: {} dbs",
                                     connection_id,
-                                    pool,
-                                    &shared_pools_thread,
-                                ));
-                                debug!("[FETCH-DB] FetchDatabases id={} result: {} dbs", connection_id, dbs_opt.as_ref().map(|d| d.len()).unwrap_or(0));
+                                    dbs_opt.as_ref().map(|d| d.len()).unwrap_or(0)
+                                );
 
                                 if let Some(dbs) = dbs_opt {
                                     let _ = result_sender_thread.send(
@@ -960,7 +1077,9 @@ impl super::Tabular {
                                     let _ = result_sender_thread.send(
                                         models::enums::BackgroundResult::ConnectionFailed {
                                             connection_id,
-                                            error_message: "Failed to connect or fetch databases from server".to_string(),
+                                            error_message:
+                                                "Failed to connect or fetch databases from server"
+                                                    .to_string(),
                                         },
                                     );
                                 }
@@ -992,7 +1111,10 @@ impl super::Tabular {
                             );
                         });
                     }
-                    models::enums::BackgroundTask::FetchRedisKeys { connection_id, database_name } => {
+                    models::enums::BackgroundTask::FetchRedisKeys {
+                        connection_id,
+                        database_name,
+                    } => {
                         // Spawn a thread so a slow Redis server does not stall
                         // the worker loop and every task queued behind it.
                         let shared_db_pool_thread = shared_db_pool.clone();
@@ -1001,7 +1123,8 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
@@ -1061,11 +1184,13 @@ impl super::Tabular {
                                     Some(all_keys)
                                 });
 
-                                let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisKeysFetched {
-                                    connection_id,
-                                    database_name,
-                                    keys: keys.unwrap_or_default(),
-                                });
+                                let _ = result_sender_thread.send(
+                                    models::enums::BackgroundResult::RedisKeysFetched {
+                                        connection_id,
+                                        database_name,
+                                        keys: keys.unwrap_or_default(),
+                                    },
+                                );
                             }
                         });
                     }
@@ -1080,7 +1205,8 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let Some(rt) = rt_opt {
                                 let state = rt.block_on(async {
                                     let redis_manager = {
@@ -1161,12 +1287,15 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     let redis_manager = {
                                         let pools = shared_pools_thread.lock().ok()?;
-                                        if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
+                                        if let Some(models::enums::DatabasePool::Redis(mgr)) =
+                                            pools.get(&connection_id)
+                                        {
                                             Some(mgr.as_ref().clone())
                                         } else {
                                             None
@@ -1192,12 +1321,14 @@ impl super::Tabular {
                                     )
                                 });
 
-                                let _ = result_sender_thread.send(models::enums::BackgroundResult::RedisBrowserSearchFetched {
-                                    connection_id,
-                                    database_name,
-                                    search_text,
-                                    keys: keys.unwrap_or_default(),
-                                });
+                                let _ = result_sender_thread.send(
+                                    models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                                        connection_id,
+                                        database_name,
+                                        search_text,
+                                        keys: keys.unwrap_or_default(),
+                                    },
+                                );
                             }
                         });
                     }
@@ -1208,20 +1339,21 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             debug!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
                                 cache_pool_thread.is_some()
                             );
-                            let (success, databases) = if let (Some(cache_pool_arc), Some(rt)) = (&cache_pool_thread, &rt_opt) {
-                                rt.block_on(
-                                    crate::connection::refresh_connection_background_async(
-                                        connection_id,
-                                        &Some(cache_pool_arc.clone()),
-                                        &shared_pools_thread,
-                                    ),
-                                )
+                            let (success, databases) = if let (Some(cache_pool_arc), Some(rt)) =
+                                (&cache_pool_thread, &rt_opt)
+                            {
+                                rt.block_on(crate::connection::refresh_connection_background_async(
+                                    connection_id,
+                                    &Some(cache_pool_arc.clone()),
+                                    &shared_pools_thread,
+                                ))
                             } else {
                                 debug!(
                                     "[AUTO-SYNC] bg RefreshConnection id={} cache_pool or runtime is None!",
@@ -1231,7 +1363,9 @@ impl super::Tabular {
                             };
                             debug!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} FINISHED success={} db_count={}",
-                                connection_id, success, databases.len()
+                                connection_id,
+                                success,
+                                databases.len()
                             );
                             let _ = result_sender_thread.send(
                                 models::enums::BackgroundResult::RefreshComplete {
@@ -1251,12 +1385,21 @@ impl super::Tabular {
                         std::thread::spawn(move || {
                             debug!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let res = rt.block_on(async {
-                                    crate::connection::create_connection_pool_by_id(connection_id, pool).await
+                                    crate::connection::create_connection_pool_by_id(
+                                        connection_id,
+                                        pool,
+                                    )
+                                    .await
                                 });
-                                debug!("[POOL] EnsureConnectionPool id={} result ok={}", connection_id, res.is_ok());
+                                debug!(
+                                    "[POOL] EnsureConnectionPool id={} result ok={}",
+                                    connection_id,
+                                    res.is_ok()
+                                );
                                 match res {
                                     Ok(new_pool) => {
                                         if let Ok(mut shared) = shared_pools_thread.lock() {
@@ -1264,18 +1407,25 @@ impl super::Tabular {
                                         }
                                     }
                                     Err(err_msg) => {
-                                        error!("[POOL] EnsureConnectionPool id={} error: {}", connection_id, err_msg);
-                                        let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
-                                            connection_id,
-                                            error_message: err_msg,
-                                        });
+                                        error!(
+                                            "[POOL] EnsureConnectionPool id={} error: {}",
+                                            connection_id, err_msg
+                                        );
+                                        let _ = result_sender_thread.send(
+                                            models::enums::BackgroundResult::ConnectionFailed {
+                                                connection_id,
+                                                error_message: err_msg,
+                                            },
+                                        );
                                     }
                                 }
                             } else {
-                                let _ = result_sender_thread.send(models::enums::BackgroundResult::ConnectionFailed {
-                                    connection_id,
-                                    error_message: "Database pool not available".to_string(),
-                                });
+                                let _ = result_sender_thread.send(
+                                    models::enums::BackgroundResult::ConnectionFailed {
+                                        connection_id,
+                                        error_message: "Database pool not available".to_string(),
+                                    },
+                                );
                             }
                         });
                     }
@@ -1289,21 +1439,28 @@ impl super::Tabular {
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
-                                debug!("[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started", connection_id, database_name, table_name);
+                                debug!(
+                                    "[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started",
+                                    connection_id, database_name, table_name
+                                );
                                 let conn_opt = rt.block_on(async {
-                                    crate::connection::pool::load_connection_by_id(connection_id, pool).await
+                                    crate::connection::pool::load_connection_by_id(
+                                        connection_id,
+                                        pool,
+                                    )
+                                    .await
                                 });
 
                                 if let Some(conn) = conn_opt {
-                                    let cols = crate::connection::fetch_columns_from_database(
-                                        connection_id,
-                                        &database_name,
-                                        &table_name,
-                                        &conn,
-                                    );
-                                    let (idxs, parts) = rt.block_on(async {
+                                    let (cols_detail, idxs, parts) = rt.block_on(async {
+                                        let col_fut = crate::data_table::fetch_column_details_standalone_async(
+                                            &conn,
+                                            &database_name,
+                                            &table_name,
+                                        );
                                         let idx_fut = crate::data_table::fetch_index_details_standalone_async(
                                             &conn,
                                             &database_name,
@@ -1314,11 +1471,30 @@ impl super::Tabular {
                                             &database_name,
                                             &table_name,
                                         );
-                                        (idx_fut.await, part_fut.await)
+                                        (col_fut.await, idx_fut.await, part_fut.await)
                                     });
 
-                                    debug!("[WORKER] FetchTableStructure finished: {} cols, {} idxs for {}/{}",
+                                    let cols: Option<Vec<(String, String)>> =
+                                        if !cols_detail.is_empty() {
+                                            Some(
+                                                cols_detail
+                                                    .iter()
+                                                    .map(|c| (c.name.clone(), c.data_type.clone()))
+                                                    .collect(),
+                                            )
+                                        } else {
+                                            crate::connection::fetch_columns_from_database(
+                                                connection_id,
+                                                &database_name,
+                                                &table_name,
+                                                &conn,
+                                            )
+                                        };
+
+                                    debug!(
+                                        "[WORKER] FetchTableStructure finished: {} cols ({} detailed), {} idxs for {}/{}",
                                         cols.as_ref().map(|c| c.len()).unwrap_or(0),
+                                        cols_detail.len(),
                                         idxs.len(),
                                         database_name,
                                         table_name
@@ -1330,12 +1506,20 @@ impl super::Tabular {
                                             database_name,
                                             table_name,
                                             columns: cols,
+                                            columns_detail: if !cols_detail.is_empty() {
+                                                Some(cols_detail)
+                                            } else {
+                                                None
+                                            },
                                             indexes: Some(idxs),
                                             partitions: Some(parts),
                                         },
                                     );
                                 } else {
-                                    error!("[WORKER] FetchTableStructure: failed to load connection id={}", connection_id);
+                                    error!(
+                                        "[WORKER] FetchTableStructure: failed to load connection id={}",
+                                        connection_id
+                                    );
                                 }
                             }
                         });
@@ -1347,10 +1531,11 @@ impl super::Tabular {
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
                         std::thread::spawn(move || {
-                            let rt_opt = shared_runtime_thread.or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                            let rt_opt = shared_runtime_thread
+                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             // Perform update check on shared runtime (if required by async API)
                             let result = if let Some(rt) = rt_opt {
-                                 rt.block_on(crate::self_update::check_for_updates())
+                                rt.block_on(crate::self_update::check_for_updates())
                                     .map_err(|e| e.to_string())
                             } else {
                                 Err("Failed to create runtime for update check".to_string())
@@ -1402,5 +1587,61 @@ impl super::Tabular {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{AiBackend, AiProvider, AppPreferences, CliAgentKind};
+    use crate::window_egui::Tabular;
+
+    /// Regresi: pengaturan AI yang tersimpan harus termuat ke state saat
+    /// startup, bukan tertinggal di nilai default konstruktor.
+    #[test]
+    fn set_initial_prefs_mirrors_ai_settings() {
+        let prefs = AppPreferences {
+            ai_api_key: "sk-test".into(),
+            ai_model: "my-model".into(),
+            ai_provider: AiProvider::Custom,
+            ai_base_url: "http://localhost:1234/v1".into(),
+            ai_backend: AiBackend::Cli,
+            ai_cli_kind: CliAgentKind::ClaudeCode,
+            ai_cli_bin: "/opt/bin/claude".into(),
+            ai_cli_model: "opus".into(),
+            ai_cli_effort: "high".into(),
+            ai_cli_extra_args: "--verbose".into(),
+            ai_cli_auto_apply_edits: false,
+            ai_obsidian_vault_path: "/vaults/work".into(),
+            ai_obsidian_enabled: true,
+            ai_obsidian_allow_write: true,
+            ai_panel_width: 420.0,
+            ..AppPreferences::default()
+        };
+
+        let mut tabular = Tabular::new();
+        tabular.set_initial_prefs(prefs);
+
+        assert_eq!(tabular.ai_api_key, "sk-test");
+        assert_eq!(tabular.ai_model, "my-model");
+        assert_eq!(tabular.ai_provider, AiProvider::Custom);
+        assert_eq!(tabular.ai_base_url, "http://localhost:1234/v1");
+        assert_eq!(tabular.ai_backend, AiBackend::Cli);
+        assert_eq!(tabular.ai_cli_kind, CliAgentKind::ClaudeCode);
+        assert_eq!(tabular.ai_cli_bin, "/opt/bin/claude");
+        assert_eq!(tabular.ai_cli_model, "opus");
+        assert_eq!(tabular.ai_cli_effort, "high");
+        assert_eq!(tabular.ai_cli_extra_args, "--verbose");
+        assert!(!tabular.ai_cli_auto_apply_edits);
+        assert_eq!(tabular.ai_obsidian_vault_path, "/vaults/work");
+        assert!(tabular.ai_obsidian_enabled);
+        assert!(tabular.ai_obsidian_allow_write);
+        assert_eq!(tabular.ai_panel_width, 420.0);
+        // Input di dialog Preferences ikut terisi
+        assert_eq!(tabular.ai_settings_api_key_input, "sk-test");
+        assert_eq!(tabular.ai_settings_model_input, "my-model");
+        assert_eq!(tabular.ai_settings_cli_bin_input, "/opt/bin/claude");
+        assert_eq!(tabular.ai_settings_cli_model_input, "opus");
+        assert_eq!(tabular.ai_settings_cli_extra_args_input, "--verbose");
+        assert!(tabular.prefs_loaded);
     }
 }

@@ -10,10 +10,10 @@ pub use host_api::{
     PluginTableSchema,
 };
 pub use manager::{
-    PluginCategory, PluginManifest, PluginManager, PluginModalState, PluginModalTab,
+    PluginCategory, PluginManager, PluginManifest, PluginModalState, PluginModalTab,
 };
 pub use templates::{
-    generate_duckdb_script, generate_orm_code, OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER,
+    OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER, generate_duckdb_script, generate_orm_code,
 };
 pub use ui::{extract_plugin_table_schema, render_plugin_modal, render_plugin_panel};
 
@@ -82,19 +82,30 @@ mod tests {
         let schema = create_test_schema();
         let selection = PluginSelectionData {
             table_name: "customers".to_string(),
-            headers: vec!["id".to_string(), "full_name".to_string(), "email".to_string()],
+            headers: vec![
+                "id".to_string(),
+                "full_name".to_string(),
+                "email".to_string(),
+            ],
             rows: vec![
-                vec!["1".to_string(), "Alice".to_string(), "alice@example.com".to_string()],
+                vec![
+                    "1".to_string(),
+                    "Alice".to_string(),
+                    "alice@example.com".to_string(),
+                ],
                 vec!["2".to_string(), "Bob".to_string(), "null".to_string()],
             ],
             total_selected: 2,
         };
 
-        let script = generate_duckdb_script(&schema, Some(&selection), Some("custom_customers.parquet"));
+        let script =
+            generate_duckdb_script(&schema, Some(&selection), Some("custom_customers.parquet"));
         assert!(script.contains("CREATE OR REPLACE TABLE \"customers\""));
         assert!(script.contains("\"id\" BIGINT NOT NULL PRIMARY KEY"));
         assert!(script.contains("\"full_name\" VARCHAR NOT NULL"));
-        assert!(script.contains("COPY \"customers\" TO 'custom_customers.parquet' (FORMAT PARQUET, COMPRESSION 'SNAPPY'"));
+        assert!(script.contains(
+            "COPY \"customers\" TO 'custom_customers.parquet' (FORMAT PARQUET, COMPRESSION 'SNAPPY'"
+        ));
         assert!(script.contains("INSERT INTO \"customers\" (\"id\", \"full_name\", \"email\")"));
         assert!(script.contains("read_parquet('custom_customers.parquet')"));
     }
@@ -150,7 +161,9 @@ mod tests {
         let code = generate_orm_code(&schema, OrmTarget::PythonSqlAlchemy2);
         assert!(code.contains("class Customers(Base):"));
         assert!(code.contains("__tablename__ = \"customers\""));
-        assert!(code.contains("id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)"));
+        assert!(
+            code.contains("id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)")
+        );
         assert!(code.contains("email: Mapped[Optional[str]] = mapped_column()"));
         assert!(code.contains("created_at: Mapped[datetime] = mapped_column()"));
     }
@@ -185,11 +198,21 @@ mod tests {
         let finished_ctx = result.unwrap();
         assert_eq!(finished_ctx.captured_logs.len(), 1);
         assert_eq!(finished_ctx.captured_logs[0].level, PluginLogLevel::Info);
-        assert!(finished_ctx.captured_logs[0].message.contains("Analyzing table schema"));
+        assert!(
+            finished_ctx.captured_logs[0]
+                .message
+                .contains("Analyzing table schema")
+        );
 
         assert_eq!(finished_ctx.captured_exports.len(), 1);
         assert_eq!(finished_ctx.captured_exports[0].format, "duckdb");
-        assert!(finished_ctx.captured_exports[0].text_content.as_ref().unwrap().contains("COPY (SELECT * FROM current_table) TO 'export.parquet'"));
+        assert!(
+            finished_ctx.captured_exports[0]
+                .text_content
+                .as_ref()
+                .unwrap()
+                .contains("COPY (SELECT * FROM current_table) TO 'export.parquet'")
+        );
     }
 
     #[test]
@@ -199,13 +222,7 @@ mod tests {
         assert!(plugins.len() >= 6, "Expected at least 6 builtin plugins");
 
         let schema = create_test_schema();
-        let res = manager.execute_plugin(
-            "builtin_orm_diesel",
-            &schema,
-            None,
-            None,
-            None,
-        );
+        let res = manager.execute_plugin("builtin_orm_diesel", &schema, None, None, None);
 
         assert!(res.is_ok());
         let ctx = res.unwrap();

@@ -1,5 +1,5 @@
+use crate::{cache_data, data_table, directory, editor, models, sidebar_query};
 use log::debug;
-use crate::{models, cache_data, data_table, editor, directory, sidebar_query};
 
 /// Diagnostic logger for the auto-sync feature. Uses log::debug! for zero overhead when disabled.
 pub(crate) fn autosync_log(msg: &str) {
@@ -109,8 +109,8 @@ impl super::Tabular {
             self.show_create_folder_dialog = true;
         } else {
             debug!("❌ No parent folder set for creation! This should not happen.");
-            self.error_message = "No parent folder selected for creation".to_string();
-            self.show_error_message = true;
+            self.toasts
+                .error("No parent folder selected for creation".to_string());
         }
     }
     pub fn handle_remove_folder_request(&mut self, hash: i64) {
@@ -134,28 +134,26 @@ impl super::Tabular {
                         }
                         Err(e) => {
                             debug!("❌ Failed to remove folder: {}", e);
-                            self.error_message = format!(
+                            self.toasts.error(format!(
                                 "Failed to remove folder '{}': {}",
                                 folder_relative_path, e
-                            );
-                            self.show_error_message = true;
+                            ));
                         }
                     }
                 } else {
                     // Offer option to remove folder and all contents
-                    self.error_message = format!(
+                    self.toasts.error(format!(
                         "Folder '{}' is not empty.\n\nWould you like to remove it and all its contents?",
                         folder_relative_path
-                    );
-                    self.show_error_message = true;
+                    ));
                     debug!(
                         "❌ Cannot remove non-empty folder: {}",
                         folder_relative_path
                     );
                 }
             } else {
-                self.error_message = format!("Folder '{}' does not exist", folder_relative_path);
-                self.show_error_message = true;
+                self.toasts
+                    .error(format!("Folder '{}' does not exist", folder_relative_path));
                 debug!("❌ Folder does not exist: {}", folder_relative_path);
             }
 
@@ -180,28 +178,25 @@ impl super::Tabular {
                             }
                             Err(e) => {
                                 debug!("❌ Failed to remove folder: {}", e);
-                                self.error_message = format!(
+                                self.toasts.error(format!(
                                     "Failed to remove folder '{}': {}",
                                     folder_relative_path, e
-                                );
-                                self.show_error_message = true;
+                                ));
                             }
                         }
                     } else {
-                        self.error_message = format!(
+                        self.toasts.error(format!(
                             "Folder '{}' is not empty.\n\nWould you like to remove it and all its contents?",
                             folder_relative_path
-                        );
-                        self.show_error_message = true;
+                        ));
                         debug!(
                             "❌ Cannot remove non-empty folder: {}",
                             folder_relative_path
                         );
                     }
                 } else {
-                    self.error_message =
-                        format!("Folder '{}' does not exist", folder_relative_path);
-                    self.show_error_message = true;
+                    self.toasts
+                        .error(format!("Folder '{}' does not exist", folder_relative_path));
                     debug!("❌ Folder does not exist: {}", folder_relative_path);
                 }
 
@@ -242,7 +237,11 @@ impl super::Tabular {
     }
     /// Check if a connection needs schema sync (e.g. at most once per 24 hours).
     pub fn should_sync_connection(&self, connection_id: i64) -> bool {
-        let conn = match self.connections.iter().find(|c| c.id == Some(connection_id)) {
+        let conn = match self
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+        {
             Some(c) => c,
             None => return false,
         };
@@ -329,8 +328,13 @@ impl super::Tabular {
             ));
             self.refreshing_connections.insert(conn_id);
             if let Some(sender) = &self.background_sender {
-                if let Err(e) = sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id: conn_id }) {
-                    autosync_log(&format!("[IDLE-SYNC] Failed to queue RefreshConnection task for id={}: {}", conn_id, e));
+                if let Err(e) = sender.send(models::enums::BackgroundTask::RefreshConnection {
+                    connection_id: conn_id,
+                }) {
+                    autosync_log(&format!(
+                        "[IDLE-SYNC] Failed to queue RefreshConnection task for id={}: {}",
+                        conn_id, e
+                    ));
                     self.refreshing_connections.remove(&conn_id);
                 }
             } else {
@@ -353,10 +357,16 @@ impl super::Tabular {
             if let Err(e) =
                 sender.send(models::enums::BackgroundTask::RefreshConnection { connection_id })
             {
-                autosync_log(&format!("[AUTO-SYNC] Failed to send background auto-sync task for id={}: {}", connection_id, e));
+                autosync_log(&format!(
+                    "[AUTO-SYNC] Failed to send background auto-sync task for id={}: {}",
+                    connection_id, e
+                ));
                 self.refreshing_connections.remove(&connection_id);
             } else {
-                autosync_log(&format!("[AUTO-SYNC] SUCCESSFULLY sent RefreshConnection task to background_sender for id={}", connection_id));
+                autosync_log(&format!(
+                    "[AUTO-SYNC] SUCCESSFULLY sent RefreshConnection task to background_sender for id={}",
+                    connection_id
+                ));
             }
         } else {
             self.refreshing_connections.remove(&connection_id);
@@ -364,7 +374,10 @@ impl super::Tabular {
     }
 
     pub fn refresh_connection(&mut self, connection_id: i64) {
-        log::debug!("[REFRESH-CONN] manual refresh_connection started for id={}", connection_id);
+        log::debug!(
+            "[REFRESH-CONN] manual refresh_connection started for id={}",
+            connection_id
+        );
         self.auto_synced_connections.remove(&connection_id);
 
         // Clear in-memory database cache so next load gets fresh data
@@ -381,7 +394,8 @@ impl super::Tabular {
             // Save expansion state before clearing so it can be restored after refresh
             let mut expansion_state = std::collections::HashMap::new();
             Self::save_expansion_state(conn_node, &mut expansion_state);
-            self.pending_expansion_restore.insert(connection_id, expansion_state);
+            self.pending_expansion_restore
+                .insert(connection_id, expansion_state);
 
             conn_node.is_loaded = false;
             // Keep current expansion state so it doesn't visually disappear; we'll repopulate on next expand
@@ -403,7 +417,8 @@ impl super::Tabular {
             {
                 let mut expansion_state = std::collections::HashMap::new();
                 Self::save_expansion_state(conn_node, &mut expansion_state);
-                self.pending_expansion_restore.insert(connection_id, expansion_state);
+                self.pending_expansion_restore
+                    .insert(connection_id, expansion_state);
 
                 let was_expanded = conn_node.is_expanded;
                 conn_node.children.clear();
@@ -421,7 +436,8 @@ impl super::Tabular {
                 {
                     let mut expansion_state = std::collections::HashMap::new();
                     Self::save_expansion_state(conn_node2, &mut expansion_state);
-                    self.pending_expansion_restore.insert(connection_id, expansion_state);
+                    self.pending_expansion_restore
+                        .insert(connection_id, expansion_state);
 
                     let was_expanded = conn_node2.is_expanded;
                     conn_node2.children.clear();
@@ -470,7 +486,6 @@ impl super::Tabular {
         node: &mut models::structs::TreeNode,
         state_map: &std::collections::HashMap<String, bool>,
     ) {
-
         // Create unique key for this node
         let node_type_str = format!("{:?}", node.node_type);
         let key = format!(
@@ -581,7 +596,6 @@ impl super::Tabular {
         connection_id: i64,
         node: &mut models::structs::TreeNode,
     ) {
-
         debug!(
             "🔍 Checking node: {:?} '{}' - expanded={}, loaded={}",
             node.node_type, node.name, node.is_expanded, node.is_loaded
@@ -803,7 +817,6 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) {
-
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
             let db = database_name.to_string();
@@ -869,7 +882,7 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) {
-        use log::{debug};
+        use log::debug;
 
         debug!(
             "🌲 Removing table {}.{} from sidebar tree",
@@ -966,5 +979,4 @@ impl super::Tabular {
             table_name
         );
     }
-
 }

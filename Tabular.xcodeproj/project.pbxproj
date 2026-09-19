@@ -293,7 +293,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 180;
+				CURRENT_PROJECT_VERSION = 181;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
@@ -303,14 +303,15 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.18.0;
+				MARKETING_VERSION = 0.18.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = 2;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "2,7";
 			};
 			name = Debug;
 		};
@@ -321,7 +322,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 180;
+				CURRENT_PROJECT_VERSION = 181;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
@@ -331,14 +332,15 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.18.0;
+				MARKETING_VERSION = 0.18.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				TARGETED_DEVICE_FAMILY = 2;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "2,7";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -352,7 +354,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 180;
+				CURRENT_PROJECT_VERSION = 181;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -363,10 +365,13 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.18.0;
+				MARKETING_VERSION = 0.18.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = "macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 7;
 			};
 			name = Debug;
 		};
@@ -379,7 +384,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 180;
+				CURRENT_PROJECT_VERSION = 181;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -390,10 +395,13 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.18.0;
+				MARKETING_VERSION = 0.18.1;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = "macosx xros xrsimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 7;
 			};
 			name = Release;
 		};

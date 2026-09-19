@@ -1,7 +1,7 @@
+use super::clear_table_selection;
+use crate::window_egui;
 use eframe::egui;
 use log::debug;
-use crate::window_egui;
-use super::clear_table_selection;
 
 pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     // Execution time of the currently displayed result (read before the mutable
@@ -23,6 +23,11 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
     } else {
         egui::Color32::from_rgb(215, 215, 220)
     };
+
+    if tabular.total_rows == 0 || tabular.query_execution_in_progress {
+        render_compact_footer_bar(tabular, ui, exec_ms, bg_color, stroke_color);
+        return;
+    }
 
     egui::Frame::new()
         .fill(bg_color)
@@ -56,14 +61,25 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                 );
 
                 ui.horizontal(|ui| {
-                    if tabular.use_server_pagination && tabular.actual_total_rows.is_some() {
-                        let actual_total = tabular.actual_total_rows.unwrap_or(0);
-                        if actual_total > 0 {
+                    if tabular.use_server_pagination && !tabular.current_base_query.is_empty() {
+                        let rows_on_page = tabular.current_table_data.len();
+                        if rows_on_page > 0 {
                             let start_row = tabular.current_page * tabular.page_size + 1;
-                            let end_row = ((tabular.current_page + 1) * tabular.page_size).min(actual_total);
-                            ui.label(format!("Showing rows {}-{}", start_row, end_row));
+                            let end_row = start_row + rows_on_page - 1;
+                            match tabular.actual_total_rows {
+                                Some(total) => ui.label(format!("Showing rows {}-{} of {}", start_row, end_row, total)),
+                                None => ui.label(format!("Showing rows {}-{}", start_row, end_row)),
+                            };
                         } else {
                             ui.label("0 rows");
+                        }
+                        if tabular.actual_total_rows.is_none()
+                            && ui
+                                .add(crate::window_egui::style::btn_secondary("Count rows"))
+                                .on_hover_text("Run SELECT COUNT(*) for this query on the server")
+                                .clicked()
+                        {
+                            tabular.request_total_row_count();
                         }
                         ui.colored_label(crate::window_egui::style::theme_success(ui.ctx()), "📡 Server pagination");
                     } else {
@@ -76,7 +92,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     // Execution time indicator
                     if let Some(ms) = exec_ms {
                         ui.separator();
-                        crate::window_egui::style::render_execution_pill(ui, ms as u128, tabular.total_rows);
+                        crate::window_egui::style::render_execution_pill(ui, ms, tabular.total_rows);
                     }
 
                     // Grid Summary Bar (Sum, Avg, Count, Min, Max for selected cells)
@@ -135,7 +151,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                     // Navigation buttons
                     let has_data = if tabular.use_server_pagination {
-                        tabular.actual_total_rows.unwrap_or(0) > 0
+                        !tabular.current_table_data.is_empty() || tabular.current_page > 0
                     } else {
                         tabular.total_rows > 0
                     };
@@ -147,30 +163,35 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
 
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary(&format!("{} First", egui_icons::icons::ICON_FIRST_PAGE.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("{} First", egui_icons::icons::ICON_FIRST_PAGE.codepoint)),
                     )
                     .clicked()
                     .then(|| go_to_page(tabular, 0));
                     ui.add_enabled(
                         has_data && tabular.current_page > 0,
-                        crate::window_egui::style::btn_secondary(&format!("{} Prev", egui_icons::icons::ICON_CHEVRON_LEFT.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("{} Prev", egui_icons::icons::ICON_CHEVRON_LEFT.codepoint)),
                     )
                     .clicked()
                     .then(|| previous_page(tabular));
-                    ui.label(format!(
-                        "Page {} of {}",
-                        tabular.current_page + 1,
-                        total_pages.max(1)
-                    ));
+                    let total_unknown = tabular.use_server_pagination && tabular.actual_total_rows.is_none();
+                    if total_unknown {
+                        ui.label(format!("Page {}", tabular.current_page + 1));
+                    } else {
+                        ui.label(format!(
+                            "Page {} of {}",
+                            tabular.current_page + 1,
+                            total_pages.max(1)
+                        ));
+                    }
                     ui.add_enabled(
                         has_data && tabular.current_page < total_pages.saturating_sub(1),
-                        crate::window_egui::style::btn_secondary(&format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
+                        crate::window_egui::style::btn_secondary(format!("Next {}", egui_icons::icons::ICON_CHEVRON_RIGHT.codepoint)),
                     )
                     .clicked()
                     .then(|| next_page(tabular));
                     ui.add_enabled(
-                        has_data && total_pages > 1,
-                        crate::window_egui::style::btn_secondary(&format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
+                        has_data && total_pages > 1 && !total_unknown,
+                        crate::window_egui::style::btn_secondary(format!("Last {}", egui_icons::icons::ICON_LAST_PAGE.codepoint)),
                     )
                     .clicked()
                     .then(|| {
@@ -202,6 +223,70 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     // Embed 3 view buttons directly into the right side of the datatable footer bar
                     render_footer_view_buttons(tabular, ui);
                 });
+            });
+        });
+}
+
+fn render_compact_footer_bar(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut egui::Ui,
+    exec_ms: Option<u128>,
+    bg_color: egui::Color32,
+    stroke_color: egui::Color32,
+) {
+    egui::Frame::new()
+        .fill(bg_color)
+        .stroke(egui::Stroke::new(1.0, stroke_color))
+        .inner_margin(egui::Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+
+                if tabular.query_execution_in_progress {
+                    ui.add(egui::Spinner::new().size(13.0));
+                    ui.label(egui::RichText::new("Executing query...").size(12.0).weak());
+                } else if tabular.query_message_is_error {
+                    ui.label(
+                        egui::RichText::new("❌ Query failed")
+                            .size(12.0)
+                            .color(crate::window_egui::style::theme_danger(ui.ctx())),
+                    );
+                } else {
+                    let display_ms = exec_ms.or(if tabular.last_execution_duration_ms > 0 {
+                        Some(tabular.last_execution_duration_ms)
+                    } else {
+                        None
+                    });
+                    if let Some(ms) = display_ms {
+                        crate::window_egui::style::render_execution_pill(ui, ms, 0);
+                    }
+
+                    if let Some(affected) = tabular.last_affected_rows {
+                        ui.label(
+                            egui::RichText::new(format!("{} row(s) affected", affected))
+                                .size(11.5)
+                                .color(crate::window_egui::style::theme_success(ui.ctx())),
+                        );
+                    } else if tabular.last_statement_type.is_select() {
+                        ui.label(egui::RichText::new("0 rows returned").size(11.5).weak());
+                    }
+
+                    if !tabular.current_table_headers.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "({} column{})",
+                                tabular.current_table_headers.len(),
+                                if tabular.current_table_headers.len() == 1 { "" } else { "s" }
+                            ))
+                            .size(11.0)
+                            .weak(),
+                        );
+                    }
+                }
+
+                // View buttons on the right
+                render_footer_view_buttons(tabular, ui);
             });
         });
 }
@@ -243,7 +328,11 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             // Show Details (Lint Issue) Button
             if has_lint {
                 let count = tabular.lint_messages.len();
-                let lint_text_label = format!("{} Details ({})", egui_icons::icons::ICON_WARNING.codepoint, count);
+                let lint_text_label = format!(
+                    "{} Details ({})",
+                    egui_icons::icons::ICON_WARNING.codepoint,
+                    count
+                );
                 let is_lint_open = tabular.show_lint_panel;
 
                 let lint_bg = if is_lint_open {
@@ -296,10 +385,13 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let msg_btn = egui::Button::new(
-                    egui::RichText::new(format!("{} Messages", egui_icons::icons::ICON_CHAT.codepoint))
-                        .small()
-                        .strong()
-                        .color(messages_text_color),
+                    egui::RichText::new(format!(
+                        "{} Messages",
+                        egui_icons::icons::ICON_CHAT.codepoint
+                    ))
+                    .small()
+                    .strong()
+                    .color(messages_text_color),
                 )
                 .fill(messages_bg)
                 .corner_radius(egui::CornerRadius::same(4u8))
@@ -312,7 +404,8 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
             }
 
             // Data Button
-            let is_data = tabular.table_bottom_view == crate::models::structs::TableBottomView::Data
+            let is_data = tabular.table_bottom_view
+                == crate::models::structs::TableBottomView::Data
                 && !tabular.show_message_panel
                 && !tabular.show_lint_panel;
             let data_bg = if is_data {
@@ -351,7 +444,8 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 .and_then(|t| t.explain_plan_json.as_ref())
                 .is_some();
             if has_explain {
-                let is_explain = tabular.table_bottom_view == crate::models::structs::TableBottomView::Explain
+                let is_explain = tabular.table_bottom_view
+                    == crate::models::structs::TableBottomView::Explain
                     && !tabular.show_message_panel
                     && !tabular.show_lint_panel;
                 let explain_bg = if is_explain {
@@ -368,10 +462,13 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 };
 
                 let explain_btn = egui::Button::new(
-                    egui::RichText::new(format!("{} Explain", egui_icons::icons::ICON_INSIGHTS.codepoint))
-                        .small()
-                        .strong()
-                        .color(explain_text_color),
+                    egui::RichText::new(format!(
+                        "{} Explain",
+                        egui_icons::icons::ICON_INSIGHTS.codepoint
+                    ))
+                    .small()
+                    .strong()
+                    .color(explain_text_color),
                 )
                 .fill(explain_bg)
                 .corner_radius(egui::CornerRadius::same(4u8))
@@ -525,7 +622,7 @@ pub(crate) fn go_to_page(tabular: &mut window_egui::Tabular, page: usize) {
     if tabular.use_server_pagination && has_base_query {
         // Server-side pagination
         let total_pages = get_total_pages_server(tabular);
-        if page < total_pages {
+        if page < total_pages || tabular.actual_total_rows.is_none() {
             tabular.current_page = page;
             tabular.execute_paginated_query();
             clear_table_selection(tabular);
@@ -551,7 +648,10 @@ pub(crate) fn get_total_pages_server(tabular: &mut window_egui::Tabular) -> usiz
     if let Some(actual_total) = tabular.actual_total_rows {
         actual_total.div_ceil(ps) // Ceiling division
     } else {
-        1
+        // Total belum diketahui: halaman berikutnya dianggap ada jika halaman
+        // saat ini terisi penuh.
+        let page_is_full = tabular.current_table_data.len() >= ps;
+        tabular.current_page + 1 + usize::from(page_is_full)
     }
 }
 
@@ -569,4 +669,3 @@ pub(crate) fn get_total_pages(tabular: &window_egui::Tabular) -> usize {
         tabular.total_rows.div_ceil(tabular.page_size)
     }
 }
-

@@ -28,8 +28,14 @@ pub async fn fetch_data(connection_id: i64, pool: &SqlitePool, cache_pool: &Sqli
                     indexes: Vec::new(),
                 };
 
-                let col_query = format!("PRAGMA table_info(\"{}\")", table_name.replace('\"', "\"\""));
-                if let Ok(col_rows) = sqlx::query(sqlx::AssertSqlSafe(col_query.as_str())).fetch_all(pool).await {
+                let col_query = format!(
+                    "PRAGMA table_info(\"{}\")",
+                    table_name.replace('\"', "\"\"")
+                );
+                if let Ok(col_rows) = sqlx::query(sqlx::AssertSqlSafe(col_query.as_str()))
+                    .fetch_all(pool)
+                    .await
+                {
                     for (idx, col_row) in col_rows.into_iter().enumerate() {
                         if let (Ok(col_name), Ok(col_type)) = (
                             col_row.try_get::<String, _>("name"),
@@ -259,17 +265,20 @@ pub(crate) async fn fetch_sqlite_foreign_keys(
     let mut keys = Vec::new();
     for table in tables {
         let pragma = format!("PRAGMA foreign_key_list('{}')", table.replace('\'', "''"));
-        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str()))
+            .fetch_all(pool)
+            .await
+        {
             for row in rows {
                 let referenced_table: String = row.try_get("table").unwrap_or_default();
                 let from_col: String = row.try_get("from").unwrap_or_default();
                 let to_col: String = row.try_get("to").unwrap_or_default();
                 let id: i64 = row.try_get("id").unwrap_or(0);
                 keys.push(models::structs::ForeignKey {
-                    constraint_name:        format!("fk_{}_{}", table, id),
-                    table_name:             table.clone(),
-                    column_name:            from_col,
-                    referenced_table_name:  referenced_table,
+                    constraint_name: format!("fk_{}_{}", table, id),
+                    table_name: table.clone(),
+                    column_name: from_col,
+                    referenced_table_name: referenced_table,
                     referenced_column_name: to_col,
                 });
             }
@@ -278,10 +287,10 @@ pub(crate) async fn fetch_sqlite_foreign_keys(
     Ok(keys)
 }
 
-/// Fetch all columns for every user table: table_name → [col1, col2, …]
+/// Fetch all columns for every user table: table_name → [kolom + tipe/PK/nullable]
 pub(crate) async fn fetch_sqlite_columns(
     pool: &SqlitePool,
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+) -> Result<std::collections::HashMap<String, Vec<models::structs::DiagramColumn>>, sqlx::Error> {
     let tables: Vec<String> = sqlx::query_as::<_, (String,)>(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )
@@ -291,13 +300,26 @@ pub(crate) async fn fetch_sqlite_columns(
     .map(|(n,)| n)
     .collect();
 
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<models::structs::DiagramColumn>> =
+        std::collections::HashMap::new();
     for table in tables {
         let pragma = format!("PRAGMA table_info('{}')", table.replace('\'', "''"));
-        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str())).fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query(sqlx::AssertSqlSafe(pragma.as_str()))
+            .fetch_all(pool)
+            .await
+        {
             for row in rows {
-                let col: String = row.try_get("name").unwrap_or_default();
-                map.entry(table.clone()).or_default().push(col);
+                // `pk` bernilai posisi kolom di primary key (0 = bukan PK).
+                let pk: i64 = row.try_get("pk").unwrap_or(0);
+                let notnull: i64 = row.try_get("notnull").unwrap_or(0);
+                map.entry(table.clone())
+                    .or_default()
+                    .push(models::structs::DiagramColumn {
+                        name: row.try_get("name").unwrap_or_default(),
+                        type_name: row.try_get("type").unwrap_or_default(),
+                        is_pk: pk > 0,
+                        nullable: notnull == 0 && pk == 0,
+                    });
             }
         }
     }
@@ -318,29 +340,7 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
 
        match pool {
               models::enums::DatabasePool::SQLite(sqlite_pool) => {
-              let query = match table_type {
-                     "table" => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                     "view" => "SELECT name FROM sqlite_master WHERE type='view'",
-                     _ => {
-                     debug!("Unsupported table type for SQLite: {}", table_type);
-                     return None;
-                     }
-              };
-
-              let result = sqlx::query_as::<_, (String,)>(query)
-                     .fetch_all(sqlite_pool.as_ref())
-                     .await;
-
-              match result {
-                     Ok(rows) => {
-                     let items: Vec<String> = rows.into_iter().map(|(name,)| name).collect();
-                     Some(items)
-                     },
-                     Err(e) => {
-                     debug!("Error querying SQLite {} from database: {}", table_type, e);
-                     None
-                     }
-              }
+                     list_sqlite_tables(&sqlite_pool, table_type).await
               },
               _ => {
               debug!("Wrong pool type for SQLite connection");
@@ -348,4 +348,31 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
               }
        }
        })
+}
+
+/// Daftar tabel / view SQLite lewat pool yang sudah ada. Aman dipanggil dari
+/// task async (tanpa runtime baru).
+pub(crate) async fn list_sqlite_tables(
+    sqlite_pool: &SqlitePool,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    let query = match table_type {
+        "table" => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        "view" => "SELECT name FROM sqlite_master WHERE type='view'",
+        _ => {
+            debug!("Unsupported table type for SQLite: {}", table_type);
+            return None;
+        }
+    };
+
+    match sqlx::query_as::<_, (String,)>(query)
+        .fetch_all(sqlite_pool)
+        .await
+    {
+        Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
+        Err(e) => {
+            debug!("Error querying SQLite {} from database: {}", table_type, e);
+            None
+        }
+    }
 }

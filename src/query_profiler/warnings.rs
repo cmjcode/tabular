@@ -12,10 +12,10 @@ pub enum WarningSeverity {
 impl WarningSeverity {
     pub fn badge_color(&self) -> (u8, u8, u8) {
         match self {
-            Self::Critical => (244, 67, 54),   // Bright Red
-            Self::High => (255, 152, 0),       // Orange
-            Self::Medium => (255, 193, 7),     // Amber / Yellow
-            Self::Info => (33, 150, 243),      // Blue
+            Self::Critical => (244, 67, 54), // Bright Red
+            Self::High => (255, 152, 0),     // Orange
+            Self::Medium => (255, 193, 7),   // Amber / Yellow
+            Self::Info => (33, 150, 243),    // Blue
         }
     }
 
@@ -137,7 +137,8 @@ fn inspect_node_warnings(node: &mut ExplainNode) {
     // ─── 2. Cartesian Product / Unbounded Join Warning ──────────────────────────
     let is_join = node_type_lower.contains("join") || node_type_lower.contains("nested loop");
     if is_join {
-        let has_no_condition = node.hash_cond.is_none() && node.index_cond.is_none() && node.filter.is_none();
+        let has_no_condition =
+            node.hash_cond.is_none() && node.index_cond.is_none() && node.filter.is_none();
         if has_no_condition && rows > 1000 {
             node.warnings.push(ProfilerWarning {
                 severity: WarningSeverity::Critical,
@@ -351,4 +352,3 @@ mod tests {
         assert!(mismatch_warn.is_some());
     }
 }
-

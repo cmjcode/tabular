@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::plugin_runtime::engine::{PluginExecutionContext, WasmPluginEngine};
@@ -8,7 +8,7 @@ use crate::plugin_runtime::host_api::{
     PluginExportPayload, PluginLogEntry, PluginSelectionData, PluginTableSchema,
 };
 use crate::plugin_runtime::templates::{
-    generate_duckdb_script, generate_orm_code, OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER,
+    OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER, generate_duckdb_script, generate_orm_code,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,7 +260,10 @@ impl PluginManager {
                                 name: format!("User Plugin: {}", file_stem),
                                 version: "1.0.0".to_string(),
                                 author: "Local User".to_string(),
-                                description: format!("Custom WebAssembly plugin loaded from {:?}", path),
+                                description: format!(
+                                    "Custom WebAssembly plugin loaded from {:?}",
+                                    path
+                                ),
                                 category: PluginCategory::Custom,
                                 icon: egui_icons::icons::MDI_FILE_CODE.codepoint.to_string(),
                                 is_builtin: false,
@@ -277,7 +280,10 @@ impl PluginManager {
                                     name: format!("WAT Plugin: {}", file_stem),
                                     version: "1.0.0".to_string(),
                                     author: "Local User".to_string(),
-                                    description: format!("Custom WebAssembly Text plugin loaded from {:?}", path),
+                                    description: format!(
+                                        "Custom WebAssembly Text plugin loaded from {:?}",
+                                        path
+                                    ),
                                     category: PluginCategory::Custom,
                                     icon: egui_icons::icons::ICON_DESCRIPTION.codepoint.to_string(),
                                     is_builtin: false,
@@ -323,8 +329,14 @@ impl PluginManager {
                 // Generate script
                 let script = generate_duckdb_script(schema, selection, parquet_output_path);
                 // Also run through Wasm sandboxed engine to verify host APIs
-                if let Some(wat) = self.plugins.get(plugin_id).and_then(|p| p.wat_content.as_deref()) {
-                    let _ = self.engine.execute(wat.as_bytes(), "tabular_main", ctx.clone());
+                if let Some(wat) = self
+                    .plugins
+                    .get(plugin_id)
+                    .and_then(|p| p.wat_content.as_deref())
+                {
+                    let _ = self
+                        .engine
+                        .execute(wat.as_bytes(), "tabular_main", ctx.clone());
                 }
 
                 ctx.result_output = Some(script.clone());
@@ -432,7 +444,10 @@ impl PluginManager {
             return Ok(ctx);
         }
 
-        Err(format!("Plugin '{}' not found or has no executable bytecode", plugin_id))
+        Err(format!(
+            "Plugin '{}' not found or has no executable bytecode",
+            plugin_id
+        ))
     }
 
     /// Execute raw WAT or WASM bytecode supplied by user

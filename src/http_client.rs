@@ -29,8 +29,18 @@ pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
     );
 
     let path = dir.join(format!("{}.json", connection_id));
-    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(path, json);
+    let result = serde_json::to_string_pretty(&persisted)
+        .map_err(|e| e.to_string())
+        .and_then(|json| {
+            crate::directory::write_file_atomically(&path, json.as_bytes())
+                .map_err(|e| e.to_string())
+        });
+    if let Err(e) = result {
+        log::error!(
+            "Failed to save HTTP request state to {}: {}",
+            path.display(),
+            e
+        );
     }
 }
 
@@ -187,13 +197,12 @@ fn render_url_bar(
         let total_right_w = send_save_code_w + send_save_code_w + send_save_code_w;
         let total_spacing = ui.spacing().item_spacing.x * 4.0;
         let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
-        let url_resp = ui.add_sized(
-            [url_w, bar_h],
+        let url_resp = crate::window_egui::style::render_text_field(
+            ui,
             egui::TextEdit::singleline(&mut state.url)
-                .hint_text("https://api.example.com/endpoint")
-                .desired_width(url_w)
-                .margin(egui::Margin::symmetric(8, 4))
-                .vertical_align(egui::Align::Center),
+                .hint_text("https://api.example.com/endpoint"),
+            url_w,
+            None,
         );
 
         // Pasting a full curl command directly into the URL field auto-converts
@@ -216,7 +225,10 @@ fn render_url_bar(
 
         // SEND button — identical width, height, and corner radius as Save and Code
         let send_label = if state.is_loading {
-            format!("{}  Sending…", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint)
+            format!(
+                "{}  Sending…",
+                egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint
+            )
         } else {
             format!("{}  Send", egui_icons::icons::ICON_PLAY_ARROW.codepoint)
         };
@@ -323,80 +335,95 @@ fn render_save_dialog(
         .collection_panel
         .active_workspace_id
         .as_ref()
-        .map_or(false, |id| state.workspaces.iter().any(|w| &w.id == id));
+        .is_some_and(|id| state.workspaces.iter().any(|w| &w.id == id));
     if !active_ws_valid {
         if let Some(first) = state.workspaces.first() {
             state.collection_panel.active_workspace_id = Some(first.id.clone());
         }
     }
 
-    egui::Window::new("💾 Save Request to Collection")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_save_request_backdrop",
+        state.show_save_dialog,
+    );
+
+    egui::Window::new("Save Request to Collection")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(380.0)
         .show(ui.ctx(), |ui| {
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Request Name:").strong());
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.save_dialog_name)
-                        .hint_text("e.g. Get User Profile")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Save Request to Collection",
+                &mut close,
+            );
+            ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Workspace:");
-                    if state.workspaces.is_empty() {
-                        ui.label(egui::RichText::new("Default Collection").weak());
-                    } else {
-                        let current_ws = state
-                            .collection_panel
-                            .active_workspace_id
-                            .clone()
-                            .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
-                            .unwrap_or_else(|| "default".to_string());
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Request Name:").strong());
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.save_dialog_name)
+                            .hint_text("e.g. Get User Profile"),
+                        f32::INFINITY,
+                        None,
+                    );
+                    ui.add_space(8.0);
 
-                        let selected_name = state
-                            .workspaces
-                            .iter()
-                            .find(|w| w.id == current_ws)
-                            .map(|w| w.name.as_str())
-                            .unwrap_or("Collection");
+                    ui.horizontal(|ui| {
+                        ui.label("Workspace:");
+                        if state.workspaces.is_empty() {
+                            ui.label(egui::RichText::new("Default Collection").weak());
+                        } else {
+                            let current_ws = state
+                                .collection_panel
+                                .active_workspace_id
+                                .clone()
+                                .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
+                                .unwrap_or_else(|| "default".to_string());
 
-                        egui::ComboBox::from_id_salt("save_dialog_ws_combo")
-                            .selected_text(selected_name)
-                            .show_ui(ui, |ui| {
-                                for ws in &state.workspaces {
-                                    ui.selectable_value(
-                                        &mut state.collection_panel.active_workspace_id,
-                                        Some(ws.id.clone()),
-                                        &ws.name,
-                                    );
-                                }
-                            });
-                    }
-                });
+                            let selected_name = state
+                                .workspaces
+                                .iter()
+                                .find(|w| w.id == current_ws)
+                                .map(|w| w.name.as_str())
+                                .unwrap_or("Collection");
 
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let save_btn = egui::Button::new(
-                            egui::RichText::new("Save")
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(save_btn).clicked() {
-                            save = true;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
+                            egui::ComboBox::from_id_salt("save_dialog_ws_combo")
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for ws in &state.workspaces {
+                                        ui.selectable_value(
+                                            &mut state.collection_panel.active_workspace_id,
+                                            Some(ws.id.clone()),
+                                            &ws.name,
+                                        );
+                                    }
+                                });
                         }
                     });
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save_btn = egui::Button::new(
+                        egui::RichText::new("Save")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(save_btn).clicked() {
+                        save = true;
+                        close = true;
+                    }
                 });
             });
         });
@@ -456,7 +483,9 @@ fn render_save_dialog(
             };
             workspaces.push(new_ws);
         }
-        crate::http_collection::save_workspaces(&workspaces);
+        if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+            toasts.error(e);
+        }
         state.workspaces = workspaces;
         state.saved_request_id = Some(new_req.id.clone());
         state.saved_workspace_id = Some(ws_id.clone());
@@ -468,7 +497,7 @@ fn render_save_dialog(
             save_http_state(conn_id, state);
         }
 
-        toasts.success(format!("Request '{}' berhasil disimpan ✓", req_name));
+        toasts.success(format!("Request '{}' saved ✓", req_name));
     }
 
     if close {
@@ -492,69 +521,55 @@ fn render_code_dialog(
     let mut close_requested = false;
     let mut copy_clicked = false;
 
-    egui::Window::new("👨‍💻 Copy as Code")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_code_dialog_backdrop",
+        state.show_code_dialog,
+    );
+
+    egui::Window::new("Copy as Code")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(true)
-        .default_size(egui::vec2(560.0, 440.0))
+        .default_size(egui::vec2(580.0, 460.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            // Generated once per frame, up front, so both the footer (Copy button)
-            // and the central content (code preview) can use it without any
-            // manual `available_height()` arithmetic — that pattern is what caused
-            // the dialog to grow every frame (self-referential sizing feedback
-            // loop) and the Beautify button to render in a broken spot. Panels
-            // reserve their own space via egui's normal layout pass instead.
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Copy as Code",
+                &mut close_requested,
+            );
+            ui.add_space(8.0);
+
             let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
 
-            egui::Panel::bottom("http_code_dialog_footer").show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let copy_label = format!("{} Copy to Clipboard", egui_icons::icons::ICON_CONTENT_COPY.codepoint);
-                        let copy_btn = egui::Button::new(
-                            egui::RichText::new(copy_label)
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(copy_btn).clicked() {
-                            ui.ctx().copy_text(code.clone());
-                            copy_clicked = true;
-                        }
-                        if ui.button("Close").clicked() {
-                            close_requested = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-            });
-
-            egui::CentralPanel::default().show(ui, |ui| {
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for lang in CodeLang::all() {
                         let label = lang.label();
                         ui.selectable_value(&mut state.code_dialog_lang, lang, label);
                     }
                 });
+            });
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
+            ui.add_space(8.0);
 
-                let dark = ui.visuals().dark_mode;
-                let lang_for_highlight = state.code_dialog_lang.clone();
-                let mut layouter =
-                    move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let s = buf.as_str();
-                        let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                        let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
+            let dark = ui.visuals().dark_mode;
+            let lang_for_highlight = state.code_dialog_lang.clone();
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
 
+            let avail_h = (ui.available_height() - 44.0).max(180.0);
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 egui::ScrollArea::both()
                     .id_salt("http_code_preview_scroll")
+                    .max_height(avail_h)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.add(
@@ -564,6 +579,27 @@ fn render_code_dialog(
                                 .layouter(&mut layouter),
                         );
                     });
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let copy_label = format!(
+                        "{} Copy to Clipboard",
+                        egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                    );
+                    let copy_btn = egui::Button::new(
+                        egui::RichText::new(copy_label)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(copy_btn).clicked() {
+                        ui.ctx().copy_text(code.clone());
+                        copy_clicked = true;
+                    }
+                });
             });
         });
 
@@ -582,6 +618,7 @@ fn render_code_dialog(
 /// - Else if associated with an HTTP connection (`connection_id`), saves connection state to disk.
 /// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
 ///   (Also updates HTTP connection state draft if `connection_id` is present).
+///
 /// Returns `true` if workspace collection or connection state was modified.
 pub fn save_or_update_http_tab(
     connection_id: Option<i64>,
@@ -645,7 +682,9 @@ pub fn save_or_update_http_tab(
         }
 
         if updated {
-            crate::http_collection::save_workspaces(&workspaces);
+            if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+                toasts.error(e);
+            }
             state.workspaces = workspaces;
             if let Some(conn_id) = connection_id {
                 save_http_state(conn_id, state);
@@ -655,7 +694,7 @@ pub fn save_or_update_http_tab(
             } else {
                 state.save_dialog_name.trim()
             };
-            toasts.success(format!("Tersimpan '{}' ✓", display_name));
+            toasts.success(format!("Saved '{}' ✓", display_name));
             true
         } else {
             // Request missing from workspaces, fallback to save dialog
@@ -675,7 +714,7 @@ pub fn save_or_update_http_tab(
         }
     } else if let Some(conn_id) = connection_id {
         save_http_state(conn_id, state);
-        toasts.success("HTTP connection state disimpan ✓");
+        toasts.success("HTTP connection state saved ✓");
         true
     } else {
         // Unsaved request: open save dialog so user can name it and choose collection
@@ -953,26 +992,23 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
                 ui.checkbox(enabled, "")
             });
 
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(key)
-                    .desired_width(field_w)
-                    .hint_text("key")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
+            crate::window_egui::style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(key).hint_text("key"),
+                field_w,
+                None,
             );
 
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(value)
-                    .desired_width(field_w)
-                    .hint_text("value")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
+            crate::window_egui::style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(value).hint_text("value"),
+                field_w,
+                None,
             );
 
             let del_btn = egui::Button::new(
-                egui_icons::icons::ICON_CLOSE.rich_text()
+                egui_icons::icons::ICON_CLOSE
+                    .rich_text()
                     .size(if metrics.is_touch { 14.0 } else { 11.0 }),
             )
             .corner_radius(egui::CornerRadius::same(5));
@@ -1010,12 +1046,6 @@ fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id
 // ─── Auth panel ─────────────────────────────────────────────────────────────
 
 fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
-        ui.ctx(),
-        crate::config::UiModePreference::Auto,
-    );
-    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
-
     // Auth type selector
     ui.horizontal_wrapped(|ui| {
         ui.label("Type:");
@@ -1052,14 +1082,13 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
         }
         HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
             ui.label("Token:");
-            ui.add_sized(
-                [ui.available_width(), row_h],
+            crate::window_egui::style::render_text_field(
+                ui,
                 egui::TextEdit::singleline(&mut state.bearer_token)
                     .hint_text("Bearer token or JWT string")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center)
                     .password(true),
+                f32::INFINITY,
+                None,
             );
         }
         HttpAuthType::BasicAuth => {
@@ -1068,25 +1097,22 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Username:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.basic_user)
-                            .hint_text("username")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.basic_user).hint_text("username"),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 
                     ui.label("Password:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.basic_pass)
                             .hint_text("password")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
                             .password(true),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
                 });
@@ -1097,25 +1123,22 @@ fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Key Name:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.api_key_name)
-                            .hint_text("X-API-Key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.api_key_name).hint_text("X-API-Key"),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 
                     ui.label("Key Value:");
-                    ui.add_sized(
-                        [260.0, row_h],
+                    crate::window_egui::style::render_text_field(
+                        ui,
                         egui::TextEdit::singleline(&mut state.api_key_value)
                             .hint_text("your-api-key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
                             .password(true),
+                        260.0,
+                        None,
                     );
                     ui.end_row();
 
@@ -1671,7 +1694,11 @@ fn xml_tag_end(input: &str) -> usize {
 /// JSON syntax highlighter.
 /// Colors: cyan = keys, green = string values, orange = numbers,
 ///         purple = true/false/null, gray = punctuation.
-fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_json(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
@@ -2135,7 +2162,7 @@ fn is_graphql_keyword(word: &str) -> bool {
 /// Colors: green = strings, muted-green = comments, orange = numbers,
 ///         purple = keywords / curl flags, yellow = Capitalized identifiers,
 ///         cyan = $variables (PHP), gray = punctuation.
-fn highlight_code(
+pub(crate) fn highlight_code(
     text: &str,
     lang: &CodeLang,
     dark: bool,

@@ -170,6 +170,7 @@ pub enum BackgroundResult {
         database_name: String,
         table_name: String,
         columns: Option<Vec<(String, String)>>,
+        columns_detail: Option<Vec<crate::models::structs::ColumnStructInfo>>,
         indexes: Option<Vec<crate::models::structs::IndexStructInfo>>,
         partitions: Option<Vec<crate::models::structs::PartitionStructInfo>>,
     },
@@ -192,7 +193,9 @@ pub enum BackgroundResult {
         connection_id: i64,
     },
     // Result from SQLite folder/file picker for new connection dialog
-    SqlitePathPicked { path: String },
+    SqlitePathPicked {
+        path: String,
+    },
     // Result from background database fetch
     DatabasesFetched {
         connection_id: i64,
@@ -303,6 +306,11 @@ pub enum AutocompleteKind {
     Snippet,
     Parameter,
     Function,
+    /// Kondisi join siap pakai (`o.user_id = u.id`).
+    Join,
+    /// Alias tabel / alias SELECT.
+    Alias,
+    Operator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

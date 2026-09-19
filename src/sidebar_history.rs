@@ -80,14 +80,21 @@ pub(crate) fn load_query_history(tabular: &mut window_egui::Tabular) {
 
         if let Some(items) = result {
             tabular.history_items = items;
-            crate::log_startup_step(&format!("sidebar_history: loaded {} history items, refreshing tree", tabular.history_items.len()));
+            crate::log_startup_step(&format!(
+                "sidebar_history: loaded {} history items, refreshing tree",
+                tabular.history_items.len()
+            ));
             refresh_history_tree(tabular);
             crate::log_startup_step("sidebar_history: history tree refreshed");
         } else if let Some(ref pool) = tabular.db_pool {
-            crate::log_startup_step("sidebar_history: query_history failed, checking corruption recovery");
+            crate::log_startup_step(
+                "sidebar_history: query_history failed, checking corruption recovery",
+            );
             // Test pool health; if corrupt, reset database file while preserving RAM
             let check = rt.block_on(async {
-                sqlx::query("SELECT 1 FROM query_history LIMIT 1").execute(pool.as_ref()).await
+                sqlx::query("SELECT 1 FROM query_history LIMIT 1")
+                    .execute(pool.as_ref())
+                    .await
             });
             if let Err(e) = check {
                 sidebar_database::check_and_recover_sqlite_corruption(tabular, &e);
@@ -119,9 +126,11 @@ pub(crate) fn save_query_to_history(
     let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // --- RAM upsert: update timestamp + bubble to top if duplicate ---
-    if let Some(pos) = tabular.history_items.iter().position(|h| {
-        h.query == trimmed && h.connection_id == connection_id
-    }) {
+    if let Some(pos) = tabular
+        .history_items
+        .iter()
+        .position(|h| h.query == trimmed && h.connection_id == connection_id)
+    {
         // Update existing entry's timestamp and move it to the front
         tabular.history_items[pos].executed_at = now_str.clone();
         let item = tabular.history_items.remove(pos);
@@ -218,7 +227,6 @@ pub(crate) fn save_query_to_history(
     }
 }
 
-
 pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
     tabular.history_tree.clear();
 
@@ -256,7 +264,10 @@ pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
             hist_node.connection_id = Some(item.connection_id);
             // Store connection info, timestamp, and original query in file_path field
             // Format: "connection_name||executed_at||original_query"
-            hist_node.file_path = Some(format!("{}||{}||{}", item.connection_name, item.executed_at, item.query));
+            hist_node.file_path = Some(format!(
+                "{}||{}||{}",
+                item.connection_name, item.executed_at, item.query
+            ));
             date_node.children.push(hist_node);
         }
 
@@ -277,14 +288,14 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
     }
 
     tabular.filtered_history_tree.clear();
-    let search_lower = search_text.to_lowercase();
+    let query = crate::search_match::SearchQuery::new(search_text);
 
     for date_node in &tabular.history_tree {
         let mut filtered_date_node = date_node.clone();
         filtered_date_node.children.clear();
 
         // If the date folder itself matches the search text, keep all items in this folder
-        let folder_matches = date_node.name.to_lowercase().contains(&search_lower);
+        let folder_matches = query.matches(&date_node.name);
 
         if folder_matches {
             filtered_date_node.children = date_node.children.clone();
@@ -293,7 +304,6 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
         } else {
             for item_node in &date_node.children {
                 // Search in query text and connection name
-                let query_text = item_node.name.to_lowercase();
                 let connection_name = item_node
                     .connection_id
                     .and_then(|id| {
@@ -301,11 +311,11 @@ pub(crate) fn filter_history_tree(tabular: &mut window_egui::Tabular) {
                             .connections
                             .iter()
                             .find(|c| c.id == Some(id))
-                            .map(|c| c.name.to_lowercase())
+                            .map(|c| c.name.clone())
                     })
                     .unwrap_or_default();
 
-                if query_text.contains(&search_lower) || connection_name.contains(&search_lower) {
+                if query.matches_any([item_node.name.as_str(), connection_name.as_str()]) {
                     filtered_date_node.children.push(item_node.clone());
                 }
             }
@@ -331,7 +341,9 @@ pub(crate) fn clear_query_history(tabular: &mut window_egui::Tabular) {
 
         if let Err(e) = result {
             error!("Failed to clear query history: {}", e);
-            tabular.toasts.error("Failed to clear query history".to_string());
+            tabular
+                .toasts
+                .error("Failed to clear query history".to_string());
             return;
         }
     }
@@ -356,7 +368,10 @@ mod tests {
         let mut item1 = TreeNode::new("SELECT * FROM users;".to_string(), NodeType::QueryHistItem);
         item1.connection_id = Some(1);
 
-        let mut item2 = TreeNode::new("UPDATE orders SET done = 1;".to_string(), NodeType::QueryHistItem);
+        let mut item2 = TreeNode::new(
+            "UPDATE orders SET done = 1;".to_string(),
+            NodeType::QueryHistItem,
+        );
         item2.connection_id = Some(1);
 
         let mut today_folder = TreeNode::new("Today".to_string(), NodeType::HistoryDateFolder);
@@ -413,4 +428,3 @@ mod tests {
         );
     }
 }
-

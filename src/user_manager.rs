@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use crate::models::enums::{DatabasePool, DatabaseType};
 use eframe::egui;
 use sqlx::Row;
-use crate::models::enums::{DatabasePool, DatabaseType};
+use std::collections::{HashMap, HashSet};
 
 /// Sub-tabs in the User & Role Manager view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -198,21 +198,34 @@ impl UserManagerState {
         };
 
         for entry in &mut self.object_grants {
-            let priv_entry = self.all_privileges_map
-                .get(&(target_key.clone(), entry.schema.clone(), entry.object_name.clone()))
+            let priv_entry = self
+                .all_privileges_map
+                .get(&(
+                    target_key.clone(),
+                    entry.schema.clone(),
+                    entry.object_name.clone(),
+                ))
                 .or_else(|| {
                     if is_mysql {
-                        self.all_privileges_map.get(&(format!("'{}'@'%'", grantee), entry.schema.clone(), entry.object_name.clone()))
+                        self.all_privileges_map.get(&(
+                            format!("'{}'@'%'", grantee),
+                            entry.schema.clone(),
+                            entry.object_name.clone(),
+                        ))
                     } else {
                         None
                     }
                 })
                 .or_else(|| {
-                    self.all_privileges_map.iter().find(|((g, s, t), _)| {
-                        (g.eq_ignore_ascii_case(&target_key) || (is_mysql && g.starts_with(&format!("'{}'@'", grantee))))
-                            && s.eq_ignore_ascii_case(&entry.schema)
-                            && t.eq_ignore_ascii_case(&entry.object_name)
-                    }).map(|(_, v)| v)
+                    self.all_privileges_map
+                        .iter()
+                        .find(|((g, s, t), _)| {
+                            (g.eq_ignore_ascii_case(&target_key)
+                                || (is_mysql && g.starts_with(&format!("'{}'@'", grantee))))
+                                && s.eq_ignore_ascii_case(&entry.schema)
+                                && t.eq_ignore_ascii_case(&entry.object_name)
+                        })
+                        .map(|(_, v)| v)
                 });
 
             let (privs, grant_opt) = match priv_entry {
@@ -225,7 +238,8 @@ impl UserManagerState {
             entry.has_update = privs.contains("UPDATE");
             entry.has_delete = privs.contains("DELETE");
             entry.has_execute = privs.contains("EXECUTE");
-            entry.has_all = entry.has_select && entry.has_insert && entry.has_update && entry.has_delete;
+            entry.has_all =
+                entry.has_select && entry.has_insert && entry.has_update && entry.has_delete;
             entry.grant_option = grant_opt;
             entry.is_modified = false;
         }
@@ -261,23 +275,34 @@ pub async fn fetch_user_manager_data(
     database_name: Option<&str>,
     schema_name: Option<&str>,
 ) -> Result<UserManagerDataPayload, String> {
-    log::debug!("[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}", db_type, database_name, schema_name);
+    log::debug!(
+        "[USER-MGR] fetch_user_manager_data started for db_type={:?}, database={:?}, schema={:?}",
+        db_type,
+        database_name,
+        schema_name
+    );
     let result = match (db_type, pool) {
         (DatabaseType::PostgreSQL, DatabasePool::PostgreSQL(pg_pool)) => {
             fetch_postgres_user_data(pg_pool).await
         }
-        (DatabaseType::MySQL, DatabasePool::MySQL(my_pool)) => {
-            fetch_mysql_user_data(my_pool).await
-        }
+        (DatabaseType::MySQL, DatabasePool::MySQL(my_pool)) => fetch_mysql_user_data(my_pool).await,
         (DatabaseType::SQLite, DatabasePool::SQLite(sq_pool)) => {
             fetch_sqlite_user_data(sq_pool).await
         }
-        _ => Err(format!("User and Role Management is not supported for {:?}", db_type)),
+        _ => Err(format!(
+            "User and Role Management is not supported for {:?}",
+            db_type
+        )),
     };
     match &result {
         Ok(payload) => {
-            log::debug!("[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
-                payload.users.len(), payload.roles.len(), payload.object_grants.len(), payload.executed_queries.len());
+            log::debug!(
+                "[USER-MGR] fetch_user_manager_data SUCCESS: {} users, {} roles, {} object grants, {} query logs",
+                payload.users.len(),
+                payload.roles.len(),
+                payload.object_grants.len(),
+                payload.executed_queries.len()
+            );
         }
         Err(err) => {
             log::error!("[USER-MGR] fetch_user_manager_data ERROR: {}", err);
@@ -287,10 +312,7 @@ pub async fn fetch_user_manager_data(
 }
 
 /// Execute a user management DDL statement (e.g. CREATE USER, ALTER USER, DROP, GRANT)
-pub async fn execute_user_manager_command(
-    pool: &DatabasePool,
-    query: &str,
-) -> Result<(), String> {
+pub async fn execute_user_manager_command(pool: &DatabasePool, query: &str) -> Result<(), String> {
     let query_owned = query.to_string();
     match pool {
         DatabasePool::PostgreSQL(pg_pool) => {
@@ -301,9 +323,10 @@ pub async fn execute_user_manager_command(
             Ok(())
         }
         DatabasePool::MySQL(my_pool) => {
-            for stmt in query_owned.split(';') {
+            // Splitter yang paham quote: password seperti 'a;b' tidak ikut terpecah.
+            for stmt in crate::connection::split_sql_statements(&query_owned, true) {
                 let trimmed = stmt.trim();
-                if !trimmed.is_empty() {
+                if !crate::connection::sql::is_comment_only_statement(trimmed) {
                     sqlx::query(sqlx::AssertSqlSafe(trimmed))
                         .execute(&**my_pool)
                         .await
@@ -333,12 +356,20 @@ async fn query_mysql_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::mysql::MySqlRow>, String> {
-    log::debug!("[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    
+    log::debug!(
+        "[USER-MGR-MYSQL] [{}] Starting query (timeout {}s)...",
+        step_desc,
+        timeout_secs
+    );
+
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(my_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::debug!("[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!(
+                "[USER-MGR-MYSQL] [{}] SUCCESS: {} rows returned",
+                step_desc,
+                rows.len()
+            );
             Ok(rows)
         }
         Ok(Err(e)) => {
@@ -346,7 +377,11 @@ async fn query_mysql_timeout(
             Err(e.to_string())
         }
         Err(_) => {
-            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            let err = format!(
+                "Query timed out after {}s: {}",
+                timeout_secs,
+                sql.chars().take(60).collect::<String>()
+            );
             log::warn!("[USER-MGR-MYSQL] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
@@ -359,12 +394,20 @@ async fn query_pg_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::postgres::PgRow>, String> {
-    log::debug!("[USER-MGR-PG] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    
+    log::debug!(
+        "[USER-MGR-PG] [{}] Starting query (timeout {}s)...",
+        step_desc,
+        timeout_secs
+    );
+
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(pg_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::debug!("[USER-MGR-PG] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!(
+                "[USER-MGR-PG] [{}] SUCCESS: {} rows returned",
+                step_desc,
+                rows.len()
+            );
             Ok(rows)
         }
         Ok(Err(e)) => {
@@ -372,7 +415,11 @@ async fn query_pg_timeout(
             Err(e.to_string())
         }
         Err(_) => {
-            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            let err = format!(
+                "Query timed out after {}s: {}",
+                timeout_secs,
+                sql.chars().take(60).collect::<String>()
+            );
             log::warn!("[USER-MGR-PG] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
@@ -385,12 +432,20 @@ async fn query_sqlite_timeout(
     timeout_secs: u64,
     step_desc: &str,
 ) -> Result<Vec<sqlx::sqlite::SqliteRow>, String> {
-    log::debug!("[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...", step_desc, timeout_secs);
-    
+    log::debug!(
+        "[USER-MGR-SQLITE] [{}] Starting query (timeout {}s)...",
+        step_desc,
+        timeout_secs
+    );
+
     let fut = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(sq_pool);
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Ok(Ok(rows)) => {
-            log::debug!("[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned", step_desc, rows.len());
+            log::debug!(
+                "[USER-MGR-SQLITE] [{}] SUCCESS: {} rows returned",
+                step_desc,
+                rows.len()
+            );
             Ok(rows)
         }
         Ok(Err(e)) => {
@@ -398,7 +453,11 @@ async fn query_sqlite_timeout(
             Err(e.to_string())
         }
         Err(_) => {
-            let err = format!("Query timed out after {}s: {}", timeout_secs, sql.chars().take(60).collect::<String>());
+            let err = format!(
+                "Query timed out after {}s: {}",
+                timeout_secs,
+                sql.chars().take(60).collect::<String>()
+            );
             log::warn!("[USER-MGR-SQLITE] [{}] Timeout Error: {}", step_desc, err);
             Err(err)
         }
@@ -490,14 +549,21 @@ async fn fetch_postgres_user_data(
                 JOIN pg_catalog.pg_roles m ON (a.member = m.oid)
                 ORDER BY b.rolname, m.rolname;
             "#;
-            let member_res = query_pg_timeout(pg_pool, members_query, 4, "Role Members (pg_catalog.pg_auth_members)").await;
+            let member_res = query_pg_timeout(
+                pg_pool,
+                members_query,
+                4,
+                "Role Members (pg_catalog.pg_auth_members)",
+            )
+            .await;
             let mut member_to_roles: HashMap<String, Vec<String>> = HashMap::new();
             let mut role_to_members: HashMap<String, Vec<String>> = HashMap::new();
 
             match member_res {
                 Ok(member_rows) => {
                     executed_queries.push(ExecutedQueryLog {
-                        step_name: "Fetch Role Memberships (pg_catalog.pg_auth_members)".to_string(),
+                        step_name: "Fetch Role Memberships (pg_catalog.pg_auth_members)"
+                            .to_string(),
                         sql: members_query.trim().to_string(),
                         row_count: Some(member_rows.len()),
                         error: None,
@@ -506,14 +572,18 @@ async fn fetch_postgres_user_data(
                         let r_name: String = row.try_get("role_name").unwrap_or_default();
                         let m_name: String = row.try_get("member_name").unwrap_or_default();
                         if !r_name.is_empty() && !m_name.is_empty() {
-                            role_to_members.entry(r_name.clone()).or_default().push(m_name.clone());
+                            role_to_members
+                                .entry(r_name.clone())
+                                .or_default()
+                                .push(m_name.clone());
                             member_to_roles.entry(m_name).or_default().push(r_name);
                         }
                     }
                 }
                 Err(e) => {
                     executed_queries.push(ExecutedQueryLog {
-                        step_name: "Fetch Role Memberships (pg_catalog.pg_auth_members)".to_string(),
+                        step_name: "Fetch Role Memberships (pg_catalog.pg_auth_members)"
+                            .to_string(),
                         sql: members_query.trim().to_string(),
                         row_count: None,
                         error: Some(e),
@@ -530,7 +600,9 @@ async fn fetch_postgres_user_data(
                 let can_login: bool = row.try_get("can_login").unwrap_or(false);
                 let is_replication: bool = row.try_get("is_replication").unwrap_or(false);
                 let conn_limit: i32 = row.try_get("conn_limit").unwrap_or(-1);
-                let valid_until: String = row.try_get("valid_until").unwrap_or_else(|_| "Never".to_string());
+                let valid_until: String = row
+                    .try_get("valid_until")
+                    .unwrap_or_else(|_| "Never".to_string());
 
                 let member_of = member_to_roles.get(&username).cloned().unwrap_or_default();
 
@@ -554,7 +626,11 @@ async fn fetch_postgres_user_data(
                     can_create_role,
                     is_locked: false,
                     password_expired: false,
-                    valid_until: if valid_until == "Never" { None } else { Some(valid_until) },
+                    valid_until: if valid_until == "Never" {
+                        None
+                    } else {
+                        Some(valid_until)
+                    },
                     member_of,
                     attributes,
                 });
@@ -580,11 +656,18 @@ async fn fetch_postgres_user_data(
             });
 
             let pg_user_query = "SELECT usename AS username, usesuper AS is_superuser, usecreatedb AS can_create_db FROM pg_catalog.pg_user ORDER BY usename;";
-            let user_res = query_pg_timeout(pg_pool, pg_user_query, 4, "Users Fallback 1 (pg_catalog.pg_user)").await;
+            let user_res = query_pg_timeout(
+                pg_pool,
+                pg_user_query,
+                4,
+                "Users Fallback 1 (pg_catalog.pg_user)",
+            )
+            .await;
             match user_res {
                 Ok(user_rows) => {
                     executed_queries.push(ExecutedQueryLog {
-                        step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1".to_string(),
+                        step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1"
+                            .to_string(),
                         sql: pg_user_query.to_string(),
                         row_count: Some(user_rows.len()),
                         error: None,
@@ -604,20 +687,27 @@ async fn fetch_postgres_user_data(
                             password_expired: false,
                             valid_until: None,
                             member_of: Vec::new(),
-                            attributes: vec![("Source".to_string(), "pg_catalog.pg_user".to_string())],
+                            attributes: vec![(
+                                "Source".to_string(),
+                                "pg_catalog.pg_user".to_string(),
+                            )],
                         });
                     }
                 }
                 Err(err_fb1) => {
                     executed_queries.push(ExecutedQueryLog {
-                        step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1".to_string(),
+                        step_name: "Fetch PostgreSQL Users (pg_catalog.pg_user) - Fallback 1"
+                            .to_string(),
                         sql: pg_user_query.to_string(),
                         row_count: None,
                         error: Some(err_fb1),
                     });
 
-                    let cur_user_query = "SELECT current_user AS username, session_user AS session_user;";
-                    let cur_res = query_pg_timeout(pg_pool, cur_user_query, 4, "Current User Fallback 2").await;
+                    let cur_user_query =
+                        "SELECT current_user AS username, session_user AS session_user;";
+                    let cur_res =
+                        query_pg_timeout(pg_pool, cur_user_query, 4, "Current User Fallback 2")
+                            .await;
                     match cur_res {
                         Ok(rows) => {
                             executed_queries.push(ExecutedQueryLog {
@@ -627,7 +717,9 @@ async fn fetch_postgres_user_data(
                                 error: None,
                             });
                             for r in rows {
-                                let uname: String = r.try_get("username").unwrap_or_else(|_| "current_user".to_string());
+                                let uname: String = r
+                                    .try_get("username")
+                                    .unwrap_or_else(|_| "current_user".to_string());
                                 users.push(UserInfo {
                                     username: uname,
                                     host: "localhost".to_string(),
@@ -639,7 +731,10 @@ async fn fetch_postgres_user_data(
                                     password_expired: false,
                                     valid_until: None,
                                     member_of: Vec::new(),
-                                    attributes: vec![("Source".to_string(), "current_user()".to_string())],
+                                    attributes: vec![(
+                                        "Source".to_string(),
+                                        "current_user()".to_string(),
+                                    )],
                                 });
                             }
                         }
@@ -701,7 +796,8 @@ async fn fetch_postgres_user_data(
     let priv_rows = match query_pg_timeout(pg_pool, privs_query, 4, "Table Privileges").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch Table Privileges (information_schema.table_privileges)".to_string(),
+                step_name: "Fetch Table Privileges (information_schema.table_privileges)"
+                    .to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: Some(rows.len()),
                 error: None,
@@ -710,7 +806,8 @@ async fn fetch_postgres_user_data(
         }
         Err(e) => {
             executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch Table Privileges (information_schema.table_privileges)".to_string(),
+                step_name: "Fetch Table Privileges (information_schema.table_privileges)"
+                    .to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: None,
                 error: Some(e),
@@ -728,7 +825,9 @@ async fn fetch_postgres_user_data(
         let is_grantable_str = get_col_str_pg(&row, "is_grantable", 4);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
-        let entry = priv_map.entry((grantee, schema, table)).or_insert_with(|| (HashSet::new(), false));
+        let entry = priv_map
+            .entry((grantee, schema, table))
+            .or_insert_with(|| (HashSet::new(), false));
         entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             entry.1 = true;
@@ -747,12 +846,18 @@ async fn fetch_postgres_user_data(
                 super_privs.insert("DELETE".to_string());
                 super_privs.insert("EXECUTE".to_string());
                 super_privs.insert("ALL".to_string());
-                priv_map.insert((user.username.clone(), schema, table_name), (super_privs, true));
+                priv_map.insert(
+                    (user.username.clone(), schema, table_name),
+                    (super_privs, true),
+                );
             }
         }
     }
 
-    let default_grantee = users.first().map(|u| u.username.as_str()).unwrap_or("public");
+    let default_grantee = users
+        .first()
+        .map(|u| u.username.as_str())
+        .unwrap_or("public");
     let mut object_grants = Vec::new();
 
     for row in table_rows {
@@ -768,7 +873,11 @@ async fn fetch_postgres_user_data(
         }
 
         let (privs, grant_opt) = priv_map
-            .get(&(default_grantee.to_string(), schema.clone(), table_name.clone()))
+            .get(&(
+                default_grantee.to_string(),
+                schema.clone(),
+                table_name.clone(),
+            ))
             .cloned()
             .unwrap_or_default();
 
@@ -783,7 +892,11 @@ async fn fetch_postgres_user_data(
             database: db,
             schema,
             object_name: table_name,
-            object_type: if ttype.contains("VIEW") { "VIEW".to_string() } else { "TABLE".to_string() },
+            object_type: if ttype.contains("VIEW") {
+                "VIEW".to_string()
+            } else {
+                "TABLE".to_string()
+            },
             has_select,
             has_insert,
             has_update,
@@ -825,7 +938,13 @@ async fn fetch_mysql_user_data(
         ORDER BY User, Host;
     "#;
 
-    let res_1 = query_mysql_timeout(my_pool, users_query_1, 4, "Users Attempt 1 (mysql.user full)").await;
+    let res_1 = query_mysql_timeout(
+        my_pool,
+        users_query_1,
+        4,
+        "Users Attempt 1 (mysql.user full)",
+    )
+    .await;
     match res_1 {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
@@ -838,8 +957,12 @@ async fn fetch_mysql_user_data(
                 let user: String = row.try_get("User").unwrap_or_default();
                 let host: String = row.try_get("Host").unwrap_or_else(|_| "%".to_string());
                 let plugin: String = row.try_get("plugin").unwrap_or_default();
-                let locked_str: String = row.try_get("account_locked").unwrap_or_else(|_| "N".to_string());
-                let exp_str: String = row.try_get("password_expired").unwrap_or_else(|_| "N".to_string());
+                let locked_str: String = row
+                    .try_get("account_locked")
+                    .unwrap_or_else(|_| "N".to_string());
+                let exp_str: String = row
+                    .try_get("password_expired")
+                    .unwrap_or_else(|_| "N".to_string());
 
                 let is_locked = locked_str.eq_ignore_ascii_case("Y");
                 let password_expired = exp_str.eq_ignore_ascii_case("Y");
@@ -875,7 +998,13 @@ async fn fetch_mysql_user_data(
             });
 
             let users_query_2 = "SELECT DISTINCT User, Host FROM mysql.user ORDER BY User, Host;";
-            let res_2 = query_mysql_timeout(my_pool, users_query_2, 4, "Users Attempt 2 (mysql.user minimal)").await;
+            let res_2 = query_mysql_timeout(
+                my_pool,
+                users_query_2,
+                4,
+                "Users Attempt 2 (mysql.user minimal)",
+            )
+            .await;
             match res_2 {
                 Ok(rows) => {
                     executed_queries.push(ExecutedQueryLog {
@@ -911,7 +1040,13 @@ async fn fetch_mysql_user_data(
                     });
 
                     let users_query_3 = "SELECT DISTINCT GRANTEE FROM information_schema.user_privileges ORDER BY GRANTEE;";
-                    let res_3 = query_mysql_timeout(my_pool, users_query_3, 4, "Users Attempt 3 (user_privileges)").await;
+                    let res_3 = query_mysql_timeout(
+                        my_pool,
+                        users_query_3,
+                        4,
+                        "Users Attempt 3 (user_privileges)",
+                    )
+                    .await;
                     match res_3 {
                         Ok(rows) if !rows.is_empty() => {
                             executed_queries.push(ExecutedQueryLog {
@@ -924,7 +1059,7 @@ async fn fetch_mysql_user_data(
                                 let grantee: String = row.try_get("GRANTEE").unwrap_or_default();
                                 let clean = grantee.replace('\'', "");
                                 let parts: Vec<&str> = clean.split('@').collect();
-                                let user = parts.get(0).copied().unwrap_or("unknown").to_string();
+                                let user = parts.first().copied().unwrap_or("unknown").to_string();
                                 let host = parts.get(1).copied().unwrap_or("%").to_string();
                                 users.push(UserInfo {
                                     username: user.clone(),
@@ -942,21 +1077,35 @@ async fn fetch_mysql_user_data(
                             }
                         }
                         _ => {
-                            let users_query_4 = "SELECT CURRENT_USER() AS cur_user, USER() AS session_user;";
-                            let res_4 = query_mysql_timeout(my_pool, users_query_4, 4, "Users Attempt 4 (CURRENT_USER)").await;
+                            let users_query_4 =
+                                "SELECT CURRENT_USER() AS cur_user, USER() AS session_user;";
+                            let res_4 = query_mysql_timeout(
+                                my_pool,
+                                users_query_4,
+                                4,
+                                "Users Attempt 4 (CURRENT_USER)",
+                            )
+                            .await;
                             match res_4 {
                                 Ok(rows) => {
                                     executed_queries.push(ExecutedQueryLog {
-                                        step_name: "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4".to_string(),
+                                        step_name:
+                                            "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4"
+                                                .to_string(),
                                         sql: users_query_4.to_string(),
                                         row_count: Some(rows.len()),
                                         error: None,
                                     });
                                     for row in rows {
-                                        let cur: String = row.try_get("cur_user").unwrap_or_default();
+                                        let cur: String =
+                                            row.try_get("cur_user").unwrap_or_default();
                                         let clean = cur.replace('\'', "");
                                         let parts: Vec<&str> = clean.split('@').collect();
-                                        let user = parts.get(0).copied().unwrap_or("current_user").to_string();
+                                        let user = parts
+                                            .first()
+                                            .copied()
+                                            .unwrap_or("current_user")
+                                            .to_string();
                                         let host = parts.get(1).copied().unwrap_or("%").to_string();
                                         users.push(UserInfo {
                                             username: user,
@@ -969,13 +1118,18 @@ async fn fetch_mysql_user_data(
                                             password_expired: false,
                                             valid_until: None,
                                             member_of: Vec::new(),
-                                            attributes: vec![("Source".to_string(), "CURRENT_USER()".to_string())],
+                                            attributes: vec![(
+                                                "Source".to_string(),
+                                                "CURRENT_USER()".to_string(),
+                                            )],
                                         });
                                     }
                                 }
                                 Err(err_4) => {
                                     executed_queries.push(ExecutedQueryLog {
-                                        step_name: "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4".to_string(),
+                                        step_name:
+                                            "Fetch Current MySQL User (CURRENT_USER()) - Attempt 4"
+                                                .to_string(),
                                         sql: users_query_4.to_string(),
                                         row_count: None,
                                         error: Some(err_4),
@@ -1027,26 +1181,29 @@ async fn fetch_mysql_user_data(
             is_grantable 
         FROM information_schema.user_privileges;
     "#;
-    let user_priv_rows = match query_mysql_timeout(my_pool, user_privs_query, 4, "Global User Privileges").await {
-        Ok(rows) => {
-            executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)".to_string(),
-                sql: user_privs_query.trim().to_string(),
-                row_count: Some(rows.len()),
-                error: None,
-            });
-            rows
-        }
-        Err(e) => {
-            executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)".to_string(),
-                sql: user_privs_query.trim().to_string(),
-                row_count: None,
-                error: Some(e),
-            });
-            Vec::new()
-        }
-    };
+    let user_priv_rows =
+        match query_mysql_timeout(my_pool, user_privs_query, 4, "Global User Privileges").await {
+            Ok(rows) => {
+                executed_queries.push(ExecutedQueryLog {
+                    step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)"
+                        .to_string(),
+                    sql: user_privs_query.trim().to_string(),
+                    row_count: Some(rows.len()),
+                    error: None,
+                });
+                rows
+            }
+            Err(e) => {
+                executed_queries.push(ExecutedQueryLog {
+                    step_name: "Fetch MySQL Global Privileges (information_schema.user_privileges)"
+                        .to_string(),
+                    sql: user_privs_query.trim().to_string(),
+                    row_count: None,
+                    error: Some(e),
+                });
+                Vec::new()
+            }
+        };
 
     let mut global_priv_map: HashMap<String, (HashSet<String>, bool)> = HashMap::new();
     for row in user_priv_rows {
@@ -1055,14 +1212,18 @@ async fn fetch_mysql_user_data(
         let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 2);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
-        let entry = global_priv_map.entry(grantee.clone()).or_insert_with(|| (HashSet::new(), false));
+        let entry = global_priv_map
+            .entry(grantee.clone())
+            .or_insert_with(|| (HashSet::new(), false));
         entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             entry.1 = true;
         }
 
         let clean = grantee.replace('\'', "");
-        let clean_entry = global_priv_map.entry(clean).or_insert_with(|| (HashSet::new(), false));
+        let clean_entry = global_priv_map
+            .entry(clean)
+            .or_insert_with(|| (HashSet::new(), false));
         clean_entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             clean_entry.1 = true;
@@ -1079,26 +1240,31 @@ async fn fetch_mysql_user_data(
         FROM information_schema.schema_privileges 
         WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys');
     "#;
-    let schema_priv_rows = match query_mysql_timeout(my_pool, schema_privs_query, 4, "Schema Privileges").await {
-        Ok(rows) => {
-            executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Schema Privileges (information_schema.schema_privileges)".to_string(),
-                sql: schema_privs_query.trim().to_string(),
-                row_count: Some(rows.len()),
-                error: None,
-            });
-            rows
-        }
-        Err(e) => {
-            executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Schema Privileges (information_schema.schema_privileges)".to_string(),
-                sql: schema_privs_query.trim().to_string(),
-                row_count: None,
-                error: Some(e),
-            });
-            Vec::new()
-        }
-    };
+    let schema_priv_rows =
+        match query_mysql_timeout(my_pool, schema_privs_query, 4, "Schema Privileges").await {
+            Ok(rows) => {
+                executed_queries.push(ExecutedQueryLog {
+                    step_name:
+                        "Fetch MySQL Schema Privileges (information_schema.schema_privileges)"
+                            .to_string(),
+                    sql: schema_privs_query.trim().to_string(),
+                    row_count: Some(rows.len()),
+                    error: None,
+                });
+                rows
+            }
+            Err(e) => {
+                executed_queries.push(ExecutedQueryLog {
+                    step_name:
+                        "Fetch MySQL Schema Privileges (information_schema.schema_privileges)"
+                            .to_string(),
+                    sql: schema_privs_query.trim().to_string(),
+                    row_count: None,
+                    error: Some(e),
+                });
+                Vec::new()
+            }
+        };
 
     let mut schema_priv_map: HashMap<(String, String), (HashSet<String>, bool)> = HashMap::new();
     for row in schema_priv_rows {
@@ -1108,14 +1274,18 @@ async fn fetch_mysql_user_data(
         let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 3);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
-        let entry = schema_priv_map.entry((grantee.clone(), schema.clone())).or_insert_with(|| (HashSet::new(), false));
+        let entry = schema_priv_map
+            .entry((grantee.clone(), schema.clone()))
+            .or_insert_with(|| (HashSet::new(), false));
         entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             entry.1 = true;
         }
 
         let clean = grantee.replace('\'', "");
-        let clean_entry = schema_priv_map.entry((clean, schema)).or_insert_with(|| (HashSet::new(), false));
+        let clean_entry = schema_priv_map
+            .entry((clean, schema))
+            .or_insert_with(|| (HashSet::new(), false));
         clean_entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             clean_entry.1 = true;
@@ -1136,7 +1306,8 @@ async fn fetch_mysql_user_data(
     let priv_rows = match query_mysql_timeout(my_pool, privs_query, 4, "Table Privileges").await {
         Ok(rows) => {
             executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)".to_string(),
+                step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)"
+                    .to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: Some(rows.len()),
                 error: None,
@@ -1145,7 +1316,8 @@ async fn fetch_mysql_user_data(
         }
         Err(e) => {
             executed_queries.push(ExecutedQueryLog {
-                step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)".to_string(),
+                step_name: "Fetch MySQL Table Privileges (information_schema.table_privileges)"
+                    .to_string(),
                 sql: privs_query.trim().to_string(),
                 row_count: None,
                 error: Some(e),
@@ -1154,7 +1326,8 @@ async fn fetch_mysql_user_data(
         }
     };
 
-    let mut table_priv_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
+    let mut table_priv_map: HashMap<(String, String, String), (HashSet<String>, bool)> =
+        HashMap::new();
     for row in priv_rows {
         let grantee = get_col_str_mysql(&row, "grantee", 0);
         let schema = get_col_str_mysql(&row, "table_schema", 1);
@@ -1163,14 +1336,18 @@ async fn fetch_mysql_user_data(
         let is_grantable_str = get_col_str_mysql(&row, "is_grantable", 4);
         let is_grantable = is_grantable_str.eq_ignore_ascii_case("YES");
 
-        let entry = table_priv_map.entry((grantee.clone(), schema.clone(), table.clone())).or_insert_with(|| (HashSet::new(), false));
+        let entry = table_priv_map
+            .entry((grantee.clone(), schema.clone(), table.clone()))
+            .or_insert_with(|| (HashSet::new(), false));
         entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             entry.1 = true;
         }
 
         let clean = grantee.replace('\'', "");
-        let clean_entry = table_priv_map.entry((clean, schema, table)).or_insert_with(|| (HashSet::new(), false));
+        let clean_entry = table_priv_map
+            .entry((clean, schema, table))
+            .or_insert_with(|| (HashSet::new(), false));
         clean_entry.0.insert(priv_type.to_uppercase());
         if is_grantable {
             clean_entry.1 = true;
@@ -1190,7 +1367,8 @@ async fn fetch_mysql_user_data(
     }
 
     // Compute effective permissions for each user
-    let mut all_privileges_map: HashMap<(String, String, String), (HashSet<String>, bool)> = HashMap::new();
+    let mut all_privileges_map: HashMap<(String, String, String), (HashSet<String>, bool)> =
+        HashMap::new();
     for user in &users {
         let is_root = user.username.eq_ignore_ascii_case("root") || user.is_superuser;
         let user_keys = [
@@ -1215,16 +1393,30 @@ async fn fetch_mysql_user_data(
             } else {
                 for key in &user_keys {
                     if let Some((p, g)) = global_priv_map.get(key) {
-                        for item in p { privs.insert(item.clone()); }
-                        if *g { grant_opt = true; }
+                        for item in p {
+                            privs.insert(item.clone());
+                        }
+                        if *g {
+                            grant_opt = true;
+                        }
                     }
                     if let Some((p, g)) = schema_priv_map.get(&(key.clone(), schema.clone())) {
-                        for item in p { privs.insert(item.clone()); }
-                        if *g { grant_opt = true; }
+                        for item in p {
+                            privs.insert(item.clone());
+                        }
+                        if *g {
+                            grant_opt = true;
+                        }
                     }
-                    if let Some((p, g)) = table_priv_map.get(&(key.clone(), schema.clone(), table_name.clone())) {
-                        for item in p { privs.insert(item.clone()); }
-                        if *g { grant_opt = true; }
+                    if let Some((p, g)) =
+                        table_priv_map.get(&(key.clone(), schema.clone(), table_name.clone()))
+                    {
+                        for item in p {
+                            privs.insert(item.clone());
+                        }
+                        if *g {
+                            grant_opt = true;
+                        }
                     }
                 }
 
@@ -1237,8 +1429,18 @@ async fn fetch_mysql_user_data(
                 }
             }
 
-            all_privileges_map.insert((format!("'{}'@'{}'", user.username, user.host), schema.clone(), table_name.clone()), (privs.clone(), grant_opt));
-            all_privileges_map.insert((user.username.clone(), schema.clone(), table_name.clone()), (privs, grant_opt));
+            all_privileges_map.insert(
+                (
+                    format!("'{}'@'{}'", user.username, user.host),
+                    schema.clone(),
+                    table_name.clone(),
+                ),
+                (privs.clone(), grant_opt),
+            );
+            all_privileges_map.insert(
+                (user.username.clone(), schema.clone(), table_name.clone()),
+                (privs, grant_opt),
+            );
         }
     }
 
@@ -1248,7 +1450,11 @@ async fn fetch_mysql_user_data(
     for (schema, table_name, ttype) in table_objects {
         let (privs, grant_opt) = if let Some(u) = default_grantee_user {
             all_privileges_map
-                .get(&(format!("'{}'@'{}'", u.username, u.host), schema.clone(), table_name.clone()))
+                .get(&(
+                    format!("'{}'@'{}'", u.username, u.host),
+                    schema.clone(),
+                    table_name.clone(),
+                ))
                 .cloned()
                 .unwrap_or_default()
         } else {
@@ -1266,7 +1472,11 @@ async fn fetch_mysql_user_data(
             database: schema.clone(),
             schema: schema.clone(),
             object_name: table_name,
-            object_type: if ttype.contains("VIEW") { "VIEW".to_string() } else { "TABLE".to_string() },
+            object_type: if ttype.contains("VIEW") {
+                "VIEW".to_string()
+            } else {
+                "TABLE".to_string()
+            },
             has_select,
             has_insert,
             has_update,
@@ -1294,8 +1504,7 @@ async fn fetch_sqlite_user_data(
     sq_pool: &sqlx::SqlitePool,
 ) -> Result<UserManagerDataPayload, String> {
     let mut executed_queries = Vec::new();
-    let mut users = Vec::new();
-    users.push(UserInfo {
+    let users = vec![UserInfo {
         username: "sqlite_master".to_string(),
         host: "embedded (local file)".to_string(),
         is_superuser: true,
@@ -1307,10 +1516,16 @@ async fn fetch_sqlite_user_data(
         valid_until: None,
         member_of: vec!["Database Owner".to_string()],
         attributes: vec![
-            ("Storage Mode".to_string(), "Single-File / Serverless".to_string()),
-            ("Security Model".to_string(), "OS File Permissions".to_string()),
+            (
+                "Storage Mode".to_string(),
+                "Single-File / Serverless".to_string(),
+            ),
+            (
+                "Security Model".to_string(),
+                "OS File Permissions".to_string(),
+            ),
         ],
-    });
+    }];
 
     let tables_query = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name;";
     let rows = match query_sqlite_timeout(sq_pool, tables_query, 4, "SQLite Objects").await {
@@ -1378,44 +1593,99 @@ pub fn generate_create_user_sql(form: &NewUserForm, db_type: &DatabaseType) -> S
             if !form.password.is_empty() {
                 opts.push(format!("PASSWORD '{}'", form.password.replace('\'', "''")));
             }
-            if form.can_login { opts.push("LOGIN".to_string()); } else { opts.push("NOLOGIN".to_string()); }
-            if form.is_superuser { opts.push("SUPERUSER".to_string()); } else { opts.push("NOSUPERUSER".to_string()); }
-            if form.can_create_db { opts.push("CREATEDB".to_string()); } else { opts.push("NOCREATEDB".to_string()); }
-            if form.can_create_role { opts.push("CREATEROLE".to_string()); } else { opts.push("NOCREATEROLE".to_string()); }
-            if form.can_inherit { opts.push("INHERIT".to_string()); } else { opts.push("NOINHERIT".to_string()); }
+            if form.can_login {
+                opts.push("LOGIN".to_string());
+            } else {
+                opts.push("NOLOGIN".to_string());
+            }
+            if form.is_superuser {
+                opts.push("SUPERUSER".to_string());
+            } else {
+                opts.push("NOSUPERUSER".to_string());
+            }
+            if form.can_create_db {
+                opts.push("CREATEDB".to_string());
+            } else {
+                opts.push("NOCREATEDB".to_string());
+            }
+            if form.can_create_role {
+                opts.push("CREATEROLE".to_string());
+            } else {
+                opts.push("NOCREATEROLE".to_string());
+            }
+            if form.can_inherit {
+                opts.push("INHERIT".to_string());
+            } else {
+                opts.push("NOINHERIT".to_string());
+            }
 
-            let create_stmt = format!("CREATE ROLE \"{}\" WITH {};", form.username.replace('"', "\"\""), opts.join(" "));
+            let create_stmt = format!(
+                "CREATE ROLE \"{}\" WITH {};",
+                form.username.replace('"', "\"\""),
+                opts.join(" ")
+            );
             stmts.push(create_stmt);
 
             for role in &form.selected_roles {
-                stmts.push(format!("GRANT \"{}\" TO \"{}\";", role.replace('"', "\"\""), form.username.replace('"', "\"\"")));
+                stmts.push(format!(
+                    "GRANT \"{}\" TO \"{}\";",
+                    role.replace('"', "\"\""),
+                    form.username.replace('"', "\"\"")
+                ));
             }
         }
         DatabaseType::MySQL => {
-            let host_part = if form.host.is_empty() { "%" } else { &form.host };
+            let host_part = if form.host.is_empty() {
+                "%"
+            } else {
+                &form.host
+            };
             let auth_clause = if !form.password.is_empty() {
                 format!(" IDENTIFIED BY '{}'", form.password.replace('\'', "\\'"))
             } else {
                 String::new()
             };
-            let create_stmt = format!("CREATE USER '{}'@'{}'{};", form.username.replace('\'', "\\'"), host_part, auth_clause);
+            let create_stmt = format!(
+                "CREATE USER '{}'@'{}'{};",
+                form.username.replace('\'', "\\'"),
+                host_part,
+                auth_clause
+            );
             stmts.push(create_stmt);
 
             if form.is_superuser {
-                stmts.push(format!("GRANT ALL PRIVILEGES ON *.* TO '{}'@'{}' WITH GRANT OPTION;", form.username.replace('\'', "\\'"), host_part));
+                stmts.push(format!(
+                    "GRANT ALL PRIVILEGES ON *.* TO '{}'@'{}' WITH GRANT OPTION;",
+                    form.username.replace('\'', "\\'"),
+                    host_part
+                ));
             }
             stmts.push("FLUSH PRIVILEGES;".to_string());
         }
         DatabaseType::MsSQL => {
             let login_stmt = if !form.password.is_empty() {
-                format!("CREATE LOGIN [{}] WITH PASSWORD = '{}';", form.username.replace(']', "]]"), form.password.replace('\'', "''"))
+                format!(
+                    "CREATE LOGIN [{}] WITH PASSWORD = '{}';",
+                    form.username.replace(']', "]]"),
+                    form.password.replace('\'', "''")
+                )
             } else {
-                format!("CREATE LOGIN [{}] WITHOUT LOGIN;", form.username.replace(']', "]]"))
+                format!(
+                    "CREATE LOGIN [{}] WITHOUT LOGIN;",
+                    form.username.replace(']', "]]")
+                )
             };
             stmts.push(login_stmt);
-            stmts.push(format!("CREATE USER [{}] FOR LOGIN [{}];", form.username.replace(']', "]]"), form.username.replace(']', "]]")));
+            stmts.push(format!(
+                "CREATE USER [{}] FOR LOGIN [{}];",
+                form.username.replace(']', "]]"),
+                form.username.replace(']', "]]")
+            ));
             if form.is_superuser {
-                stmts.push(format!("ALTER SERVER ROLE sysadmin ADD MEMBER [{}];", form.username.replace(']', "]]")));
+                stmts.push(format!(
+                    "ALTER SERVER ROLE sysadmin ADD MEMBER [{}];",
+                    form.username.replace(']', "]]")
+                ));
             }
         }
         DatabaseType::SQLite => {
@@ -1428,17 +1698,35 @@ pub fn generate_create_user_sql(form: &NewUserForm, db_type: &DatabaseType) -> S
     stmts.join("\n")
 }
 
-pub fn generate_alter_password_sql(username: &str, host: &str, new_pass: &str, db_type: &DatabaseType) -> String {
+pub fn generate_alter_password_sql(
+    username: &str,
+    host: &str,
+    new_pass: &str,
+    db_type: &DatabaseType,
+) -> String {
     match db_type {
         DatabaseType::PostgreSQL => {
-            format!("ALTER ROLE \"{}\" WITH PASSWORD '{}';", username.replace('"', "\"\""), new_pass.replace('\'', "''"))
+            format!(
+                "ALTER ROLE \"{}\" WITH PASSWORD '{}';",
+                username.replace('"', "\"\""),
+                new_pass.replace('\'', "''")
+            )
         }
         DatabaseType::MySQL => {
             let host_part = if host.is_empty() { "%" } else { host };
-            format!("ALTER USER '{}'@'{}' IDENTIFIED BY '{}';\nFLUSH PRIVILEGES;", username.replace('\'', "\\'"), host_part, new_pass.replace('\'', "\\'"))
+            format!(
+                "ALTER USER '{}'@'{}' IDENTIFIED BY '{}';\nFLUSH PRIVILEGES;",
+                username.replace('\'', "\\'"),
+                host_part,
+                new_pass.replace('\'', "\\'")
+            )
         }
         DatabaseType::MsSQL => {
-            format!("ALTER LOGIN [{}] WITH PASSWORD = '{}';", username.replace(']', "]]"), new_pass.replace('\'', "''"))
+            format!(
+                "ALTER LOGIN [{}] WITH PASSWORD = '{}';",
+                username.replace(']', "]]"),
+                new_pass.replace('\'', "''")
+            )
         }
         _ => "-- Password change not supported for this database".to_string(),
     }
@@ -1451,10 +1739,18 @@ pub fn generate_drop_user_sql(username: &str, host: &str, db_type: &DatabaseType
         }
         DatabaseType::MySQL => {
             let host_part = if host.is_empty() { "%" } else { host };
-            format!("DROP USER '{}'@'{}';", username.replace('\'', "\\'"), host_part)
+            format!(
+                "DROP USER '{}'@'{}';",
+                username.replace('\'', "\\'"),
+                host_part
+            )
         }
         DatabaseType::MsSQL => {
-            format!("DROP USER IF EXISTS [{}];\nDROP LOGIN [{}];", username.replace(']', "]]"), username.replace(']', "]]"))
+            format!(
+                "DROP USER IF EXISTS [{}];\nDROP LOGIN [{}];",
+                username.replace(']', "]]"),
+                username.replace(']', "]]")
+            )
         }
         _ => "-- Drop user not supported for this database".to_string(),
     }
@@ -1480,23 +1776,75 @@ pub fn generate_object_privilege_diff_sql(
         if orig_val != new_val {
             match db_type {
                 DatabaseType::PostgreSQL => {
-                    let target_obj = format!("\"{}\".\"{}\"", original.schema.replace('"', "\"\""), original.object_name.replace('"', "\"\""));
-                    let kind_prefix = if original.object_type == "ROUTINE" || original.object_type == "FUNCTION" { "FUNCTION " } else { "TABLE " };
-                    if new_val {
-                        let grant_opt = if updated.grant_option { " WITH GRANT OPTION" } else { "" };
-                        statements.push(format!("GRANT {} ON {}{} TO \"{}\"{};", p_name, kind_prefix, target_obj, grantee.replace('"', "\"\""), grant_opt));
+                    let target_obj = format!(
+                        "\"{}\".\"{}\"",
+                        original.schema.replace('"', "\"\""),
+                        original.object_name.replace('"', "\"\"")
+                    );
+                    let kind_prefix = if original.object_type == "ROUTINE"
+                        || original.object_type == "FUNCTION"
+                    {
+                        "FUNCTION "
                     } else {
-                        statements.push(format!("REVOKE {} ON {}{} FROM \"{}\";", p_name, kind_prefix, target_obj, grantee.replace('"', "\"\"")));
+                        "TABLE "
+                    };
+                    if new_val {
+                        let grant_opt = if updated.grant_option {
+                            " WITH GRANT OPTION"
+                        } else {
+                            ""
+                        };
+                        statements.push(format!(
+                            "GRANT {} ON {}{} TO \"{}\"{};",
+                            p_name,
+                            kind_prefix,
+                            target_obj,
+                            grantee.replace('"', "\"\""),
+                            grant_opt
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "REVOKE {} ON {}{} FROM \"{}\";",
+                            p_name,
+                            kind_prefix,
+                            target_obj,
+                            grantee.replace('"', "\"\"")
+                        ));
                     }
                 }
                 DatabaseType::MySQL => {
-                    let host_part = if grantee_host.is_empty() { "%" } else { grantee_host };
-                    let target_obj = format!("`{}`.`{}`", original.schema.replace('`', "``"), original.object_name.replace('`', "``"));
-                    if new_val {
-                        let grant_opt = if updated.grant_option { " WITH GRANT OPTION" } else { "" };
-                        statements.push(format!("GRANT {} ON {} TO '{}'@'{}'{};", p_name, target_obj, grantee.replace('\'', "\\'"), host_part, grant_opt));
+                    let host_part = if grantee_host.is_empty() {
+                        "%"
                     } else {
-                        statements.push(format!("REVOKE {} ON {} FROM '{}'@'{}';", p_name, target_obj, grantee.replace('\'', "\\'"), host_part));
+                        grantee_host
+                    };
+                    let target_obj = format!(
+                        "`{}`.`{}`",
+                        original.schema.replace('`', "``"),
+                        original.object_name.replace('`', "``")
+                    );
+                    if new_val {
+                        let grant_opt = if updated.grant_option {
+                            " WITH GRANT OPTION"
+                        } else {
+                            ""
+                        };
+                        statements.push(format!(
+                            "GRANT {} ON {} TO '{}'@'{}'{};",
+                            p_name,
+                            target_obj,
+                            grantee.replace('\'', "\\'"),
+                            host_part,
+                            grant_opt
+                        ));
+                    } else {
+                        statements.push(format!(
+                            "REVOKE {} ON {} FROM '{}'@'{}';",
+                            p_name,
+                            target_obj,
+                            grantee.replace('\'', "\\'"),
+                            host_part
+                        ));
                     }
                 }
                 _ => {}
@@ -1537,11 +1885,17 @@ pub fn render_user_manager(
         .show(ui, |ui| match state.selected_tab {
             UserManagerTab::Users => render_users_and_roles_tab(ui, state, db_type, out_action),
             UserManagerTab::CreateUser => render_create_user_tab(ui, state, db_type, out_action),
-            UserManagerTab::ObjectGrants => render_object_grants_matrix_tab(ui, state, db_type, out_action),
+            UserManagerTab::ObjectGrants => {
+                render_object_grants_matrix_tab(ui, state, db_type, out_action)
+            }
             UserManagerTab::SqlPreview => render_sql_preview_tab(ui, state, out_action),
         });
 
-    if state.show_diagnostics_panel || (state.users.is_empty() && !state.is_loading && state.selected_tab != UserManagerTab::SqlPreview) {
+    if state.show_diagnostics_panel
+        || (state.users.is_empty()
+            && !state.is_loading
+            && state.selected_tab != UserManagerTab::SqlPreview)
+    {
         ui.add_space(6.0);
         render_diagnostics_card(ui, state, out_action);
     }
@@ -1560,10 +1914,13 @@ fn render_header_bar(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("{} User & Privileges Manager", egui_icons::icons::ICON_GROUP.codepoint))
-                        .strong()
-                        .size(15.0)
-                        .color(ui.visuals().strong_text_color()),
+                    egui::RichText::new(format!(
+                        "{} User & Privileges Manager",
+                        egui_icons::icons::ICON_GROUP.codepoint
+                    ))
+                    .strong()
+                    .size(15.0)
+                    .color(ui.visuals().strong_text_color()),
                 );
 
                 ui.add_space(8.0);
@@ -1584,11 +1941,20 @@ fn render_header_bar(
                 let user_count = state.users.len();
                 let role_count = state.roles.len();
                 let users_label = format!("👥 Users & Roles ({}+{})", user_count, role_count);
-                if ui.selectable_label(state.selected_tab == UserManagerTab::Users, users_label).clicked() {
+                if ui
+                    .selectable_label(state.selected_tab == UserManagerTab::Users, users_label)
+                    .clicked()
+                {
                     state.selected_tab = UserManagerTab::Users;
                 }
 
-                if ui.selectable_label(state.selected_tab == UserManagerTab::CreateUser, "➕ New User").clicked() {
+                if ui
+                    .selectable_label(
+                        state.selected_tab == UserManagerTab::CreateUser,
+                        "➕ New User",
+                    )
+                    .clicked()
+                {
                     state.selected_tab = UserManagerTab::CreateUser;
                 }
 
@@ -1598,24 +1964,43 @@ fn render_header_bar(
                 } else {
                     "🛡️ Object Grants Matrix".to_string()
                 };
-                if ui.selectable_label(state.selected_tab == UserManagerTab::ObjectGrants, grants_label).clicked() {
+                if ui
+                    .selectable_label(
+                        state.selected_tab == UserManagerTab::ObjectGrants,
+                        grants_label,
+                    )
+                    .clicked()
+                {
                     state.selected_tab = UserManagerTab::ObjectGrants;
                 }
 
-                let diag_errors = state.executed_queries.iter().filter(|q| q.error.is_some()).count();
+                let diag_errors = state
+                    .executed_queries
+                    .iter()
+                    .filter(|q| q.error.is_some())
+                    .count();
                 let sql_tab_label = if diag_errors > 0 {
                     format!("📜 SQL & Diagnostics (⚠️ {})", diag_errors)
                 } else {
                     "📜 SQL & Diagnostics".to_string()
                 };
-                if ui.selectable_label(state.selected_tab == UserManagerTab::SqlPreview, sql_tab_label).clicked() {
+                if ui
+                    .selectable_label(
+                        state.selected_tab == UserManagerTab::SqlPreview,
+                        sql_tab_label,
+                    )
+                    .clicked()
+                {
                     state.selected_tab = UserManagerTab::SqlPreview;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let refresh_btn = egui::Button::new(
-                        egui::RichText::new(format!("{} Refresh", egui_icons::icons::ICON_REFRESH.codepoint))
-                            .size(12.0),
+                        egui::RichText::new(format!(
+                            "{} Refresh",
+                            egui_icons::icons::ICON_REFRESH.codepoint
+                        ))
+                        .size(12.0),
                     );
                     if ui.add_enabled(!state.is_loading, refresh_btn).clicked() {
                         *out_action = Some(UserManagerAction::Refresh);
@@ -1626,9 +2011,12 @@ fn render_header_bar(
                         ui.label(egui::RichText::new("Loading...").italics().size(11.0));
                     } else if let Some(last) = state.last_refreshed {
                         ui.label(
-                            egui::RichText::new(format!("Updated {:.0}s ago", last.elapsed().as_secs_f32()))
-                                .size(11.0)
-                                .color(ui.visuals().weak_text_color()),
+                            egui::RichText::new(format!(
+                                "Updated {:.0}s ago",
+                                last.elapsed().as_secs_f32()
+                            ))
+                            .size(11.0)
+                            .color(ui.visuals().weak_text_color()),
                         );
                     }
 
@@ -1641,12 +2029,16 @@ fn render_header_bar(
                         state.show_diagnostics_panel = !state.show_diagnostics_panel;
                     }
 
-                    if state.selected_tab == UserManagerTab::Users || state.selected_tab == UserManagerTab::ObjectGrants {
+                    if state.selected_tab == UserManagerTab::Users
+                        || state.selected_tab == UserManagerTab::ObjectGrants
+                    {
                         ui.add_space(8.0);
-                        let search_edit = egui::TextEdit::singleline(&mut state.search_text)
-                            .hint_text("🔍 Search users, tables, roles...")
-                            .desired_width(180.0);
-                        ui.add(search_edit);
+                        crate::window_egui::style::render_search_field(
+                            ui,
+                            &mut state.search_text,
+                            "Search users, tables, roles…",
+                            180.0,
+                        );
                     }
                 });
             });
@@ -1674,7 +2066,11 @@ fn render_status_banner(ui: &mut egui::Ui, message: &str, is_error: bool) {
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{} {}", icon, message)).color(text_color).size(12.0));
+                ui.label(
+                    egui::RichText::new(format!("{} {}", icon, message))
+                        .color(text_color)
+                        .size(12.0),
+                );
             });
         });
 }
@@ -1685,7 +2081,7 @@ fn render_users_and_roles_tab(
     db_type: Option<&DatabaseType>,
     out_action: &mut Option<UserManagerAction>,
 ) {
-    let filter_text = state.search_text.to_lowercase();
+    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
 
     ui.columns(2, |cols| {
         cols[0].group(|ui| {
@@ -1718,10 +2114,7 @@ fn render_users_and_roles_tab(
                     }
 
                     for (idx, user) in state.users.iter().enumerate() {
-                        if !filter_text.is_empty()
-                            && !user.username.to_lowercase().contains(&filter_text)
-                            && !user.host.to_lowercase().contains(&filter_text)
-                        {
+                        if !filter_text.matches_any([user.username.as_str(), user.host.as_str()]) {
                             continue;
                         }
 
@@ -1784,7 +2177,7 @@ fn render_users_and_roles_tab(
                         ui.separator();
 
                         for role in &state.roles {
-                            if !filter_text.is_empty() && !role.role_name.to_lowercase().contains(&filter_text) {
+                            if !filter_text.matches(&role.role_name) {
                                 continue;
                             }
                             ui.horizontal(|ui| {
@@ -1951,10 +2344,13 @@ fn render_diagnostics_card(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("{} Executed SQL Queries & Introspection Diagnostics", egui_icons::icons::ICON_TERMINAL.codepoint))
-                        .strong()
-                        .size(13.0)
-                        .color(ui.visuals().strong_text_color()),
+                    egui::RichText::new(format!(
+                        "{} Executed SQL Queries & Introspection Diagnostics",
+                        egui_icons::icons::ICON_TERMINAL.codepoint
+                    ))
+                    .strong()
+                    .size(13.0)
+                    .color(ui.visuals().strong_text_color()),
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1962,20 +2358,28 @@ fn render_diagnostics_card(
                         *out_action = Some(UserManagerAction::Refresh);
                     }
                     if ui.small_button("⚡ Open All in SQL Tab").clicked() {
-                        let full_log = state.executed_queries.iter().map(|q| {
-                            format!("-- Step: {}\n{};\n", q.step_name, q.sql)
-                        }).collect::<Vec<String>>().join("\n");
+                        let full_log = state
+                            .executed_queries
+                            .iter()
+                            .map(|q| format!("-- Step: {}\n{};\n", q.step_name, q.sql))
+                            .collect::<Vec<String>>()
+                            .join("\n");
                         *out_action = Some(UserManagerAction::OpenInSqlTab(full_log));
                     }
                     if ui.small_button("📋 Copy All Queries").clicked() {
-                        let full_log = state.executed_queries.iter().map(|q| {
-                            let status = match (&q.row_count, &q.error) {
-                                (Some(n), _) => format!("-- [SUCCESS: {} rows]", n),
-                                (_, Some(e)) => format!("-- [ERROR: {}]", e),
-                                _ => "-- [UNKNOWN]".to_string(),
-                            };
-                            format!("-- Step: {}\n{}\n{};\n", q.step_name, status, q.sql)
-                        }).collect::<Vec<String>>().join("\n");
+                        let full_log = state
+                            .executed_queries
+                            .iter()
+                            .map(|q| {
+                                let status = match (&q.row_count, &q.error) {
+                                    (Some(n), _) => format!("-- [SUCCESS: {} rows]", n),
+                                    (_, Some(e)) => format!("-- [ERROR: {}]", e),
+                                    _ => "-- [UNKNOWN]".to_string(),
+                                };
+                                format!("-- Step: {}\n{}\n{};\n", q.step_name, status, q.sql)
+                            })
+                            .collect::<Vec<String>>()
+                            .join("\n");
                         ui.ctx().copy_text(full_log);
                     }
                 });
@@ -1984,7 +2388,11 @@ fn render_diagnostics_card(
             ui.add_space(4.0);
 
             if state.executed_queries.is_empty() {
-                ui.label(egui::RichText::new("No queries logged yet. Click Refresh to load.").weak().italics());
+                ui.label(
+                    egui::RichText::new("No queries logged yet. Click Refresh to load.")
+                        .weak()
+                        .italics(),
+                );
             } else {
                 for (idx, q) in state.executed_queries.iter().enumerate() {
                     egui::Frame::group(ui.style())
@@ -1993,24 +2401,41 @@ fn render_diagnostics_card(
                         .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(format!("{}.", idx + 1)).weak().size(11.0));
+                                ui.label(
+                                    egui::RichText::new(format!("{}.", idx + 1))
+                                        .weak()
+                                        .size(11.0),
+                                );
                                 ui.label(egui::RichText::new(&q.step_name).strong().size(12.0));
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("⚡ Open in SQL Tab / Test").clicked() {
-                                        *out_action = Some(UserManagerAction::OpenInSqlTab(q.sql.clone()));
-                                    }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("⚡ Open in SQL Tab / Test").clicked() {
+                                            *out_action = Some(UserManagerAction::OpenInSqlTab(
+                                                q.sql.clone(),
+                                            ));
+                                        }
 
-                                    if ui.small_button("📋 Copy").clicked() {
-                                        ui.ctx().copy_text(q.sql.clone());
-                                    }
+                                        if ui.small_button("📋 Copy").clicked() {
+                                            ui.ctx().copy_text(q.sql.clone());
+                                        }
 
-                                    if let Some(err) = &q.error {
-                                        render_badge(ui, &format!("ERROR: {}", err), egui::Color32::from_rgb(180, 40, 40));
-                                    } else if let Some(count) = q.row_count {
-                                        render_badge(ui, &format!("OK: {} rows", count), egui::Color32::from_rgb(30, 120, 60));
-                                    }
-                                });
+                                        if let Some(err) = &q.error {
+                                            render_badge(
+                                                ui,
+                                                &format!("ERROR: {}", err),
+                                                egui::Color32::from_rgb(180, 40, 40),
+                                            );
+                                        } else if let Some(count) = q.row_count {
+                                            render_badge(
+                                                ui,
+                                                &format!("OK: {} rows", count),
+                                                egui::Color32::from_rgb(30, 120, 60),
+                                            );
+                                        }
+                                    },
+                                );
                             });
 
                             ui.add_space(2.0);
@@ -2046,7 +2471,11 @@ fn render_create_user_tab(
 
     ui.columns(2, |cols| {
         cols[0].group(|ui| {
-            ui.label(egui::RichText::new("➕ Create New Database User").strong().size(14.0));
+            ui.label(
+                egui::RichText::new("➕ Create New Database User")
+                    .strong()
+                    .size(14.0),
+            );
             ui.separator();
             ui.add_space(6.0);
 
@@ -2060,52 +2489,111 @@ fn render_create_user_tab(
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Username:");
-                    ui.text_edit_singleline(&mut state.new_user_form.username);
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.new_user_form.username),
+                        220.0,
+                        None,
+                    );
                     ui.end_row();
 
                     if active_db_type == DatabaseType::MySQL {
                         ui.label("Host Scope:");
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut state.new_user_form.host);
-                            ui.label(egui::RichText::new("(e.g. %, localhost, 192.168.%)").size(10.0).weak());
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut state.new_user_form.host),
+                                160.0,
+                                None,
+                            );
+                            ui.label(
+                                egui::RichText::new("(e.g. %, localhost, 192.168.%)")
+                                    .size(10.0)
+                                    .weak(),
+                            );
                         });
                         ui.end_row();
                     }
 
                     ui.label("Password:");
                     ui.horizontal(|ui| {
-                        if state.new_user_form.show_password {
-                            ui.text_edit_singleline(&mut state.new_user_form.password);
+                        let spacing = 6.0;
+                        crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut state.new_user_form.password)
+                                .password(!state.new_user_form.show_password),
+                            220.0,
+                            None,
+                        );
+                        ui.add_space(spacing);
+                        let icon = if state.new_user_form.show_password {
+                            "👁"
                         } else {
-                            ui.add(egui::TextEdit::singleline(&mut state.new_user_form.password).password(true));
-                        }
-                        if ui.button(if state.new_user_form.show_password { "👁" } else { "🔒" }).clicked() {
+                            "🔒"
+                        };
+                        if ui
+                            .add(
+                                crate::window_egui::style::btn_field_action(ui, icon)
+                                    .min_size(egui::vec2(32.0, 0.0)),
+                            )
+                            .clicked()
+                        {
                             state.new_user_form.show_password = !state.new_user_form.show_password;
                         }
                     });
                     ui.end_row();
 
                     ui.label("Confirm Password:");
-                    ui.add(egui::TextEdit::singleline(&mut state.new_user_form.confirm_password).password(!state.new_user_form.show_password));
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.new_user_form.confirm_password)
+                            .password(!state.new_user_form.show_password),
+                        220.0,
+                        None,
+                    );
                     ui.end_row();
                 });
 
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Administrative Capabilities").strong().size(12.0));
+            ui.label(
+                egui::RichText::new("Administrative Capabilities")
+                    .strong()
+                    .size(12.0),
+            );
             ui.checkbox(&mut state.new_user_form.can_login, "Can Login (LOGIN)");
-            ui.checkbox(&mut state.new_user_form.is_superuser, "Superuser / DBA (SUPERUSER / sysadmin)");
-            ui.checkbox(&mut state.new_user_form.can_create_db, "Can Create Databases (CREATEDB)");
-            ui.checkbox(&mut state.new_user_form.can_create_role, "Can Create Roles/Users (CREATEROLE)");
-            ui.checkbox(&mut state.new_user_form.can_inherit, "Inherit Parent Privileges (INHERIT)");
+            ui.checkbox(
+                &mut state.new_user_form.is_superuser,
+                "Superuser / DBA (SUPERUSER / sysadmin)",
+            );
+            ui.checkbox(
+                &mut state.new_user_form.can_create_db,
+                "Can Create Databases (CREATEDB)",
+            );
+            ui.checkbox(
+                &mut state.new_user_form.can_create_role,
+                "Can Create Roles/Users (CREATEROLE)",
+            );
+            ui.checkbox(
+                &mut state.new_user_form.can_inherit,
+                "Inherit Parent Privileges (INHERIT)",
+            );
 
             if !state.roles.is_empty() {
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("Assign to Roles / Groups").strong().size(12.0));
+                ui.label(
+                    egui::RichText::new("Assign to Roles / Groups")
+                        .strong()
+                        .size(12.0),
+                );
                 for role in &state.roles {
-                    let mut is_checked = state.new_user_form.selected_roles.contains(&role.role_name);
+                    let mut is_checked =
+                        state.new_user_form.selected_roles.contains(&role.role_name);
                     if ui.checkbox(&mut is_checked, &role.role_name).changed() {
                         if is_checked {
-                            state.new_user_form.selected_roles.insert(role.role_name.clone());
+                            state
+                                .new_user_form
+                                .selected_roles
+                                .insert(role.role_name.clone());
                         } else {
                             state.new_user_form.selected_roles.remove(&role.role_name);
                         }
@@ -2125,12 +2613,15 @@ fn render_create_user_tab(
 
                 if ui.add(create_btn).clicked() {
                     if state.new_user_form.username.trim().is_empty() {
-                        state.new_user_form.validation_error = Some("Username cannot be empty".to_string());
+                        state.new_user_form.validation_error =
+                            Some("Username cannot be empty".to_string());
                     } else if state.new_user_form.password != state.new_user_form.confirm_password {
-                        state.new_user_form.validation_error = Some("Passwords do not match".to_string());
+                        state.new_user_form.validation_error =
+                            Some("Passwords do not match".to_string());
                     } else {
                         state.new_user_form.validation_error = None;
-                        *out_action = Some(UserManagerAction::CreateUser(state.new_user_form.clone()));
+                        *out_action =
+                            Some(UserManagerAction::CreateUser(state.new_user_form.clone()));
                     }
                 }
 
@@ -2141,7 +2632,11 @@ fn render_create_user_tab(
         });
 
         cols[1].group(|ui| {
-            ui.label(egui::RichText::new("📜 Live Generated SQL DDL").strong().size(13.0));
+            ui.label(
+                egui::RichText::new("📜 Live Generated SQL DDL")
+                    .strong()
+                    .size(13.0),
+            );
             ui.separator();
             ui.add_space(6.0);
 
@@ -2174,7 +2669,7 @@ fn render_object_grants_matrix_tab(
     out_action: &mut Option<UserManagerAction>,
 ) {
     let active_db_type = db_type.cloned().unwrap_or(DatabaseType::PostgreSQL);
-    let filter_text = state.search_text.to_lowercase();
+    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Target Grantee:").strong());
@@ -2310,19 +2805,38 @@ fn render_object_grants_matrix_tab(
                     ui.label(egui::RichText::new("Schema / Database").strong());
                     ui.label(egui::RichText::new("Object Name").strong());
                     ui.label(egui::RichText::new("Type").strong());
-                    ui.label(egui::RichText::new("SELECT").strong().color(egui::Color32::from_rgb(80, 180, 255)));
-                    ui.label(egui::RichText::new("INSERT").strong().color(egui::Color32::from_rgb(100, 220, 120)));
-                    ui.label(egui::RichText::new("UPDATE").strong().color(egui::Color32::from_rgb(255, 190, 80)));
-                    ui.label(egui::RichText::new("DELETE").strong().color(egui::Color32::from_rgb(255, 100, 100)));
-                    ui.label(egui::RichText::new("EXECUTE").strong().color(egui::Color32::from_rgb(200, 120, 255)));
+                    ui.label(
+                        egui::RichText::new("SELECT")
+                            .strong()
+                            .color(egui::Color32::from_rgb(80, 180, 255)),
+                    );
+                    ui.label(
+                        egui::RichText::new("INSERT")
+                            .strong()
+                            .color(egui::Color32::from_rgb(100, 220, 120)),
+                    );
+                    ui.label(
+                        egui::RichText::new("UPDATE")
+                            .strong()
+                            .color(egui::Color32::from_rgb(255, 190, 80)),
+                    );
+                    ui.label(
+                        egui::RichText::new("DELETE")
+                            .strong()
+                            .color(egui::Color32::from_rgb(255, 100, 100)),
+                    );
+                    ui.label(
+                        egui::RichText::new("EXECUTE")
+                            .strong()
+                            .color(egui::Color32::from_rgb(200, 120, 255)),
+                    );
                     ui.label(egui::RichText::new("ALL").strong());
                     ui.label(egui::RichText::new("Grant Option").strong());
                     ui.end_row();
 
                     for entry in &mut state.object_grants {
-                        if !filter_text.is_empty()
-                            && !entry.object_name.to_lowercase().contains(&filter_text)
-                            && !entry.schema.to_lowercase().contains(&filter_text)
+                        if !filter_text
+                            .matches_any([entry.object_name.as_str(), entry.schema.as_str()])
                         {
                             continue;
                         }
@@ -2330,7 +2844,10 @@ fn render_object_grants_matrix_tab(
                         ui.label(&entry.schema);
                         ui.horizontal(|ui| {
                             if entry.is_modified {
-                                ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(255, 180, 50)));
+                                ui.label(
+                                    egui::RichText::new("●")
+                                        .color(egui::Color32::from_rgb(255, 180, 50)),
+                                );
                             }
                             ui.label(egui::RichText::new(&entry.object_name).strong());
                         });
@@ -2345,11 +2862,21 @@ fn render_object_grants_matrix_tab(
                             },
                         );
 
-                        if ui.checkbox(&mut entry.has_select, "").changed() { entry.is_modified = true; }
-                        if ui.checkbox(&mut entry.has_insert, "").changed() { entry.is_modified = true; }
-                        if ui.checkbox(&mut entry.has_update, "").changed() { entry.is_modified = true; }
-                        if ui.checkbox(&mut entry.has_delete, "").changed() { entry.is_modified = true; }
-                        if ui.checkbox(&mut entry.has_execute, "").changed() { entry.is_modified = true; }
+                        if ui.checkbox(&mut entry.has_select, "").changed() {
+                            entry.is_modified = true;
+                        }
+                        if ui.checkbox(&mut entry.has_insert, "").changed() {
+                            entry.is_modified = true;
+                        }
+                        if ui.checkbox(&mut entry.has_update, "").changed() {
+                            entry.is_modified = true;
+                        }
+                        if ui.checkbox(&mut entry.has_delete, "").changed() {
+                            entry.is_modified = true;
+                        }
+                        if ui.checkbox(&mut entry.has_execute, "").changed() {
+                            entry.is_modified = true;
+                        }
                         if ui.checkbox(&mut entry.has_all, "").changed() {
                             if entry.has_all {
                                 entry.has_select = true;
@@ -2359,7 +2886,9 @@ fn render_object_grants_matrix_tab(
                             }
                             entry.is_modified = true;
                         }
-                        if ui.checkbox(&mut entry.grant_option, "").changed() { entry.is_modified = true; }
+                        if ui.checkbox(&mut entry.grant_option, "").changed() {
+                            entry.is_modified = true;
+                        }
 
                         ui.end_row();
                     }
@@ -2373,7 +2902,11 @@ fn render_sql_preview_tab(
     out_action: &mut Option<UserManagerAction>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("📜 Database Introspection & DDL Execution Log").strong().size(14.0));
+        ui.label(
+            egui::RichText::new("📜 Database Introspection & DDL Execution Log")
+                .strong()
+                .size(14.0),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("🗑️ Clear Log").clicked() {
                 state.generated_sql_log.clear();
@@ -2488,56 +3021,96 @@ fn render_modals(
         let mut close_modal = false;
         let mut submit_modal = false;
 
-        egui::Window::new("🔑 Change User Password")
+        crate::window_egui::style::render_modal_backdrop(ctx, "change_password_backdrop", true);
+
+        egui::Window::new("Change User Password")
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(380.0)
             .show(ctx, |ui| {
-                ui.label(format!("Change password for user: {}@{}", form.target_user, form.target_host));
-                ui.separator();
-                ui.add_space(6.0);
+                crate::window_egui::style::render_modal_header(
+                    ui,
+                    "Change User Password",
+                    &mut close_modal,
+                );
+                ui.add_space(8.0);
 
                 if let Some(err) = &form.validation_error {
                     render_status_banner(ui, err, true);
                     ui.add_space(6.0);
                 }
 
-                egui::Grid::new("change_pass_grid")
-                    .num_columns(2)
-                    .spacing([12.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("New Password:");
-                        ui.horizontal(|ui| {
-                            if form.show_password {
-                                ui.text_edit_singleline(&mut form.new_password);
-                            } else {
-                                ui.add(egui::TextEdit::singleline(&mut form.new_password).password(true));
-                            }
-                            if ui.button(if form.show_password { "👁" } else { "🔒" }).clicked() {
-                                form.show_password = !form.show_password;
-                            }
-                        });
-                        ui.end_row();
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.label(format!(
+                        "Change password for user: {}@{}",
+                        form.target_user, form.target_host
+                    ));
+                    ui.add_space(8.0);
 
-                        ui.label("Confirm Password:");
-                        ui.add(egui::TextEdit::singleline(&mut form.confirm_password).password(!form.show_password));
-                        ui.end_row();
-                    });
+                    egui::Grid::new("change_pass_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("New Password:");
+                            ui.horizontal(|ui| {
+                                let spacing = 6.0;
+                                crate::window_egui::style::render_text_field(
+                                    ui,
+                                    egui::TextEdit::singleline(&mut form.new_password)
+                                        .password(!form.show_password),
+                                    220.0,
+                                    None,
+                                );
+                                ui.add_space(spacing);
+                                let icon = if form.show_password { "👁" } else { "🔒" };
+                                if ui
+                                    .add(
+                                        crate::window_egui::style::btn_field_action(ui, icon)
+                                            .min_size(egui::vec2(32.0, 0.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    form.show_password = !form.show_password;
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Confirm Password:");
+                            crate::window_egui::style::render_text_field(
+                                ui,
+                                egui::TextEdit::singleline(&mut form.confirm_password)
+                                    .password(!form.show_password),
+                                220.0,
+                                None,
+                            );
+                            ui.end_row();
+                        });
+                });
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save Password").clicked() {
-                        if form.new_password.is_empty() {
-                            form.validation_error = Some("Password cannot be empty".to_string());
-                        } else if form.new_password != form.confirm_password {
-                            form.validation_error = Some("Passwords do not match".to_string());
-                        } else {
-                            submit_modal = true;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let save_btn = egui::Button::new(
+                            egui::RichText::new("Save Password")
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                        if ui.add(save_btn).clicked() {
+                            if form.new_password.is_empty() {
+                                form.validation_error =
+                                    Some("Password cannot be empty".to_string());
+                            } else if form.new_password != form.confirm_password {
+                                form.validation_error = Some("Passwords do not match".to_string());
+                            } else {
+                                submit_modal = true;
+                            }
                         }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close_modal = true;
-                    }
+                    });
                 });
             });
 
@@ -2553,38 +3126,65 @@ fn render_modals(
         let mut close_drop = false;
         let mut confirm_drop = false;
 
-        egui::Window::new("⚠️ Confirm Drop User")
+        crate::window_egui::style::render_modal_backdrop(
+            ctx,
+            "drop_user_backdrop",
+            state.drop_confirm_user.is_some(),
+        );
+
+        egui::Window::new("Confirm Drop User")
+            .title_bar(false)
+            .frame(crate::window_egui::style::modal_window_frame(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(400.0)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Are you sure you want to permanently delete user '{}'@'{}'?",
-                        target_user, target_host
-                    ))
-                    .strong(),
+                crate::window_egui::style::render_modal_header(
+                    ui,
+                    "Confirm Drop User",
+                    &mut close_drop,
                 );
-                ui.label(egui::RichText::new("This will revoke all granted permissions and remove access.").weak());
-                ui.separator();
                 ui.add_space(8.0);
 
-                let sql_preview = generate_drop_user_sql(target_user, target_host, &active_db_type);
-                ui.label(egui::RichText::new(format!("DDL: {}", sql_preview)).monospace().size(11.0));
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Are you sure you want to permanently delete user '{}'@'{}'?",
+                            target_user, target_host
+                        ))
+                        .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "This will revoke all granted permissions and remove access.",
+                        )
+                        .weak(),
+                    );
+                    ui.add_space(8.0);
+
+                    let sql_preview =
+                        generate_drop_user_sql(target_user, target_host, &active_db_type);
+                    ui.label(
+                        egui::RichText::new(format!("DDL: {}", sql_preview))
+                            .monospace()
+                            .size(11.0),
+                    );
+                });
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let del_btn = egui::Button::new(
-                        egui::RichText::new("🗑️ Permanently Delete").color(egui::Color32::WHITE),
-                    )
-                    .fill(egui::Color32::from_rgb(180, 30, 30));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let del_btn = egui::Button::new(
+                            egui::RichText::new("🗑️ Permanently Delete")
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(egui::Color32::from_rgb(180, 30, 30));
 
-                    if ui.add(del_btn).clicked() {
-                        confirm_drop = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close_drop = true;
-                    }
+                        if ui.add(del_btn).clicked() {
+                            confirm_drop = true;
+                        }
+                    });
                 });
             });
 
@@ -2625,6 +3225,8 @@ fn render_bool_badge(ui: &mut egui::Ui, val: bool) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -2699,9 +3301,21 @@ mod tests {
         updated.has_insert = true;
         updated.has_update = true;
 
-        let sqls = generate_object_privilege_diff_sql("alice", "", &original, &updated, &DatabaseType::PostgreSQL);
+        let sqls = generate_object_privilege_diff_sql(
+            "alice",
+            "",
+            &original,
+            &updated,
+            &DatabaseType::PostgreSQL,
+        );
         assert_eq!(sqls.len(), 2);
-        assert!(sqls.iter().any(|s| s.contains("GRANT INSERT ON TABLE \"public\".\"orders\" TO \"alice\";")));
-        assert!(sqls.iter().any(|s| s.contains("GRANT UPDATE ON TABLE \"public\".\"orders\" TO \"alice\";")));
+        assert!(
+            sqls.iter()
+                .any(|s| s.contains("GRANT INSERT ON TABLE \"public\".\"orders\" TO \"alice\";"))
+        );
+        assert!(
+            sqls.iter()
+                .any(|s| s.contains("GRANT UPDATE ON TABLE \"public\".\"orders\" TO \"alice\";"))
+        );
     }
 }

@@ -10,20 +10,18 @@ impl super::Tabular {
         {
             Some(conn) => conn,
             None => {
-                self.error_message = format!(
-                    "Connection {} tidak ditemukan untuk Create Table.",
+                self.toasts.error(format!(
+                    "Connection {} was not found for Create Table.",
                     connection_id
-                );
-                self.show_error_message = true;
+                ));
                 return;
             }
         };
 
         match connection.connection_type {
             models::enums::DatabaseType::Redis | models::enums::DatabaseType::MongoDB => {
-                self.error_message =
-                    "Create Table tidak tersedia untuk jenis database ini.".to_string();
-                self.show_error_message = true;
+                self.toasts
+                    .error("Create Table is not available for this database type.".to_string());
                 return;
             }
             _ => {}
@@ -298,49 +296,28 @@ impl super::Tabular {
     pub fn submit_create_table_wizard(&mut self, state: models::structs::CreateTableWizardState) {
         match self.generate_create_table_sql(&state) {
             Ok(sql) => {
-                let execution = crate::connection::execute_query_with_connection(
-                    self,
-                    state.connection_id,
-                    sql,
-                );
-                let (success, message) = match execution {
-                    Some((headers, rows)) => {
-                        let is_error = headers.first().map(|h| h == "Error").unwrap_or(false);
-                        if is_error {
-                            let msg = rows
-                                .first()
-                                .and_then(|row| row.first())
-                                .cloned()
-                                .unwrap_or_else(|| "Failed to create table.".to_string());
-                            (false, Some(msg))
-                        } else {
-                            (true, None)
-                        }
+                let connection_id = state.connection_id;
+                let table_name = state.table_name.trim().to_string();
+                self.create_table_error = None;
+                self.run_query_with_callback(connection_id, sql, move |tabular, message| {
+                    if message.success {
+                        tabular.create_table_error = None;
+                        tabular.create_table_wizard = None;
+                        tabular.show_create_table_dialog = false;
+                        tabular
+                            .toasts
+                            .success(format!("Table '{}' has been created.", table_name));
+                        tabular.refresh_connection(connection_id);
+                    } else {
+                        let msg = message
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Failed to create table.".to_string());
+                        tabular.create_table_error = Some(msg);
+                        tabular.create_table_wizard = Some(state);
+                        tabular.show_create_table_dialog = true;
                     }
-                    None => (
-                        false,
-                        Some("Failed to execute CREATE TABLE command.".to_string()),
-                    ),
-                };
-
-                if success {
-                    self.create_table_error = None;
-                    self.create_table_wizard = None;
-                    self.show_create_table_dialog = false;
-                    self.error_message = format!(
-                        "Table '{}' has been created successfully.",
-                        state.table_name.trim()
-                    );
-                    self.show_error_message = true;
-                    self.refresh_connection(state.connection_id);
-                } else {
-                    let msg = message.unwrap_or_else(|| "Failed to create table.".to_string());
-                    self.create_table_error = Some(msg.clone());
-                    self.error_message = msg;
-                    self.show_error_message = true;
-                    self.create_table_wizard = Some(state);
-                    self.show_create_table_dialog = true;
-                }
+                });
             }
             Err(err) => {
                 self.create_table_error = Some(err.clone());

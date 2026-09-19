@@ -56,7 +56,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         Some(a) if !session_expired => a.clone(),
         _ => {
             ui.label(
-                egui::RichText::new("🔒 Login untuk mengakses Teams.")
+                egui::RichText::new("🔒 Sign in to access Teams.")
                     .small()
                     .weak(),
             );
@@ -66,7 +66,8 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
 
     // ── Create & Refresh Team row ─────────────────────────────────────────
     ui.horizontal(|ui| {
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+        let metrics =
+            crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
         let row_h = if metrics.is_touch { 38.0 } else { 28.0 };
         let btn_w = if metrics.is_touch { 38.0 } else { 28.0 };
         let refresh_w = if metrics.is_touch { 38.0 } else { 28.0 };
@@ -79,18 +80,18 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let spacing_total = ui.spacing().item_spacing.x * 2.0;
         let input_w = (total_avail - btn_w - refresh_w - spacing_total).max(40.0);
 
-        ui.add_sized(
-            [input_w, row_h],
-            egui::TextEdit::singleline(&mut tabular.new_team_name)
-                .hint_text("Team name…")
-                .desired_width(input_w)
-                .margin(egui::Margin::symmetric(6, 4))
-                .vertical_align(egui::Align::Center),
+        crate::window_egui::style::render_text_field(
+            ui,
+            egui::TextEdit::singleline(&mut tabular.new_team_name).hint_text("Team name…"),
+            input_w,
+            None,
         );
 
         let can_create = !tabular.new_team_name.trim().is_empty();
         let create_btn = egui::Button::new(
-            egui::RichText::new("+").size(if metrics.is_touch { 18.0 } else { 14.0 }).strong()
+            egui::RichText::new("+")
+                .size(if metrics.is_touch { 18.0 } else { 14.0 })
+                .strong(),
         )
         .min_size(egui::vec2(btn_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
@@ -106,16 +107,15 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             create_team(tabular);
         }
 
-        let refresh_btn = egui::Button::new(
-            egui::RichText::new("🔄").size(if metrics.is_touch { 16.0 } else { 13.0 })
-        )
+        let refresh_btn = egui::Button::new(egui::RichText::new("🔄").size(if metrics.is_touch {
+            16.0
+        } else {
+            13.0
+        }))
         .min_size(egui::vec2(refresh_w, row_h))
         .corner_radius(egui::CornerRadius::same(5));
 
-        if ui.add(refresh_btn)
-            .on_hover_text("Refresh Teams")
-            .clicked()
-        {
+        if ui.add(refresh_btn).on_hover_text("Refresh Teams").clicked() {
             refresh_teams(tabular);
         }
     });
@@ -125,7 +125,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
     // ── Team list tree ────────────────────────────────────────────────────
     if tabular.teams.is_empty() {
         ui.label(
-            egui::RichText::new("Belum ada Team. Buat Team untuk berbagi folder & Room.")
+            egui::RichText::new("No teams yet. Create a team to share folders and rooms.")
                 .small()
                 .weak(),
         );
@@ -148,12 +148,27 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
             );
             let is_open_before = team_state.is_open();
 
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-            let sub_btn_size = if metrics.is_touch { egui::vec2(32.0, 32.0) } else { egui::vec2(18.0, 18.0) };
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+                ui.ctx(),
+                tabular.ui_mode,
+            );
+            let sub_btn_size = if metrics.is_touch {
+                egui::vec2(32.0, 32.0)
+            } else {
+                egui::vec2(18.0, 18.0)
+            };
             let sub_btn_font = if metrics.is_touch { 18.0 } else { 12.0 };
-            let team_del_size = if metrics.is_touch { egui::vec2(34.0, 34.0) } else { egui::vec2(22.0, 22.0) };
+            let team_del_size = if metrics.is_touch {
+                egui::vec2(34.0, 34.0)
+            } else {
+                egui::vec2(22.0, 22.0)
+            };
             let team_del_font = if metrics.is_touch { 18.0 } else { 14.0 };
-            let item_del_size = if metrics.is_touch { egui::vec2(30.0, 30.0) } else { egui::vec2(18.0, 18.0) };
+            let item_del_size = if metrics.is_touch {
+                egui::vec2(30.0, 30.0)
+            } else {
+                egui::vec2(18.0, 18.0)
+            };
 
             let team_res = team_state.show_header(ui, |ui| {
                 ui.spacing_mut().interact_size = team_del_size;
@@ -402,7 +417,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
                                 .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
-                        .on_hover_text("Buat Room baru untuk Team ini")
+                        .on_hover_text("Create a new room for this team")
                         .clicked()
                         {
                             add_room_clicked = true;
@@ -410,7 +425,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     }).body(|ui| {
                         ui.indent(format!("rooms_body_{}", team.id), |ui| {
                             if team_rooms.is_empty() {
-                                ui.label(egui::RichText::new("Belum ada Room untuk Team ini.").small().weak());
+                                ui.label(egui::RichText::new("This team has no rooms yet.").small().weak());
                             } else {
                                 for r in &team_rooms {
                                     ui.horizontal(|ui| {
@@ -487,7 +502,7 @@ pub fn refresh_teams(tabular: &mut Tabular) {
 fn create_team(tabular: &mut Tabular) {
     let name = tabular.new_team_name.trim().to_string();
     if name.is_empty() {
-        tabular.toasts.warning("Nama Team tidak boleh kosong");
+        tabular.toasts.warning("Team name must not be empty");
         return;
     }
 
@@ -642,194 +657,223 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let resource_types = ["connection", "query", "http"];
     let resource_labels = ["Connection", "Query", "HTTP Request"];
 
-    egui::Window::new("🤝 Share Folder to Team")
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "share_folder_dialog_backdrop",
+        tabular.show_share_folder_dialog,
+    );
+
+    egui::Window::new("Share Folder to Team")
         .id(egui::Id::new("share_folder_dialog"))
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(380.0)
         .show(ctx, |ui| {
-            ui.set_width(360.0);
+            ui.set_width(380.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Share Folder to Team",
+                &mut close_requested,
+            );
+            ui.add_space(8.0);
 
-            if let Some((res_type, folder_path)) = &preset_target {
-                ui.label(
-                    egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase()))
-                        .strong(),
-                );
-                ui.label(
-                    egui::RichText::new(folder_path)
-                        .monospace()
-                        .color(egui::Color32::from_rgb(100, 180, 255)),
-                );
-            } else {
-                ui.label(egui::RichText::new("Tipe Resource:").small().strong());
-                egui::ComboBox::from_id_salt("share_folder_dialog_res_type")
-                    .selected_text(resource_labels[tabular.share_folder_type_idx.min(2)])
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut tabular.share_folder_type_idx, 0, "Connection");
-                        ui.selectable_value(&mut tabular.share_folder_type_idx, 1, "Query");
-                        ui.selectable_value(&mut tabular.share_folder_type_idx, 2, "HTTP Request");
-                    });
-
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Folder Path:").small().strong());
-
-                let active_res_type = resource_types[tabular.share_folder_type_idx.min(2)];
-                let available_folders = get_available_folder_suggestions(tabular, active_res_type);
-
-                let selected_folder_text = if tabular.share_folder_path_input.trim().is_empty() {
-                    "Pilih Folder dari daftar...".to_string()
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                if let Some((res_type, folder_path)) = &preset_target {
+                    ui.label(
+                        egui::RichText::new(format!("Share {} folder:", res_type.to_uppercase()))
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(folder_path)
+                            .monospace()
+                            .color(egui::Color32::from_rgb(100, 180, 255)),
+                    );
                 } else {
-                    tabular.share_folder_path_input.clone()
-                };
+                    ui.label(egui::RichText::new("Tipe Resource:").small().strong());
+                    egui::ComboBox::from_id_salt("share_folder_dialog_res_type")
+                        .selected_text(resource_labels[tabular.share_folder_type_idx.min(2)])
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut tabular.share_folder_type_idx,
+                                0,
+                                "Connection",
+                            );
+                            ui.selectable_value(&mut tabular.share_folder_type_idx, 1, "Query");
+                            ui.selectable_value(
+                                &mut tabular.share_folder_type_idx,
+                                2,
+                                "HTTP Request",
+                            );
+                        });
 
-                egui::ComboBox::from_id_salt("share_folder_path_combobox")
-                    .selected_text(&selected_folder_text)
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        if available_folders.is_empty() {
-                            ui.label(egui::RichText::new("Belum ada folder lokal").small().weak());
-                        } else {
-                            for folder in &available_folders {
-                                let is_selected = tabular.share_folder_path_input == *folder;
-                                if ui.selectable_label(is_selected, folder).clicked() {
-                                    tabular.share_folder_path_input = folder.clone();
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Folder Path:").small().strong());
+
+                    let active_res_type = resource_types[tabular.share_folder_type_idx.min(2)];
+                    let available_folders =
+                        get_available_folder_suggestions(tabular, active_res_type);
+
+                    let selected_folder_text = if tabular.share_folder_path_input.trim().is_empty()
+                    {
+                        "Pilih Folder dari daftar...".to_string()
+                    } else {
+                        tabular.share_folder_path_input.clone()
+                    };
+
+                    egui::ComboBox::from_id_salt("share_folder_path_combobox")
+                        .selected_text(&selected_folder_text)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            if available_folders.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("Belum ada folder lokal").small().weak(),
+                                );
+                            } else {
+                                for folder in &available_folders {
+                                    let is_selected = tabular.share_folder_path_input == *folder;
+                                    if ui.selectable_label(is_selected, folder).clicked() {
+                                        tabular.share_folder_path_input = folder.clone();
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
 
-                ui.add_space(2.0);
-                ui.add_sized(
-                    [ui.available_width(), 24.0],
-                    egui::TextEdit::singleline(&mut tabular.share_folder_path_input)
-                        .hint_text("Atau ketik folder baru (cth: /Production)"),
-                );
-            }
-
-            ui.add_space(8.0);
-
-            if tabular.teams.is_empty() {
-                ui.label(
-                    egui::RichText::new("Anda belum memiliki atau bergabung di Team manapun.")
-                        .weak()
-                        .small(),
-                );
-            } else {
-                ui.label(egui::RichText::new("Pilih Team:").small().strong());
-
-                let selected_team_id = tabular
-                    .share_folder_selected_team_id
-                    .clone()
-                    .unwrap_or_else(|| tabular.teams[0].id.clone());
-
-                let selected_team_name = tabular
-                    .teams
-                    .iter()
-                    .find(|t| t.id == selected_team_id)
-                    .map(|t| t.name.as_str())
-                    .unwrap_or("Pilih Team...");
-
-                egui::ComboBox::from_id_salt("share_target_team")
-                    .selected_text(selected_team_name)
-                    .show_ui(ui, |ui| {
-                        for team in &tabular.teams {
-                            if ui
-                                .selectable_value(
-                                    &mut tabular.share_folder_selected_team_id,
-                                    Some(team.id.clone()),
-                                    &team.name,
-                                )
-                                .clicked()
-                            {}
-                        }
-                    });
-
-                ui.add_space(6.0);
-
-                if ui
-                    .add(crate::window_egui::style::btn_primary_ctx(
-                        ui.ctx(),
-                        "🤝 Share to Team",
-                    ))
-                    .clicked()
-                {
-                    share_clicked = true;
+                    ui.add_space(2.0);
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut tabular.share_folder_path_input)
+                            .hint_text("Atau ketik folder baru (cth: /Production)"),
+                        f32::INFINITY,
+                        None,
+                    );
                 }
-            }
 
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("Shared dengan Team:").small().strong());
+                ui.add_space(8.0);
 
-            let (active_res_type, active_folder_path) = match &preset_target {
-                Some((rt, fp)) => (rt.clone(), fp.clone()),
-                None => (
-                    resource_types[tabular.share_folder_type_idx.min(2)].to_string(),
-                    tabular.share_folder_path_input.trim().to_string(),
-                ),
-            };
+                if tabular.teams.is_empty() {
+                    ui.label(
+                        egui::RichText::new("You have not created or joined any team yet.")
+                            .weak()
+                            .small(),
+                    );
+                } else {
+                    ui.label(egui::RichText::new("Pilih Team:").small().strong());
 
-            let current_shares: Vec<_> = tabular
-                .shared_folders_cache
-                .iter()
-                .filter(|sf| {
-                    if active_folder_path.is_empty() {
-                        true
-                    } else {
-                        sf.resource_type == active_res_type && sf.folder_path == active_folder_path
-                    }
-                })
-                .cloned()
-                .collect();
+                    let selected_team_id = tabular
+                        .share_folder_selected_team_id
+                        .clone()
+                        .unwrap_or_else(|| tabular.teams[0].id.clone());
 
-            if current_shares.is_empty() {
-                ui.label(
-                    egui::RichText::new("Belum ada folder yang dibagikan.")
-                        .small()
-                        .weak(),
-                );
-            } else {
-                for sf in &current_shares {
-                    let team_name = tabular
+                    let selected_team_name = tabular
                         .teams
                         .iter()
-                        .find(|t| t.id == sf.team_id)
+                        .find(|t| t.id == selected_team_id)
                         .map(|t| t.name.as_str())
-                        .unwrap_or(&sf.team_id);
+                        .unwrap_or("Pilih Team...");
 
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "• [{}] {} ➔ {}",
-                                sf.resource_type.to_uppercase(),
-                                sf.folder_path,
-                                team_name
-                            ))
-                            .small(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(egui::RichText::new("🗑").small())
-                                        .frame(false),
-                                )
-                                .on_hover_text("Unshare folder")
-                                .clicked()
-                            {
-                                unshare_id = Some((sf.team_id.clone(), sf.id.clone()));
+                    egui::ComboBox::from_id_salt("share_target_team")
+                        .selected_text(selected_team_name)
+                        .show_ui(ui, |ui| {
+                            for team in &tabular.teams {
+                                if ui
+                                    .selectable_value(
+                                        &mut tabular.share_folder_selected_team_id,
+                                        Some(team.id.clone()),
+                                        &team.name,
+                                    )
+                                    .clicked()
+                                {}
                             }
                         });
-                    });
+
+                    ui.add_space(6.0);
+
+                    if ui
+                        .add(crate::window_egui::style::btn_primary_ctx(
+                            ui.ctx(),
+                            "🤝 Share to Team",
+                        ))
+                        .clicked()
+                    {
+                        share_clicked = true;
+                    }
                 }
-            }
+            });
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Tutup").clicked() {
-                        close_requested = true;
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(egui::RichText::new("Shared with team:").small().strong());
+                ui.add_space(4.0);
+
+                let (active_res_type, active_folder_path) = match &preset_target {
+                    Some((rt, fp)) => (rt.clone(), fp.clone()),
+                    None => (
+                        resource_types[tabular.share_folder_type_idx.min(2)].to_string(),
+                        tabular.share_folder_path_input.trim().to_string(),
+                    ),
+                };
+
+                let current_shares: Vec<_> = tabular
+                    .shared_folders_cache
+                    .iter()
+                    .filter(|sf| {
+                        if active_folder_path.is_empty() {
+                            true
+                        } else {
+                            sf.resource_type == active_res_type
+                                && sf.folder_path == active_folder_path
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                if current_shares.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Belum ada folder yang dibagikan.")
+                            .small()
+                            .weak(),
+                    );
+                } else {
+                    for sf in &current_shares {
+                        let team_name = tabular
+                            .teams
+                            .iter()
+                            .find(|t| t.id == sf.team_id)
+                            .map(|t| t.name.as_str())
+                            .unwrap_or(&sf.team_id);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "• [{}] {} ➔ {}",
+                                    sf.resource_type.to_uppercase(),
+                                    sf.folder_path,
+                                    team_name
+                                ))
+                                .small(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(egui::RichText::new("🗑").small())
+                                                .frame(false),
+                                        )
+                                        .on_hover_text("Unshare folder")
+                                        .clicked()
+                                    {
+                                        unshare_id = Some((sf.team_id.clone(), sf.id.clone()));
+                                    }
+                                },
+                            );
+                        });
                     }
-                });
+                }
             });
         });
 
@@ -848,7 +892,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         };
 
         if folder_path.is_empty() {
-            tabular.toasts.warning("Folder path tidak boleh kosong");
+            tabular.toasts.warning("Folder path must not be empty");
         } else {
             let team_id = tabular
                 .share_folder_selected_team_id
@@ -1065,55 +1109,79 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut add_clicked = false;
     let mut search_triggered_query: Option<String> = None;
 
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "add_member_dialog_backdrop",
+        tabular.show_add_member_dialog,
+    );
+
     egui::Window::new(format!("👥 Add Member to {}", team_name))
         .id(egui::Id::new("add_team_member_dialog"))
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(380.0)
         .show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.spacing_mut().item_spacing.y = 8.0;
-
-            ui.label(
-                egui::RichText::new("Cari Member (Min. 5 Karakter Email / Name / Phone):")
-                    .small()
-                    .strong(),
+            crate::window_egui::style::render_modal_header(
+                ui,
+                format!("Add Member to {}", team_name),
+                &mut close_requested,
             );
+            ui.add_space(8.0);
 
-            ui.add_sized(
-                [ui.available_width(), 26.0],
-                egui::TextEdit::singleline(&mut tabular.add_member_identifier)
-                    .hint_text("Ketik min. 5 karakter untuk mencari…"),
-            );
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+
+                ui.label(
+                    egui::RichText::new("Cari Member (Min. 5 Karakter Email / Name / Phone):")
+                        .small()
+                        .strong(),
+                );
+
+                crate::window_egui::style::render_search_field(
+                    ui,
+                    &mut tabular.add_member_identifier,
+                    "Type at least 5 characters to search…",
+                    f32::INFINITY,
+                );
+
+                let trimmed_input = tabular.add_member_identifier.trim().to_string();
+                let char_count = trimmed_input.chars().count();
+
+                // Trigger search if >= 5 chars and query changed
+                if char_count >= 5
+                    && trimmed_input != tabular.add_member_search_query
+                    && !tabular.add_member_search_in_progress
+                {
+                    search_triggered_query = Some(trimmed_input.clone());
+                }
+
+                // Role selection row (Tipe dropdown is removed)
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Role:").small().strong());
+                    let roles = ["member", "admin"];
+                    egui::ComboBox::from_id_salt("add_member_dialog_role")
+                        .selected_text(roles[tabular.add_member_role_idx])
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut tabular.add_member_role_idx, 0, "member");
+                            ui.selectable_value(&mut tabular.add_member_role_idx, 1, "admin");
+                        });
+                });
+            });
 
             let trimmed_input = tabular.add_member_identifier.trim().to_string();
             let char_count = trimmed_input.chars().count();
 
-            // Trigger search if >= 5 chars and query changed
-            if char_count >= 5
-                && trimmed_input != tabular.add_member_search_query
-                && !tabular.add_member_search_in_progress
-            {
-                search_triggered_query = Some(trimmed_input.clone());
-            }
-
-            // Role selection row (Tipe dropdown is removed)
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Role:").small().strong());
-                let roles = ["member", "admin"];
-                egui::ComboBox::from_id_salt("add_member_dialog_role")
-                    .selected_text(roles[tabular.add_member_role_idx])
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut tabular.add_member_role_idx, 0, "member");
-                        ui.selectable_value(&mut tabular.add_member_role_idx, 1, "admin");
-                    });
-            });
+            ui.add_space(6.0);
 
             // Autocomplete Candidate Dropdown / Box
             if char_count < 5 {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Ketik {} karakter lagi untuk mencari…",
+                        "Type {} more character(s) to search…",
                         5 - char_count
                     ))
                     .small()
@@ -1129,7 +1197,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     );
                 });
             } else if !tabular.add_member_search_results.is_empty() {
-                ui.group(|ui| {
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                     ui.set_max_height(140.0);
                     ui.label(
                         egui::RichText::new("Hasil Pencarian (Pilih Pengguna):")
@@ -1173,9 +1241,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 );
             }
 
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(10.0);
 
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1191,10 +1257,6 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .clicked()
                     {
                         add_clicked = true;
-                    }
-
-                    if ui.button("Batal").clicked() {
-                        close_requested = true;
                     }
                 });
             });
@@ -1345,57 +1407,59 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     };
 
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "delete_team_dialog_backdrop",
+        tabular.team_to_delete.is_some(),
+    );
+
     let mut do_delete = false;
     let mut close = false;
 
-    egui::Window::new("🗑 Hapus Team")
+    egui::Window::new("Delete Team")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .fixed_size([340.0, 160.0])
+        .default_width(360.0)
         .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Apakah Anda yakin ingin menghapus Team ini?")
-                        .strong()
-                        .size(14.0),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(format!("\"{}\"", team_name))
-                        .strong()
-                        .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Semua room, share folder, dan data member di dalam team ini akan terhapus.")
-                        .weak()
-                        .small(),
-                );
-                ui.add_space(14.0);
+            crate::window_egui::style::render_modal_header(ui, "Delete Team", &mut close);
+            ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.spacing_mut().interact_size.y = 28.0;
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Are you sure you want to delete this team?")
+                            .strong()
+                            .size(14.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("\"{}\"", team_name))
+                            .strong()
+                            .color(crate::window_egui::style::theme_accent(ui.ctx())),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Semua room, share folder, dan data member di dalam team ini akan terhapus.")
+                            .weak()
+                            .small(),
+                    );
+                });
+            });
 
-                    let avail_w = ui.available_width();
-                    let btn_w = (avail_w - 12.0) / 2.0;
-
-                    if ui.add_sized([btn_w, 28.0], egui::Button::new("Batal")).clicked() {
-                        close = true;
-                    }
-
-                    if ui.add_sized(
-                        [btn_w, 28.0],
-                        egui::Button::new(egui::RichText::new("🗑 Hapus Team").color(egui::Color32::WHITE))
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new("🗑 Delete Team").color(egui::Color32::WHITE))
                             .fill(egui::Color32::from_rgb(200, 50, 50)),
                     ).clicked() {
                         do_delete = true;
                         close = true;
                     }
                 });
-                ui.add_space(6.0);
             });
         });
 
@@ -1406,7 +1470,6 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         tabular.team_to_delete = None;
     }
 }
-
 
 // ─── Moderation UI (App Store Review Guideline 1.2) ──────────────────────────
 
@@ -1425,47 +1488,59 @@ pub fn render_report_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     };
 
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "report_dialog_backdrop",
+        tabular.report_target.is_some(),
+    );
+
     let in_flight = tabular.report_receiver.is_some();
     let mut close = false;
 
     egui::Window::new("Report Member")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(420.0)
         .show(ctx, |ui| {
             ui.set_min_width(400.0);
-            ui.add_space(4.0);
-
-            ui.label(format!("Reporting {label}"));
+            crate::window_egui::style::render_modal_header(ui, "Report Member", &mut close);
             ui.add_space(8.0);
 
-            ui.label(egui::RichText::new("Why are you reporting this?").strong());
-            ui.add_space(4.0);
-            for (key, text) in REPORT_REASONS {
-                ui.radio_value(&mut tabular.report_reason, (*key).to_string(), *text);
-            }
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Reporting {label}"));
+                ui.add_space(8.0);
 
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Details (optional)").strong());
-            ui.add_space(4.0);
-            ui.add_enabled(
-                !in_flight,
-                egui::TextEdit::multiline(&mut tabular.report_details)
-                    .hint_text("Anything that helps us understand what happened")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(4),
-            );
+                ui.label(egui::RichText::new("Why are you reporting this?").strong());
+                ui.add_space(4.0);
+                for (key, text) in REPORT_REASONS {
+                    ui.radio_value(&mut tabular.report_reason, (*key).to_string(), *text);
+                }
 
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(
-                    "We review every report and act on it, which may include removing content \
-                     or suspending the account. Blocking this person stops them reaching you \
-                     straight away.",
-                )
-                .size(11.0)
-                .color(ui.visuals().weak_text_color()),
-            );
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Details (optional)").strong());
+                ui.add_space(4.0);
+                ui.add_enabled(
+                    !in_flight,
+                    egui::TextEdit::multiline(&mut tabular.report_details)
+                        .hint_text("Anything that helps us understand what happened")
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(4),
+                );
+
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "We review every report and act on it, which may include removing content \
+                         or suspending the account. Blocking this person stops them reaching you \
+                         straight away.",
+                    )
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+                );
+            });
 
             if let Some(err) = &tabular.report_error {
                 ui.add_space(6.0);
@@ -1474,22 +1549,19 @@ pub fn render_report_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(!in_flight, |ui| {
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(!in_flight, |ui| {
-                        let label = if in_flight { "Sending…" } else { "Submit Report" };
+                        let label = if in_flight {
+                            "Sending…"
+                        } else {
+                            "Submit Report"
+                        };
                         if ui.button(label).clicked() {
                             submit_report(tabular, &user_id);
                         }
                     });
                 });
             });
-            ui.add_space(4.0);
         });
 
     if close {
@@ -1505,43 +1577,49 @@ pub fn render_block_user_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     };
 
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "block_user_dialog_backdrop",
+        tabular.block_target.is_some(),
+    );
+
     let in_flight = tabular.block_receiver.is_some();
     let mut close = false;
 
     egui::Window::new("Block Member")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(420.0)
         .show(ctx, |ui| {
             ui.set_min_width(400.0);
-            ui.add_space(4.0);
-
-            ui.label(format!("Block {label}?"));
+            crate::window_egui::style::render_modal_header(ui, "Block Member", &mut close);
             ui.add_space(8.0);
 
-            for line in [
-                "• They can no longer add you to any team",
-                "• You are removed from teams they own, and they from teams you own",
-                "• Neither of you will find the other in member search",
-            ] {
-                ui.label(egui::RichText::new(line).size(12.0));
-            }
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("Block {label}?")).strong());
+                ui.add_space(6.0);
 
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("You can undo this later from Settings → Sync & Account.")
-                    .size(11.0)
-                    .color(ui.visuals().weak_text_color()),
-            );
+                for line in [
+                    "• They can no longer add you to any team",
+                    "• You are removed from teams they own, and they from teams you own",
+                    "• Neither of you will find the other in member search",
+                ] {
+                    ui.label(egui::RichText::new(line).size(12.0));
+                }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("You can undo this later from Settings → Sync & Account.")
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(!in_flight, |ui| {
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(!in_flight, |ui| {
                         let label = if in_flight { "Blocking…" } else { "Block" };
@@ -1551,7 +1629,6 @@ pub fn render_block_user_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     });
                 });
             });
-            ui.add_space(4.0);
         });
 
     if close {
@@ -1582,7 +1659,11 @@ fn submit_report(tabular: &mut Tabular, user_id: &str) {
                 Some(&target),
                 Some(&target),
                 &reason,
-                if details.is_empty() { None } else { Some(&details) },
+                if details.is_empty() {
+                    None
+                } else {
+                    Some(&details)
+                },
             )
             .await
             .map_err(|e| e.to_string());
