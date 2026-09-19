@@ -63,6 +63,30 @@ impl CliAgentConfig {
     }
 }
 
+/// Status sebuah tahapan pengerjaan (step) oleh agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgressStatus {
+    #[default]
+    Active,
+    Done,
+    Error,
+}
+
+/// Satu tahapan pengerjaan (step) oleh agent yang dilaporkan ke UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressStep {
+    /// Nomor urut tahapan (misal 1, 2, 3...) bila CLI menyediakannya.
+    pub step_index: Option<u64>,
+    /// Deskripsi ringkas & manusiawi (misal "Read schema.rs", "Run SQL query").
+    pub description: String,
+    /// Detail parameter tambahan jika ada (misal path file, query SQL, baris perintah).
+    pub detail: Option<String>,
+    /// Status step: Active, Done, atau Error.
+    pub status: ProgressStatus,
+    /// Nama tool asal (misal "view_file", "describe_schema", "call_mcp_tool").
+    pub tool_name: Option<String>,
+}
+
 /// Kejadian yang dikirim ke UI selama satu giliran percakapan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -72,6 +96,8 @@ pub enum AgentEvent {
     TextDelta(String),
     /// Agent memanggil tool (nama tool), hanya untuk indikator aktivitas.
     ToolUse(String),
+    /// Tahapan kemajuan atau perubahan status aktivitas agent.
+    Progress(ProgressStep),
     /// Giliran selesai. `text` berisi jawaban lengkap (sama dengan gabungan
     /// delta bila ada), `usage` ringkasan token/biaya bila CLI melaporkannya.
     Done {
@@ -334,6 +360,28 @@ impl StreamParser {
             return Vec::new();
         }
         if self.kind == CliAgentKind::Custom {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let evs = self.feed_custom_json(&v);
+                if !evs.is_empty() {
+                    return evs;
+                }
+            }
+            let trimmed = line.trim();
+            if trimmed.starts_with("Step ")
+                || trimmed.starts_with("Running ")
+                || trimmed.starts_with("[tool] ")
+            {
+                return vec![
+                    AgentEvent::Progress(ProgressStep {
+                        step_index: None,
+                        description: trimmed.to_string(),
+                        detail: None,
+                        status: ProgressStatus::Active,
+                        tool_name: None,
+                    }),
+                    self.delta(&format!("{line}\n")),
+                ];
+            }
             return vec![self.delta(&format!("{line}\n"))];
         }
         let value: serde_json::Value = match serde_json::from_str(line) {
@@ -350,8 +398,34 @@ impl StreamParser {
             CliAgentKind::Antigravity => self.feed_agy(&value),
             CliAgentKind::ClaudeCode => self.feed_claude(&value),
             CliAgentKind::GeminiCli => self.feed_gemini(&value),
-            CliAgentKind::Custom => unreachable!(),
+            CliAgentKind::Custom => self.feed_custom_json(&value),
         }
+    }
+
+    fn feed_custom_json(&mut self, v: &serde_json::Value) -> Vec<AgentEvent> {
+        if v.get("event").is_some() {
+            return self.feed_agy(v);
+        }
+        if v.get("type").is_some() {
+            let ty = v["type"].as_str().unwrap_or("");
+            if ty == "stream_event" || ty == "assistant" || ty == "system" {
+                return self.feed_claude(v);
+            }
+            if ty == "tool_use" || ty == "tool_call" || ty == "message" {
+                return self.feed_gemini(v);
+            }
+        }
+        if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
+            if let Some(first) = choices.first() {
+                if let Some(d) = first["delta"]["content"].as_str() {
+                    return vec![self.delta(d)];
+                }
+                if let Some(msg) = first["message"]["content"].as_str() {
+                    return vec![self.delta(msg)];
+                }
+            }
+        }
+        Vec::new()
     }
 
     /// Dipanggil saat stdout ditutup. `Some` bila giliran belum ditutup oleh
@@ -380,6 +454,8 @@ impl StreamParser {
             }
             "step_update" => {
                 let su = &v["step_update"];
+                let step_idx = su["step_index"].as_u64();
+                let state_str = su["state"].as_str().unwrap_or("");
                 let step_type = su["step_type"].as_str().unwrap_or("");
                 match step_type {
                     "agent_response" => {
@@ -391,13 +467,33 @@ impl StreamParser {
                     }
                     "user_input" | "" => {}
                     other => {
-                        if su["state"].as_str() == Some("ACTIVE") {
-                            let name = su["tool_name"]
-                                .as_str()
-                                .or_else(|| su["name"].as_str())
-                                .unwrap_or(other);
+                        let name = su["tool_name"]
+                            .as_str()
+                            .or_else(|| su["tool_info"]["name"].as_str())
+                            .or_else(|| su["name"].as_str())
+                            .unwrap_or(other);
+                        let params = if su["tool_info"]["parameters"].is_object() {
+                            &su["tool_info"]["parameters"]
+                        } else {
+                            &su["parameters"]
+                        };
+                        let (desc, detail) = format_tool_step(name, params);
+                        let status = match state_str {
+                            "ACTIVE" => ProgressStatus::Active,
+                            "DONE" => ProgressStatus::Done,
+                            "ERROR" => ProgressStatus::Error,
+                            _ => ProgressStatus::Active,
+                        };
+                        if state_str == "ACTIVE" {
                             out.push(AgentEvent::ToolUse(name.to_string()));
                         }
+                        out.push(AgentEvent::Progress(ProgressStep {
+                            step_index: step_idx,
+                            description: desc,
+                            detail,
+                            status,
+                            tool_name: Some(name.to_string()),
+                        }));
                     }
                 }
             }
@@ -456,6 +552,15 @@ impl StreamParser {
                             && let Some(name) = ev["content_block"]["name"].as_str()
                         {
                             out.push(AgentEvent::ToolUse(name.to_string()));
+                            let (desc, detail) =
+                                format_tool_step(name, &ev["content_block"]["input"]);
+                            out.push(AgentEvent::Progress(ProgressStep {
+                                step_index: None,
+                                description: desc,
+                                detail,
+                                status: ProgressStatus::Active,
+                                tool_name: Some(name.to_string()),
+                            }));
                         }
                     }
                     _ => {}
@@ -480,6 +585,14 @@ impl StreamParser {
                             "tool_use" => {
                                 if let Some(name) = b["name"].as_str() {
                                     out.push(AgentEvent::ToolUse(name.to_string()));
+                                    let (desc, detail) = format_tool_step(name, &b["input"]);
+                                    out.push(AgentEvent::Progress(ProgressStep {
+                                        step_index: None,
+                                        description: desc,
+                                        detail,
+                                        status: ProgressStatus::Active,
+                                        tool_name: Some(name.to_string()),
+                                    }));
                                 }
                             }
                             _ => {}
@@ -546,6 +659,21 @@ impl StreamParser {
                     .or_else(|| v["name"].as_str())
                     .unwrap_or("tool");
                 out.push(AgentEvent::ToolUse(name.to_string()));
+                let params = if v["parameters"].is_object() {
+                    &v["parameters"]
+                } else if v["args"].is_object() {
+                    &v["args"]
+                } else {
+                    &v["tool_info"]["parameters"]
+                };
+                let (desc, detail) = format_tool_step(name, params);
+                out.push(AgentEvent::Progress(ProgressStep {
+                    step_index: None,
+                    description: desc,
+                    detail,
+                    status: ProgressStatus::Active,
+                    tool_name: Some(name.to_string()),
+                }));
             }
             "result" => {
                 let status = v["status"].as_str().unwrap_or("success");
@@ -572,6 +700,341 @@ impl StreamParser {
             _ => {}
         }
         out
+    }
+}
+
+fn clean_arg_str(val: &serde_json::Value) -> Option<String> {
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim();
+        if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+            Some(trimmed[1..trimmed.len() - 1].trim().to_string())
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    }
+}
+
+fn is_tabular_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "describe_schema"
+            | "run_query"
+            | "list_databases"
+            | "list_connections"
+            | "schema_diagram"
+            | "refresh_schema_cache"
+            | "format_sql"
+            | "explain_query"
+            | "check_sql_safety"
+            | "save_note"
+            | "read_note"
+            | "search_notes"
+    )
+}
+
+fn format_tabular_mcp_tool(
+    mcp_tool: &str,
+    args_ref: &serde_json::Value,
+    inner_action: Option<String>,
+) -> (String, Option<String>) {
+    match mcp_tool {
+        "describe_schema" => {
+            let table = args_ref
+                .get("table_name")
+                .or_else(|| args_ref.get("table"))
+                .and_then(clean_arg_str);
+            if let Some(tbl) = table {
+                (
+                    format!("Describe schema for '{tbl}'"),
+                    Some(format!("Table: {tbl}")),
+                )
+            } else {
+                ("Describe database schema".to_string(), None)
+            }
+        }
+        "run_query" => {
+            let query = args_ref
+                .get("query")
+                .or_else(|| args_ref.get("sql"))
+                .and_then(clean_arg_str);
+            let detail = query.clone();
+            let desc = if let Some(q) = query {
+                let single_line = q.split_whitespace().collect::<Vec<_>>().join(" ");
+                if single_line.len() > 50 {
+                    format!("Run SQL: {}…", &single_line[..47])
+                } else {
+                    format!("Run SQL: {single_line}")
+                }
+            } else {
+                "Execute SQL query".to_string()
+            };
+            (desc, detail)
+        }
+        "list_databases" => ("List databases".to_string(), None),
+        "list_connections" => ("List database connections".to_string(), None),
+        "schema_diagram" => ("Generate schema diagram".to_string(), None),
+        "refresh_schema_cache" => ("Refresh schema cache".to_string(), None),
+        "format_sql" => ("Format SQL".to_string(), None),
+        "explain_query" => ("Explain query plan".to_string(), None),
+        "check_sql_safety" => ("Check query safety".to_string(), None),
+        "save_note" => {
+            let title = args_ref.get("title").and_then(clean_arg_str);
+            (
+                title
+                    .as_ref()
+                    .map(|t| format!("Save note '{t}'"))
+                    .unwrap_or_else(|| "Save memory note".to_string()),
+                title,
+            )
+        }
+        "read_note" => {
+            let title = args_ref
+                .get("title")
+                .or_else(|| args_ref.get("note"))
+                .and_then(clean_arg_str);
+            (
+                title
+                    .as_ref()
+                    .map(|t| format!("Read note '{t}'"))
+                    .unwrap_or_else(|| "Read memory note".to_string()),
+                title,
+            )
+        }
+        "search_notes" => {
+            let q = args_ref.get("query").and_then(clean_arg_str);
+            (
+                q.as_ref()
+                    .map(|s| format!("Search notes \"{s}\""))
+                    .unwrap_or_else(|| "Search memory notes".to_string()),
+                q,
+            )
+        }
+        other => {
+            if let Some(act) = inner_action {
+                (act, None)
+            } else {
+                (format!("Tabular: {other}"), None)
+            }
+        }
+    }
+}
+
+/// Format nama dan parameter tool menjadi deskripsi manusiawi dan detailnya.
+/// Mengadopsi konvensi pelacak aktivitas dari AGENT-CODE.
+pub fn format_tool_step(tool_name: &str, params: &serde_json::Value) -> (String, Option<String>) {
+    let raw_name = tool_name.trim();
+    let explicit_action = params
+        .get("toolAction")
+        .and_then(clean_arg_str)
+        .filter(|s| !s.is_empty());
+    let explicit_summary = params
+        .get("toolSummary")
+        .and_then(clean_arg_str)
+        .filter(|s| !s.is_empty());
+
+    if raw_name == "call_mcp_tool" {
+        let mcp_tool = params
+            .get("ToolName")
+            .and_then(clean_arg_str)
+            .unwrap_or_else(|| "tool".to_string());
+        let mcp_args = params.get("Arguments");
+        let parsed_args = mcp_args.and_then(|a| {
+            if a.is_object() {
+                Some(a.clone())
+            } else if let Some(s) = a.as_str() {
+                serde_json::from_str::<serde_json::Value>(s).ok()
+            } else {
+                None
+            }
+        });
+        let args_ref = parsed_args.as_ref().unwrap_or(params);
+
+        let inner_action = args_ref
+            .get("toolAction")
+            .and_then(clean_arg_str)
+            .filter(|s| !s.is_empty())
+            .or(explicit_action);
+
+        return format_tabular_mcp_tool(&mcp_tool, args_ref, inner_action);
+    }
+
+    if let Some(sub) = raw_name
+        .strip_prefix("mcp__tabular__")
+        .or_else(|| raw_name.strip_prefix("tabular__"))
+    {
+        return (format!("Tabular: {sub}"), None);
+    }
+
+    if is_tabular_tool(raw_name) {
+        return format_tabular_mcp_tool(raw_name, params, explicit_action);
+    }
+
+    match raw_name {
+        "run_command" | "bash" => {
+            let cmd = params
+                .get("CommandLine")
+                .or_else(|| params.get("command"))
+                .or_else(|| params.get("cmd"))
+                .and_then(clean_arg_str);
+            let detail = cmd.clone();
+            let desc = if let Some(c) = cmd {
+                let single_line = c.split_whitespace().collect::<Vec<_>>().join(" ");
+                if single_line.len() > 45 {
+                    format!("Run: {}…", &single_line[..42])
+                } else if !single_line.is_empty() {
+                    format!("Run: {single_line}")
+                } else {
+                    "Run command".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Run command".to_string()
+            };
+            (desc, detail)
+        }
+        "view_file" => {
+            let path = params
+                .get("AbsolutePath")
+                .or_else(|| params.get("path"))
+                .or_else(|| params.get("file"))
+                .and_then(clean_arg_str);
+            let detail = path.clone();
+            let desc = if let Some(p) = &path {
+                let file_name = Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(p);
+                if !file_name.is_empty() {
+                    format!("Read {file_name}")
+                } else {
+                    "Read file".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Read file".to_string()
+            };
+            (desc, detail)
+        }
+        "replace_file_content" | "multi_replace_file_content" => {
+            let path = params
+                .get("TargetFile")
+                .or_else(|| params.get("path"))
+                .and_then(clean_arg_str);
+            let detail = path.clone();
+            let desc = if let Some(p) = &path {
+                let file_name = Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(p);
+                if !file_name.is_empty() {
+                    format!("Edit {file_name}")
+                } else {
+                    "Edit file".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Edit code".to_string()
+            };
+            (desc, detail)
+        }
+        "write_to_file" => {
+            let path = params
+                .get("TargetFile")
+                .or_else(|| params.get("path"))
+                .and_then(clean_arg_str);
+            let detail = path.clone();
+            let desc = if let Some(p) = &path {
+                let file_name = Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(p);
+                if !file_name.is_empty() {
+                    format!("Write {file_name}")
+                } else {
+                    "Write file".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Write file".to_string()
+            };
+            (desc, detail)
+        }
+        "grep_search" => {
+            let query = params
+                .get("Query")
+                .or_else(|| params.get("query"))
+                .or_else(|| params.get("pattern"))
+                .and_then(clean_arg_str);
+            let detail = query.clone();
+            let desc = if let Some(q) = query {
+                if !q.is_empty() {
+                    format!("Search \"{q}\"")
+                } else {
+                    "Search codebase".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Search codebase".to_string()
+            };
+            (desc, detail)
+        }
+        "list_dir" => {
+            let dir = params
+                .get("DirectoryPath")
+                .or_else(|| params.get("path"))
+                .or_else(|| params.get("dir"))
+                .and_then(clean_arg_str);
+            let detail = dir.clone();
+            let desc = if let Some(d) = &dir {
+                let dir_name = Path::new(d)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(d);
+                if !dir_name.is_empty() {
+                    format!("List {dir_name}")
+                } else {
+                    "List directory".to_string()
+                }
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "List directory".to_string()
+            };
+            (desc, detail)
+        }
+        "search_web" => {
+            let q = params.get("query").and_then(clean_arg_str);
+            let detail = q.clone();
+            let desc = if let Some(query) = q {
+                format!("Search web: {query}")
+            } else if let Some(act) = explicit_action {
+                act
+            } else {
+                "Search web".to_string()
+            };
+            (desc, detail)
+        }
+        _ => {
+            if raw_name.starts_with("mcp__tabular__") {
+                let sub = raw_name.trim_start_matches("mcp__tabular__");
+                (format!("Tabular: {sub}"), None)
+            } else if let Some(act) = explicit_action {
+                (act, None)
+            } else if let Some(sum) = explicit_summary {
+                (sum, None)
+            } else if !raw_name.is_empty() {
+                (format!("Running {raw_name}…"), None)
+            } else {
+                ("Working…".to_string(), None)
+            }
+        }
     }
 }
 
@@ -879,7 +1342,7 @@ pub fn spawn_stream(
     };
 
     let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    {
+    let stderr_thread = {
         let buf = Arc::clone(&stderr_buf);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
@@ -891,8 +1354,8 @@ pub fn spawn_stream(
             if let Ok(mut g) = buf.lock() {
                 *g = s;
             }
-        });
-    }
+        })
+    };
 
     let kind = cfg.kind;
     let reader_handle = handle.clone();
@@ -923,6 +1386,7 @@ pub fn spawn_stream(
                 .and_then(|g| g.take())
                 .and_then(|mut c| c.wait().ok())
         };
+        let _ = stderr_thread.join();
         if parser.is_finished() {
             return;
         }
@@ -1246,7 +1710,16 @@ mod tests {
         let tool = r#"{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool_call","tool_name":"call_mcp_tool"}}"#;
         assert_eq!(
             p.feed_line(tool),
-            vec![AgentEvent::ToolUse("call_mcp_tool".into())]
+            vec![
+                AgentEvent::ToolUse("call_mcp_tool".into()),
+                AgentEvent::Progress(ProgressStep {
+                    step_index: Some(2),
+                    description: "Tabular: tool".into(),
+                    detail: None,
+                    status: ProgressStatus::Active,
+                    tool_name: Some("call_mcp_tool".into()),
+                })
+            ]
         );
         let d2 = r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":1,"output_tokens":1}}}"#;
         assert_eq!(p.feed_line(d2), vec![AgentEvent::TextDelta("\n".into())]);
@@ -1284,7 +1757,16 @@ mod tests {
         let start = r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp__tabular__run_query"}}}"#;
         assert_eq!(
             p.feed_line(start),
-            vec![AgentEvent::ToolUse("mcp__tabular__run_query".into())]
+            vec![
+                AgentEvent::ToolUse("mcp__tabular__run_query".into()),
+                AgentEvent::Progress(ProgressStep {
+                    step_index: None,
+                    description: "Tabular: run_query".into(),
+                    detail: None,
+                    status: ProgressStatus::Active,
+                    tool_name: Some("mcp__tabular__run_query".into()),
+                })
+            ]
         );
         let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}"#;
         assert_eq!(
@@ -1318,7 +1800,14 @@ mod tests {
             p.feed_line(asst),
             vec![
                 AgentEvent::TextDelta("Hi".into()),
-                AgentEvent::ToolUse("Read".into())
+                AgentEvent::ToolUse("Read".into()),
+                AgentEvent::Progress(ProgressStep {
+                    step_index: None,
+                    description: "Running Read…".into(),
+                    detail: None,
+                    status: ProgressStatus::Active,
+                    tool_name: Some("Read".into()),
+                })
             ]
         );
         let err = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}"#;
@@ -1335,7 +1824,16 @@ mod tests {
         );
         assert_eq!(
             p.feed_line(r#"{"type":"tool_use","tool_name":"run_query"}"#),
-            vec![AgentEvent::ToolUse("run_query".into())]
+            vec![
+                AgentEvent::ToolUse("run_query".into()),
+                AgentEvent::Progress(ProgressStep {
+                    step_index: None,
+                    description: "Execute SQL query".into(),
+                    detail: None,
+                    status: ProgressStatus::Active,
+                    tool_name: Some("run_query".into()),
+                })
+            ]
         );
         let evs =
             p.feed_line(r#"{"type":"result","status":"success","stats":{"total_tokens":42}}"#);
@@ -1374,6 +1872,38 @@ mod tests {
                 text: "Some plain error text".into(),
                 usage: None
             })
+        );
+    }
+
+    #[test]
+    fn format_tool_step_formats_tools_descriptively() {
+        let p_view = serde_json::json!({"AbsolutePath": "/Users/test/project/src/main.rs"});
+        let (desc, detail) = format_tool_step("view_file", &p_view);
+        assert_eq!(desc, "Read main.rs");
+        assert_eq!(detail.as_deref(), Some("/Users/test/project/src/main.rs"));
+
+        let p_cmd = serde_json::json!({"CommandLine": "cargo check --all-targets"});
+        let (desc, detail) = format_tool_step("run_command", &p_cmd);
+        assert_eq!(desc, "Run: cargo check --all-targets");
+        assert_eq!(detail.as_deref(), Some("cargo check --all-targets"));
+
+        let p_mcp = serde_json::json!({
+            "ToolName": "describe_schema",
+            "Arguments": {"table_name": "users"}
+        });
+        let (desc, detail) = format_tool_step("call_mcp_tool", &p_mcp);
+        assert_eq!(desc, "Describe schema for 'users'");
+        assert_eq!(detail.as_deref(), Some("Table: users"));
+
+        let p_query = serde_json::json!({
+            "ToolName": "run_query",
+            "Arguments": {"query": "SELECT id, name FROM users LIMIT 10"}
+        });
+        let (desc, detail) = format_tool_step("call_mcp_tool", &p_query);
+        assert_eq!(desc, "Run SQL: SELECT id, name FROM users LIMIT 10");
+        assert_eq!(
+            detail.as_deref(),
+            Some("SELECT id, name FROM users LIMIT 10")
         );
     }
 

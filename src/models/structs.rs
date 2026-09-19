@@ -1019,6 +1019,8 @@ pub enum AiChatRole {
     Assistant,
 }
 
+pub use crate::agent::harness::{ProgressStatus, ProgressStep};
+
 /// Satu gelembung di transkrip panel AI.
 #[derive(Clone, Debug, Default)]
 pub struct AiChatMessage {
@@ -1034,6 +1036,8 @@ pub struct AiChatMessage {
     pub error: Option<String>,
     /// Ringkasan token/biaya dari backend, bila ada.
     pub usage: Option<String>,
+    /// Tahapan kemajuan / aktivitas yang dijalankan agent pada giliran ini.
+    pub progress_steps: Vec<crate::agent::harness::ProgressStep>,
 }
 
 /// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
