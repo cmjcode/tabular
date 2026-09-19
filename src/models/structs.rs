@@ -78,6 +78,8 @@ pub enum HttpResponseTab {
     Body,
     Headers,
     Raw,
+    /// Penjelasan response dari AI.
+    Ai,
 }
 
 fn default_http_split_ratio() -> f32 {
@@ -189,6 +191,9 @@ pub struct HttpClientState {
     /// Waktu mulai request yang sedang berjalan, untuk timer live.
     #[serde(skip)]
     pub request_started: Option<std::time::Instant>,
+    /// Bantuan AI (prompt, jawaban tertunda, penjelasan). Tidak disimpan.
+    #[serde(skip)]
+    pub ai: crate::http_ai::HttpAiState,
 
     /// Channel receiver from background HTTP thread (Arc so Clone works).
     /// Skipped during serialization — recreated at runtime.
@@ -260,6 +265,7 @@ impl Default for HttpClientState {
             response_wrap: true,
             response_search: String::new(),
             request_started: None,
+            ai: Default::default(),
             response_receiver: None,
             workspaces: Vec::new(),
             collection_panel: crate::http_collection::CollectionPanelState::default(),

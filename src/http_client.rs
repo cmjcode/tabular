@@ -83,14 +83,21 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
 
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
+/// Backend AI yang siap dipakai, atau alasan kenapa belum bisa dipakai
+/// (ditampilkan apa adanya di UI).
+pub type AiBackend = Result<crate::ai_assistant::ChatBackend, String>;
+
+type Toasts = crate::window_egui::notifications::ToastManager;
+
 /// Render the HTTP client panel.
 /// Returns `true` if the user just saved a request to a collection workspace
 /// (so the caller can reload `app.yaak_workspaces` from disk).
 pub fn render_http_client(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
-    toasts: &mut crate::window_egui::notifications::ToastManager,
+    toasts: &mut Toasts,
     connection_id: Option<i64>,
+    ai: &AiBackend,
 ) -> bool {
     ui.style_mut().visuals.selection.bg_fill = crate::window_egui::style::theme_accent(ui.ctx());
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
@@ -111,6 +118,15 @@ pub fn render_http_client(
         }
     }
 
+    if state.ai.is_busy() {
+        if let Some((task, reply)) = state.ai.poll() {
+            apply_ai_reply(state, task, reply, toasts);
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
     // Cmd/Ctrl+Enter mengirim request dari mana pun di panel ini.
     if !state.show_save_dialog
         && !state.show_code_dialog
@@ -128,8 +144,12 @@ pub fn render_http_client(
             if render_url_bar(ui, state, toasts, connection_id) {
                 workspaces_saved = true;
             }
+            if state.ai.bar_open {
+                ui.add_space(8.0);
+                render_ai_bar(ui, state, ai);
+            }
             ui.add_space(10.0);
-            render_split_panels(ui, state, toasts);
+            render_split_panels(ui, state, toasts, ai);
         });
 
     // Render the save dialog (outside the Frame so it can float as a Window)
@@ -166,12 +186,264 @@ const ALL_METHODS: [HttpMethod; 7] = [
     HttpMethod::OPTIONS,
 ];
 
+// ─── Bantuan AI (agy / Claude Code / API) ──────────────────────────────────
+
+/// Nama backend AI untuk ditampilkan ke user.
+fn ai_backend_label(backend: &crate::ai_assistant::ChatBackend) -> &'static str {
+    match backend.backend {
+        crate::config::AiBackend::Api => backend.provider.display_name(),
+        crate::config::AiBackend::Cli => backend.cli.kind.display_name(),
+    }
+}
+
+fn ai_consent_id() -> egui::Id {
+    egui::Id::new("http_ai_consent_v1")
+}
+
+/// User sudah menyetujui bahwa request (tanpa secret) dikirim ke backend AI.
+fn ai_consent_given(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.get_persisted::<bool>(ai_consent_id()))
+        .unwrap_or(false)
+}
+
+/// Pemberitahuan sekali pakai sebelum data request pertama kali dikirim ke AI.
+/// Mengembalikan `true` bila user sudah setuju.
+fn render_ai_consent(ui: &mut egui::Ui, backend_label: &str) -> bool {
+    use crate::window_egui::style;
+    if ai_consent_given(ui.ctx()) {
+        return true;
+    }
+    let ctx = ui.ctx().clone();
+    style::ai_notice_frame(style::theme_info(&ctx)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            egui::RichText::new(format!(
+                "{}  The request (URL, headers, body) and response are sent to {backend_label}. \
+Tokens, passwords, cookies and other secrets are replaced with {} first.",
+                egui_icons::icons::ICON_SHIELD.codepoint,
+                crate::http_ai::REDACTED
+            ))
+            .size(12.0),
+        );
+        ui.add_space(6.0);
+        if ui.add(style::btn_secondary("Got it, continue")).clicked() {
+            ctx.data_mut(|d| d.insert_persisted(ai_consent_id(), true));
+        }
+    });
+    false
+}
+
+fn start_ai_task(
+    state: &mut HttpClientState,
+    task: crate::http_ai::HttpAiTask,
+    backend: &crate::ai_assistant::ChatBackend,
+) {
+    let (system, user) = crate::http_ai::build_prompts(task, state, &state.ai.prompt);
+    log::info!(
+        "[HTTP] AI task '{}' via {}",
+        task.label(),
+        ai_backend_label(backend)
+    );
+    let rx = crate::ai_assistant::request_text(backend, system, user);
+    state.ai.start(task, rx);
+    if task == crate::http_ai::HttpAiTask::ExplainResponse {
+        state.response_tab = HttpResponseTab::Ai;
+    }
+}
+
+fn apply_ai_reply(
+    state: &mut HttpClientState,
+    task: crate::http_ai::HttpAiTask,
+    reply: Result<String, String>,
+    toasts: &mut Toasts,
+) {
+    use crate::http_ai::{self, HttpAiTask};
+    let reply = match reply {
+        Ok(text) => text,
+        Err(e) => {
+            log::warn!("[HTTP] AI task '{}' failed: {}", task.label(), e);
+            state.ai.error = Some(e);
+            return;
+        }
+    };
+    match task {
+        HttpAiTask::ExplainResponse => {
+            state.ai.explanation = Some(reply.trim().to_string());
+            state.response_tab = HttpResponseTab::Ai;
+        }
+        HttpAiTask::GenerateBody => match http_ai::extract_json(&reply) {
+            Ok(json) => {
+                state.body_type = HttpBodyType::Json;
+                state.body_text = json;
+                state.active_tab = HttpRequestTab::Body;
+                state.ai.prompt.clear();
+                toasts.success("Body generated by AI");
+            }
+            Err(e) => state.ai.error = Some(e),
+        },
+        HttpAiTask::BuildRequest => {
+            let Some(curl) = http_ai::extract_curl(&reply) else {
+                state.ai.error = Some("The AI reply did not contain a curl command".to_string());
+                return;
+            };
+            match http_ai::apply_generated_curl(state, &curl) {
+                Ok(warnings) => {
+                    state.ai.prompt.clear();
+                    toasts.success("Request built by AI. Review it, then press Send.");
+                    for w in warnings {
+                        toasts.warning(w);
+                    }
+                }
+                Err(e) => state.ai.error = Some(format!("Could not apply the AI request: {e}")),
+            }
+        }
+    }
+}
+
+/// Bar prompt AI di bawah URL bar: pilih tugas, tulis instruksi, jalankan.
+fn render_ai_bar(ui: &mut egui::Ui, state: &mut HttpClientState, ai: &AiBackend) {
+    use crate::http_ai::HttpAiTask;
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::nav_text_muted(&ctx);
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let backend = match ai {
+                Ok(b) => b,
+                Err(msg) => {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  {msg}",
+                                egui_icons::icons::ICON_INFO.codepoint
+                            ))
+                            .size(12.0)
+                            .color(muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if style::ai_icon_button(
+                                ui,
+                                egui_icons::icons::ICON_CLOSE.codepoint,
+                                "Close",
+                            )
+                            .clicked()
+                            {
+                                state.ai.bar_open = false;
+                            }
+                        });
+                    });
+                    return;
+                }
+            };
+            let label = ai_backend_label(backend);
+            if !render_ai_consent(ui, label) {
+                return;
+            }
+
+            let busy = state.ai.is_busy();
+            let mut run = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(
+                    egui::RichText::new(egui_icons::icons::ICON_AUTO_AWESOME.codepoint)
+                        .size(16.0)
+                        .color(style::theme_accent(&ctx)),
+                );
+                for task in [HttpAiTask::BuildRequest, HttpAiTask::GenerateBody] {
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::selectable(
+                                state.ai.task == task,
+                                egui::RichText::new(task.label()).size(12.0),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        state.ai.task = task;
+                    }
+                }
+
+                let right_w = 110.0;
+                let hint = match state.ai.task {
+                    HttpAiTask::GenerateBody => {
+                        "e.g. create a user with 3 roles and a nested address"
+                    }
+                    _ => "e.g. get page 2 of permissions sorted by name",
+                };
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut state.ai.prompt)
+                        .id_salt("http_ai_prompt")
+                        .hint_text(egui::RichText::new(hint).color(muted)),
+                    (ui.available_width() - right_w).max(120.0),
+                    None,
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    run = true;
+                }
+
+                if busy {
+                    ui.add(egui::Spinner::new().size(16.0));
+                    ui.label(egui::RichText::new("Thinking…").size(12.0).color(muted));
+                } else {
+                    let can_run = !state.ai.prompt.trim().is_empty();
+                    if ui
+                        .add_enabled(can_run, style::btn_field_action_primary(ui, "Generate"))
+                        .clicked()
+                    {
+                        run = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if style::ai_icon_button(ui, egui_icons::icons::ICON_CLOSE.codepoint, "Close")
+                        .clicked()
+                    {
+                        state.ai.bar_open = false;
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+            match &state.ai.error {
+                Some(err) if !busy => {
+                    ui.label(
+                        egui::RichText::new(err)
+                            .size(11.5)
+                            .color(style::theme_danger(&ctx)),
+                    );
+                }
+                _ => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "via {label} · secrets are redacted before sending"
+                        ))
+                        .size(11.0)
+                        .color(muted),
+                    );
+                }
+            }
+
+            if run && !busy && !state.ai.prompt.trim().is_empty() {
+                let task = state.ai.task;
+                start_ai_task(state, task, backend);
+            }
+        });
+}
+
 // ─── Layout: panel request/response dengan pembagi yang bisa digeser ─────────
 
 fn render_split_panels(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
-    toasts: &mut crate::window_egui::notifications::ToastManager,
+    toasts: &mut Toasts,
+    ai: &AiBackend,
 ) {
     let ctx = ui.ctx().clone();
     let area = ui.available_rect_before_wrap();
@@ -259,7 +531,7 @@ fn render_split_panels(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     resp_ui.shrink_clip_rect(second);
-    render_response_panel(&mut resp_ui, state, toasts);
+    render_response_panel(&mut resp_ui, state, toasts, ai);
 
     ui.allocate_rect(area, egui::Sense::hover());
 }
@@ -293,7 +565,8 @@ fn render_url_bar(
         ui.spacing_mut().item_spacing.x = gap;
 
         // ── Field gabungan: [METHOD ▾ | URL] ──
-        let field_w = (ui.available_width() - btn_w * 3.0 - gap * 3.0).max(200.0);
+        // Empat tombol berukuran sama: Send, Save, Code, AI.
+        let field_w = (ui.available_width() - btn_w * 4.0 - gap * 4.0).max(200.0);
         let (field_rect, _) =
             ui.allocate_exact_size(egui::vec2(field_w, bar_h), egui::Sense::hover());
         let visuals = ui.visuals().clone();
@@ -477,6 +750,21 @@ fn render_url_bar(
             .clicked()
         {
             state.show_code_dialog = true;
+        }
+
+        // ── AI ──
+        let ai_label = format!("{}  AI", egui_icons::icons::ICON_AUTO_AWESOME.codepoint);
+        let ai_btn = if state.ai.bar_open {
+            secondary(ai_label).stroke(egui::Stroke::new(1.0, style::theme_accent(&ctx)))
+        } else {
+            secondary(ai_label)
+        };
+        if ui
+            .add_sized([btn_w, bar_h], ai_btn)
+            .on_hover_text("Build the request or generate a body with AI (agy, Claude Code, …)")
+            .clicked()
+        {
+            state.ai.bar_open = !state.ai.bar_open;
         }
 
         // Allow pressing Enter in the URL field to send
@@ -1517,14 +1805,15 @@ fn response_syntax(headers: &[(String, String)], body: &str) -> crate::http_clie
 fn render_response_panel(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
-    toasts: &mut crate::window_egui::notifications::ToastManager,
+    toasts: &mut Toasts,
+    ai: &AiBackend,
 ) {
     if state.is_loading {
         render_response_loading(ui, state, toasts);
         return;
     }
     if let Some(err) = state.response_error.clone() {
-        render_response_error(ui, state, &err);
+        render_response_error(ui, state, &err, ai);
         return;
     }
     if state.response_status.is_none() {
@@ -1624,11 +1913,17 @@ fn render_response_panel(
             badge: None,
             dot: false,
         },
+        TabItem {
+            label: "AI",
+            badge: None,
+            dot: state.ai.explanation.is_some(),
+        },
     ];
     let active = match state.response_tab {
         HttpResponseTab::Body => 0,
         HttpResponseTab::Headers => 1,
         HttpResponseTab::Raw => 2,
+        HttpResponseTab::Ai => 3,
     };
     let show_body_tools = matches!(state.response_tab, HttpResponseTab::Body);
     let match_count = if show_body_tools && !state.response_search.is_empty() {
@@ -1668,7 +1963,8 @@ fn render_response_panel(
         state.response_tab = match i {
             0 => HttpResponseTab::Body,
             1 => HttpResponseTab::Headers,
-            _ => HttpResponseTab::Raw,
+            2 => HttpResponseTab::Raw,
+            _ => HttpResponseTab::Ai,
         };
     }
     ui.add_space(8.0);
@@ -1712,6 +2008,105 @@ fn render_response_panel(
                     hint: "",
                     search: "",
                 },
+            );
+        }
+        HttpResponseTab::Ai => render_ai_explanation(ui, state, ai),
+    }
+}
+
+/// Tab "AI" di panel response: tombol Explain, status, dan jawaban Markdown.
+fn render_ai_explanation(ui: &mut egui::Ui, state: &mut HttpClientState, ai: &AiBackend) {
+    use crate::http_ai::HttpAiTask;
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::nav_text_muted(&ctx);
+
+    let backend = match ai {
+        Ok(b) => b,
+        Err(msg) => {
+            ui.add_space(24.0);
+            crate::http_client_widgets::empty_state(
+                ui,
+                egui_icons::icons::ICON_AUTO_AWESOME.codepoint,
+                "AI is not configured",
+                msg,
+            );
+            return;
+        }
+    };
+    let label = ai_backend_label(backend);
+    if !render_ai_consent(ui, label) {
+        return;
+    }
+
+    let explaining = state
+        .ai
+        .pending
+        .as_ref()
+        .is_some_and(|(t, _)| *t == HttpAiTask::ExplainResponse);
+    let busy = state.ai.is_busy();
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Explained by {label}"))
+                .size(11.5)
+                .color(muted),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let text = if state.ai.explanation.is_some() {
+                "Explain again"
+            } else {
+                "Explain this response"
+            };
+            if ui
+                .add_enabled(
+                    !busy,
+                    style::btn_secondary(format!(
+                        "{}  {text}",
+                        egui_icons::icons::ICON_AUTO_AWESOME.codepoint
+                    )),
+                )
+                .clicked()
+            {
+                start_ai_task(state, HttpAiTask::ExplainResponse, backend);
+            }
+        });
+    });
+    ui.add_space(8.0);
+
+    if explaining {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.add(egui::Spinner::new().size(20.0));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("Asking {label}…")).color(muted));
+        });
+        return;
+    }
+    if let Some(err) = &state.ai.error {
+        style::ai_notice_frame(style::theme_danger(&ctx)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(err).size(12.0));
+        });
+        return;
+    }
+    match &state.ai.explanation {
+        Some(text) => {
+            egui::ScrollArea::vertical()
+                .id_salt("http_ai_explanation_scroll")
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    let mut cache = egui_commonmark::CommonMarkCache::default();
+                    egui_commonmark::CommonMarkViewer::new().show(ui, &mut cache, text);
+                });
+        }
+        None => {
+            ui.add_space(24.0);
+            crate::http_client_widgets::empty_state(
+                ui,
+                egui_icons::icons::ICON_AUTO_AWESOME.codepoint,
+                "Get a plain-English explanation",
+                "What the status means, what the body contains, and how to fix errors.",
             );
         }
     }
@@ -1828,7 +2223,12 @@ fn render_response_loading(
     });
 }
 
-fn render_response_error(ui: &mut egui::Ui, state: &HttpClientState, err: &str) {
+fn render_response_error(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    err: &str,
+    ai: &AiBackend,
+) {
     use crate::window_egui::style;
     let ctx = ui.ctx().clone();
     let danger = style::theme_danger(&ctx);
@@ -1874,6 +2274,12 @@ fn render_response_error(ui: &mut egui::Ui, state: &HttpClientState, err: &str) 
             );
         }
     });
+
+    // Error jaringan juga bisa dijelaskan AI (tanpa tab, langsung di bawah).
+    if ai.is_ok() {
+        ui.add_space(12.0);
+        render_ai_explanation(ui, state, ai);
+    }
 }
 
 fn render_response_empty(ui: &mut egui::Ui) {

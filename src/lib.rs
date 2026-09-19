@@ -45,6 +45,7 @@ pub mod editor_selection;
 pub mod editor_state_adapter;
 pub mod export;
 pub mod export_import_all;
+pub mod http_ai;
 pub mod http_client;
 pub mod http_client_widgets;
 pub mod http_code_export;

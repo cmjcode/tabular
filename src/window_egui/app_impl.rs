@@ -3027,6 +3027,19 @@ impl Tabular {
                             rendered_user_manager = true;
                         }
 
+                        // Snapshot backend AI untuk bantuan AI di REST client. Diambil
+                        // sebelum `query_tabs` dipinjam mutable; hanya clone konfigurasi.
+                        let http_ai_backend: crate::http_client::AiBackend = if self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .is_some_and(|t| t.http_client_state.is_some())
+                        {
+                            crate::ai_assistant::backend_ready(self)
+                                .map(|()| crate::ai_assistant::chat_backend(self))
+                        } else {
+                            Err(String::new())
+                        };
+
                         // Check for HTTP client tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && tab.http_client_state.is_some()
@@ -3037,7 +3050,7 @@ impl Tabular {
                             let mut saved_folder_id = None;
                             let mut workspaces_saved = false;
                             if let Some(state) = &mut tab.http_client_state {
-                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
+                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id, &http_ai_backend);
                                 if workspaces_saved {
                                     saved_ws_id = state.saved_workspace_id.clone();
                                     saved_folder_id = state.saved_folder_id.clone();
