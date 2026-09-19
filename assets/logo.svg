@@ -1,32 +1,38 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg width="100%" height="100%" viewBox="0 0 310 309" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
-    <g transform="matrix(0.855643,0,0,0.846382,40.948,43.134)">
-        <g transform="matrix(1.13312,0,0,1.18263,-40.3984,-51.1726)">
-            <path d="M236.688,107.646L236.363,201.358L208.977,215.605L182.624,200.914L182.212,235.956L153.337,247.281L70.207,199.899L69.812,169.686L126.355,139.186L125.847,108.118L154.16,92.426L181.847,107.422L209.488,93.226L236.688,107.646Z" style="fill:rgb(255,253,253);"/>
-        </g>
+<svg width="100%" height="100%" viewBox="0 0 4267 4267" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g id="App-Icon-Shape" serif:id="App Icon Shape">
+    </g>
+    <g transform="matrix(8.45487,0,0,8.47159,915.311,966.687)">
         <g id="Background">
             <g>
-                <g transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path id="Path-6" serif:id="Path 6" d="M159,158L197,136L198,136L198,182L159.006,203.371L159,158ZM41,226L41,181L79.706,157.984L80,203L80,204L41,226Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                    <path id="Path-7" serif:id="Path 7" d="M198,182L198,136L237,158L237,204L198,182ZM198.71,278.434L158.642,252.481L198.991,227.013L198.71,278.434Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                <g transform="matrix(1.62424,0,0,1.58941,-104.853,-107.898)">
+                    <path d="M236.688,107.646L236.363,201.358L208.977,215.605L182.624,200.914L182.212,235.956L153.337,247.281L70.207,199.899L69.812,169.686L126.355,139.186L125.847,108.118L154.16,92.426L181.847,107.422L209.488,93.226L236.688,107.646Z" style="fill:rgb(255,253,253);"/>
                 </g>
-                <g transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path id="Path-1" serif:id="Path 1" d="M159,68L198,90L237.046,111.747L237.026,69.437L275.001,90.006L275,228L237,204L237,158L198,136L197,136L158.769,113.773L159,68Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                    <path id="Path-4" serif:id="Path 4" d="M120.006,137.013L158.759,113.749L197,136L159,158L120.006,137.013ZM199,227L237,204L275,228L236,249L199,227Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                    <path id="Path-9" serif:id="Path 9" d="M120,137L119,91L158.986,67.997L158.778,113.757L120,137ZM197.977,90.034L237.054,69.388L237.073,111.778L197.977,90.034Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                </g>
-                <g id="Path-2" serif:id="Path 2" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path d="M156,205L198,182L236.937,203.969L199,227L198,228L158.857,252.421L198.488,278.238L158,295L41,226L80,204L119,227L156,205Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                </g>
-                <g id="Path-3" serif:id="Path 3" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path d="M42,136L42,89L159,23L159,68L119,91L120,137L119.861,181.449L80,203L79.622,157.884L78,118L42,136Z" style="fill:rgb(254,81,57);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                </g>
-                <g id="Path-5" serif:id="Path 5" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path d="M159,68L159,23L198,45L198,90L159,68ZM119.694,181.575L120,137L159,158L159.002,203.37L119.694,181.575Z" style="fill:rgb(209,44,58);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
-                </g>
-                <g id="Path-8" serif:id="Path 8" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
-                    <path d="M42,136L79.971,116.652L79.645,157.822L42,136ZM80,203L119.904,181.533L159.008,203.37L119,227L80,204L80,203Z" style="fill:rgb(209,44,58);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                <g id="Background1" serif:id="Background" transform="matrix(1.43342,0,0,1.34396,-46.9453,-39.1238)">
+                    <g>
+                        <g transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path id="Path-6" serif:id="Path 6" d="M159,158L197,136L198,136L198,182L159.006,203.371L159,158ZM41,226L41,181L79.706,157.984L80,203L80,204L41,226Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                            <path id="Path-7" serif:id="Path 7" d="M198,182L198,136L237,158L237,204L198,182ZM198.71,278.434L158.642,252.481L198.991,227.013L198.71,278.434Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                        <g transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path id="Path-1" serif:id="Path 1" d="M159,68L198,90L237.046,111.747L237.026,69.437L275.001,90.006L275,228L237,204L237,158L198,136L197,136L158.769,113.773L159,68Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                            <path id="Path-4" serif:id="Path 4" d="M120.006,137.013L158.759,113.749L197,136L159,158L120.006,137.013ZM199,227L237,204L275,228L236,249L199,227Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                            <path id="Path-9" serif:id="Path 9" d="M120,137L119,91L158.986,67.997L158.778,113.757L120,137ZM197.977,90.034L237.054,69.388L237.073,111.778L197.977,90.034Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                        <g id="Path-2" serif:id="Path 2" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path d="M156,205L198,182L236.937,203.969L199,227L198,228L158.857,252.421L198.488,278.238L158,295L41,226L80,204L119,227L156,205Z" style="fill:none;fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                        <g id="Path-3" serif:id="Path 3" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path d="M42,136L42,89L159,23L159,68L119,91L120,137L119.861,181.449L80,203L79.622,157.884L78,118L42,136Z" style="fill:rgb(254,81,57);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                        <g id="Path-5" serif:id="Path 5" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path d="M159,68L159,23L198,45L198,90L159,68ZM119.694,181.575L120,137L159,158L159.002,203.37L119.694,181.575Z" style="fill:rgb(209,44,58);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                        <g id="Path-8" serif:id="Path 8" transform="matrix(0.807272,0,0,0.807272,5.74461,3.22259)">
+                            <path d="M42,136L79.971,116.652L79.645,157.822L42,136ZM80,203L119.904,181.533L159.008,203.37L119,227L80,204L80,203Z" style="fill:rgb(209,44,58);fill-rule:nonzero;stroke:black;stroke-width:1.46px;"/>
+                        </g>
+                    </g>
                 </g>
             </g>
         </g>
