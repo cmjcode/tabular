@@ -403,43 +403,41 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
     ui.separator();
     ui.add_space(2.0);
-    egui::ScrollArea::both()
-                .id_salt("structure_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    match tabular.structure_sub_view {
-                        models::structs::StructureSubView::Columns => {
-                            render_structure_columns_editor(tabular, ui);
-                        }
-                        models::structs::StructureSubView::Indexes => {
-                            // Headers: No | index_name | algorithm | unique | columns | actions
-                            let headers = [
-                                "#",
-                                "index_name",
-                                "algorithm",
-                                "unique",
-                                "columns",
-                                "actions",
-                            ];
-                            if tabular.structure_idx_col_widths.len() != headers.len() {
-                                tabular.structure_idx_col_widths =
-                                    vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0];
-                            }
-                            let mut widths = tabular.structure_idx_col_widths.clone();
-                            for w in widths.iter_mut() {
-                                *w = w.clamp(40.0, 800.0);
-                            }
-                            let dark = ui.visuals().dark_mode;
-                            let border = if dark {
-                                egui::Color32::from_rgb(55, 59, 74)
-                            } else {
-                                egui::Color32::from_rgb(203, 213, 225)
-                            };
-                            let stroke = egui::Stroke::new(0.5, border);
-                            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-                            let row_h = metrics.table_row_height;
-                            let header_h = metrics.table_row_height + 4.0;
-                            egui::ScrollArea::both()
+    match tabular.structure_sub_view {
+        models::structs::StructureSubView::Columns => {
+            render_structure_columns_editor(tabular, ui);
+        }
+        models::structs::StructureSubView::Indexes => {
+            // Headers: No | index_name | algorithm | unique | columns | actions
+            let headers = [
+                "#",
+                "index_name",
+                "algorithm",
+                "unique",
+                "columns",
+                "actions",
+            ];
+            if tabular.structure_idx_col_widths.len() != headers.len() {
+                tabular.structure_idx_col_widths = vec![40.0, 200.0, 120.0, 70.0, 260.0, 120.0];
+            }
+            let mut widths = tabular.structure_idx_col_widths.clone();
+            for w in widths.iter_mut() {
+                *w = w.clamp(40.0, 800.0);
+            }
+            let dark = ui.visuals().dark_mode;
+            let border = if dark {
+                egui::Color32::from_rgb(55, 59, 74)
+            } else {
+                egui::Color32::from_rgb(203, 213, 225)
+            };
+            let stroke = egui::Stroke::new(0.5, border);
+            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
+                ui.ctx(),
+                tabular.ui_mode,
+            );
+            let row_h = metrics.table_row_height;
+            let header_h = metrics.table_row_height + 4.0;
+            egui::ScrollArea::both()
                                 .id_salt("struct_idx_inline")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
@@ -1034,8 +1032,8 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                                 // fit inside the fixed row height instead of the
                                                 // app-wide toolbar-sized padding (12,7).
                                                 child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                                                // Safety net: never let a control paint outside its cell.
-                                                child_ui.set_clip_rect(rect);
+                                                // Safety net: never let a control paint outside its cell or outside visible area.
+                                                child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
 
                                                 match i {
                                                     0 => {
@@ -1177,10 +1175,9 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
                                         });
                                     }
                                 });
-                            tabular.structure_idx_col_widths = widths;
-                        }
-                    }
-                });
+            tabular.structure_idx_col_widths = widths;
+        }
+    }
 }
 
 pub(crate) fn render_structure_columns_editor(
@@ -1334,7 +1331,7 @@ pub(crate) fn render_structure_columns_editor(
                             );
                             child_ui.spacing_mut().item_spacing.x = 2.0;
                             child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                            child_ui.set_clip_rect(rect);
+                            child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
 
                             match i {
                                 0 => {
@@ -1727,40 +1724,44 @@ pub(crate) fn render_structure_columns_editor(
                                     }
                                 }
                                 7 => {
-                                    // actions: Quick Edit & Drop buttons
-                                    let mut child_ui =
-                                        ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                        ));
-                                    child_ui.spacing_mut().item_spacing.x = 4.0;
-                                    child_ui.spacing_mut().button_padding = egui::vec2(5.0, 1.5);
-                                    child_ui.set_clip_rect(rect);
-                                    child_ui.add_space(4.0);
+                                    // actions: Quick Edit & Drop buttons (hanya render jika berada di dalam area tampak)
+                                    let visible_rect = rect.intersect(ui.clip_rect());
+                                    if visible_rect.is_positive() {
+                                        let mut child_ui = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(rect).layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                            ),
+                                        );
+                                        child_ui.spacing_mut().item_spacing.x = 4.0;
+                                        child_ui.spacing_mut().button_padding =
+                                            egui::vec2(5.0, 1.5);
+                                        child_ui.set_clip_rect(visible_rect);
+                                        child_ui.add_space(4.0);
 
-                                    let edit_btn = child_ui.add(
-                                        egui::Button::new(
-                                            egui::RichText::new(format!(
-                                                "{} Edit",
-                                                egui_icons::icons::ICON_EDIT.codepoint
-                                            ))
-                                            .size(11.5),
-                                        )
-                                        .corner_radius(4.0),
-                                    );
-                                    if edit_btn.on_hover_text("Edit this column").clicked() {
-                                        tabular.editing_column = true;
-                                        tabular.edit_column_original_name = col.name.clone();
-                                        tabular.edit_column_name = col.name.clone();
-                                        tabular.edit_column_type = col.data_type.clone();
-                                        tabular.edit_column_nullable = col.nullable.unwrap_or(true);
-                                        tabular.edit_column_default =
-                                            col.default_value.clone().unwrap_or_default();
-                                        tabular.edit_column_comment =
-                                            col.comment.clone().unwrap_or_default();
-                                    }
+                                        let edit_btn = child_ui.add(
+                                            egui::Button::new(
+                                                egui::RichText::new(format!(
+                                                    "{} Edit",
+                                                    egui_icons::icons::ICON_EDIT.codepoint
+                                                ))
+                                                .size(11.5),
+                                            )
+                                            .corner_radius(4.0),
+                                        );
+                                        if edit_btn.on_hover_text("Edit this column").clicked() {
+                                            tabular.editing_column = true;
+                                            tabular.edit_column_original_name = col.name.clone();
+                                            tabular.edit_column_name = col.name.clone();
+                                            tabular.edit_column_type = col.data_type.clone();
+                                            tabular.edit_column_nullable =
+                                                col.nullable.unwrap_or(true);
+                                            tabular.edit_column_default =
+                                                col.default_value.clone().unwrap_or_default();
+                                            tabular.edit_column_comment =
+                                                col.comment.clone().unwrap_or_default();
+                                        }
 
-                                    let del_btn =
-                                        child_ui.add(
+                                        let del_btn = child_ui.add(
                                             egui::Button::new(
                                                 egui::RichText::new(format!(
                                                     "{} Drop",
@@ -1773,8 +1774,9 @@ pub(crate) fn render_structure_columns_editor(
                                             )
                                             .corner_radius(4.0),
                                         );
-                                    if del_btn.on_hover_text("Drop this column").clicked() {
-                                        trigger_drop_column(tabular, &col.name);
+                                        if del_btn.on_hover_text("Drop this column").clicked() {
+                                            trigger_drop_column(tabular, &col.name);
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -2025,8 +2027,8 @@ pub(crate) fn render_structure_columns_editor(
                         // Compact widget padding so ComboBox/Button controls fit inside the
                         // fixed row height instead of the app-wide toolbar-sized padding (12,7).
                         child_ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-                        // Safety net: never let a control paint outside its cell.
-                        child_ui.set_clip_rect(rect);
+                        // Safety net: never let a control paint outside its cell or outside visible area.
+                        child_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
 
                         match i {
                             0 => {
