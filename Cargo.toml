@@ -122,7 +122,7 @@ crypto_box = { version = "0.9", features = [
        "std",
 ] } # X25519 sealed boxes for Team vault key sharing
 zeroize = { version = "1", features = [
-       "zeroize_derive",
+       "derive",
 ] } # scrub key material from memory
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
