@@ -3034,8 +3034,9 @@ impl Tabular {
                             .get(self.active_tab_index)
                             .is_some_and(|t| t.http_client_state.is_some())
                         {
-                            crate::ai_assistant::backend_ready(self)
-                                .map(|()| crate::ai_assistant::chat_backend(self))
+                            let target = self.effective_default_target();
+                            crate::ai_assistant::backend_ready_for(self, target)
+                                .map(|()| crate::ai_assistant::chat_backend_for(self, target))
                         } else {
                             Err(String::new())
                         };
@@ -4088,12 +4089,9 @@ impl Tabular {
                     ai_model: self.ai_model.clone(),
                     ai_provider: self.ai_provider,
                     ai_base_url: self.ai_base_url.clone(),
-                    ai_backend: self.ai_backend,
-                    ai_cli_kind: self.ai_cli_kind,
-                    ai_cli_bin: self.ai_cli_bin.clone(),
-                    ai_cli_model: self.ai_cli_model.clone(),
-                    ai_cli_effort: self.ai_cli_effort.clone(),
-                    ai_cli_extra_args: self.ai_cli_extra_args.clone(),
+                    ai_default_target: self.ai_default_target,
+                    ai_chat_target: Some(self.ai_chat_target),
+                    ai_cli_profiles: self.ai_cli_profiles.values().cloned().collect(),
                     ai_cli_auto_apply_edits: self.ai_cli_auto_apply_edits,
                     ai_obsidian_vault_path: self.ai_obsidian_vault_path.clone(),
                     ai_obsidian_enabled: self.ai_obsidian_enabled,

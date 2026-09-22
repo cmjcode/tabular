@@ -4433,12 +4433,13 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
         // TRIGGER: only when user just pressed Enter (completing the closing --)
+        let default_target = tabular.effective_default_target();
         if just_inserted_newline
             && tabular.ai_inline_receiver.is_none()
-            && crate::ai_assistant::backend_ready(tabular).is_ok()
+            && crate::ai_assistant::backend_ready_for(tabular, default_target).is_ok()
             && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular)
         {
-            let backend = crate::ai_assistant::chat_backend(tabular);
+            let backend = crate::ai_assistant::chat_backend_for(tabular, default_target);
             let schema_context =
                 crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
             let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
@@ -5129,7 +5130,9 @@ fn ai_handle_agent_event(
     use crate::agent::harness::AgentEvent;
     match ev {
         AgentEvent::Session(id) => {
-            tabular.ai_session_id = Some(id);
+            if let Some(crate::config::ChatTarget::Cli(kind)) = tabular.ai_turn_target {
+                tabular.ai_session = Some(crate::models::structs::AgentSession { kind, id });
+            }
             false
         }
         AgentEvent::TextDelta(delta) => {
@@ -5218,6 +5221,7 @@ fn ai_handle_agent_event(
 }
 
 fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
+    tabular.ai_turn_target = None;
     if let Some(mut parser) = tabular.ai_live_edit_parser.take() {
         for ev in parser.finish() {
             ai_handle_live_edit_event(tabular, ev);
@@ -5278,13 +5282,18 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     if text.is_empty() || tabular.ai_stream_receiver.is_some() {
         return;
     }
-    if let Err(e) = crate::ai_assistant::backend_ready(tabular) {
+    let target = tabular.effective_chat_target();
+    if let Err(e) = crate::ai_assistant::backend_ready_for(tabular, target) {
         tabular.ai_error = Some(e);
         return;
     }
     tabular.ai_obsidian_save_message = None;
-    let cfg = crate::ai_assistant::chat_backend(tabular);
-    let (system, user) = crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text);
+    let cfg = crate::ai_assistant::chat_backend_for(tabular, target);
+    let native_session = crate::ai_assistant::session_for(tabular.ai_session.as_ref(), target);
+    let has_native_session = native_session.is_some();
+    let (system, user) =
+        crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text, has_native_session);
+    let agent_label = crate::ai_assistant::backend_label_for(tabular, target);
 
     let initial_step = match cfg.backend {
         crate::config::AiBackend::Api => crate::agent::harness::ProgressStep {
@@ -5311,13 +5320,15 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     tabular.ai_chat.push(AiChatMessage {
         role: AiChatRole::Assistant,
         streaming: true,
+        agent_label: Some(agent_label),
         progress_steps: vec![initial_step],
         ..Default::default()
     });
     tabular.ai_input.clear();
     tabular.ai_error = None;
+    tabular.ai_turn_target = Some(target);
 
-    match crate::ai_assistant::start_chat(&cfg, system, user, tabular.ai_session_id.clone()) {
+    match crate::ai_assistant::start_chat(&cfg, system, user, native_session.map(|s| s.to_string())) {
         Ok((rx, cancel)) => {
             tabular.ai_stream_receiver = Some(rx);
             tabular.ai_cancel = cancel;
@@ -5326,6 +5337,7 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
             tabular.ai_live_edit_active = None;
         }
         Err(e) => {
+            tabular.ai_turn_target = None;
             log::warn!("[AGENT] failed to start chat turn: {e}");
             if let Some(msg) = tabular.ai_chat.last_mut() {
                 msg.streaming = false;
@@ -5352,7 +5364,8 @@ fn ai_stop_turn(tabular: &mut window_egui::Tabular) {
 fn ai_new_chat(tabular: &mut window_egui::Tabular) {
     ai_stop_turn(tabular);
     tabular.ai_chat.clear();
-    tabular.ai_session_id = None;
+    tabular.ai_session = None;
+    tabular.ai_turn_target = None;
     tabular.ai_error = None;
 }
 
@@ -6047,12 +6060,13 @@ fn ai_unique_tools(tools: &[String]) -> Vec<&str> {
 }
 
 fn ai_export_chat(tabular: &mut window_egui::Tabular) {
+    let target = tabular.effective_chat_target();
     let mut meta: Vec<(&str, String)> = vec![
         (
             "Exported",
             chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
         ),
-        ("Backend", crate::ai_assistant::backend_label(tabular)),
+        ("Backend", crate::ai_assistant::backend_label_for(tabular, target)),
     ];
     if let Some(conn) = tabular
         .current_connection_id
@@ -6078,7 +6092,6 @@ fn ai_export_chat(tabular: &mut window_egui::Tabular) {
 }
 
 fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy: bool) {
-    use crate::config::AiBackend;
     use crate::window_egui::style;
     use egui_icons::icons;
 
@@ -6162,14 +6175,16 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
 
     // Baris 2: status backend + konteks skema
     let (table_count, schema_preview) = ai_schema_badge(tabular);
-    let backend = crate::ai_assistant::backend_label(tabular);
-    let (backend_icon, backend_tip) = match tabular.ai_backend {
-        AiBackend::Api => (icons::ICON_CLOUD.codepoint, "Backend: HTTP API".to_string()),
-        AiBackend::Cli => (
+    let enabled_targets = tabular.enabled_chat_targets();
+    let current_target = tabular.effective_chat_target();
+    let backend = crate::ai_assistant::backend_label_for(tabular, current_target);
+    let (backend_icon, backend_tip) = match current_target {
+        crate::config::ChatTarget::Api => (icons::ICON_CLOUD.codepoint, "Backend: HTTP API".to_string()),
+        crate::config::ChatTarget::Cli(kind) => (
             icons::ICON_TERMINAL.codepoint,
             format!(
                 "Backend: CLI agent ({}). Live edit: {}",
-                tabular.ai_cli_kind.display_name(),
+                kind.display_name(),
                 if tabular.ai_cli_auto_apply_edits {
                     "on"
                 } else {
@@ -6180,12 +6195,34 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
     };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-        style::ai_chip(
-            ui,
-            egui::RichText::new(format!("{backend_icon} {backend}")).color(muted),
-            egui::Sense::hover(),
-        )
-        .on_hover_text(backend_tip);
+        if enabled_targets.len() > 1 {
+            let mut selected = current_target;
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::ComboBox::from_id_salt("ai_chat_target_picker")
+                    .selected_text(format!("{backend_icon} {backend}"))
+                    .show_ui(ui, |ui| {
+                        for target in &enabled_targets {
+                            let icon = match target {
+                                crate::config::ChatTarget::Api => icons::ICON_CLOUD.codepoint,
+                                crate::config::ChatTarget::Cli(_) => icons::ICON_TERMINAL.codepoint,
+                            };
+                            let label = crate::ai_assistant::backend_label_for(tabular, *target);
+                            ui.selectable_value(&mut selected, *target, format!("{icon} {label}"));
+                        }
+                    });
+            });
+            if selected != tabular.ai_chat_target {
+                tabular.ai_chat_target = selected;
+                tabular.save_ai_prefs();
+            }
+        } else {
+            style::ai_chip(
+                ui,
+                egui::RichText::new(format!("{backend_icon} {backend}")).color(muted),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(backend_tip);
+        }
         if table_count == 0 {
             style::ai_chip(
                 ui,
@@ -6568,8 +6605,12 @@ fn ai_render_assistant_message(
                 .size(13.0)
                 .color(accent),
         );
+        let title = match &msg.agent_label {
+            Some(label) => format!("Assistant ({label})"),
+            None => "Assistant".to_string(),
+        };
         ui.label(
-            egui::RichText::new("Assistant")
+            egui::RichText::new(title)
                 .size(11.5)
                 .strong()
                 .color(accent),
@@ -6932,18 +6973,21 @@ fn ai_render_composer(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, bus
 }
 
 pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    use crate::config::AiBackend;
+    use crate::config::ChatTarget;
     use crate::window_egui::style;
     use egui_icons::icons;
 
     ui.set_min_width(ui.available_width().max(280.0));
     ui.take_available_width();
 
+    let target = tabular.effective_chat_target();
     ai_poll_stream(tabular, ui.ctx());
-    tabular.ensure_ai_mcp_check();
+    if let ChatTarget::Cli(kind) = target {
+        tabular.ensure_ai_mcp_check(kind);
+    }
     tabular.poll_ai_cli_background(ui.ctx());
 
-    let ready = crate::ai_assistant::backend_ready(tabular);
+    let ready = crate::ai_assistant::backend_ready_for(tabular, target);
     let busy = tabular.ai_stream_receiver.is_some();
     let mut actions: Vec<AiPanelAction> = Vec::new();
 
@@ -6982,32 +7026,31 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
             }
 
             // Peringatan MCP untuk CLI yang butuh registrasi global.
-            if tabular.ai_backend == AiBackend::Cli
-                && tabular.ai_cli_kind.needs_global_mcp_registration()
-                && tabular.ai_cli_mcp_registered == Some(false)
-            {
-                ui.add_space(6.0);
-                style::ai_notice_frame(warning).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "{} Tabular MCP server is not registered in this CLI — the agent cannot query your database.",
-                                icons::ICON_WARNING.codepoint
-                            ))
-                            .size(11.0)
-                            .color(warning),
-                        )
-                        .wrap(),
-                    );
-                    if ui
-                        .small_button("Register")
-                        .on_hover_text("Runs `<cli> mcp add tabular …`")
-                        .clicked()
-                    {
-                        tabular.start_ai_mcp_register();
-                    }
-                });
+            if let ChatTarget::Cli(kind) = target {
+                if kind.needs_global_mcp_registration() && tabular.mcp_registered(kind) == Some(false) {
+                    ui.add_space(6.0);
+                    style::ai_notice_frame(warning).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "{} Tabular MCP server is not registered in this CLI — the agent cannot query your database.",
+                                    icons::ICON_WARNING.codepoint
+                                ))
+                                .size(11.0)
+                                .color(warning),
+                            )
+                            .wrap(),
+                        );
+                        if ui
+                            .small_button("Register")
+                            .on_hover_text("Runs `<cli> mcp add tabular …`")
+                            .clicked()
+                        {
+                            tabular.start_ai_mcp_register(kind);
+                        }
+                    });
+                }
             }
 
             // Composer dipin di bawah; transkrip mengisi sisa ruang di atasnya.

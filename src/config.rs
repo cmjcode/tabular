@@ -236,7 +236,7 @@ impl std::str::FromStr for AiBackend {
 
 /// Jenis CLI agent yang dipakai bila [`AiBackend::Cli`]. Menentukan argumen
 /// baris perintah dan parser output stream-json (lihat `agent::harness`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub enum CliAgentKind {
     #[default]
     Antigravity,
@@ -246,6 +246,14 @@ pub enum CliAgentKind {
 }
 
 impl CliAgentKind {
+    /// Urutan tampil di Settings dan picker chat.
+    pub const ALL: [CliAgentKind; 4] = [
+        CliAgentKind::Antigravity,
+        CliAgentKind::ClaudeCode,
+        CliAgentKind::GeminiCli,
+        CliAgentKind::Custom,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             CliAgentKind::Antigravity => "AGY",
@@ -315,6 +323,133 @@ impl std::str::FromStr for CliAgentKind {
     }
 }
 
+/// Profil satu CLI agent. Satu slot tetap per `CliAgentKind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliAgentProfile {
+    pub kind: CliAgentKind,
+    /// Tampil di picker panel chat dan boleh dipakai sebagai default target.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path binary; kosong berarti cari `kind.default_binary()` di PATH.
+    #[serde(default)]
+    pub bin: String,
+    #[serde(default)]
+    pub model: String,
+    /// `low` | `medium` | `high`; kosong berarti default CLI.
+    #[serde(default)]
+    pub effort: String,
+    /// Argumen tambahan; untuk `Custom` adalah template dengan placeholder.
+    #[serde(default)]
+    pub extra_args: String,
+}
+
+impl CliAgentProfile {
+    pub fn new(kind: CliAgentKind) -> Self {
+        Self {
+            kind,
+            enabled: false,
+            bin: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        }
+    }
+
+    /// Empat profil default, urutan `CliAgentKind::ALL`.
+    pub fn defaults() -> Vec<CliAgentProfile> {
+        CliAgentKind::ALL.into_iter().map(Self::new).collect()
+    }
+}
+
+/// Siapa yang menjawab: HTTP API (provider di prefs) atau salah satu CLI agent.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ChatTarget {
+    #[default]
+    Api,
+    Cli(CliAgentKind),
+}
+
+impl ChatTarget {
+    pub fn backend(self) -> AiBackend {
+        match self {
+            ChatTarget::Api => AiBackend::Api,
+            ChatTarget::Cli(_) => AiBackend::Cli,
+        }
+    }
+
+    /// Bentuk string untuk tabel prefs: `"API"` atau `"CLI:AGY"`, `"CLI:CLAUDE"`, …
+    pub fn as_string(self) -> String {
+        match self {
+            ChatTarget::Api => "API".to_string(),
+            ChatTarget::Cli(kind) => format!("CLI:{}", kind.as_str()),
+        }
+    }
+}
+
+impl std::str::FromStr for ChatTarget {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLI:AGY" => ChatTarget::Cli(CliAgentKind::Antigravity),
+            "CLI:CLAUDE" => ChatTarget::Cli(CliAgentKind::ClaudeCode),
+            "CLI:GEMINI" => ChatTarget::Cli(CliAgentKind::GeminiCli),
+            "CLI:CUSTOM" => ChatTarget::Cli(CliAgentKind::Custom),
+            _ => ChatTarget::Api,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LegacyCliPrefs {
+    pub backend: Option<AiBackend>,
+    pub kind: Option<CliAgentKind>,
+    pub bin: String,
+    pub model: String,
+    pub effort: String,
+    pub extra_args: String,
+}
+
+/// Bangun profil dari preferensi format lama (satu agent aktif).
+pub fn migrate_legacy_cli_prefs(legacy: &LegacyCliPrefs) -> (Vec<CliAgentProfile>, ChatTarget) {
+    let mut profiles = CliAgentProfile::defaults();
+    let kind = legacy.kind.unwrap_or_default();
+    // Hanya aktifkan bila user memang pernah memakai CLI atau pernah mengisi sesuatu.
+    let had_cli = legacy.backend == Some(AiBackend::Cli)
+        || !legacy.bin.trim().is_empty()
+        || !legacy.model.trim().is_empty()
+        || !legacy.effort.trim().is_empty()
+        || !legacy.extra_args.trim().is_empty();
+    if had_cli {
+        if let Some(p) = profiles.iter_mut().find(|p| p.kind == kind) {
+            p.enabled = true;
+            p.bin = legacy.bin.clone();
+            p.model = legacy.model.clone();
+            p.effort = legacy.effort.clone();
+            p.extra_args = legacy.extra_args.clone();
+        }
+    }
+    let target = if legacy.backend == Some(AiBackend::Cli) {
+        ChatTarget::Cli(kind)
+    } else {
+        ChatTarget::Api
+    };
+    (profiles, target)
+}
+
+/// Pastikan tepat 4 entri profil, satu per kind, urutan `CliAgentKind::ALL`.
+pub fn normalize_profiles(profiles: &mut Vec<CliAgentProfile>) {
+    let mut normalized = Vec::with_capacity(CliAgentKind::ALL.len());
+    for kind in CliAgentKind::ALL {
+        if let Some(pos) = profiles.iter().position(|p| p.kind == kind) {
+            normalized.push(profiles.remove(pos));
+        } else {
+            normalized.push(CliAgentProfile::new(kind));
+        }
+    }
+    *profiles = normalized;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -341,22 +476,15 @@ pub struct AppPreferences {
     pub ai_provider: AiProvider,
     #[serde(default)]
     pub ai_base_url: String,
-    /// Backend panel AI: HTTP API (default) atau CLI agent lokal.
+    /// Target untuk fitur non-chat (blok inline `--AI`, HTTP client) dan nilai awal picker.
     #[serde(default)]
-    pub ai_backend: AiBackend,
+    pub ai_default_target: ChatTarget,
+    /// Pilihan terakhir di picker panel chat; `None` berarti ikut `ai_default_target`.
     #[serde(default)]
-    pub ai_cli_kind: CliAgentKind,
-    /// Path binary CLI; kosong berarti cari `CliAgentKind::default_binary()` di PATH.
-    #[serde(default)]
-    pub ai_cli_bin: String,
-    #[serde(default)]
-    pub ai_cli_model: String,
-    /// `low` | `medium` | `high`; kosong berarti default CLI.
-    #[serde(default)]
-    pub ai_cli_effort: String,
-    /// Argumen tambahan (dipisah spasi, mendukung kutip) yang ditambahkan apa adanya.
-    #[serde(default)]
-    pub ai_cli_extra_args: String,
+    pub ai_chat_target: Option<ChatTarget>,
+    /// Profil semua CLI agent; selalu 4 entri (satu per `CliAgentKind`).
+    #[serde(default = "CliAgentProfile::defaults")]
+    pub ai_cli_profiles: Vec<CliAgentProfile>,
     /// Tulis blok `sql tabular:tab=…` dari agent langsung ke editor saat streaming.
     #[serde(default = "default_true")]
     pub ai_cli_auto_apply_edits: bool,
@@ -424,12 +552,9 @@ impl Default for AppPreferences {
             ai_model: String::new(),
             ai_provider: AiProvider::OpenAI,
             ai_base_url: String::new(),
-            ai_backend: AiBackend::Api,
-            ai_cli_kind: CliAgentKind::Antigravity,
-            ai_cli_bin: String::new(),
-            ai_cli_model: String::new(),
-            ai_cli_effort: String::new(),
-            ai_cli_extra_args: String::new(),
+            ai_default_target: ChatTarget::Api,
+            ai_chat_target: None,
+            ai_cli_profiles: CliAgentProfile::defaults(),
             ai_cli_auto_apply_edits: true,
             ai_obsidian_vault_path: String::new(),
             ai_obsidian_enabled: false,
@@ -442,6 +567,125 @@ impl Default for AppPreferences {
             ai_panel_width: default_ai_panel_width(),
         }
     }
+}
+
+pub(crate) fn apply_kv_pair(
+    prefs: &mut AppPreferences,
+    legacy: &mut LegacyCliPrefs,
+    saw_profiles: &mut bool,
+    ai_key_rewrite: &mut Option<String>,
+    k: &str,
+    v: &str,
+) {
+    match k {
+        "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
+        "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
+        // Legacy migration: old boolean flags
+        "is_dark_mode" => {
+            if v != "1" {
+                prefs.theme = AppTheme::Light;
+            }
+        }
+        "is_light_soft" => {
+            if v == "1" {
+                prefs.theme = AppTheme::LightSoft;
+            }
+        }
+        "link_editor_theme" => prefs.link_editor_theme = v == "1",
+        "editor_theme" => prefs.editor_theme = v.to_string(),
+        "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
+        "word_wrap" => prefs.word_wrap = v == "1",
+        "data_directory" => {
+            prefs.data_directory = if v.is_empty() { None } else { Some(v.to_string()) }
+        }
+        "auto_check_updates" => prefs.auto_check_updates = v == "1",
+        "use_server_pagination" => prefs.use_server_pagination = v == "1",
+        "last_update_check_iso" => {
+            prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v.to_string()) }
+        }
+        "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
+        "ai_api_key" => {
+            let (real, rewrite) =
+                crate::secrets::resolve_stored("pref:ai_api_key", v);
+            prefs.ai_api_key = real;
+            *ai_key_rewrite = rewrite;
+        }
+        "ai_model" => prefs.ai_model = v.to_string(),
+        "ai_provider" => {
+            prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI)
+        }
+        "ai_base_url" => prefs.ai_base_url = v.to_string(),
+        "ai_backend" => legacy.backend = Some(v.parse().unwrap_or(AiBackend::Api)),
+        "ai_cli_kind" => {
+            legacy.kind = Some(v.parse().unwrap_or(CliAgentKind::Antigravity))
+        }
+        "ai_cli_bin" => legacy.bin = v.to_string(),
+        "ai_cli_model" => legacy.model = v.to_string(),
+        "ai_cli_effort" => legacy.effort = v.to_string(),
+        "ai_cli_extra_args" => legacy.extra_args = v.to_string(),
+        "ai_cli_profiles" => {
+            match serde_json::from_str::<Vec<CliAgentProfile>>(v) {
+                Ok(parsed) => {
+                    prefs.ai_cli_profiles = parsed;
+                    *saw_profiles = true;
+                }
+                Err(e) => {
+                    log::warn!("[PREFS] Failed to parse ai_cli_profiles JSON: {e}");
+                }
+            }
+        }
+        "ai_default_target" => {
+            prefs.ai_default_target = v.parse().unwrap_or_default();
+        }
+        "ai_chat_target" => {
+            prefs.ai_chat_target = if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.parse().unwrap_or_default())
+            };
+        }
+        "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
+        "ai_obsidian_vault_path" => prefs.ai_obsidian_vault_path = v.to_string(),
+        "ai_obsidian_enabled" => prefs.ai_obsidian_enabled = v == "1",
+        "ai_obsidian_allow_write" => prefs.ai_obsidian_allow_write = v == "1",
+        "redis_browser_auto_refresh_seconds" => {
+            prefs.redis_browser_auto_refresh_seconds = v
+                .parse()
+                .unwrap_or(default_redis_browser_auto_refresh_seconds())
+        }
+        "sync_server_url" => {
+            prefs.sync_server_url = if v.is_empty() { None } else { Some(v.to_string()) }
+        }
+        "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
+        "max_result_rows" => {
+            prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS)
+        }
+        "restore_session" => prefs.restore_session = v == "1",
+        "ai_panel_width" => {
+            prefs.ai_panel_width = v
+                .parse()
+                .unwrap_or_else(|_| default_ai_panel_width())
+                .clamp(280.0, 800.0);
+        }
+        _ => {}
+    }
+}
+
+pub fn preferences_from_kv<'a>(rows: impl IntoIterator<Item = (&'a str, &'a str)>) -> AppPreferences {
+    let mut prefs = AppPreferences::default();
+    let mut legacy = LegacyCliPrefs::default();
+    let mut saw_profiles = false;
+    let mut rewrite = None;
+    for (k, v) in rows {
+        apply_kv_pair(&mut prefs, &mut legacy, &mut saw_profiles, &mut rewrite, k, v);
+    }
+    if !saw_profiles {
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        prefs.ai_cli_profiles = profiles;
+        prefs.ai_default_target = target;
+    }
+    normalize_profiles(&mut prefs.ai_cli_profiles);
+    prefs
 }
 
 pub struct ConfigStore {
@@ -553,12 +797,9 @@ impl ConfigStore {
                 ai_model: String::new(),
                 ai_provider: AiProvider::OpenAI,
                 ai_base_url: String::new(),
-                ai_backend: AiBackend::Api,
-                ai_cli_kind: CliAgentKind::Antigravity,
-                ai_cli_bin: String::new(),
-                ai_cli_model: String::new(),
-                ai_cli_effort: String::new(),
-                ai_cli_extra_args: String::new(),
+                ai_default_target: ChatTarget::Api,
+                ai_chat_target: None,
+                ai_cli_profiles: CliAgentProfile::defaults(),
                 ai_cli_auto_apply_edits: true,
                 ai_obsidian_vault_path: String::new(),
                 ai_obsidian_enabled: false,
@@ -575,6 +816,8 @@ impl ConfigStore {
             // Set when a legacy plaintext AI key was migrated to the secret
             // store during this load; the row is rewritten below.
             let mut ai_key_rewrite: Option<String> = None;
+            let mut legacy = LegacyCliPrefs::default();
+            let mut saw_profiles = false;
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
                 .fetch_all(pool)
@@ -583,79 +826,16 @@ impl ConfigStore {
                 for row in rows {
                     let k: String = row.get(0);
                     let v: String = row.get(1);
-                    match k.as_str() {
-                        "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
-                        "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
-                        // Legacy migration: old boolean flags
-                        "is_dark_mode" => {
-                            if v != "1" {
-                                prefs.theme = AppTheme::Light;
-                            }
-                        }
-                        "is_light_soft" => {
-                            if v == "1" {
-                                prefs.theme = AppTheme::LightSoft;
-                            }
-                        }
-                        "link_editor_theme" => prefs.link_editor_theme = v == "1",
-                        "editor_theme" => prefs.editor_theme = v,
-                        "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
-                        "word_wrap" => prefs.word_wrap = v == "1",
-                        "data_directory" => {
-                            prefs.data_directory = if v.is_empty() { None } else { Some(v) }
-                        }
-                        "auto_check_updates" => prefs.auto_check_updates = v == "1",
-                        "use_server_pagination" => prefs.use_server_pagination = v == "1",
-                        "last_update_check_iso" => {
-                            prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
-                        }
-                        "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
-                        "ai_api_key" => {
-                            let (real, rewrite) =
-                                crate::secrets::resolve_stored("pref:ai_api_key", &v);
-                            prefs.ai_api_key = real;
-                            ai_key_rewrite = rewrite;
-                        }
-                        "ai_model" => prefs.ai_model = v,
-                        "ai_provider" => {
-                            prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI)
-                        }
-                        "ai_base_url" => prefs.ai_base_url = v,
-                        "ai_backend" => prefs.ai_backend = v.parse().unwrap_or(AiBackend::Api),
-                        "ai_cli_kind" => {
-                            prefs.ai_cli_kind = v.parse().unwrap_or(CliAgentKind::Antigravity)
-                        }
-                        "ai_cli_bin" => prefs.ai_cli_bin = v,
-                        "ai_cli_model" => prefs.ai_cli_model = v,
-                        "ai_cli_effort" => prefs.ai_cli_effort = v,
-                        "ai_cli_extra_args" => prefs.ai_cli_extra_args = v,
-                        "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
-                        "ai_obsidian_vault_path" => prefs.ai_obsidian_vault_path = v,
-                        "ai_obsidian_enabled" => prefs.ai_obsidian_enabled = v == "1",
-                        "ai_obsidian_allow_write" => prefs.ai_obsidian_allow_write = v == "1",
-                        "redis_browser_auto_refresh_seconds" => {
-                            prefs.redis_browser_auto_refresh_seconds = v
-                                .parse()
-                                .unwrap_or(default_redis_browser_auto_refresh_seconds())
-                        }
-                        "sync_server_url" => {
-                            prefs.sync_server_url = if v.is_empty() { None } else { Some(v) }
-                        }
-                        "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
-                        "max_result_rows" => {
-                            prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS)
-                        }
-                        "restore_session" => prefs.restore_session = v == "1",
-                        "ai_panel_width" => {
-                            prefs.ai_panel_width = v
-                                .parse()
-                                .unwrap_or_else(|_| default_ai_panel_width())
-                                .clamp(280.0, 800.0);
-                        }
-                        _ => {}
-                    }
+                    apply_kv_pair(&mut prefs, &mut legacy, &mut saw_profiles, &mut ai_key_rewrite, &k, &v);
                 }
             }
+
+            if !saw_profiles {
+                let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+                prefs.ai_cli_profiles = profiles;
+                prefs.ai_default_target = target;
+            }
+            normalize_profiles(&mut prefs.ai_cli_profiles);
 
             if let Some(value) = ai_key_rewrite {
                 let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
@@ -680,6 +860,21 @@ impl ConfigStore {
             return prefs;
         }
 
+        // Fallback to JSON
+        let path = Self::json_path();
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(mut prefs) = serde_json::from_str::<AppPreferences>(&content)
+        {
+            // Resolve AI API key from keyring/file if stored as sentinel
+            let (real, rewrite) =
+                crate::secrets::resolve_stored("pref:ai_api_key", &prefs.ai_api_key);
+            prefs.ai_api_key = real;
+            if rewrite.is_some() {
+                let _ = self.save_to_json(&prefs);
+            }
+            normalize_profiles(&mut prefs.ai_cli_profiles);
+            return prefs;
+        }
         AppPreferences::default()
     }
 
@@ -710,8 +905,20 @@ impl ConfigStore {
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
             let query_timeout_secs = prefs.query_timeout_secs.to_string();
             let max_result_rows = prefs.max_result_rows.to_string();
+            let ai_default_target_str = prefs.ai_default_target.as_string();
+            let ai_chat_target_str = prefs
+                .ai_chat_target
+                .map(|t| t.as_string())
+                .unwrap_or_default();
+            let ai_cli_profiles_json = match serde_json::to_string(&prefs.ai_cli_profiles) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("[PREFS] Failed to serialize ai_cli_profiles: {e}");
+                    String::new()
+                }
+            };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
-            let entries: [(&str, &str); 30] = [
+            let entries: [(&str, &str); 27] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -745,12 +952,9 @@ impl ConfigStore {
                 ("ai_model", prefs.ai_model.as_str()),
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
-                ("ai_backend", prefs.ai_backend.as_str()),
-                ("ai_cli_kind", prefs.ai_cli_kind.as_str()),
-                ("ai_cli_bin", prefs.ai_cli_bin.as_str()),
-                ("ai_cli_model", prefs.ai_cli_model.as_str()),
-                ("ai_cli_effort", prefs.ai_cli_effort.as_str()),
-                ("ai_cli_extra_args", prefs.ai_cli_extra_args.as_str()),
+                ("ai_default_target", ai_default_target_str.as_str()),
+                ("ai_chat_target", ai_chat_target_str.as_str()),
+                ("ai_cli_profiles", ai_cli_profiles_json.as_str()),
                 (
                     "ai_cli_auto_apply_edits",
                     if prefs.ai_cli_auto_apply_edits {
@@ -1169,5 +1373,165 @@ mod tests {
             ObsidianSettings::from_json("not json"),
             ObsidianSettings::default()
         );
+    }
+
+    #[test]
+    fn chat_target_roundtrip() {
+        let targets = [
+            ChatTarget::Api,
+            ChatTarget::Cli(CliAgentKind::Antigravity),
+            ChatTarget::Cli(CliAgentKind::ClaudeCode),
+            ChatTarget::Cli(CliAgentKind::GeminiCli),
+            ChatTarget::Cli(CliAgentKind::Custom),
+        ];
+        for t in targets {
+            let s = t.as_string();
+            let parsed: ChatTarget = s.parse().unwrap();
+            assert_eq!(t, parsed);
+        }
+        // Unknown strings fallback to Api
+        assert_eq!("".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+        assert_eq!("UNKNOWN".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+        assert_eq!("CLI:UNKNOWN".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+    }
+
+    #[test]
+    fn profiles_json_roundtrip() {
+        let defaults = CliAgentProfile::defaults();
+        let json = serde_json::to_string(&defaults).expect("serialize defaults");
+        let restored: Vec<CliAgentProfile> =
+            serde_json::from_str(&json).expect("deserialize defaults");
+        assert_eq!(defaults, restored);
+    }
+
+    #[test]
+    fn migrate_legacy_cli_enables_selected_kind() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Cli),
+            kind: Some(CliAgentKind::ClaudeCode),
+            bin: "/x/claude".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            extra_args: "--verbose".into(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Cli(CliAgentKind::ClaudeCode));
+        assert_eq!(profiles.len(), 4);
+        let claude = profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::ClaudeCode)
+            .unwrap();
+        assert!(claude.enabled);
+        assert_eq!(claude.bin, "/x/claude");
+        assert_eq!(claude.model, "opus");
+        assert_eq!(claude.effort, "high");
+        assert_eq!(claude.extra_args, "--verbose");
+
+        for p in profiles.iter().filter(|p| p.kind != CliAgentKind::ClaudeCode) {
+            assert!(!p.enabled);
+            assert!(p.bin.is_empty());
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_api_backend_keeps_target_api() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Api),
+            kind: Some(CliAgentKind::Antigravity),
+            bin: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Api);
+        for p in profiles {
+            assert!(!p.enabled);
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_api_with_filled_bin_enables_profile() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Api),
+            kind: Some(CliAgentKind::Antigravity),
+            bin: "/usr/local/bin/agy".into(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Api);
+        let agy = profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::Antigravity)
+            .unwrap();
+        assert!(agy.enabled);
+        assert_eq!(agy.bin, "/usr/local/bin/agy");
+    }
+
+    #[test]
+    fn normalize_profiles_fills_missing_and_dedups() {
+        let mut profiles = vec![
+            CliAgentProfile {
+                kind: CliAgentKind::ClaudeCode,
+                enabled: true,
+                bin: "claude1".into(),
+                ..CliAgentProfile::new(CliAgentKind::ClaudeCode)
+            },
+            CliAgentProfile {
+                kind: CliAgentKind::ClaudeCode,
+                enabled: false,
+                bin: "claude2".into(),
+                ..CliAgentProfile::new(CliAgentKind::ClaudeCode)
+            },
+        ];
+        normalize_profiles(&mut profiles);
+        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles[0].kind, CliAgentKind::Antigravity);
+        assert_eq!(profiles[1].kind, CliAgentKind::ClaudeCode);
+        assert_eq!(profiles[2].kind, CliAgentKind::GeminiCli);
+        assert_eq!(profiles[3].kind, CliAgentKind::Custom);
+        assert!(profiles[1].enabled);
+        assert_eq!(profiles[1].bin, "claude1");
+    }
+
+    #[test]
+    fn load_prefers_new_key_over_legacy() {
+        let mut custom_profile = CliAgentProfile::new(CliAgentKind::Custom);
+        custom_profile.enabled = true;
+        custom_profile.bin = "my-ai".into();
+        let mut expected_profiles = CliAgentProfile::defaults();
+        if let Some(p) = expected_profiles
+            .iter_mut()
+            .find(|p| p.kind == CliAgentKind::Custom)
+        {
+            *p = custom_profile;
+        }
+        let profiles_json = serde_json::to_string(&expected_profiles).unwrap();
+
+        let rows = [
+            ("ai_backend", "CLI"),
+            ("ai_cli_kind", "CLAUDE"),
+            ("ai_cli_bin", "/old/claude"),
+            ("ai_cli_profiles", profiles_json.as_str()),
+            ("ai_default_target", "CLI:CUSTOM"),
+        ];
+
+        let prefs = preferences_from_kv(rows);
+        assert_eq!(prefs.ai_default_target, ChatTarget::Cli(CliAgentKind::Custom));
+        let custom = prefs
+            .ai_cli_profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::Custom)
+            .unwrap();
+        assert!(custom.enabled);
+        assert_eq!(custom.bin, "my-ai");
+        let claude = prefs
+            .ai_cli_profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::ClaudeCode)
+            .unwrap();
+        assert!(!claude.enabled);
     }
 }

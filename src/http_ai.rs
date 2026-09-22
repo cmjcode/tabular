@@ -548,6 +548,7 @@ mod tests {
         use crate::config::{AiBackend, AiProvider, CliAgentKind};
 
         let backend = crate::ai_assistant::ChatBackend {
+            target: crate::config::ChatTarget::Cli(CliAgentKind::Antigravity),
             backend: AiBackend::Cli,
             provider: AiProvider::OpenAI,
             api_key: String::new(),

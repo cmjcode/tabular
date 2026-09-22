@@ -80,19 +80,18 @@ impl super::Tabular {
             prefs.ai_model.clone()
         };
         self.ai_settings_base_url_input = prefs.ai_base_url.clone();
-        self.ai_backend = prefs.ai_backend;
-        self.ai_cli_kind = prefs.ai_cli_kind;
-        self.ai_cli_bin = prefs.ai_cli_bin.clone();
-        self.ai_cli_model = prefs.ai_cli_model.clone();
-        self.ai_cli_effort = prefs.ai_cli_effort.clone();
-        self.ai_cli_extra_args = prefs.ai_cli_extra_args.clone();
+        self.ai_cli_profiles = prefs
+            .ai_cli_profiles
+            .iter()
+            .cloned()
+            .map(|p| (p.kind, p))
+            .collect();
+        self.ai_default_target = prefs.ai_default_target;
+        self.ai_chat_target = prefs.ai_chat_target.unwrap_or(prefs.ai_default_target);
         self.ai_cli_auto_apply_edits = prefs.ai_cli_auto_apply_edits;
         self.ai_obsidian_vault_path = prefs.ai_obsidian_vault_path.clone();
         self.ai_obsidian_enabled = prefs.ai_obsidian_enabled;
         self.ai_obsidian_allow_write = prefs.ai_obsidian_allow_write;
-        self.ai_settings_cli_bin_input = prefs.ai_cli_bin.clone();
-        self.ai_settings_cli_model_input = prefs.ai_cli_model.clone();
-        self.ai_settings_cli_extra_args_input = prefs.ai_cli_extra_args.clone();
         if let Some(url) = prefs.sync_server_url.clone()
             && !url.trim().is_empty()
         {
@@ -597,7 +596,6 @@ impl super::Tabular {
             ai_chat: Vec::new(),
             ai_stream_receiver: None,
             ai_cancel: None,
-            ai_session_id: None,
             ai_attached_tab_ids: Vec::new(),
             ai_live_edit_parser: None,
             ai_live_edit_active: None,
@@ -608,24 +606,22 @@ impl super::Tabular {
             ai_model: String::new(),
             ai_provider: crate::config::AiProvider::OpenAI,
             ai_base_url: String::new(),
-            ai_backend: crate::config::AiBackend::Api,
-            ai_cli_kind: crate::config::CliAgentKind::Antigravity,
-            ai_cli_bin: String::new(),
-            ai_cli_model: String::new(),
-            ai_cli_effort: String::new(),
-            ai_cli_extra_args: String::new(),
+            ai_cli_profiles: crate::config::CliAgentProfile::defaults()
+                .into_iter()
+                .map(|p| (p.kind, p))
+                .collect(),
+            ai_default_target: crate::config::ChatTarget::Api,
+            ai_chat_target: crate::config::ChatTarget::Api,
+            ai_turn_target: None,
+            ai_session: None,
+            ai_settings_cli_tab: crate::config::CliAgentKind::Antigravity,
+            ai_cli_mcp: std::collections::HashMap::new(),
             ai_cli_auto_apply_edits: true,
             ai_settings_api_key_input: String::new(),
             ai_settings_model_input: String::new(),
             ai_settings_base_url_input: String::new(),
-            ai_settings_cli_bin_input: String::new(),
-            ai_settings_cli_model_input: String::new(),
-            ai_settings_cli_extra_args_input: String::new(),
             ai_cli_test_receiver: None,
             ai_cli_test_result: None,
-            ai_cli_mcp_registered: None,
-            ai_cli_mcp_receiver: None,
-            ai_cli_mcp_message: None,
             ai_obsidian_vault_path: String::new(),
             ai_obsidian_enabled: false,
             ai_obsidian_allow_write: false,
@@ -1592,24 +1588,32 @@ impl super::Tabular {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{AiBackend, AiProvider, AppPreferences, CliAgentKind};
+    use crate::config::{AiProvider, AppPreferences};
     use crate::window_egui::Tabular;
 
     /// Regresi: pengaturan AI yang tersimpan harus termuat ke state saat
     /// startup, bukan tertinggal di nilai default konstruktor.
     #[test]
     fn set_initial_prefs_mirrors_ai_settings() {
+        let mut profiles = crate::config::CliAgentProfile::defaults();
+        if let Some(p) = profiles
+            .iter_mut()
+            .find(|p| p.kind == crate::config::CliAgentKind::ClaudeCode)
+        {
+            p.enabled = true;
+            p.bin = "/opt/bin/claude".into();
+            p.model = "opus".into();
+            p.effort = "high".into();
+            p.extra_args = "--verbose".into();
+        }
         let prefs = AppPreferences {
             ai_api_key: "sk-test".into(),
             ai_model: "my-model".into(),
             ai_provider: AiProvider::Custom,
             ai_base_url: "http://localhost:1234/v1".into(),
-            ai_backend: AiBackend::Cli,
-            ai_cli_kind: CliAgentKind::ClaudeCode,
-            ai_cli_bin: "/opt/bin/claude".into(),
-            ai_cli_model: "opus".into(),
-            ai_cli_effort: "high".into(),
-            ai_cli_extra_args: "--verbose".into(),
+            ai_default_target: crate::config::ChatTarget::Cli(crate::config::CliAgentKind::ClaudeCode),
+            ai_chat_target: None,
+            ai_cli_profiles: profiles,
             ai_cli_auto_apply_edits: false,
             ai_obsidian_vault_path: "/vaults/work".into(),
             ai_obsidian_enabled: true,
@@ -1625,12 +1629,20 @@ mod tests {
         assert_eq!(tabular.ai_model, "my-model");
         assert_eq!(tabular.ai_provider, AiProvider::Custom);
         assert_eq!(tabular.ai_base_url, "http://localhost:1234/v1");
-        assert_eq!(tabular.ai_backend, AiBackend::Cli);
-        assert_eq!(tabular.ai_cli_kind, CliAgentKind::ClaudeCode);
-        assert_eq!(tabular.ai_cli_bin, "/opt/bin/claude");
-        assert_eq!(tabular.ai_cli_model, "opus");
-        assert_eq!(tabular.ai_cli_effort, "high");
-        assert_eq!(tabular.ai_cli_extra_args, "--verbose");
+        assert_eq!(
+            tabular.ai_default_target,
+            crate::config::ChatTarget::Cli(crate::config::CliAgentKind::ClaudeCode)
+        );
+        assert_eq!(
+            tabular.ai_chat_target,
+            crate::config::ChatTarget::Cli(crate::config::CliAgentKind::ClaudeCode)
+        );
+        let claude = &tabular.ai_cli_profiles[&crate::config::CliAgentKind::ClaudeCode];
+        assert!(claude.enabled);
+        assert_eq!(claude.bin, "/opt/bin/claude");
+        assert_eq!(claude.model, "opus");
+        assert_eq!(claude.effort, "high");
+        assert_eq!(claude.extra_args, "--verbose");
         assert!(!tabular.ai_cli_auto_apply_edits);
         assert_eq!(tabular.ai_obsidian_vault_path, "/vaults/work");
         assert!(tabular.ai_obsidian_enabled);
@@ -1639,9 +1651,6 @@ mod tests {
         // Input di dialog Preferences ikut terisi
         assert_eq!(tabular.ai_settings_api_key_input, "sk-test");
         assert_eq!(tabular.ai_settings_model_input, "my-model");
-        assert_eq!(tabular.ai_settings_cli_bin_input, "/opt/bin/claude");
-        assert_eq!(tabular.ai_settings_cli_model_input, "opus");
-        assert_eq!(tabular.ai_settings_cli_extra_args_input, "--verbose");
         assert!(tabular.prefs_loaded);
     }
 }

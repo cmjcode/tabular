@@ -5,7 +5,7 @@
 use eframe::egui;
 
 use super::{PrefTab, Tabular, style};
-use crate::config::{AiBackend, AiProvider, AppTheme, UiModePreference};
+use crate::config::{AiProvider, AppTheme, UiModePreference};
 use crate::models::structs::EditorColorTheme;
 
 /// Lebar kolom navigasi kiri.
@@ -1240,17 +1240,10 @@ impl Tabular {
         page_header(
             ui,
             "AI Assistant",
-            "Press Cmd+Shift+A in the editor to toggle the AI panel.",
+            "Configure API providers and local CLI coding agents.",
         );
 
-        self.render_ai_backend_settings(ui);
-
-        if self.ai_backend != AiBackend::Api {
-            self.render_ai_memory_settings(ui);
-            return;
-        }
-
-        section(ui, "Provider", |ui| {
+        section(ui, "API Provider", |ui| {
             row(ui, "Provider", None, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for p in [
@@ -1326,7 +1319,7 @@ impl Tabular {
                 status(
                     ui,
                     Tone::Warning,
-                    "⚠ No API key set. The AI panel will show a warning.",
+                    "⚠ No API key set. The API backend will be unavailable until a key is added.",
                 );
             } else {
                 status(
@@ -1425,6 +1418,8 @@ impl Tabular {
             }
         });
 
+        self.render_ai_cli_section(ui);
+        self.render_ai_default_target(ui);
         self.render_ai_memory_settings(ui);
     }
 

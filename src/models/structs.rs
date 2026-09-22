@@ -1202,7 +1202,25 @@ pub struct AiChatMessage {
     pub usage: Option<String>,
     /// Tahapan kemajuan / aktivitas yang dijalankan agent pada giliran ini.
     pub progress_steps: Vec<crate::agent::harness::ProgressStep>,
+    /// Nama backend/agent yang menjawab; hanya diisi untuk role Assistant.
+    pub agent_label: Option<String>,
 }
+
+/// Sesi CLI aktif untuk melanjutkan percakapan (agy --conversation / claude --resume).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSession {
+    pub kind: crate::config::CliAgentKind,
+    pub id: String,
+}
+
+#[derive(Default)]
+pub struct McpStatus {
+    /// None = belum diperiksa; Some(true) = MCP Tabular terdaftar di CLI global.
+    pub registered: Option<bool>,
+    pub message: Option<String>,
+    pub receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
+}
+
 
 /// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
 /// jadi hanya dihitung ulang saat koneksi/database berubah atau cache kedaluwarsa.

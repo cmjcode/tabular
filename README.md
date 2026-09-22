@@ -135,10 +135,13 @@ Extend Tabular with lightweight sandboxed Wasm modules (`wasmi` engine).
 
 ### AI Assistant (Cmd+Shift+A)
 Context‑aware AI chat integrated directly into the query editor.
-- Two backends (Settings → AI Assistant):
+- **Multiple CLI Agents & HTTP APIs simultaneously** (Settings → AI Assistant):
   - **HTTP API** with your own key: **OpenAI (ChatGPT)**, **Anthropic (Claude)**, **Groq**, **GitHub Copilot/Models**, or any **OpenAI‑compatible** endpoint.
-  - **CLI agent** — reuse a coding agent already installed and logged in on your machine, no API key needed: **Antigravity (`agy`)**, **Claude Code (`claude`)**, **Gemini CLI (`gemini`)**, or a custom command. Output is streamed live; conversations continue across turns.
-- With a CLI agent, the agent can inspect your databases through Tabular's own read‑only MCP server (`tabular mcp`): Claude Code gets it per request, `agy`/`gemini` register it once with the **Register** button.
+  - **CLI coding agents** — configure multiple agents on the same machine (**Antigravity (`agy`)**, **Claude Code (`claude`)**, **Gemini CLI (`gemini`)**, and custom commands) with per-agent model, reasoning effort, extra arguments, and enabled status.
+- **Chat Target Picker**: When multiple agents or API are enabled, pick the active agent directly in the chat panel header. Chat history is preserved seamlessly when switching agents.
+- **Agent Attribution**: Responses in chat bubbles and Markdown exports are tagged with the answering agent label (e.g. `Assistant (agy · gemini-3.8-flash-low)`).
+- **Default Target**: Select which agent or API powers non-chat features like the inline `--AI` SQL block and HTTP Client AI generation.
+- **Database Access via MCP**: With CLI agents, inspect databases through Tabular's read‑only MCP server (`tabular mcp`): Claude Code receives it per request; `agy` and `gemini` register it via the Settings tab.
 - **Editor context**: the active tab (and its selection) is always sent; attach any other open SQL tabs with **+ Attach tab**.
 - **Live edit**: when the agent writes a query for a tab it lands in that tab while streaming; every edit has **Revert**, and live edit can be turned off in favour of an **Apply** button.
 - Automatically injects the relevant schema (tables + columns, vector‑ranked) as context.

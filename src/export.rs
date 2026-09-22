@@ -234,8 +234,11 @@ pub fn build_ai_chat_markdown(chat: &[AiChatMessage], meta: &[(&str, String)]) -
 
     for msg in chat {
         let heading = match msg.role {
-            AiChatRole::User => "You",
-            AiChatRole::Assistant => "Assistant",
+            AiChatRole::User => "You".to_string(),
+            AiChatRole::Assistant => match &msg.agent_label {
+                Some(label) => format!("Assistant ({label})"),
+                None => "Assistant".to_string(),
+            },
         };
         out.push_str(&format!("\n## {heading}\n\n"));
 
@@ -632,6 +635,14 @@ mod tests {
     fn ai_chat_markdown_empty_chat_has_only_header() {
         let md = build_ai_chat_markdown(&[], &[]);
         assert_eq!(md.trim_end(), "# Tabular AI Chat");
+    }
+
+    #[test]
+    fn ai_chat_markdown_includes_agent_label_when_present() {
+        let mut answer = chat_msg(AiChatRole::Assistant, "Hello from agy");
+        answer.agent_label = Some("agy · gemini-3.8-flash-low".to_string());
+        let md = build_ai_chat_markdown(&[answer], &[]);
+        assert!(md.contains("## Assistant (agy · gemini-3.8-flash-low)\n\n"));
     }
 
     #[test]

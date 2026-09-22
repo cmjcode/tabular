@@ -63,6 +63,19 @@ impl CliAgentConfig {
     }
 }
 
+impl From<&crate::config::CliAgentProfile> for CliAgentConfig {
+    fn from(p: &crate::config::CliAgentProfile) -> Self {
+        CliAgentConfig {
+            kind: p.kind,
+            bin: p.bin.clone(),
+            model: p.model.clone(),
+            effort: p.effort.clone(),
+            extra_args: p.extra_args.clone(),
+        }
+    }
+}
+
+
 /// Status sebuah tahapan pengerjaan (step) oleh agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProgressStatus {
