@@ -154,6 +154,8 @@ pub struct CopyDatabaseOptions {
     /// For SQLite: target file path on disk
     pub target_file: Option<PathBuf>,
     pub custom_binary_path: Option<PathBuf>,
+    pub drop_target_if_exists: bool,
+    pub include_routines: bool,
 }
 
 impl Default for CopyDatabaseOptions {
@@ -163,6 +165,8 @@ impl Default for CopyDatabaseOptions {
             target_database_name: String::new(),
             target_file: None,
             custom_binary_path: None,
+            drop_target_if_exists: false,
+            include_routines: false,
         }
     }
 }
@@ -471,6 +475,37 @@ impl BinaryDetector {
         }
 
         dirs
+    }
+}
+
+// ─── mysqldump Capability Detection ──────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct MysqldumpCapabilities {
+    pub supports_gtid_purged: bool,
+    pub supports_no_tablespaces: bool,
+}
+
+impl MysqldumpCapabilities {
+    /// Detects mysqldump CLI capabilities across MySQL and MariaDB variants
+    pub fn detect(binary_path: &Path, version_str: Option<&str>) -> Self {
+        let is_mariadb = version_str
+            .map(|v| v.to_lowercase().contains("mariadb"))
+            .unwrap_or(false);
+
+        let help_text = Command::new(binary_path)
+            .arg("--help")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+
+        let supports_gtid_purged = !is_mariadb && help_text.contains("--set-gtid-purged");
+        let supports_no_tablespaces = help_text.contains("--no-tablespaces");
+
+        Self {
+            supports_gtid_purged,
+            supports_no_tablespaces,
+        }
     }
 }
 
@@ -900,6 +935,9 @@ impl BackupRestoreRunner {
                     let target_path = options.target_file.clone().unwrap_or_else(|| {
                         PathBuf::from(format!("{}_copy.sqlite", config_clone.database))
                     });
+                    if options.drop_target_if_exists && target_path.exists() {
+                        let _ = std::fs::remove_file(&target_path);
+                    }
                     if let Some(parent) = target_path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
@@ -1238,6 +1276,11 @@ impl BackupRestoreRunner {
             cmd.env("MYSQL_PWD", &config.password);
         }
 
+        let caps = MysqldumpCapabilities::detect(
+            &binary_info.path,
+            binary_info.version.as_deref(),
+        );
+
         if options.single_transaction {
             cmd.arg("--single-transaction");
         }
@@ -1246,6 +1289,12 @@ impl BackupRestoreRunner {
         }
         if options.clean_before_recreate {
             cmd.arg("--add-drop-table");
+        }
+        if caps.supports_gtid_purged {
+            cmd.arg("--set-gtid-purged=OFF");
+        }
+        if caps.supports_no_tablespaces {
+            cmd.arg("--no-tablespaces");
         }
 
         match options.scope {
@@ -1807,6 +1856,23 @@ impl BackupRestoreRunner {
             create_cmd.env("PGPASSWORD", &config.password);
         }
         let sql_escaped = options.target_database_name.replace('"', "\"\"");
+
+        // If requested, drop existing target database first
+        if options.drop_target_if_exists {
+            let mut drop_cmd = Command::new(&psql_info.path);
+            drop_cmd.arg("-h").arg(&config.host);
+            drop_cmd.arg("-p").arg(&config.port);
+            if !config.username.is_empty() {
+                drop_cmd.arg("-U").arg(&config.username);
+            }
+            drop_cmd.arg("-d").arg(conn_db);
+            if !config.password.is_empty() {
+                drop_cmd.env("PGPASSWORD", &config.password);
+            }
+            drop_cmd.arg("-c").arg(format!("DROP DATABASE IF EXISTS \"{}\";", sql_escaped));
+            let _ = drop_cmd.output();
+        }
+
         create_cmd.arg("-c").arg(format!("CREATE DATABASE \"{}\";", sql_escaped));
 
         create_cmd.stdout(Stdio::piped());
@@ -1818,11 +1884,14 @@ impl BackupRestoreRunner {
 
         if !out.status.success() {
             let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
-            let msg = format!(
+            let mut msg = format!(
                 "Failed to create database '{}': {}",
                 options.target_database_name,
                 err_msg.trim()
             );
+            if err_msg.contains("already exists") {
+                msg.push_str(". Tip: enable 'Overwrite target database if it already exists' to replace it.");
+            }
             let mut trk = tracker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1921,6 +1990,23 @@ impl BackupRestoreRunner {
         }
 
         // 1. Create target database using mysql
+        let sql_escaped = options.target_database_name.replace('`', "``");
+
+        // If requested, drop existing target database first
+        if options.drop_target_if_exists {
+            let mut drop_cmd = Command::new(&mysql_info.path);
+            drop_cmd.arg("-h").arg(&config.host);
+            drop_cmd.arg("-P").arg(&config.port);
+            if !config.username.is_empty() {
+                drop_cmd.arg("-u").arg(&config.username);
+            }
+            if !config.password.is_empty() {
+                drop_cmd.env("MYSQL_PWD", &config.password);
+            }
+            drop_cmd.arg("-e").arg(format!("DROP DATABASE IF EXISTS `{}`;", sql_escaped));
+            let _ = drop_cmd.output();
+        }
+
         let mut create_cmd = Command::new(&mysql_info.path);
         create_cmd.arg("-h").arg(&config.host);
         create_cmd.arg("-P").arg(&config.port);
@@ -1930,7 +2016,6 @@ impl BackupRestoreRunner {
         if !config.password.is_empty() {
             create_cmd.env("MYSQL_PWD", &config.password);
         }
-        let sql_escaped = options.target_database_name.replace('`', "``");
         create_cmd.arg("-e").arg(format!("CREATE DATABASE `{}`;", sql_escaped));
 
         create_cmd.stdout(Stdio::piped());
@@ -1942,11 +2027,14 @@ impl BackupRestoreRunner {
 
         if !out.status.success() {
             let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
-            let msg = format!(
+            let mut msg = format!(
                 "Failed to create database '{}': {}",
                 options.target_database_name,
                 err_msg.trim()
             );
+            if err_msg.contains("database exists") || err_msg.contains("1007") {
+                msg.push_str(". Tip: enable 'Overwrite target database if it already exists' to replace it.");
+            }
             let mut trk = tracker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1966,6 +2054,11 @@ impl BackupRestoreRunner {
         }
 
         // 2. Dump from source
+        let caps = MysqldumpCapabilities::detect(
+            &mysqldump_info.path,
+            mysqldump_info.version.as_deref(),
+        );
+
         let mut dump_cmd = Command::new(&mysqldump_info.path);
         dump_cmd.arg("-h").arg(&config.host);
         dump_cmd.arg("-P").arg(&config.port);
@@ -1975,6 +2068,23 @@ impl BackupRestoreRunner {
         if !config.password.is_empty() {
             dump_cmd.env("MYSQL_PWD", &config.password);
         }
+
+        // Consistent non-locking snapshot and streaming
+        dump_cmd.arg("--single-transaction");
+        dump_cmd.arg("--quick");
+
+        // Prevent GTID_PURGED from breaking restore on running MySQL instances (ERROR 3546)
+        if caps.supports_gtid_purged {
+            dump_cmd.arg("--set-gtid-purged=OFF");
+        }
+        // Avoid requiring PROCESS privilege for tablespaces in MySQL 8+
+        if caps.supports_no_tablespaces {
+            dump_cmd.arg("--no-tablespaces");
+        }
+        if options.include_routines {
+            dump_cmd.arg("--routines");
+        }
+
         dump_cmd.arg(&options.source_database_name);
         dump_cmd.stdout(Stdio::piped());
         dump_cmd.stderr(Stdio::piped());
@@ -2065,8 +2175,31 @@ impl BackupRestoreRunner {
 
             if let Err(e) = restore_stdin.write_all(&buffer[..read_bytes]) {
                 let _ = dump_child.kill();
+
+                // Give stderr reader thread a short window to capture error output from restore process
+                std::thread::sleep(std::time::Duration::from_millis(150));
                 let _ = restore_child.kill();
-                let msg = format!("Pipe to restore process broke: {}", e);
+
+                // Look for actual error line from restore output
+                let mut detailed_err: Option<String> = None;
+                if let Ok(trk) = tracker.lock() {
+                    for line in trk.log_lines.iter().rev() {
+                        if line.contains("[restore] ERROR") || line.contains("[restore]") {
+                            let clean = line.trim();
+                            if !clean.is_empty() && clean != "[restore]" {
+                                detailed_err = Some(clean.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                let msg = if let Some(restore_err) = detailed_err {
+                    format!("Restore process failed: {}", restore_err)
+                } else {
+                    format!("Pipe to restore process broke: {}", e)
+                };
+
                 let mut trk = tracker
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2311,6 +2444,8 @@ mod tests {
         assert!(opts.target_database_name.is_empty());
         assert!(opts.target_file.is_none());
         assert!(opts.custom_binary_path.is_none());
+        assert!(!opts.drop_target_if_exists);
+        assert!(!opts.include_routines);
     }
 
     #[test]

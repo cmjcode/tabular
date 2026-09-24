@@ -412,6 +412,8 @@ pub struct Tabular {
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
     // Pending drop table confirmation
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
+    // Pending drop database confirmation
+    pub pending_drop_database: Option<models::structs::PendingDropDatabase>,
     // Pending delete connection confirmation
     pub pending_delete_connection: Option<(i64, String)>, // (connection_id, connection_name)
     pub pending_delete_http_request: Option<(String, String)>, // (request_id, request_name)

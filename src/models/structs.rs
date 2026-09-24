@@ -1785,7 +1785,50 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String)>,
     // New: request to open Copy Database dialog prefilled with (connection_id, database_name)
     Option<(i64, String)>,
+    // New: request to drop a database (connection_id, database_name)
+    Option<(i64, String)>,
 );
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingDropDatabase {
+    pub connection_id: i64,
+    pub database_name: String,
+    pub database_type: models::enums::DatabaseType,
+    pub drop_statement: String,
+}
+
+impl PendingDropDatabase {
+    pub fn new(
+        connection_id: i64,
+        database_name: String,
+        database_type: models::enums::DatabaseType,
+    ) -> Self {
+        let drop_statement = match database_type {
+            models::enums::DatabaseType::MySQL => {
+                format!("DROP DATABASE IF EXISTS `{}`;", database_name.replace('`', "``"))
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", database_name.replace('"', "\"\""))
+            }
+            models::enums::DatabaseType::MsSQL => {
+                format!(
+                    "USE master;\nALTER DATABASE [{0}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE [{0}];",
+                    database_name.replace(']', "]]")
+                )
+            }
+            models::enums::DatabaseType::MongoDB => {
+                format!("use {};\ndb.dropDatabase();", database_name)
+            }
+            _ => format!("DROP DATABASE \"{}\";", database_name),
+        };
+        Self {
+            connection_id,
+            database_name,
+            database_type,
+            drop_statement,
+        }
+    }
+}
 
 // ── CSV Import Wizard ─────────────────────────────────────────────────────────
 
@@ -2359,4 +2402,21 @@ mod tests {
         assert_eq!(StatementType::from_sql("SHOW TABLES;"), StatementType::Show);
         assert_eq!(StatementType::from_sql("EXPLAIN SELECT 1;"), StatementType::Show);
     }
+
+    #[test]
+    fn test_pending_drop_database_statements() {
+        let p_mysql = PendingDropDatabase::new(1, "my_db".to_string(), models::enums::DatabaseType::MySQL);
+        assert_eq!(p_mysql.drop_statement, "DROP DATABASE IF EXISTS `my_db`;");
+
+        let p_pg = PendingDropDatabase::new(2, "pg_db".to_string(), models::enums::DatabaseType::PostgreSQL);
+        assert_eq!(p_pg.drop_statement, "DROP DATABASE IF EXISTS \"pg_db\" WITH (FORCE);");
+
+        let p_mssql = PendingDropDatabase::new(3, "ms_db".to_string(), models::enums::DatabaseType::MsSQL);
+        assert!(p_mssql.drop_statement.contains("ALTER DATABASE [ms_db] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"));
+        assert!(p_mssql.drop_statement.contains("DROP DATABASE [ms_db];"));
+
+        let p_mongo = PendingDropDatabase::new(4, "mongo_db".to_string(), models::enums::DatabaseType::MongoDB);
+        assert_eq!(p_mongo.drop_statement, "use mongo_db;\ndb.dropDatabase();");
+    }
 }
+

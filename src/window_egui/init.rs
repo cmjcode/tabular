@@ -437,6 +437,7 @@ impl super::Tabular {
             pending_drop_column_stmt: None,
             pending_drop_collection: None,
             pending_drop_table: None,
+            pending_drop_database: None,
             pending_delete_connection: None,
             pending_delete_http_request: None,
             pending_rename_http_request: None,

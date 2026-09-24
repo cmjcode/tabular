@@ -25,6 +25,8 @@ pub struct CopyDatabaseDialogState {
     pub target_file: Option<PathBuf>,
     pub binary_info: Option<NativeBinaryInfo>,
     pub custom_binary_path: String,
+    pub drop_target_if_exists: bool,
+    pub include_routines: bool,
     pub tracker: Option<Arc<Mutex<ProgressTracker>>>,
     pub cancel_token: Option<Arc<AtomicBool>>,
     pub is_running: bool,
@@ -71,6 +73,8 @@ impl CopyDatabaseDialogState {
             target_file,
             binary_info,
             custom_binary_path: String::new(),
+            drop_target_if_exists: false,
+            include_routines: false,
             tracker: None,
             cancel_token: None,
             is_running: false,
@@ -231,6 +235,31 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     });
 
                                 ui.add_space(8.0);
+
+                                // Checkboxes for advanced copy options
+                                let drop_label = if state.connection_type == DatabaseType::SQLite {
+                                    "Overwrite destination SQLite file if it already exists"
+                                } else {
+                                    "Overwrite / Drop target database if it already exists"
+                                };
+                                let drop_color = if state.drop_target_if_exists {
+                                    egui::Color32::from_rgb(235, 140, 30)
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                ui.checkbox(
+                                    &mut state.drop_target_if_exists,
+                                    egui::RichText::new(drop_label).color(drop_color).small(),
+                                );
+
+                                if state.connection_type == DatabaseType::MySQL {
+                                    ui.checkbox(
+                                        &mut state.include_routines,
+                                        egui::RichText::new("Include Stored Procedures & Functions (Routines)").small(),
+                                    );
+                                }
+
+                                ui.add_space(6.0);
 
                                 // Information / Guidance Box
                                 egui::Frame::new()
@@ -425,6 +454,8 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     } else {
                         Some(PathBuf::from(&state.custom_binary_path))
                     },
+                    drop_target_if_exists: state.drop_target_if_exists,
+                    include_routines: state.include_routines,
                 };
 
                 let tracker = Arc::new(Mutex::new(ProgressTracker::new(

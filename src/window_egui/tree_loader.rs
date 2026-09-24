@@ -5,6 +5,49 @@ use crate::{
 use log::debug;
 
 impl super::Tabular {
+    pub fn remove_database_from_connection_node(
+        conn_node: &mut models::structs::TreeNode,
+        database_name: &str,
+        matches_db: &dyn Fn(&str, &str) -> bool,
+    ) -> bool {
+        let mut removed = false;
+        // Case 1: Check inside DatabasesFolder
+        for child in &mut conn_node.children {
+            if child.node_type == models::enums::NodeType::DatabasesFolder {
+                let count_before = child.children.len();
+                child.children.retain(|db_node| {
+                    let d_name = db_node.database_name.as_deref().unwrap_or(&db_node.name);
+                    let keep = !matches_db(d_name, database_name);
+                    if !keep {
+                        debug!("   ✅ Removed database '{}' from DatabasesFolder in tree", d_name);
+                    }
+                    keep
+                });
+                if child.children.len() < count_before {
+                    removed = true;
+                }
+            }
+        }
+        // Case 2: Check direct database children (e.g. for engines that don't have DatabasesFolder)
+        let count_before = conn_node.children.len();
+        conn_node.children.retain(|child| {
+            if child.node_type == models::enums::NodeType::Database {
+                let d_name = child.database_name.as_deref().unwrap_or(&child.name);
+                let keep = !matches_db(d_name, database_name);
+                if !keep {
+                    debug!("   ✅ Removed direct database '{}' from tree", d_name);
+                }
+                keep
+            } else {
+                true
+            }
+        });
+        if conn_node.children.len() < count_before {
+            removed = true;
+        }
+        removed
+    }
+
     pub fn remove_table_from_connection_node(
         conn_node: &mut models::structs::TreeNode,
         database_name: &str,

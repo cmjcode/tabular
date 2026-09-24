@@ -100,6 +100,7 @@ impl super::Tabular {
         let mut backup_requests: Vec<(i64, String)> = Vec::new();
         let mut restore_requests: Vec<(i64, String)> = Vec::new();
         let mut copy_database_requests: Vec<(i64, String)> = Vec::new();
+        let mut drop_database_requests: Vec<(i64, String)> = Vec::new();
         let mut add_view_requests: Vec<i64> = Vec::new();
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
@@ -139,6 +140,7 @@ impl super::Tabular {
                 backup_request,
                 restore_request,
                 copy_database_request,
+                drop_database_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -239,6 +241,9 @@ impl super::Tabular {
             }
             if let Some((conn_id, db_name)) = copy_database_request {
                 copy_database_requests.push((conn_id, db_name));
+            }
+            if let Some((conn_id, db_name)) = drop_database_request {
+                drop_database_requests.push((conn_id, db_name));
             }
 
             if let Some(conn_id) = request_add_view_dialog {
@@ -580,6 +585,18 @@ impl super::Tabular {
                 conn_id,
                 db_name,
                 &self.connections,
+            ));
+        }
+
+        for (conn_id, db_name) in drop_database_requests {
+            let conn_type = self.connections.iter()
+                .find(|c| c.id == Some(conn_id))
+                .map(|c| c.connection_type.clone())
+                .unwrap_or(models::enums::DatabaseType::MySQL);
+            self.pending_drop_database = Some(models::structs::PendingDropDatabase::new(
+                conn_id,
+                db_name,
+                conn_type,
             ));
         }
 
@@ -2030,6 +2047,7 @@ impl super::Tabular {
         let mut backup_request: Option<(i64, String)> = None;
         let mut restore_request: Option<(i64, String)> = None;
         let mut copy_database_request: Option<(i64, String)> = None;
+        let mut drop_database_request: Option<(i64, String)> = None;
 
         let is_api_http = if node.node_type == models::enums::NodeType::Connection
             && let Some(conn_id) = node.connection_id
@@ -2940,7 +2958,29 @@ impl super::Tabular {
                                     copy_database_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
-                            } else {
+                            }
+
+                            let can_drop = matches!(
+                                db_type,
+                                Some(models::enums::DatabaseType::MySQL)
+                                    | Some(models::enums::DatabaseType::PostgreSQL)
+                                    | Some(models::enums::DatabaseType::MsSQL)
+                                    | Some(models::enums::DatabaseType::MongoDB)
+                            );
+                            if can_drop {
+                                if supported {
+                                    ui.separator();
+                                }
+                                if ui.button("🗑 Drop Database...").clicked() {
+                                    let database_name = node
+                                        .database_name
+                                        .clone()
+                                        .or_else(|| Some(node.name.clone()))
+                                        .unwrap_or_default();
+                                    drop_database_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
+                            } else if !supported {
                                 ui.label("Create table not supported for this database");
                             }
                         }
@@ -3269,6 +3309,7 @@ impl super::Tabular {
                             child_backup_request,
                             child_restore_request,
                             child_copy_database_request,
+                            child_drop_database_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -3348,6 +3389,9 @@ impl super::Tabular {
                         if let Some(v) = child_copy_database_request {
                             copy_database_request = Some(v);
                         }
+                        if let Some(v) = child_drop_database_request {
+                            drop_database_request = Some(v);
+                        }
                         if let Some(v) = child_open_diagram_request {
                             open_diagram_request = Some(v);
                         }
@@ -3405,6 +3449,7 @@ impl super::Tabular {
                                 child_backup_request2,
                                 child_restore_request2,
                                 child_copy_database_request2,
+                                child_drop_database_request2,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -3498,6 +3543,9 @@ impl super::Tabular {
                             }
                             if let Some(v) = child_copy_database_request2 {
                                 copy_database_request = Some(v);
+                            }
+                            if let Some(v) = child_drop_database_request2 {
+                                drop_database_request = Some(v);
                             }
                             if let Some(v) = child_open_diagram_request {
                                 open_diagram_request = Some(v);
@@ -4274,6 +4322,7 @@ impl super::Tabular {
             backup_request,
             restore_request,
             copy_database_request,
+            drop_database_request,
         )
     }
 

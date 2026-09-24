@@ -979,4 +979,120 @@ impl super::Tabular {
             table_name
         );
     }
+
+    // Remove a specific database from the sidebar tree without reloading entire connection
+    pub(crate) fn remove_database_from_tree(
+        &mut self,
+        connection_id: i64,
+        database_name: &str,
+    ) {
+        use log::debug;
+
+        debug!(
+            "🌲 Removing database '{}' from sidebar tree for connection {}",
+            database_name, connection_id
+        );
+
+        let matches_db = |node_name: &str, search_name: &str| -> bool {
+            if node_name.eq_ignore_ascii_case(search_name) {
+                return true;
+            }
+            let clean_node = node_name.replace(['[', ']', '`', '"'], "");
+            let clean_search = search_name.replace(['[', ']', '`', '"'], "");
+            clean_node.eq_ignore_ascii_case(&clean_search)
+        };
+
+        // Remove from both main tree and filtered tree
+        for tree in [&mut self.items_tree, &mut self.filtered_items_tree] {
+            for folder_or_conn in tree.iter_mut() {
+                if folder_or_conn.node_type == models::enums::NodeType::CustomFolder {
+                    for conn_node in &mut folder_or_conn.children {
+                        if conn_node.connection_id == Some(connection_id) {
+                            if Self::remove_database_from_connection_node(
+                                conn_node,
+                                database_name,
+                                &matches_db,
+                            ) {
+                                break;
+                            }
+                        }
+                    }
+                } else if folder_or_conn.connection_id == Some(connection_id) {
+                    if Self::remove_database_from_connection_node(
+                        folder_or_conn,
+                        database_name,
+                        &matches_db,
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Clear cache for a specific database
+    pub(crate) fn clear_database_cache(
+        &mut self,
+        connection_id: i64,
+        database_name: &str,
+    ) {
+        use log::debug;
+
+        // 1. Remove from in-memory cache
+        if let Some(dbs) = self.database_cache.get_mut(&connection_id) {
+            dbs.retain(|d| !d.eq_ignore_ascii_case(database_name));
+        }
+
+        // 2. Clear from SQLite local cache
+        if let Some(ref pool) = self.db_pool {
+            let pool_clone = pool.clone();
+            let db = database_name.to_string();
+            let rt = match self.runtime.clone() {
+                Some(rt) => rt,
+                None => match tokio::runtime::Runtime::new() {
+                    Ok(rt) => std::sync::Arc::new(rt),
+                    Err(e) => {
+                        debug!("Failed to create runtime for cache clear: {}", e);
+                        return;
+                    }
+                },
+            };
+
+            rt.block_on(async {
+                debug!("🧹 Clearing database cache for db '{}' on conn {}", db, connection_id);
+                let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                let _ = sqlx::query("DELETE FROM partition_cache WHERE connection_id = ? AND database_name = ?")
+                    .bind(connection_id)
+                    .bind(&db)
+                    .execute(pool_clone.as_ref())
+                    .await;
+                debug!("✅ Database cache cleared for db '{}' on conn {}", db, connection_id);
+            });
+        }
+    }
 }
+

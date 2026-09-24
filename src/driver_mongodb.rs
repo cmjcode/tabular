@@ -226,3 +226,27 @@ pub async fn drop_collection(
         false
     }
 }
+
+// Drop a MongoDB database, returning Result<(), String>
+pub async fn drop_database(
+    tabular: &mut Tabular,
+    connection_id: i64,
+    database_name: &str,
+) -> Result<(), String> {
+    if let Some(models::enums::DatabasePool::MongoDB(client)) =
+        connection::get_or_create_connection_pool(tabular, connection_id).await
+    {
+        let db = client.database(database_name);
+        match tokio::time::timeout(std::time::Duration::from_secs(15), db.drop()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                debug!("MongoDB drop_database error for {}: {}", database_name, e);
+                Err(format!("MongoDB drop database error: {}", e))
+            }
+            Err(_) => Err("Timeout dropping MongoDB database".to_string()),
+        }
+    } else {
+        Err("Cannot connect to MongoDB pool".to_string())
+    }
+}
+
