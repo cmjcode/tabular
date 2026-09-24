@@ -147,12 +147,33 @@ impl Default for RestoreOptions {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CopyDatabaseOptions {
+    pub source_database_name: String,
+    pub target_database_name: String,
+    /// For SQLite: target file path on disk
+    pub target_file: Option<PathBuf>,
+    pub custom_binary_path: Option<PathBuf>,
+}
+
+impl Default for CopyDatabaseOptions {
+    fn default() -> Self {
+        Self {
+            source_database_name: String::new(),
+            target_database_name: String::new(),
+            target_file: None,
+            custom_binary_path: None,
+        }
+    }
+}
+
 // ─── Progress & State Tracking ─────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationType {
     Backup,
     Restore,
+    CopyDatabase,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -860,6 +881,60 @@ impl BackupRestoreRunner {
 
             if let Err(e) = res {
                 error!("Restore job failed: {}", e);
+            }
+        });
+    }
+
+    /// Launches a background copy database operation for Postgres, MySQL, or SQLite
+    pub fn run_copy_database(
+        config: &ConnectionConfig,
+        options: CopyDatabaseOptions,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) {
+        let config_clone = config.clone();
+        std::thread::spawn(move || {
+            let res = match config_clone.connection_type {
+                DatabaseType::SQLite => {
+                    let source_path = PathBuf::from(&config_clone.database);
+                    let target_path = options.target_file.clone().unwrap_or_else(|| {
+                        PathBuf::from(format!("{}_copy.sqlite", config_clone.database))
+                    });
+                    if let Some(parent) = target_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    SqliteBackupEngine::backup(
+                        &source_path,
+                        &target_path,
+                        false,
+                        tracker.clone(),
+                        cancel_token,
+                    )
+                }
+                DatabaseType::PostgreSQL => Self::run_postgres_copy(
+                    &config_clone,
+                    &options,
+                    tracker.clone(),
+                    cancel_token,
+                ),
+                DatabaseType::MySQL => {
+                    Self::run_mysql_copy(&config_clone, &options, tracker.clone(), cancel_token)
+                }
+                _ => {
+                    let err = format!(
+                        "Copy database is not supported for {:?}",
+                        config_clone.connection_type
+                    );
+                    let mut trk = tracker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    trk.fail(&err);
+                    Err(err)
+                }
+            };
+
+            if let Err(e) = res {
+                error!("Copy database job failed: {}", e);
             }
         });
     }
@@ -1680,6 +1755,363 @@ impl BackupRestoreRunner {
             }
         }
     }
+
+    // ─── PostgreSQL COPY Runner ─────────────────────────────────────────────
+
+    fn run_postgres_copy(
+        config: &ConnectionConfig,
+        options: &CopyDatabaseOptions,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let pg_dump_info = BinaryDetector::find_binary("pg_dump", options.custom_binary_path.as_deref())
+            .ok_or_else(|| {
+                let msg = "pg_dump binary not found in PATH or standard directories. Please install PostgreSQL client tools.".to_string();
+                tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
+                msg
+            })?;
+
+        let psql_info = BinaryDetector::find_binary("psql", options.custom_binary_path.as_deref())
+            .ok_or_else(|| {
+                let msg = "psql binary not found in PATH or standard directories. Please install PostgreSQL client tools.".to_string();
+                tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
+                msg
+            })?;
+
+        {
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.start("Creating target database...");
+            trk.append_log(format!(
+                "Using pg_dump: {} and psql: {}",
+                pg_dump_info.path.display(),
+                psql_info.path.display()
+            ));
+        }
+
+        // 1. Create target database using psql
+        let mut create_cmd = Command::new(&psql_info.path);
+        create_cmd.arg("-h").arg(&config.host);
+        create_cmd.arg("-p").arg(&config.port);
+        if !config.username.is_empty() {
+            create_cmd.arg("-U").arg(&config.username);
+        }
+        let conn_db = if !config.database.is_empty() {
+            &config.database
+        } else {
+            &options.source_database_name
+        };
+        create_cmd.arg("-d").arg(conn_db);
+        if !config.password.is_empty() {
+            create_cmd.env("PGPASSWORD", &config.password);
+        }
+        let sql_escaped = options.target_database_name.replace('"', "\"\"");
+        create_cmd.arg("-c").arg(format!("CREATE DATABASE \"{}\";", sql_escaped));
+
+        create_cmd.stdout(Stdio::piped());
+        create_cmd.stderr(Stdio::piped());
+
+        let out = create_cmd
+            .output()
+            .map_err(|e| format!("Failed to spawn psql to create database: {}", e))?;
+
+        if !out.status.success() {
+            let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+            let msg = format!(
+                "Failed to create database '{}': {}",
+                options.target_database_name,
+                err_msg.trim()
+            );
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.fail(&msg);
+            return Err(msg);
+        }
+
+        {
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.append_log(format!(
+                "Target database '{}' created successfully.",
+                options.target_database_name
+            ));
+            trk.current_stage = "Streaming schema and data from source to target...".to_string();
+        }
+
+        // 2. Dump from source
+        let mut dump_cmd = Command::new(&pg_dump_info.path);
+        dump_cmd.arg("-h").arg(&config.host);
+        dump_cmd.arg("-p").arg(&config.port);
+        if !config.username.is_empty() {
+            dump_cmd.arg("-U").arg(&config.username);
+        }
+        dump_cmd.arg("-d").arg(&options.source_database_name);
+        dump_cmd.arg("-F").arg("p");
+        dump_cmd.arg("--no-owner");
+        if !config.password.is_empty() {
+            dump_cmd.env("PGPASSWORD", &config.password);
+        }
+        dump_cmd.stdout(Stdio::piped());
+        dump_cmd.stderr(Stdio::piped());
+
+        let mut dump_child = dump_cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn pg_dump: {}", e))?;
+
+        // 3. Restore into target
+        let mut restore_cmd = Command::new(&psql_info.path);
+        restore_cmd.arg("-h").arg(&config.host);
+        restore_cmd.arg("-p").arg(&config.port);
+        if !config.username.is_empty() {
+            restore_cmd.arg("-U").arg(&config.username);
+        }
+        restore_cmd.arg("-d").arg(&options.target_database_name);
+        restore_cmd.arg("-v").arg("ON_ERROR_STOP=1");
+        if !config.password.is_empty() {
+            restore_cmd.env("PGPASSWORD", &config.password);
+        }
+        restore_cmd.stdin(Stdio::piped());
+        restore_cmd.stdout(Stdio::piped());
+        restore_cmd.stderr(Stdio::piped());
+
+        let mut restore_child = restore_cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn psql for restore: {}", e))?;
+
+        Self::pipe_dump_to_restore(&mut dump_child, &mut restore_child, tracker, cancel_token)
+    }
+
+    // ─── MySQL COPY Runner ──────────────────────────────────────────────────
+
+    fn run_mysql_copy(
+        config: &ConnectionConfig,
+        options: &CopyDatabaseOptions,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let mysqldump_info =
+            BinaryDetector::find_binary("mysqldump", options.custom_binary_path.as_deref())
+                .ok_or_else(|| {
+                    let msg = "mysqldump binary not found in PATH or standard directories. Please install MySQL client tools.".to_string();
+                    tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
+                    msg
+                })?;
+
+        let mysql_info =
+            BinaryDetector::find_binary("mysql", options.custom_binary_path.as_deref())
+                .ok_or_else(|| {
+                    let msg = "mysql client binary not found in PATH or standard directories.".to_string();
+                    tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
+                    msg
+                })?;
+
+        {
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.start("Creating target database...");
+            trk.append_log(format!(
+                "Using mysqldump: {} and mysql: {}",
+                mysqldump_info.path.display(),
+                mysql_info.path.display()
+            ));
+        }
+
+        // 1. Create target database using mysql
+        let mut create_cmd = Command::new(&mysql_info.path);
+        create_cmd.arg("-h").arg(&config.host);
+        create_cmd.arg("-P").arg(&config.port);
+        if !config.username.is_empty() {
+            create_cmd.arg("-u").arg(&config.username);
+        }
+        if !config.password.is_empty() {
+            create_cmd.env("MYSQL_PWD", &config.password);
+        }
+        let sql_escaped = options.target_database_name.replace('`', "``");
+        create_cmd.arg("-e").arg(format!("CREATE DATABASE `{}`;", sql_escaped));
+
+        create_cmd.stdout(Stdio::piped());
+        create_cmd.stderr(Stdio::piped());
+
+        let out = create_cmd
+            .output()
+            .map_err(|e| format!("Failed to spawn mysql to create database: {}", e))?;
+
+        if !out.status.success() {
+            let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+            let msg = format!(
+                "Failed to create database '{}': {}",
+                options.target_database_name,
+                err_msg.trim()
+            );
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.fail(&msg);
+            return Err(msg);
+        }
+
+        {
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.append_log(format!(
+                "Target database '{}' created successfully.",
+                options.target_database_name
+            ));
+            trk.current_stage = "Streaming schema and data from source to target...".to_string();
+        }
+
+        // 2. Dump from source
+        let mut dump_cmd = Command::new(&mysqldump_info.path);
+        dump_cmd.arg("-h").arg(&config.host);
+        dump_cmd.arg("-P").arg(&config.port);
+        if !config.username.is_empty() {
+            dump_cmd.arg("-u").arg(&config.username);
+        }
+        if !config.password.is_empty() {
+            dump_cmd.env("MYSQL_PWD", &config.password);
+        }
+        dump_cmd.arg(&options.source_database_name);
+        dump_cmd.stdout(Stdio::piped());
+        dump_cmd.stderr(Stdio::piped());
+
+        let mut dump_child = dump_cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn mysqldump: {}", e))?;
+
+        // 3. Restore into target
+        let mut restore_cmd = Command::new(&mysql_info.path);
+        restore_cmd.arg("-h").arg(&config.host);
+        restore_cmd.arg("-P").arg(&config.port);
+        if !config.username.is_empty() {
+            restore_cmd.arg("-u").arg(&config.username);
+        }
+        if !config.password.is_empty() {
+            restore_cmd.env("MYSQL_PWD", &config.password);
+        }
+        restore_cmd.arg("-D").arg(&options.target_database_name);
+        restore_cmd.stdin(Stdio::piped());
+        restore_cmd.stdout(Stdio::piped());
+        restore_cmd.stderr(Stdio::piped());
+
+        let mut restore_child = restore_cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn mysql for restore: {}", e))?;
+
+        Self::pipe_dump_to_restore(&mut dump_child, &mut restore_child, tracker, cancel_token)
+    }
+
+    /// Pipes stdout from dump_child directly into stdin of restore_child, tracking progress
+    fn pipe_dump_to_restore(
+        dump_child: &mut Child,
+        restore_child: &mut Child,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let mut dump_stdout = dump_child.stdout.take().ok_or("Failed to capture dump stdout")?;
+        let mut restore_stdin = restore_child.stdin.take().ok_or("Failed to open restore stdin")?;
+        let dump_stderr = dump_child.stderr.take();
+        let restore_stderr = restore_child.stderr.take();
+
+        if let Some(err_pipe) = dump_stderr {
+            let trk_stderr = tracker.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(err_pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    let mut t = trk_stderr
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    t.append_log(format!("[dump] {}", line));
+                }
+            });
+        }
+
+        if let Some(err_pipe) = restore_stderr {
+            let trk_stderr = tracker.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(err_pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    let mut t = trk_stderr
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    t.append_log(format!("[restore] {}", line));
+                }
+            });
+        }
+
+        let mut buffer = [0u8; 64 * 1024];
+
+        loop {
+            if cancel_token.load(Ordering::Relaxed) {
+                let _ = dump_child.kill();
+                let _ = restore_child.kill();
+                let mut trk = tracker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                trk.cancel();
+                return Ok(());
+            }
+
+            let read_bytes = dump_stdout
+                .read(&mut buffer)
+                .map_err(|e| format!("Error reading from dump process: {}", e))?;
+            if read_bytes == 0 {
+                break;
+            }
+
+            if let Err(e) = restore_stdin.write_all(&buffer[..read_bytes]) {
+                let _ = dump_child.kill();
+                let _ = restore_child.kill();
+                let msg = format!("Pipe to restore process broke: {}", e);
+                let mut trk = tracker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                trk.fail(&msg);
+                return Err(msg);
+            }
+
+            {
+                let mut trk = tracker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                trk.add_bytes(read_bytes as u64);
+            }
+        }
+
+        // Close restore stdin to signal EOF to the restore process
+        drop(restore_stdin);
+
+        let dump_status = dump_child
+            .wait()
+            .map_err(|e| format!("Error waiting for dump process: {}", e))?;
+
+        let restore_status = restore_child
+            .wait()
+            .map_err(|e| format!("Error waiting for restore process: {}", e))?;
+
+        if dump_status.success() && restore_status.success() {
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.complete();
+            Ok(())
+        } else {
+            let msg = format!(
+                "Copy failed: dump exit status {:?}, restore exit status {:?}",
+                dump_status.code(),
+                restore_status.code()
+            );
+            let mut trk = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            trk.fail(&msg);
+            Err(msg)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1867,6 +2299,100 @@ mod tests {
             libsqlite3_sys::sqlite3_finalize(stmt);
             libsqlite3_sys::sqlite3_close(db);
         }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_copy_database_options_default() {
+        let opts = CopyDatabaseOptions::default();
+        assert!(opts.source_database_name.is_empty());
+        assert!(opts.target_database_name.is_empty());
+        assert!(opts.target_file.is_none());
+        assert!(opts.custom_binary_path.is_none());
+    }
+
+    #[test]
+    fn test_sqlite_copy_database_roundtrip() {
+        let temp_dir = std::env::temp_dir().join(format!("tabular_test_copy_{}", Instant::now().elapsed().as_nanos()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let source_db = temp_dir.join("source.sqlite");
+        let target_db = temp_dir.join("target_copy.sqlite");
+
+        // 1. Populate source database
+        let source_c = CString::new(source_db.to_str().unwrap()).unwrap();
+        unsafe {
+            let mut db: *mut libsqlite3_sys::sqlite3 = std::ptr::null_mut();
+            let rc = libsqlite3_sys::sqlite3_open(source_c.as_ptr(), &mut db);
+            assert_eq!(rc, libsqlite3_sys::SQLITE_OK);
+
+            let sql = CString::new(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); \
+                 INSERT INTO items (name) VALUES ('Item A'), ('Item B'), ('Item C'), ('Item D');",
+            )
+            .unwrap();
+            let exec_rc = libsqlite3_sys::sqlite3_exec(
+                db,
+                sql.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            assert_eq!(exec_rc, libsqlite3_sys::SQLITE_OK);
+            libsqlite3_sys::sqlite3_close(db);
+        }
+
+        // 2. Perform copy database operation
+        let tracker = Arc::new(Mutex::new(ProgressTracker::new(
+            OperationType::CopyDatabase,
+            "source ➔ target".to_string(),
+            target_db.clone(),
+        )));
+        let cancel_token = Arc::new(AtomicBool::new(false));
+
+        let res = SqliteBackupEngine::backup(
+            &source_db,
+            &target_db,
+            false,
+            tracker.clone(),
+            cancel_token,
+        );
+        assert!(res.is_ok(), "SQLite copy failed: {:?}", res.err());
+        assert!(target_db.is_file(), "Target copied database file does not exist");
+
+        // 3. Verify copied database contents
+        let target_c = CString::new(target_db.to_str().unwrap()).unwrap();
+        unsafe {
+            let mut db: *mut libsqlite3_sys::sqlite3 = std::ptr::null_mut();
+            let rc = libsqlite3_sys::sqlite3_open(target_c.as_ptr(), &mut db);
+            assert_eq!(rc, libsqlite3_sys::SQLITE_OK);
+
+            let sql = CString::new("SELECT COUNT(*) FROM items;").unwrap();
+            let mut stmt: *mut libsqlite3_sys::sqlite3_stmt = std::ptr::null_mut();
+            let prep_rc = libsqlite3_sys::sqlite3_prepare_v2(
+                db,
+                sql.as_ptr(),
+                -1,
+                &mut stmt,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(prep_rc, libsqlite3_sys::SQLITE_OK);
+
+            let step_rc = libsqlite3_sys::sqlite3_step(stmt);
+            assert_eq!(step_rc, libsqlite3_sys::SQLITE_ROW);
+            let count = libsqlite3_sys::sqlite3_column_int(stmt, 0);
+            assert_eq!(count, 4);
+
+            libsqlite3_sys::sqlite3_finalize(stmt);
+            libsqlite3_sys::sqlite3_close(db);
+        }
+
+        // Verify tracker state
+        let snap = tracker.lock().unwrap().snapshot();
+        assert_eq!(snap.operation_type, OperationType::CopyDatabase);
+        assert_eq!(snap.status, OperationStatus::Completed);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);

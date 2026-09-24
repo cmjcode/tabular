@@ -651,6 +651,8 @@ impl super::Tabular {
             show_restore_dialog: false,
             backup_state: None,
             restore_state: None,
+            show_copy_database_dialog: false,
+            copy_database_state: None,
             show_export_all_dialog: false,
             show_import_all_dialog: false,
             export_all_state: None,

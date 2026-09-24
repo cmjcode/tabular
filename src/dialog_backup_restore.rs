@@ -899,7 +899,7 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
 // ─── UI Helper Components ───────────────────────────────────────────────────
 
-fn render_header_card(
+pub(crate) fn render_header_card(
     ui: &mut egui::Ui,
     title: &str,
     database_name: &str,
@@ -1011,7 +1011,7 @@ fn render_header_card(
     });
 }
 
-fn render_progress_dashboard(
+pub(crate) fn render_progress_dashboard(
     ui: &mut egui::Ui,
     snapshot_opt: Option<&ProgressSnapshot>,
     _is_running: bool,
@@ -1149,7 +1149,7 @@ fn render_progress_dashboard(
     }
 }
 
-fn format_byte_size(bytes: u64) -> String {
+pub(crate) fn format_byte_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {

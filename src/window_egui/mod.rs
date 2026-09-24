@@ -685,6 +685,9 @@ pub struct Tabular {
     pub show_restore_dialog: bool,
     pub backup_state: Option<crate::dialog_backup_restore::BackupDialogState>,
     pub restore_state: Option<crate::dialog_backup_restore::RestoreDialogState>,
+    // Copy Database dialog
+    pub show_copy_database_dialog: bool,
+    pub copy_database_state: Option<crate::dialog_copy_database::CopyDatabaseDialogState>,
 
     // ─── Sync & Collaboration ────────────────────────────────────────────────
     /// Logged-in Tabular cloud account (None = not signed in)

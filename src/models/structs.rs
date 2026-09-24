@@ -1783,6 +1783,8 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String)>,
     // New: request to open Restore dialog prefilled with (connection_id, database_name)
     Option<(i64, String)>,
+    // New: request to open Copy Database dialog prefilled with (connection_id, database_name)
+    Option<(i64, String)>,
 );
 
 // ── CSV Import Wizard ─────────────────────────────────────────────────────────

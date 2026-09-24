@@ -99,6 +99,7 @@ impl super::Tabular {
         let mut schema_diff_requests: Vec<(i64, String)> = Vec::new();
         let mut backup_requests: Vec<(i64, String)> = Vec::new();
         let mut restore_requests: Vec<(i64, String)> = Vec::new();
+        let mut copy_database_requests: Vec<(i64, String)> = Vec::new();
         let mut add_view_requests: Vec<i64> = Vec::new();
         let mut custom_view_click_requests: Vec<(i64, String, String)> = Vec::new();
         let mut delete_custom_view_requests: Vec<(i64, String)> = Vec::new();
@@ -137,6 +138,7 @@ impl super::Tabular {
                 schema_diff_request,
                 backup_request,
                 restore_request,
+                copy_database_request,
             ) = Self::render_tree_node_with_table_expansion(
                 ui,
                 node,
@@ -234,6 +236,9 @@ impl super::Tabular {
             }
             if let Some((conn_id, db_name)) = restore_request {
                 restore_requests.push((conn_id, db_name));
+            }
+            if let Some((conn_id, db_name)) = copy_database_request {
+                copy_database_requests.push((conn_id, db_name));
             }
 
             if let Some(conn_id) = request_add_view_dialog {
@@ -563,6 +568,15 @@ impl super::Tabular {
         for (conn_id, db_name) in restore_requests {
             self.show_restore_dialog = true;
             self.restore_state = Some(crate::dialog_backup_restore::RestoreDialogState::new(
+                conn_id,
+                db_name,
+                &self.connections,
+            ));
+        }
+
+        for (conn_id, db_name) in copy_database_requests {
+            self.show_copy_database_dialog = true;
+            self.copy_database_state = Some(crate::dialog_copy_database::CopyDatabaseDialogState::new(
                 conn_id,
                 db_name,
                 &self.connections,
@@ -2015,6 +2029,7 @@ impl super::Tabular {
         let mut schema_diff_request: Option<(i64, String)> = None;
         let mut backup_request: Option<(i64, String)> = None;
         let mut restore_request: Option<(i64, String)> = None;
+        let mut copy_database_request: Option<(i64, String)> = None;
 
         let is_api_http = if node.node_type == models::enums::NodeType::Connection
             && let Some(conn_id) = node.connection_id
@@ -2916,6 +2931,15 @@ impl super::Tabular {
                                     restore_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
+                                if ui.button("📋 Copy Database...").clicked() {
+                                    let database_name = node
+                                        .database_name
+                                        .clone()
+                                        .or_else(|| Some(node.name.clone()))
+                                        .unwrap_or_default();
+                                    copy_database_request = Some((conn_id, database_name));
+                                    ui.close();
+                                }
                             } else {
                                 ui.label("Create table not supported for this database");
                             }
@@ -3244,6 +3268,7 @@ impl super::Tabular {
                             child_schema_diff_request,
                             child_backup_request,
                             child_restore_request,
+                            child_copy_database_request,
                         ) = Self::render_tree_node_with_table_expansion(
                             ui,
                             child,
@@ -3320,6 +3345,9 @@ impl super::Tabular {
                         if let Some(v) = child_restore_request {
                             restore_request = Some(v);
                         }
+                        if let Some(v) = child_copy_database_request {
+                            copy_database_request = Some(v);
+                        }
                         if let Some(v) = child_open_diagram_request {
                             open_diagram_request = Some(v);
                         }
@@ -3376,6 +3404,7 @@ impl super::Tabular {
                                 child_schema_diff_request2,
                                 child_backup_request2,
                                 child_restore_request2,
+                                child_copy_database_request2,
                             ) = Self::render_tree_node_with_table_expansion(
                                 ui,
                                 child,
@@ -3466,6 +3495,9 @@ impl super::Tabular {
                             }
                             if let Some(v) = child_restore_request2 {
                                 restore_request = Some(v);
+                            }
+                            if let Some(v) = child_copy_database_request2 {
+                                copy_database_request = Some(v);
                             }
                             if let Some(v) = child_open_diagram_request {
                                 open_diagram_request = Some(v);
@@ -4241,6 +4273,7 @@ impl super::Tabular {
             schema_diff_request,
             backup_request,
             restore_request,
+            copy_database_request,
         )
     }
 

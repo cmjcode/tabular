@@ -5104,6 +5104,11 @@ impl App for Tabular {
             crate::dialog_backup_restore::render_restore_dialog(self, ctx);
         }
 
+        // Copy Database dialog
+        if self.show_copy_database_dialog {
+            crate::dialog_copy_database::render_copy_database_dialog(self, ctx);
+        }
+
         // Export All Data (ZIP) dialog
         if self.show_export_all_dialog {
             crate::dialog_export_import_all::render_export_all_dialog(self, ctx);

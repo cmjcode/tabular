@@ -29,6 +29,7 @@ pub mod diagram_storage;
 pub mod diagram_view;
 pub mod dialog;
 pub mod dialog_backup_restore;
+pub mod dialog_copy_database;
 pub mod dialog_export_import_all;
 pub mod directory;
 pub mod driver_mongodb;
