@@ -213,6 +213,7 @@ pub struct ProgressTracker {
     pages_copied: usize,
     total_pages: usize,
     start_time: Option<Instant>,
+    end_time: Option<Instant>,
     current_stage: String,
     log_lines: VecDeque<String>,
     max_log_lines: usize,
@@ -229,6 +230,7 @@ impl ProgressTracker {
             pages_copied: 0,
             total_pages: 0,
             start_time: None,
+            end_time: None,
             current_stage: "Ready".to_string(),
             log_lines: VecDeque::with_capacity(100),
             max_log_lines: 200,
@@ -238,6 +240,7 @@ impl ProgressTracker {
     pub fn start(&mut self, stage: impl Into<String>) {
         self.status = OperationStatus::Running;
         self.start_time = Some(Instant::now());
+        self.end_time = None;
         self.current_stage = stage.into();
         self.append_log(format!(
             "[{}] Starting {:?} on database '{}'...",
@@ -269,9 +272,11 @@ impl ProgressTracker {
     }
 
     pub fn complete(&mut self) {
+        let end = Instant::now();
+        self.end_time = Some(end);
         self.status = OperationStatus::Completed;
         self.current_stage = "Completed successfully".to_string();
-        let elapsed = self.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64());
+        let elapsed = self.start_time.map_or(0.0, |t| (end - t).as_secs_f64());
         self.append_log(format!(
             "[{}] {:?} finished in {:.2}s ({} bytes processed)",
             chrono::Local::now().format("%H:%M:%S"),
@@ -282,6 +287,7 @@ impl ProgressTracker {
     }
 
     pub fn fail(&mut self, err: impl Into<String>) {
+        self.end_time = Some(Instant::now());
         let msg = err.into();
         self.status = OperationStatus::Failed(msg.clone());
         self.current_stage = format!("Failed: {}", msg);
@@ -293,6 +299,7 @@ impl ProgressTracker {
     }
 
     pub fn cancel(&mut self) {
+        self.end_time = Some(Instant::now());
         self.status = OperationStatus::Cancelled;
         self.current_stage = "Cancelled by user".to_string();
         self.append_log(format!(
@@ -302,7 +309,11 @@ impl ProgressTracker {
     }
 
     pub fn snapshot(&self) -> ProgressSnapshot {
-        let elapsed = self.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64());
+        let elapsed = match (self.start_time, self.end_time) {
+            (Some(start), Some(end)) => (end - start).as_secs_f64(),
+            (Some(start), None) => start.elapsed().as_secs_f64(),
+            (None, _) => 0.0,
+        };
         let speed = if elapsed > 0.05 {
             self.bytes_processed as f64 / elapsed
         } else {
@@ -2482,7 +2493,7 @@ mod tests {
         // 2. Perform copy database operation
         let tracker = Arc::new(Mutex::new(ProgressTracker::new(
             OperationType::CopyDatabase,
-            "source ➔ target".to_string(),
+            "source → target".to_string(),
             target_db.clone(),
         )));
         let cancel_token = Arc::new(AtomicBool::new(false));
@@ -2531,5 +2542,28 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_progress_tracker_freezes_elapsed_and_speed_on_complete() {
+        let mut tracker = ProgressTracker::new(
+            OperationType::Backup,
+            "test_db".to_string(),
+            PathBuf::from("/tmp/test.sql"),
+        );
+        tracker.start("Processing");
+        tracker.add_bytes(100_000);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        tracker.complete();
+
+        let snap1 = tracker.snapshot();
+        assert_eq!(snap1.status, OperationStatus::Completed);
+        assert!(snap1.elapsed_secs > 0.0);
+        assert!(snap1.bytes_per_sec > 0.0);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let snap2 = tracker.snapshot();
+        assert_eq!(snap1.elapsed_secs, snap2.elapsed_secs);
+        assert_eq!(snap1.bytes_per_sec, snap2.bytes_per_sec);
     }
 }

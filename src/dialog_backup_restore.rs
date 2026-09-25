@@ -195,7 +195,9 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            if state.is_running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
         }
     }
 
@@ -658,7 +660,9 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            if state.is_running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
         }
     }
 
@@ -907,7 +911,9 @@ pub(crate) fn render_header_card(
     binary_info: Option<&NativeBinaryInfo>,
 ) {
     crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
+            ui.set_width(ui.available_width());
             // Left: Icon + title
             ui.label(egui::RichText::new(db_type.icon()).size(26.0));
             ui.add_space(4.0);
@@ -1019,8 +1025,10 @@ pub(crate) fn render_progress_dashboard(
 ) {
     if let Some(snap) = snapshot_opt {
         crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
             // Status row
             ui.horizontal(|ui| {
+                ui.set_width(ui.available_width());
                 match &snap.status {
                     OperationStatus::Running => {
                         ui.spinner();
@@ -1118,13 +1126,16 @@ pub(crate) fn render_progress_dashboard(
 
             egui::Frame::new()
                 .fill(console_bg)
-                .inner_margin(6.0)
+                .inner_margin(8.0)
                 .corner_radius(4.0)
                 .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     egui::ScrollArea::vertical()
-                        .max_height(160.0)
+                        .max_height(140.0)
+                        .auto_shrink([false, false])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             for line in &snap.log_lines {
                                 let text_color = if line.contains("❌") || line.contains("Error") {
                                     egui::Color32::from_rgb(230, 80, 80)

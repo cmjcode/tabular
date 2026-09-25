@@ -145,6 +145,8 @@ pub struct UserManagerState {
     pub selected_grantee_host: String,
     pub selected_user_index: Option<usize>,
     pub search_text: String,
+    pub user_search_text: String,
+    pub database_search_text: String,
     pub schema_filter: String,
     pub object_type_filter: String, // "ALL", "TABLE", "VIEW", "ROUTINE"
     pub new_user_form: NewUserForm,
@@ -171,6 +173,8 @@ impl Default for UserManagerState {
             selected_grantee_host: "%".to_string(),
             selected_user_index: None,
             search_text: String::new(),
+            user_search_text: String::new(),
+            database_search_text: String::new(),
             schema_filter: "ALL".to_string(),
             object_type_filter: "ALL".to_string(),
             new_user_form: NewUserForm::default(),
@@ -2028,18 +2032,6 @@ fn render_header_bar(
                     if ui.small_button(diag_btn_text).clicked() {
                         state.show_diagnostics_panel = !state.show_diagnostics_panel;
                     }
-
-                    if state.selected_tab == UserManagerTab::Users
-                        || state.selected_tab == UserManagerTab::ObjectGrants
-                    {
-                        ui.add_space(8.0);
-                        crate::window_egui::style::render_search_field(
-                            ui,
-                            &mut state.search_text,
-                            "Search users, tables, roles…",
-                            180.0,
-                        );
-                    }
                 });
             });
         });
@@ -2081,12 +2073,23 @@ fn render_users_and_roles_tab(
     db_type: Option<&DatabaseType>,
     out_action: &mut Option<UserManagerAction>,
 ) {
-    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
+    let user_filter = crate::search_match::SearchQuery::new(&state.user_search_text);
+    let total_user_count = state.users.len();
+    let visible_user_count = state
+        .users
+        .iter()
+        .filter(|u| is_user_entry_visible_with_query(u, &user_filter))
+        .count();
 
     ui.columns(2, |cols| {
         cols[0].group(|ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Users & Accounts").strong().size(13.0));
+                let title_text = if !state.user_search_text.is_empty() {
+                    format!("Users & Accounts ({}/{})", visible_user_count, total_user_count)
+                } else {
+                    format!("Users & Accounts ({})", total_user_count)
+                };
+                ui.label(egui::RichText::new(title_text).strong().size(13.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("➕ Add User").clicked() {
                         state.selected_tab = UserManagerTab::CreateUser;
@@ -2094,6 +2097,28 @@ fn render_users_and_roles_tab(
                 });
             });
             ui.separator();
+
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let avail = ui.available_width();
+                let field_width = if state.user_search_text.is_empty() {
+                    avail
+                } else {
+                    (avail - 26.0).max(60.0)
+                };
+                crate::window_egui::style::render_search_field(
+                    ui,
+                    &mut state.user_search_text,
+                    "Search username...",
+                    field_width,
+                );
+                if !state.user_search_text.is_empty() {
+                    if ui.small_button("✖").on_hover_text("Clear search").clicked() {
+                        state.user_search_text.clear();
+                    }
+                }
+            });
+            ui.add_space(4.0);
 
             let mut clicked_user = None;
 
@@ -2114,7 +2139,7 @@ fn render_users_and_roles_tab(
                     }
 
                     for (idx, user) in state.users.iter().enumerate() {
-                        if !filter_text.matches_any([user.username.as_str(), user.host.as_str()]) {
+                        if !is_user_entry_visible_with_query(user, &user_filter) {
                             continue;
                         }
 
@@ -2171,26 +2196,46 @@ fn render_users_and_roles_tab(
                         ui.add_space(2.0);
                     }
 
-                    if !state.roles.is_empty() {
-                        ui.add_space(12.0);
-                        ui.label(egui::RichText::new("Database Roles / Groups").strong().size(13.0));
-                        ui.separator();
-
-                        for role in &state.roles {
-                            if !filter_text.matches(&role.role_name) {
-                                continue;
+                    if visible_user_count == 0 && !state.users.is_empty() {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new("🔍 No users match the search query.")
+                                    .size(11.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                            ui.add_space(4.0);
+                            if ui.small_button("Clear Search").clicked() {
+                                state.user_search_text.clear();
                             }
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("🛡️").size(13.0));
-                                ui.label(egui::RichText::new(&role.role_name).strong());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!("{} members", role.member_count))
-                                            .size(11.0)
-                                            .weak(),
-                                    );
+                        });
+                    }
+
+                    if !state.roles.is_empty() {
+                        let matching_roles: Vec<_> = state
+                            .roles
+                            .iter()
+                            .filter(|r| user_filter.is_empty() || user_filter.matches(&r.role_name))
+                            .collect();
+
+                        if !matching_roles.is_empty() {
+                            ui.add_space(12.0);
+                            ui.label(egui::RichText::new("Database Roles / Groups").strong().size(13.0));
+                            ui.separator();
+
+                            for role in matching_roles {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("🛡️").size(13.0));
+                                    ui.label(egui::RichText::new(&role.role_name).strong());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{} members", role.member_count))
+                                                .size(11.0)
+                                                .weak(),
+                                        );
+                                    });
                                 });
-                            });
+                            }
                         }
                     }
                 });
@@ -2662,6 +2707,14 @@ fn render_create_user_tab(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantPresetAction {
+    ReadOnly,
+    ReadWrite,
+    GrantAll,
+    RevokeAll,
+}
+
 fn render_object_grants_matrix_tab(
     ui: &mut egui::Ui,
     state: &mut UserManagerState,
@@ -2669,7 +2722,7 @@ fn render_object_grants_matrix_tab(
     out_action: &mut Option<UserManagerAction>,
 ) {
     let active_db_type = db_type.cloned().unwrap_or(DatabaseType::PostgreSQL);
-    let filter_text = crate::search_match::SearchQuery::new(&state.search_text);
+    let mut apply_preset = None;
 
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Target Grantee:").strong());
@@ -2706,46 +2759,44 @@ fn render_object_grants_matrix_tab(
         }
 
         ui.add_space(16.0);
-        ui.label("Batch Presets:");
-        if ui.small_button("📖 Read-Only (SELECT)").clicked() {
-            for entry in &mut state.object_grants {
-                entry.has_select = true;
-                entry.has_insert = false;
-                entry.has_update = false;
-                entry.has_delete = false;
-                entry.has_all = false;
-                entry.is_modified = true;
-            }
+        let is_any_filter_active = (state.schema_filter != "ALL" && !state.schema_filter.is_empty())
+            || !state.database_search_text.is_empty()
+            || !state.search_text.is_empty();
+
+        let presets_label = if is_any_filter_active {
+            "Batch Presets (visible only):"
+        } else {
+            "Batch Presets:"
+        };
+        ui.label(egui::RichText::new(presets_label).strong());
+
+        if ui
+            .small_button("📖 Read-Only (SELECT)")
+            .on_hover_text("Grant SELECT on visible objects")
+            .clicked()
+        {
+            apply_preset = Some(GrantPresetAction::ReadOnly);
         }
-        if ui.small_button("✏️ Read-Write (CRUD)").clicked() {
-            for entry in &mut state.object_grants {
-                entry.has_select = true;
-                entry.has_insert = true;
-                entry.has_update = true;
-                entry.has_delete = true;
-                entry.has_all = false;
-                entry.is_modified = true;
-            }
+        if ui
+            .small_button("✏️ Read-Write (CRUD)")
+            .on_hover_text("Grant SELECT, INSERT, UPDATE, DELETE on visible objects")
+            .clicked()
+        {
+            apply_preset = Some(GrantPresetAction::ReadWrite);
         }
-        if ui.small_button("👑 Grant ALL").clicked() {
-            for entry in &mut state.object_grants {
-                entry.has_select = true;
-                entry.has_insert = true;
-                entry.has_update = true;
-                entry.has_delete = true;
-                entry.has_all = true;
-                entry.is_modified = true;
-            }
+        if ui
+            .small_button("👑 Grant ALL")
+            .on_hover_text("Grant ALL privileges on visible objects")
+            .clicked()
+        {
+            apply_preset = Some(GrantPresetAction::GrantAll);
         }
-        if ui.small_button("❌ Revoke ALL").clicked() {
-            for entry in &mut state.object_grants {
-                entry.has_select = false;
-                entry.has_insert = false;
-                entry.has_update = false;
-                entry.has_delete = false;
-                entry.has_all = false;
-                entry.is_modified = true;
-            }
+        if ui
+            .small_button("❌ Revoke ALL")
+            .on_hover_text("Revoke ALL privileges on visible objects")
+            .clicked()
+        {
+            apply_preset = Some(GrantPresetAction::RevokeAll);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2792,6 +2843,181 @@ fn render_object_grants_matrix_tab(
     });
 
     ui.separator();
+    ui.add_space(2.0);
+
+    // Extract list of unique databases/schemas from object_grants
+    let mut unique_dbs: Vec<String> = state
+        .object_grants
+        .iter()
+        .map(|e| {
+            if !e.schema.is_empty() {
+                e.schema.clone()
+            } else {
+                e.database.clone()
+            }
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_dbs.sort();
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("🗄️ Database:").strong());
+
+        let current_schema_label =
+            if state.schema_filter.is_empty() || state.schema_filter == "ALL" {
+                "All Databases".to_string()
+            } else {
+                state.schema_filter.clone()
+            };
+
+        let mut db_selected = None;
+        egui::ComboBox::from_id_salt("matrix_database_combo")
+            .selected_text(format!("🗄️ {}", current_schema_label))
+            .show_ui(ui, |ui| {
+                let is_all = state.schema_filter.is_empty() || state.schema_filter == "ALL";
+                if ui.selectable_label(is_all, "🌐 All Databases").clicked() {
+                    db_selected = Some("ALL".to_string());
+                }
+                for db_name in &unique_dbs {
+                    let is_sel = state.schema_filter == *db_name;
+                    if ui.selectable_label(is_sel, format!("🗄️ {}", db_name)).clicked() {
+                        db_selected = Some(db_name.clone());
+                    }
+                }
+            });
+
+        if let Some(new_db) = db_selected {
+            state.schema_filter = new_db;
+            state.database_search_text.clear();
+        }
+
+        ui.add_space(6.0);
+        let db_search_resp = crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.database_search_text,
+            "Search database...",
+            170.0,
+        );
+        if db_search_resp.changed()
+            && !state.database_search_text.is_empty()
+            && state.schema_filter != "ALL"
+        {
+            state.schema_filter = "ALL".to_string();
+        }
+        if !state.database_search_text.is_empty() {
+            if ui
+                .small_button("✖")
+                .on_hover_text("Clear database search")
+                .clicked()
+            {
+                state.database_search_text.clear();
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Object:").weak());
+        crate::window_egui::style::render_search_field(
+            ui,
+            &mut state.search_text,
+            "Filter table/view name...",
+            170.0,
+        );
+        if !state.search_text.is_empty() {
+            if ui
+                .small_button("✖")
+                .on_hover_text("Clear object search")
+                .clicked()
+            {
+                state.search_text.clear();
+            }
+        }
+
+        let is_any_filter_active = (state.schema_filter != "ALL" && !state.schema_filter.is_empty())
+            || !state.database_search_text.is_empty()
+            || !state.search_text.is_empty();
+
+        if is_any_filter_active {
+            if ui
+                .small_button("Reset")
+                .on_hover_text("Reset all filters")
+                .clicked()
+            {
+                state.schema_filter = "ALL".to_string();
+                state.database_search_text.clear();
+                state.search_text.clear();
+            }
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let total_count = state.object_grants.len();
+            let db_query = crate::search_match::SearchQuery::new(&state.database_search_text);
+            let obj_query = crate::search_match::SearchQuery::new(&state.search_text);
+            let sel_db = state.schema_filter.clone();
+
+            let visible_count = state
+                .object_grants
+                .iter()
+                .filter(|e| {
+                    is_object_entry_visible_with_queries(e, &sel_db, &db_query, &obj_query)
+                })
+                .count();
+
+            ui.label(
+                egui::RichText::new(format!("{}/{} objects", visible_count, total_count))
+                    .weak()
+                    .size(11.0),
+            );
+        });
+    });
+
+    let sel_db = state.schema_filter.clone();
+    let db_query = crate::search_match::SearchQuery::new(&state.database_search_text);
+    let obj_query = crate::search_match::SearchQuery::new(&state.search_text);
+
+    if let Some(preset) = apply_preset {
+        for entry in &mut state.object_grants {
+            if !is_object_entry_visible_with_queries(entry, &sel_db, &db_query, &obj_query) {
+                continue;
+            }
+            match preset {
+                GrantPresetAction::ReadOnly => {
+                    entry.has_select = true;
+                    entry.has_insert = false;
+                    entry.has_update = false;
+                    entry.has_delete = false;
+                    entry.has_all = false;
+                    entry.is_modified = true;
+                }
+                GrantPresetAction::ReadWrite => {
+                    entry.has_select = true;
+                    entry.has_insert = true;
+                    entry.has_update = true;
+                    entry.has_delete = true;
+                    entry.has_all = false;
+                    entry.is_modified = true;
+                }
+                GrantPresetAction::GrantAll => {
+                    entry.has_select = true;
+                    entry.has_insert = true;
+                    entry.has_update = true;
+                    entry.has_delete = true;
+                    entry.has_all = true;
+                    entry.is_modified = true;
+                }
+                GrantPresetAction::RevokeAll => {
+                    entry.has_select = false;
+                    entry.has_insert = false;
+                    entry.has_update = false;
+                    entry.has_delete = false;
+                    entry.has_all = false;
+                    entry.is_modified = true;
+                }
+            }
+        }
+    }
+
+    ui.separator();
     ui.add_space(4.0);
 
     egui::ScrollArea::both()
@@ -2834,12 +3060,17 @@ fn render_object_grants_matrix_tab(
                     ui.label(egui::RichText::new("Grant Option").strong());
                     ui.end_row();
 
+                    let mut rendered_count = 0;
                     for entry in &mut state.object_grants {
-                        if !filter_text
-                            .matches_any([entry.object_name.as_str(), entry.schema.as_str()])
-                        {
+                        if !is_object_entry_visible_with_queries(
+                            entry,
+                            &sel_db,
+                            &db_query,
+                            &obj_query,
+                        ) {
                             continue;
                         }
+                        rendered_count += 1;
 
                         ui.label(&entry.schema);
                         ui.horizontal(|ui| {
@@ -2892,8 +3123,35 @@ fn render_object_grants_matrix_tab(
 
                         ui.end_row();
                     }
+
+                    if rendered_count == 0 && !state.object_grants.is_empty() {
+                        ui.label(
+                            egui::RichText::new("🔍 No objects match filter")
+                                .italics()
+                                .weak(),
+                        );
+                        ui.end_row();
+                    }
                 });
         });
+
+    if state.object_grants.is_empty() && !state.is_loading {
+        ui.vertical_centered(|ui| {
+            ui.add_space(20.0);
+            ui.label(
+                egui::RichText::new("⚠️ No database objects or tables retrieved.")
+                    .strong()
+                    .color(egui::Color32::from_rgb(255, 180, 80)),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Inspect the SQL & Diagnostics tab to verify table introspection queries.",
+                )
+                .weak()
+                .size(11.0),
+            );
+        });
+    }
 }
 
 fn render_sql_preview_tab(
@@ -3224,6 +3482,59 @@ fn render_bool_badge(ui: &mut egui::Ui, val: bool) {
     }
 }
 
+/// Helper: check if an object privilege entry is visible under given database & search filters.
+pub fn is_object_entry_visible_with_queries(
+    entry: &ObjectPrivilegeEntry,
+    schema_filter: &str,
+    db_query: &crate::search_match::SearchQuery,
+    obj_query: &crate::search_match::SearchQuery,
+) -> bool {
+    if schema_filter != "ALL" && !schema_filter.is_empty() {
+        if !entry.schema.eq_ignore_ascii_case(schema_filter)
+            && !entry.database.eq_ignore_ascii_case(schema_filter)
+        {
+            return false;
+        }
+    }
+    if !db_query.is_empty() {
+        if !db_query.matches_any([entry.schema.as_str(), entry.database.as_str()]) {
+            return false;
+        }
+    }
+    if !obj_query.is_empty() {
+        if !obj_query.matches_any([entry.object_name.as_str()]) {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn is_object_entry_visible(
+    entry: &ObjectPrivilegeEntry,
+    schema_filter: &str,
+    database_search: &str,
+    object_search: &str,
+) -> bool {
+    let db_query = crate::search_match::SearchQuery::new(database_search);
+    let obj_query = crate::search_match::SearchQuery::new(object_search);
+    is_object_entry_visible_with_queries(entry, schema_filter, &db_query, &obj_query)
+}
+
+pub fn is_user_entry_visible_with_query(
+    user: &UserInfo,
+    user_query: &crate::search_match::SearchQuery,
+) -> bool {
+    if user_query.is_empty() {
+        return true;
+    }
+    user_query.matches_any([user.username.as_str(), user.host.as_str()])
+}
+
+pub fn is_user_entry_visible(user: &UserInfo, search_text: &str) -> bool {
+    let query = crate::search_match::SearchQuery::new(search_text);
+    is_user_entry_visible_with_query(user, &query)
+}
+
 #[cfg(test)]
 // Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
 #[allow(clippy::field_reassign_with_default)]
@@ -3317,5 +3628,81 @@ mod tests {
             sqls.iter()
                 .any(|s| s.contains("GRANT UPDATE ON TABLE \"public\".\"orders\" TO \"alice\";"))
         );
+    }
+
+    #[test]
+    fn test_is_object_entry_visible_database_filter() {
+        let entry1 = ObjectPrivilegeEntry {
+            database: "ACADEMYUP_DEMO_DEV".to_string(),
+            schema: "ACADEMYUP_DEMO_DEV".to_string(),
+            object_name: "users".to_string(),
+            object_type: "TABLE".to_string(),
+            has_select: true,
+            has_insert: false,
+            has_update: false,
+            has_delete: false,
+            has_execute: false,
+            has_all: false,
+            grant_option: false,
+            is_modified: false,
+        };
+        let entry2 = ObjectPrivilegeEntry {
+            database: "billing_prod".to_string(),
+            schema: "billing_prod".to_string(),
+            object_name: "invoices".to_string(),
+            object_type: "TABLE".to_string(),
+            has_select: true,
+            has_insert: false,
+            has_update: false,
+            has_delete: false,
+            has_execute: false,
+            has_all: false,
+            grant_option: false,
+            is_modified: false,
+        };
+
+        // All databases
+        assert!(is_object_entry_visible(&entry1, "ALL", "", ""));
+        assert!(is_object_entry_visible(&entry2, "ALL", "", ""));
+
+        // Exact schema_filter dropdown
+        assert!(is_object_entry_visible(&entry1, "ACADEMYUP_DEMO_DEV", "", ""));
+        assert!(!is_object_entry_visible(&entry2, "ACADEMYUP_DEMO_DEV", "", ""));
+
+        // Database search query
+        assert!(is_object_entry_visible(&entry1, "ALL", "academy", ""));
+        assert!(!is_object_entry_visible(&entry2, "ALL", "academy", ""));
+        assert!(is_object_entry_visible(&entry2, "ALL", "billing", ""));
+
+        // Object name filter
+        assert!(is_object_entry_visible(&entry1, "ALL", "", "users"));
+        assert!(!is_object_entry_visible(&entry1, "ALL", "", "invoices"));
+
+        // Combined database search + object search
+        assert!(is_object_entry_visible(&entry1, "ALL", "academy", "users"));
+        assert!(!is_object_entry_visible(&entry1, "ALL", "billing", "users"));
+    }
+
+    #[test]
+    fn test_is_user_entry_visible() {
+        let user = UserInfo {
+            username: "ridwan".to_string(),
+            host: "%".to_string(),
+            is_superuser: false,
+            can_login: true,
+            can_create_db: false,
+            can_create_role: false,
+            is_locked: false,
+            password_expired: false,
+            valid_until: None,
+            member_of: Vec::new(),
+            attributes: Vec::new(),
+        };
+
+        assert!(is_user_entry_visible(&user, ""));
+        assert!(is_user_entry_visible(&user, "ridwan"));
+        assert!(is_user_entry_visible(&user, "RID"));
+        assert!(is_user_entry_visible(&user, "%"));
+        assert!(!is_user_entry_visible(&user, "superadmin"));
     }
 }

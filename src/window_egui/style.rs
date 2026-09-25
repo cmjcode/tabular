@@ -1022,6 +1022,7 @@ pub fn render_modal_header(
     }
 
     ui.horizontal(|ui| {
+        ui.set_width(ui.available_width());
         ui.heading(title);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close_btn = egui::Button::new(

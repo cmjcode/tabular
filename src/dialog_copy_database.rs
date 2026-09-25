@@ -101,22 +101,29 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            if state.is_running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
         }
     }
 
     crate::window_egui::style::render_modal_backdrop(ctx, "modal_backdrop_copy_database", open);
 
+    let screen = ctx.content_rect();
+    let dialog_w = (screen.width() - 32.0).min(580.0);
+    let dialog_h = (screen.height() - 32.0).min(490.0);
+
     egui::Window::new("📋 Copy Database")
         .open(&mut open)
         .title_bar(false)
         .frame(crate::window_egui::style::modal_window_frame(ctx))
-        .default_size(egui::vec2(580.0, 400.0))
-        .max_size(egui::vec2(660.0, (ctx.content_rect().height() * 0.85).max(340.0)))
-        .resizable(true)
+        .fixed_size(egui::vec2(dialog_w, dialog_h))
+        .resizable(false)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            ui.set_width(ui.available_width());
+
             crate::window_egui::style::render_modal_header(
                 ui,
                 "📋 Copy Database",
@@ -126,9 +133,9 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
             if let Some(state) = &mut tabular.copy_database_state {
                 // Header card
                 let display_db = if state.target_database_name.is_empty() {
-                    format!("{} ➔ ...", state.source_database_name)
+                    format!("{} → ...", state.source_database_name)
                 } else {
-                    format!("{} ➔ {}", state.source_database_name, state.target_database_name)
+                    format!("{} → {}", state.source_database_name, state.target_database_name)
                 };
                 render_header_card(
                     ui,
@@ -140,13 +147,14 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                 ui.add_space(6.0);
 
-                let scroll_height = (ui.available_height() - 44.0).max(100.0);
+                let scroll_height = (ui.available_height() - 48.0).max(100.0);
 
                 if state.is_running || state.last_snapshot.is_some() {
                     egui::ScrollArea::vertical()
                         .max_height(scroll_height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             render_progress_dashboard(
                                 ui,
                                 state.last_snapshot.as_ref(),
@@ -159,8 +167,10 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .max_height(scroll_height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             // Section 1: Source & Target Configuration
                             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
                                 ui.label(egui::RichText::new("🎯 Copy Configuration").strong().small());
                                 ui.add_space(4.0);
 
@@ -175,7 +185,7 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         ui.end_row();
 
                                         ui.label(egui::RichText::new("New Database Name:").strong());
-                                        let field_w = (ui.available_width() - 8.0).max(150.0);
+                                        let field_w = (ui.available_width() - 4.0).max(150.0);
                                         let resp = crate::window_egui::style::render_text_field(
                                             ui,
                                             egui::TextEdit::singleline(&mut state.target_database_name)
@@ -271,13 +281,17 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(10, 8))
                                     .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
                                         ui.horizontal(|ui| {
                                             ui.label("ℹ️");
-                                            ui.label(
-                                                egui::RichText::new(
-                                                    "A new database will be created on the server. All schema, tables, views, and data will be copied from the source database.",
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(
+                                                        "A new database will be created on the server. All schema, tables, views, and data will be copied from the source database.",
+                                                    )
+                                                    .size(11.5),
                                                 )
-                                                .size(11.5),
+                                                .wrap(),
                                             );
                                         });
                                     });
@@ -297,16 +311,18 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             if state.connection_type != DatabaseType::SQLite {
                                 ui.add_space(4.0);
                                 crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
                                     ui.label(egui::RichText::new("⚙️ Advanced Settings").strong().small());
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {
+                                        ui.set_width(ui.available_width());
                                         let tool_name = match state.connection_type {
                                             DatabaseType::PostgreSQL => "pg_dump / psql",
                                             DatabaseType::MySQL => "mysqldump / mysql",
                                             _ => "database CLI",
                                         };
                                         ui.label(egui::RichText::new(format!("Custom {} Path:", tool_name)).weak().small());
-                                        let w = (ui.available_width() - 8.0).max(100.0);
+                                        let w = (ui.available_width() - 4.0).max(100.0);
                                         crate::window_egui::style::render_text_field(
                                             ui,
                                             egui::TextEdit::singleline(&mut state.custom_binary_path)
@@ -460,7 +476,7 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                 let tracker = Arc::new(Mutex::new(ProgressTracker::new(
                     OperationType::CopyDatabase,
-                    format!("{} ➔ {}", state.source_database_name, state.target_database_name),
+                    format!("{} → {}", state.source_database_name, state.target_database_name),
                     target_file_path,
                 )));
                 let cancel_token = Arc::new(AtomicBool::new(false));
