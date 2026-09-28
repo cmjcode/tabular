@@ -12,9 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use super::api_client::{
-    ApiClient, CreateDiagramReq, RemoteSharedFolder, UpdateDiagramReq,
-};
+use super::api_client::{ApiClient, CreateDiagramReq, RemoteSharedFolder, UpdateDiagramReq};
 use super::vault_crypto::{self, SymKey};
 use super::vault_sync;
 use crate::models::structs::DiagramState;
@@ -119,7 +117,10 @@ pub fn push_diagrams_to_server(
             let encrypted = match vault_crypto::encrypt_str(key, &content) {
                 Ok(e) => e,
                 Err(e) => {
-                    warn!("❌ [sync_diagrams] Gagal mengenkripsi diagram '{}': {}", name, e);
+                    warn!(
+                        "❌ [sync_diagrams] Gagal mengenkripsi diagram '{}': {}",
+                        name, e
+                    );
                     continue;
                 }
             };
@@ -157,7 +158,10 @@ pub fn push_diagrams_to_server(
             pushed += 1;
         }
 
-        info!("✅ [sync_diagrams] Berhasil push {} diagram ke server", pushed);
+        info!(
+            "✅ [sync_diagrams] Berhasil push {} diagram ke server",
+            pushed
+        );
         let _ = result_tx.send(Ok(pushed));
     });
 }
@@ -230,7 +234,10 @@ pub fn push_single_diagram(
             };
             match client.update_diagram(&token, &d.id, &req).await {
                 Ok(_) => {
-                    info!("✅ [sync_diagrams] Diagram '{}' diperbarui di server", diagram_name);
+                    info!(
+                        "✅ [sync_diagrams] Diagram '{}' diperbarui di server",
+                        diagram_name
+                    );
                     let _ = result_tx.send(Ok(d.id));
                 }
                 Err(e) => {
@@ -247,7 +254,10 @@ pub fn push_single_diagram(
             };
             match client.create_diagram(&token, &req).await {
                 Ok(res) => {
-                    info!("✅ [sync_diagrams] Diagram '{}' dibuat di server (id: {})", diagram_name, res.id);
+                    info!(
+                        "✅ [sync_diagrams] Diagram '{}' dibuat di server (id: {})",
+                        diagram_name, res.id
+                    );
                     let _ = result_tx.send(Ok(res.id));
                 }
                 Err(e) => {
@@ -307,20 +317,30 @@ pub fn pull_diagrams_from_server(
             let decrypted = match vault_crypto::decrypt_str(key, &remote.encrypted_data) {
                 Ok(d) => d,
                 Err(e) => {
-                    warn!("❌ [sync_diagrams] Gagal mendekripsi diagram '{}': {}", remote.name, e);
+                    warn!(
+                        "❌ [sync_diagrams] Gagal mendekripsi diagram '{}': {}",
+                        remote.name, e
+                    );
                     continue;
                 }
             };
 
             if let Err(e) = crate::diagram_view::write_atomic(&local_path, decrypted.as_bytes()) {
-                warn!("❌ [sync_diagrams] Gagal menulis diagram lokal '{}': {}", local_path.display(), e);
+                warn!(
+                    "❌ [sync_diagrams] Gagal menulis diagram lokal '{}': {}",
+                    local_path.display(),
+                    e
+                );
                 continue;
             }
 
             pulled += 1;
         }
 
-        info!("✅ [sync_diagrams] Berhasil pull {} diagram dari server", pulled);
+        info!(
+            "✅ [sync_diagrams] Berhasil pull {} diagram dari server",
+            pulled
+        );
         let _ = result_tx.send(Ok(pulled));
     });
 }
@@ -396,7 +416,8 @@ mod tests {
 
         // Dekripsi
         let decrypted = vault_crypto::decrypt_str(&key, &encrypted).expect("Decryption failed");
-        let restored: DiagramState = serde_json::from_str(&decrypted).expect("Deserialization failed");
+        let restored: DiagramState =
+            serde_json::from_str(&decrypted).expect("Deserialization failed");
 
         assert_eq!(restored.diagram_title.as_deref(), Some("multi_tenant_erd"));
         assert_eq!(restored.nodes.len(), 2);
@@ -404,7 +425,10 @@ mod tests {
         let restored_node1 = &restored.nodes[0];
         assert_eq!(restored_node1.database_name.as_deref(), Some("auth_db"));
         assert_eq!(restored_node1.connection_id, Some(1));
-        assert_eq!(restored_node1.connection_name.as_deref(), Some("Auth Service"));
+        assert_eq!(
+            restored_node1.connection_name.as_deref(),
+            Some("Auth Service")
+        );
 
         let restored_node2 = &restored.nodes[1];
         assert_eq!(restored_node2.id, "orders_db::users");
@@ -412,4 +436,3 @@ mod tests {
         assert_eq!(restored_node2.connection_id, Some(2));
     }
 }
-

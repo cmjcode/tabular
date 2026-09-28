@@ -253,9 +253,7 @@ impl Tabular {
             section(ui, "Database Access", |ui| {
                 self.render_ai_cli_mcp_status(ui, tab)
             });
-            section(ui, "Connection Test", |ui| {
-                self.render_ai_cli_test(ui, tab)
-            });
+            section(ui, "Connection Test", |ui| self.render_ai_cli_test(ui, tab));
         }
     }
 

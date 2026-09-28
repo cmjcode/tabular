@@ -60,7 +60,10 @@ async fn wait_for_pool(
 }
 
 async fn timed<T>(fut: impl std::future::Future<Output = Option<T>>) -> Option<T> {
-    tokio::time::timeout(QUERY_TIMEOUT, fut).await.ok().flatten()
+    tokio::time::timeout(QUERY_TIMEOUT, fut)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Ambil FK, kolom, daftar tabel, dan layout bersama secara paralel.
@@ -78,9 +81,15 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
 
     let fks = timed(async {
         match &pool {
-            DatabasePool::MySQL(p) => crate::driver_mysql::fetch_mysql_foreign_keys(p, db).await.ok(),
-            DatabasePool::PostgreSQL(p) => crate::driver_postgres::fetch_postgres_foreign_keys(p).await.ok(),
-            DatabasePool::SQLite(p) => crate::driver_sqlite::fetch_sqlite_foreign_keys(p).await.ok(),
+            DatabasePool::MySQL(p) => crate::driver_mysql::fetch_mysql_foreign_keys(p, db)
+                .await
+                .ok(),
+            DatabasePool::PostgreSQL(p) => crate::driver_postgres::fetch_postgres_foreign_keys(p)
+                .await
+                .ok(),
+            DatabasePool::SQLite(p) => crate::driver_sqlite::fetch_sqlite_foreign_keys(p)
+                .await
+                .ok(),
             // Fetcher MsSQL mengembalikan daftar kosong saat gagal; kosong
             // diperlakukan sebagai "tidak diketahui" supaya edge cache aman.
             DatabasePool::MsSQL(_) => {
@@ -93,7 +102,9 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
     let columns = timed(async {
         match &pool {
             DatabasePool::MySQL(p) => crate::driver_mysql::fetch_mysql_columns(p, db).await.ok(),
-            DatabasePool::PostgreSQL(p) => crate::driver_postgres::fetch_postgres_columns(p).await.ok(),
+            DatabasePool::PostgreSQL(p) => {
+                crate::driver_postgres::fetch_postgres_columns(p).await.ok()
+            }
             DatabasePool::SQLite(p) => crate::driver_sqlite::fetch_sqlite_columns(p).await.ok(),
             _ => None,
         }
@@ -101,7 +112,9 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
     let tables = timed(async {
         match &pool {
             DatabasePool::MySQL(p) => crate::driver_mysql::list_mysql_tables(p, db, "table").await,
-            DatabasePool::PostgreSQL(_) => crate::driver_postgres::list_postgres_tables(conn, db, "table").await,
+            DatabasePool::PostgreSQL(_) => {
+                crate::driver_postgres::list_postgres_tables(conn, db, "table").await
+            }
             DatabasePool::SQLite(p) => crate::driver_sqlite::list_sqlite_tables(p, "table").await,
             DatabasePool::MsSQL(p) => crate::driver_mssql::list_mssql_tables(p, "table").await,
             _ => None,
@@ -146,8 +159,7 @@ pub fn prepare_stored_state(state: &mut DiagramState, conn_id: i64, db_name: &st
     crate::diagram_links::strip_linked(state);
     let migrated =
         crate::diagram_links::migrate_legacy_foreign_nodes(state, conn_id, db_name, |i| {
-            crate::diagram_view::GROUP_COLORS
-                [(i * 3 + 5) % crate::diagram_view::GROUP_COLORS.len()]
+            crate::diagram_view::GROUP_COLORS[(i * 3 + 5) % crate::diagram_view::GROUP_COLORS.len()]
         });
     if migrated > 0 {
         // Simpan segera supaya `link_id` hasil migrasi stabil.
@@ -231,9 +243,9 @@ pub fn merge_schema(
     // dipertahankan; tanpa daftar tabel yang valid tidak ada yang dibuang.
     let tables_known = snapshot.tables.as_ref().is_some_and(|t| !t.is_empty());
     if tables_known {
-        state
-            .nodes
-            .retain(|n| n.detached || crate::diagram_links::is_linked_id(&n.id) || table_names.contains(&n.id));
+        state.nodes.retain(|n| {
+            n.detached || crate::diagram_links::is_linked_id(&n.id) || table_names.contains(&n.id)
+        });
     }
 
     let is_init = state.nodes.is_empty();
@@ -252,9 +264,16 @@ pub fn merge_schema(
         state.nodes.push(DiagramNode {
             id: table.clone(),
             title: table.clone(),
-            pos: eframe::egui::pos2((hash % 800) as f32 + 100.0, ((hash / 800) % 600) as f32 + 100.0),
+            pos: eframe::egui::pos2(
+                (hash % 800) as f32 + 100.0,
+                ((hash / 800) % 600) as f32 + 100.0,
+            ),
             size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
-            group_ids: if has_group { vec![target_group.clone()] } else { Vec::new() },
+            group_ids: if has_group {
+                vec![target_group.clone()]
+            } else {
+                Vec::new()
+            },
             group_id: has_group.then_some(target_group),
             database_name: Some(db_name.to_string()),
             connection_id: Some(conn_id),
@@ -301,16 +320,26 @@ pub fn merge_schema(
 /// virtual, dan link database. Pan/zoom sengaja tidak ikut.
 pub fn layout_fingerprint(state: &DiagramState) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for n in state.nodes.iter().filter(|n| !crate::diagram_links::is_linked_id(&n.id)) {
+    for n in state
+        .nodes
+        .iter()
+        .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+    {
         n.id.hash(&mut h);
         n.pos.x.to_bits().hash(&mut h);
         n.pos.y.to_bits().hash(&mut h);
         n.group_ids.hash(&mut h);
     }
-    for g in state.groups.iter().filter(|g| !crate::diagram_links::is_linked_id(&g.id)) {
+    for g in state
+        .groups
+        .iter()
+        .filter(|g| !crate::diagram_links::is_linked_id(&g.id))
+    {
         g.id.hash(&mut h);
         g.title.hash(&mut h);
-        g.manual_pos.map(|p| (p.x.to_bits(), p.y.to_bits())).hash(&mut h);
+        g.manual_pos
+            .map(|p| (p.x.to_bits(), p.y.to_bits()))
+            .hash(&mut h);
     }
     state.virtual_relations.len().hash(&mut h);
     for l in &state.linked_databases {
@@ -359,7 +388,13 @@ mod tests {
             nodes: vec![node("users")],
             ..Default::default()
         };
-        merge_schema(&mut state, &snapshot(&["users", "orders"], vec![fk("orders", "users")]), 1, "shop", None);
+        merge_schema(
+            &mut state,
+            &snapshot(&["users", "orders"], vec![fk("orders", "users")]),
+            1,
+            "shop",
+            None,
+        );
 
         assert_eq!(state.nodes.len(), 2);
         let users = state.nodes.iter().find(|n| n.id == "users").unwrap();
@@ -405,10 +440,21 @@ mod tests {
     #[test]
     fn merge_on_empty_state_creates_prefix_groups() {
         let mut state = DiagramState::default();
-        merge_schema(&mut state, &snapshot(&["user_a", "user_b", "misc"], vec![]), 1, "shop", Some("local"));
+        merge_schema(
+            &mut state,
+            &snapshot(&["user_a", "user_b", "misc"], vec![]),
+            1,
+            "shop",
+            Some("local"),
+        );
 
         assert_eq!(state.nodes.len(), 3);
-        assert!(state.groups.iter().any(|g| g.id == "group_user" && g.title == "User"));
+        assert!(
+            state
+                .groups
+                .iter()
+                .any(|g| g.id == "group_user" && g.title == "User")
+        );
         let a = state.nodes.iter().find(|n| n.id == "user_a").unwrap();
         assert_eq!(a.group_id.as_deref(), Some("group_user"));
         assert_eq!(a.connection_name.as_deref(), Some("local"));

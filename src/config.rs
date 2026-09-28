@@ -236,7 +236,9 @@ impl std::str::FromStr for AiBackend {
 
 /// Jenis CLI agent yang dipakai bila [`AiBackend::Cli`]. Menentukan argumen
 /// baris perintah dan parser output stream-json (lihat `agent::harness`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum CliAgentKind {
     #[default]
     Antigravity,
@@ -362,7 +364,9 @@ impl CliAgentProfile {
 }
 
 /// Siapa yang menjawab: HTTP API (provider di prefs) atau salah satu CLI agent.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum ChatTarget {
     #[default]
     Api,
@@ -596,44 +600,45 @@ pub(crate) fn apply_kv_pair(
         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
         "word_wrap" => prefs.word_wrap = v == "1",
         "data_directory" => {
-            prefs.data_directory = if v.is_empty() { None } else { Some(v.to_string()) }
+            prefs.data_directory = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
         }
         "auto_check_updates" => prefs.auto_check_updates = v == "1",
         "use_server_pagination" => prefs.use_server_pagination = v == "1",
         "last_update_check_iso" => {
-            prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v.to_string()) }
+            prefs.last_update_check_iso = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
         }
         "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
         "ai_api_key" => {
-            let (real, rewrite) =
-                crate::secrets::resolve_stored("pref:ai_api_key", v);
+            let (real, rewrite) = crate::secrets::resolve_stored("pref:ai_api_key", v);
             prefs.ai_api_key = real;
             *ai_key_rewrite = rewrite;
         }
         "ai_model" => prefs.ai_model = v.to_string(),
-        "ai_provider" => {
-            prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI)
-        }
+        "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
         "ai_base_url" => prefs.ai_base_url = v.to_string(),
         "ai_backend" => legacy.backend = Some(v.parse().unwrap_or(AiBackend::Api)),
-        "ai_cli_kind" => {
-            legacy.kind = Some(v.parse().unwrap_or(CliAgentKind::Antigravity))
-        }
+        "ai_cli_kind" => legacy.kind = Some(v.parse().unwrap_or(CliAgentKind::Antigravity)),
         "ai_cli_bin" => legacy.bin = v.to_string(),
         "ai_cli_model" => legacy.model = v.to_string(),
         "ai_cli_effort" => legacy.effort = v.to_string(),
         "ai_cli_extra_args" => legacy.extra_args = v.to_string(),
-        "ai_cli_profiles" => {
-            match serde_json::from_str::<Vec<CliAgentProfile>>(v) {
-                Ok(parsed) => {
-                    prefs.ai_cli_profiles = parsed;
-                    *saw_profiles = true;
-                }
-                Err(e) => {
-                    log::warn!("[PREFS] Failed to parse ai_cli_profiles JSON: {e}");
-                }
+        "ai_cli_profiles" => match serde_json::from_str::<Vec<CliAgentProfile>>(v) {
+            Ok(parsed) => {
+                prefs.ai_cli_profiles = parsed;
+                *saw_profiles = true;
             }
-        }
+            Err(e) => {
+                log::warn!("[PREFS] Failed to parse ai_cli_profiles JSON: {e}");
+            }
+        },
         "ai_default_target" => {
             prefs.ai_default_target = v.parse().unwrap_or_default();
         }
@@ -654,12 +659,14 @@ pub(crate) fn apply_kv_pair(
                 .unwrap_or(default_redis_browser_auto_refresh_seconds())
         }
         "sync_server_url" => {
-            prefs.sync_server_url = if v.is_empty() { None } else { Some(v.to_string()) }
+            prefs.sync_server_url = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
         }
         "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
-        "max_result_rows" => {
-            prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS)
-        }
+        "max_result_rows" => prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS),
         "restore_session" => prefs.restore_session = v == "1",
         "ai_panel_width" => {
             prefs.ai_panel_width = v
@@ -671,13 +678,22 @@ pub(crate) fn apply_kv_pair(
     }
 }
 
-pub fn preferences_from_kv<'a>(rows: impl IntoIterator<Item = (&'a str, &'a str)>) -> AppPreferences {
+pub fn preferences_from_kv<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> AppPreferences {
     let mut prefs = AppPreferences::default();
     let mut legacy = LegacyCliPrefs::default();
     let mut saw_profiles = false;
     let mut rewrite = None;
     for (k, v) in rows {
-        apply_kv_pair(&mut prefs, &mut legacy, &mut saw_profiles, &mut rewrite, k, v);
+        apply_kv_pair(
+            &mut prefs,
+            &mut legacy,
+            &mut saw_profiles,
+            &mut rewrite,
+            k,
+            v,
+        );
     }
     if !saw_profiles {
         let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
@@ -826,7 +842,14 @@ impl ConfigStore {
                 for row in rows {
                     let k: String = row.get(0);
                     let v: String = row.get(1);
-                    apply_kv_pair(&mut prefs, &mut legacy, &mut saw_profiles, &mut ai_key_rewrite, &k, &v);
+                    apply_kv_pair(
+                        &mut prefs,
+                        &mut legacy,
+                        &mut saw_profiles,
+                        &mut ai_key_rewrite,
+                        &k,
+                        &v,
+                    );
                 }
             }
 
@@ -1392,7 +1415,10 @@ mod tests {
         // Unknown strings fallback to Api
         assert_eq!("".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
         assert_eq!("UNKNOWN".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
-        assert_eq!("CLI:UNKNOWN".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+        assert_eq!(
+            "CLI:UNKNOWN".parse::<ChatTarget>().unwrap(),
+            ChatTarget::Api
+        );
     }
 
     #[test]
@@ -1427,7 +1453,10 @@ mod tests {
         assert_eq!(claude.effort, "high");
         assert_eq!(claude.extra_args, "--verbose");
 
-        for p in profiles.iter().filter(|p| p.kind != CliAgentKind::ClaudeCode) {
+        for p in profiles
+            .iter()
+            .filter(|p| p.kind != CliAgentKind::ClaudeCode)
+        {
             assert!(!p.enabled);
             assert!(p.bin.is_empty());
         }
@@ -1519,7 +1548,10 @@ mod tests {
         ];
 
         let prefs = preferences_from_kv(rows);
-        assert_eq!(prefs.ai_default_target, ChatTarget::Cli(CliAgentKind::Custom));
+        assert_eq!(
+            prefs.ai_default_target,
+            ChatTarget::Cli(CliAgentKind::Custom)
+        );
         let custom = prefs
             .ai_cli_profiles
             .iter()

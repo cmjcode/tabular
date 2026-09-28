@@ -311,8 +311,12 @@ pub(crate) async fn list_postgres_tables(
     table_type: &str,
 ) -> Option<Vec<String>> {
     let sql = match table_type {
-        "table" => "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
-        "view" => "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name",
+        "table" => {
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name"
+        }
+        "view" => {
+            "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name"
+        }
         _ => return None,
     };
     let conn_str = format!(
@@ -335,7 +339,8 @@ pub(crate) async fn list_postgres_tables(
     .map_err(|_| sqlx::Error::PoolTimedOut)
     .and_then(|r| r);
     pool.close().await;
-    rows.ok().map(|rows| rows.into_iter().map(|(n,)| n).collect())
+    rows.ok()
+        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
 /// Mengubah satu nilai PostgreSQL menjadi teks tampilan.
@@ -470,10 +475,11 @@ pub async fn drop_database(
 ) -> Result<(), String> {
     use sqlx::postgres::PgConnectOptions;
 
-    let (target_host, target_port) = match crate::connection::pool::resolve_connection_target_async(connection).await {
-        Ok(t) => t,
-        Err(e) => return Err(format!("Cannot resolve target host: {}", e)),
-    };
+    let (target_host, target_port) =
+        match crate::connection::pool::resolve_connection_target_async(connection).await {
+            Ok(t) => t,
+            Err(e) => return Err(format!("Cannot resolve target host: {}", e)),
+        };
     let port_num = target_port.parse::<u16>().unwrap_or(5432);
 
     // Never connect to the database being dropped
@@ -518,16 +524,26 @@ pub async fn drop_database(
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect_with(connect_opts)
         .await
-        .map_err(|e| format!("PostgreSQL connect failed (to maintenance db '{}'): {}", conn_db, e))?;
+        .map_err(|e| {
+            format!(
+                "PostgreSQL connect failed (to maintenance db '{}'): {}",
+                conn_db, e
+            )
+        })?;
 
     // Terminate existing connections to target database
     let term_query = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()";
-    let _ = sqlx::query(term_query).bind(database_name).execute(&pool).await;
+    let _ = sqlx::query(term_query)
+        .bind(database_name)
+        .execute(&pool)
+        .await;
 
     // Drop database with FORCE (PG 13+)
     let safe_name = database_name.replace('"', "\"\"");
     let drop_query_force = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", safe_name);
-    let res = sqlx::query(sqlx::AssertSqlSafe(drop_query_force.as_str())).execute(&pool).await;
+    let res = sqlx::query(sqlx::AssertSqlSafe(drop_query_force.as_str()))
+        .execute(&pool)
+        .await;
 
     match res {
         Ok(_) => Ok(()),
@@ -547,4 +563,3 @@ pub async fn drop_database(
         }
     }
 }
-

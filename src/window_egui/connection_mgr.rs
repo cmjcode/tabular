@@ -981,11 +981,7 @@ impl super::Tabular {
     }
 
     // Remove a specific database from the sidebar tree without reloading entire connection
-    pub(crate) fn remove_database_from_tree(
-        &mut self,
-        connection_id: i64,
-        database_name: &str,
-    ) {
+    pub(crate) fn remove_database_from_tree(&mut self, connection_id: i64, database_name: &str) {
         use log::debug;
 
         debug!(
@@ -1031,11 +1027,7 @@ impl super::Tabular {
     }
 
     // Clear cache for a specific database
-    pub(crate) fn clear_database_cache(
-        &mut self,
-        connection_id: i64,
-        database_name: &str,
-    ) {
+    pub(crate) fn clear_database_cache(&mut self, connection_id: i64, database_name: &str) {
         use log::debug;
 
         // 1. Remove from in-memory cache
@@ -1059,40 +1051,57 @@ impl super::Tabular {
             };
 
             rt.block_on(async {
-                debug!("🧹 Clearing database cache for db '{}' on conn {}", db, connection_id);
-                let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                let _ = sqlx::query("DELETE FROM partition_cache WHERE connection_id = ? AND database_name = ?")
-                    .bind(connection_id)
-                    .bind(&db)
-                    .execute(pool_clone.as_ref())
-                    .await;
-                debug!("✅ Database cache cleared for db '{}' on conn {}", db, connection_id);
+                debug!(
+                    "🧹 Clearing database cache for db '{}' on conn {}",
+                    db, connection_id
+                );
+                let _ = sqlx::query(
+                    "DELETE FROM database_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                let _ = sqlx::query(
+                    "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                let _ = sqlx::query(
+                    "DELETE FROM column_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                let _ = sqlx::query(
+                    "DELETE FROM row_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                let _ = sqlx::query(
+                    "DELETE FROM index_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                let _ = sqlx::query(
+                    "DELETE FROM partition_cache WHERE connection_id = ? AND database_name = ?",
+                )
+                .bind(connection_id)
+                .bind(&db)
+                .execute(pool_clone.as_ref())
+                .await;
+                debug!(
+                    "✅ Database cache cleared for db '{}' on conn {}",
+                    db, connection_id
+                );
             });
         }
     }
 }
-

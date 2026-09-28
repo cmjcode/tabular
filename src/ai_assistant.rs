@@ -435,10 +435,7 @@ pub fn backend_ready_for(tabular: &Tabular, target: ChatTarget) -> Result<(), St
 }
 
 /// Id sesi yang boleh dipakai untuk `target`: hanya bila sesi berasal dari kind yang sama.
-pub fn session_for(
-    session: Option<&AgentSession>,
-    target: ChatTarget,
-) -> Option<&str> {
+pub fn session_for(session: Option<&AgentSession>, target: ChatTarget) -> Option<&str> {
     match (session, target) {
         (Some(s), ChatTarget::Cli(k)) if s.kind == k && k.supports_resume() => Some(&s.id),
         _ => None,

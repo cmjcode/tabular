@@ -147,7 +147,7 @@ impl Default for RestoreOptions {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CopyDatabaseOptions {
     pub source_database_name: String,
     pub target_database_name: String,
@@ -156,19 +156,6 @@ pub struct CopyDatabaseOptions {
     pub custom_binary_path: Option<PathBuf>,
     pub drop_target_if_exists: bool,
     pub include_routines: bool,
-}
-
-impl Default for CopyDatabaseOptions {
-    fn default() -> Self {
-        Self {
-            source_database_name: String::new(),
-            target_database_name: String::new(),
-            target_file: None,
-            custom_binary_path: None,
-            drop_target_if_exists: false,
-            include_routines: false,
-        }
-    }
 }
 
 // ─── Progress & State Tracking ─────────────────────────────────────────────
@@ -960,12 +947,9 @@ impl BackupRestoreRunner {
                         cancel_token,
                     )
                 }
-                DatabaseType::PostgreSQL => Self::run_postgres_copy(
-                    &config_clone,
-                    &options,
-                    tracker.clone(),
-                    cancel_token,
-                ),
+                DatabaseType::PostgreSQL => {
+                    Self::run_postgres_copy(&config_clone, &options, tracker.clone(), cancel_token)
+                }
                 DatabaseType::MySQL => {
                     Self::run_mysql_copy(&config_clone, &options, tracker.clone(), cancel_token)
                 }
@@ -1287,10 +1271,7 @@ impl BackupRestoreRunner {
             cmd.env("MYSQL_PWD", &config.password);
         }
 
-        let caps = MysqldumpCapabilities::detect(
-            &binary_info.path,
-            binary_info.version.as_deref(),
-        );
+        let caps = MysqldumpCapabilities::detect(&binary_info.path, binary_info.version.as_deref());
 
         if options.single_transaction {
             cmd.arg("--single-transaction");
@@ -1880,11 +1861,15 @@ impl BackupRestoreRunner {
             if !config.password.is_empty() {
                 drop_cmd.env("PGPASSWORD", &config.password);
             }
-            drop_cmd.arg("-c").arg(format!("DROP DATABASE IF EXISTS \"{}\";", sql_escaped));
+            drop_cmd
+                .arg("-c")
+                .arg(format!("DROP DATABASE IF EXISTS \"{}\";", sql_escaped));
             let _ = drop_cmd.output();
         }
 
-        create_cmd.arg("-c").arg(format!("CREATE DATABASE \"{}\";", sql_escaped));
+        create_cmd
+            .arg("-c")
+            .arg(format!("CREATE DATABASE \"{}\";", sql_escaped));
 
         create_cmd.stdout(Stdio::piped());
         create_cmd.stderr(Stdio::piped());
@@ -1901,7 +1886,9 @@ impl BackupRestoreRunner {
                 err_msg.trim()
             );
             if err_msg.contains("already exists") {
-                msg.push_str(". Tip: enable 'Overwrite target database if it already exists' to replace it.");
+                msg.push_str(
+                    ". Tip: enable 'Overwrite target database if it already exists' to replace it.",
+                );
             }
             let mut trk = tracker
                 .lock()
@@ -1983,8 +1970,12 @@ impl BackupRestoreRunner {
         let mysql_info =
             BinaryDetector::find_binary("mysql", options.custom_binary_path.as_deref())
                 .ok_or_else(|| {
-                    let msg = "mysql client binary not found in PATH or standard directories.".to_string();
-                    tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fail(&msg);
+                    let msg = "mysql client binary not found in PATH or standard directories."
+                        .to_string();
+                    tracker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .fail(&msg);
                     msg
                 })?;
 
@@ -2014,7 +2005,9 @@ impl BackupRestoreRunner {
             if !config.password.is_empty() {
                 drop_cmd.env("MYSQL_PWD", &config.password);
             }
-            drop_cmd.arg("-e").arg(format!("DROP DATABASE IF EXISTS `{}`;", sql_escaped));
+            drop_cmd
+                .arg("-e")
+                .arg(format!("DROP DATABASE IF EXISTS `{}`;", sql_escaped));
             let _ = drop_cmd.output();
         }
 
@@ -2027,7 +2020,9 @@ impl BackupRestoreRunner {
         if !config.password.is_empty() {
             create_cmd.env("MYSQL_PWD", &config.password);
         }
-        create_cmd.arg("-e").arg(format!("CREATE DATABASE `{}`;", sql_escaped));
+        create_cmd
+            .arg("-e")
+            .arg(format!("CREATE DATABASE `{}`;", sql_escaped));
 
         create_cmd.stdout(Stdio::piped());
         create_cmd.stderr(Stdio::piped());
@@ -2044,7 +2039,9 @@ impl BackupRestoreRunner {
                 err_msg.trim()
             );
             if err_msg.contains("database exists") || err_msg.contains("1007") {
-                msg.push_str(". Tip: enable 'Overwrite target database if it already exists' to replace it.");
+                msg.push_str(
+                    ". Tip: enable 'Overwrite target database if it already exists' to replace it.",
+                );
             }
             let mut trk = tracker
                 .lock()
@@ -2065,10 +2062,8 @@ impl BackupRestoreRunner {
         }
 
         // 2. Dump from source
-        let caps = MysqldumpCapabilities::detect(
-            &mysqldump_info.path,
-            mysqldump_info.version.as_deref(),
-        );
+        let caps =
+            MysqldumpCapabilities::detect(&mysqldump_info.path, mysqldump_info.version.as_deref());
 
         let mut dump_cmd = Command::new(&mysqldump_info.path);
         dump_cmd.arg("-h").arg(&config.host);
@@ -2133,8 +2128,14 @@ impl BackupRestoreRunner {
         tracker: Arc<Mutex<ProgressTracker>>,
         cancel_token: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        let mut dump_stdout = dump_child.stdout.take().ok_or("Failed to capture dump stdout")?;
-        let mut restore_stdin = restore_child.stdin.take().ok_or("Failed to open restore stdin")?;
+        let mut dump_stdout = dump_child
+            .stdout
+            .take()
+            .ok_or("Failed to capture dump stdout")?;
+        let mut restore_stdin = restore_child
+            .stdin
+            .take()
+            .ok_or("Failed to open restore stdin")?;
         let dump_stderr = dump_child.stderr.take();
         let restore_stderr = restore_child.stderr.take();
 
@@ -2461,7 +2462,10 @@ mod tests {
 
     #[test]
     fn test_sqlite_copy_database_roundtrip() {
-        let temp_dir = std::env::temp_dir().join(format!("tabular_test_copy_{}", Instant::now().elapsed().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_test_copy_{}",
+            Instant::now().elapsed().as_nanos()
+        ));
         let _ = std::fs::create_dir_all(&temp_dir);
 
         let source_db = temp_dir.join("source.sqlite");
@@ -2506,7 +2510,10 @@ mod tests {
             cancel_token,
         );
         assert!(res.is_ok(), "SQLite copy failed: {:?}", res.err());
-        assert!(target_db.is_file(), "Target copied database file does not exist");
+        assert!(
+            target_db.is_file(),
+            "Target copied database file does not exist"
+        );
 
         // 3. Verify copied database contents
         let target_c = CString::new(target_db.to_str().unwrap()).unwrap();

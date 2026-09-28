@@ -1614,7 +1614,9 @@ mod tests {
             ai_model: "my-model".into(),
             ai_provider: AiProvider::Custom,
             ai_base_url: "http://localhost:1234/v1".into(),
-            ai_default_target: crate::config::ChatTarget::Cli(crate::config::CliAgentKind::ClaudeCode),
+            ai_default_target: crate::config::ChatTarget::Cli(
+                crate::config::CliAgentKind::ClaudeCode,
+            ),
             ai_chat_target: None,
             ai_cli_profiles: profiles,
             ai_cli_auto_apply_edits: false,

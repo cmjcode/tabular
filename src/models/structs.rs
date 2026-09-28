@@ -858,6 +858,9 @@ pub struct DiagramState {
     /// Teks input pencarian relasi berdasarkan nama kolom.
     #[serde(skip)]
     pub relation_column_search_query: String,
+    /// Filter database pada jendela saran relasi (None = semua database).
+    #[serde(skip)]
+    pub relation_database_filter: Option<String>,
     /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
     #[serde(skip)]
     pub hand_tool: bool,
@@ -970,6 +973,7 @@ impl Default for DiagramState {
             relation_suggestions: None,
             relation_suggestions_title: None,
             relation_column_search_query: String::new(),
+            relation_database_filter: None,
             hand_tool: false,
             linked_databases: Vec::new(),
             linked_relations: Vec::new(),
@@ -1046,7 +1050,9 @@ impl StatementType {
         // Lewati komentar SQL dan spasi awal
         while i < len {
             // Lewati spasi
-            while i < len && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n') {
+            while i < len
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
                 i += 1;
             }
             if i >= len {
@@ -1090,7 +1096,10 @@ impl StatementType {
 
         if word.eq_ignore_ascii_case("select") || word.eq_ignore_ascii_case("with") {
             Self::Select
-        } else if word.eq_ignore_ascii_case("insert") || word.eq_ignore_ascii_case("upsert") || word.eq_ignore_ascii_case("replace") {
+        } else if word.eq_ignore_ascii_case("insert")
+            || word.eq_ignore_ascii_case("upsert")
+            || word.eq_ignore_ascii_case("replace")
+        {
             Self::Insert
         } else if word.eq_ignore_ascii_case("update") {
             Self::Update
@@ -1254,7 +1263,6 @@ pub struct McpStatus {
     pub message: Option<String>,
     pub receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
 }
-
 
 /// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
 /// jadi hanya dihitung ulang saat koneksi/database berubah atau cache kedaluwarsa.
@@ -1839,10 +1847,16 @@ impl PendingDropDatabase {
     ) -> Self {
         let drop_statement = match database_type {
             models::enums::DatabaseType::MySQL => {
-                format!("DROP DATABASE IF EXISTS `{}`;", database_name.replace('`', "``"))
+                format!(
+                    "DROP DATABASE IF EXISTS `{}`;",
+                    database_name.replace('`', "``")
+                )
             }
             models::enums::DatabaseType::PostgreSQL => {
-                format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", database_name.replace('"', "\"\""))
+                format!(
+                    "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);",
+                    database_name.replace('"', "\"\"")
+                )
             }
             models::enums::DatabaseType::MsSQL => {
                 format!(
@@ -2421,36 +2435,88 @@ mod tests {
 
     #[test]
     fn test_statement_type_from_sql() {
-        assert_eq!(StatementType::from_sql("SELECT * FROM users"), StatementType::Select);
-        assert_eq!(StatementType::from_sql("  -- comment\nSELECT 1"), StatementType::Select);
-        assert_eq!(StatementType::from_sql("/* block */ WITH cte AS (...) SELECT 1"), StatementType::Select);
-        assert_eq!(StatementType::from_sql("INSERT INTO t VALUES (1)"), StatementType::Insert);
-        assert_eq!(StatementType::from_sql("UPDATE t SET a = 1"), StatementType::Update);
-        assert_eq!(StatementType::from_sql("DELETE FROM t WHERE a = 1"), StatementType::Delete);
-        assert_eq!(StatementType::from_sql("CREATE TABLE foo (id INT)"), StatementType::Ddl);
-        assert_eq!(StatementType::from_sql("ALTER TABLE foo ADD COLUMN bar TEXT"), StatementType::Ddl);
-        assert_eq!(StatementType::from_sql("DROP TABLE foo"), StatementType::Ddl);
+        assert_eq!(
+            StatementType::from_sql("SELECT * FROM users"),
+            StatementType::Select
+        );
+        assert_eq!(
+            StatementType::from_sql("  -- comment\nSELECT 1"),
+            StatementType::Select
+        );
+        assert_eq!(
+            StatementType::from_sql("/* block */ WITH cte AS (...) SELECT 1"),
+            StatementType::Select
+        );
+        assert_eq!(
+            StatementType::from_sql("INSERT INTO t VALUES (1)"),
+            StatementType::Insert
+        );
+        assert_eq!(
+            StatementType::from_sql("UPDATE t SET a = 1"),
+            StatementType::Update
+        );
+        assert_eq!(
+            StatementType::from_sql("DELETE FROM t WHERE a = 1"),
+            StatementType::Delete
+        );
+        assert_eq!(
+            StatementType::from_sql("CREATE TABLE foo (id INT)"),
+            StatementType::Ddl
+        );
+        assert_eq!(
+            StatementType::from_sql("ALTER TABLE foo ADD COLUMN bar TEXT"),
+            StatementType::Ddl
+        );
+        assert_eq!(
+            StatementType::from_sql("DROP TABLE foo"),
+            StatementType::Ddl
+        );
         assert_eq!(StatementType::from_sql("TRUNCATE foo"), StatementType::Ddl);
-        assert_eq!(StatementType::from_sql("BEGIN;"), StatementType::Transaction);
-        assert_eq!(StatementType::from_sql("COMMIT;"), StatementType::Transaction);
+        assert_eq!(
+            StatementType::from_sql("BEGIN;"),
+            StatementType::Transaction
+        );
+        assert_eq!(
+            StatementType::from_sql("COMMIT;"),
+            StatementType::Transaction
+        );
         assert_eq!(StatementType::from_sql("SHOW TABLES;"), StatementType::Show);
-        assert_eq!(StatementType::from_sql("EXPLAIN SELECT 1;"), StatementType::Show);
+        assert_eq!(
+            StatementType::from_sql("EXPLAIN SELECT 1;"),
+            StatementType::Show
+        );
     }
 
     #[test]
     fn test_pending_drop_database_statements() {
-        let p_mysql = PendingDropDatabase::new(1, "my_db".to_string(), models::enums::DatabaseType::MySQL);
+        let p_mysql =
+            PendingDropDatabase::new(1, "my_db".to_string(), models::enums::DatabaseType::MySQL);
         assert_eq!(p_mysql.drop_statement, "DROP DATABASE IF EXISTS `my_db`;");
 
-        let p_pg = PendingDropDatabase::new(2, "pg_db".to_string(), models::enums::DatabaseType::PostgreSQL);
-        assert_eq!(p_pg.drop_statement, "DROP DATABASE IF EXISTS \"pg_db\" WITH (FORCE);");
+        let p_pg = PendingDropDatabase::new(
+            2,
+            "pg_db".to_string(),
+            models::enums::DatabaseType::PostgreSQL,
+        );
+        assert_eq!(
+            p_pg.drop_statement,
+            "DROP DATABASE IF EXISTS \"pg_db\" WITH (FORCE);"
+        );
 
-        let p_mssql = PendingDropDatabase::new(3, "ms_db".to_string(), models::enums::DatabaseType::MsSQL);
-        assert!(p_mssql.drop_statement.contains("ALTER DATABASE [ms_db] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"));
+        let p_mssql =
+            PendingDropDatabase::new(3, "ms_db".to_string(), models::enums::DatabaseType::MsSQL);
+        assert!(
+            p_mssql
+                .drop_statement
+                .contains("ALTER DATABASE [ms_db] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;")
+        );
         assert!(p_mssql.drop_statement.contains("DROP DATABASE [ms_db];"));
 
-        let p_mongo = PendingDropDatabase::new(4, "mongo_db".to_string(), models::enums::DatabaseType::MongoDB);
+        let p_mongo = PendingDropDatabase::new(
+            4,
+            "mongo_db".to_string(),
+            models::enums::DatabaseType::MongoDB,
+        );
         assert_eq!(p_mongo.drop_statement, "use mongo_db;\ndb.dropDatabase();");
     }
 }
-

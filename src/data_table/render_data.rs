@@ -2251,7 +2251,8 @@ fn render_sql_code_box(ui: &mut egui::Ui, sql: &str) {
 
 /// Tampilan saat query sedang aktif dieksekusi di database
 fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(100));
 
     egui::ScrollArea::both()
         .id_salt("executing_query_scroll")
@@ -2265,7 +2266,11 @@ fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egu
                 );
                 ui.add_space(12.0);
 
-                ui.label(egui::RichText::new("Executing query...").strong().size(16.0));
+                ui.label(
+                    egui::RichText::new("Executing query...")
+                        .strong()
+                        .size(16.0),
+                );
 
                 let has_active_jobs = !tabular.jobs.active.is_empty();
                 if has_active_jobs {
@@ -2316,19 +2321,22 @@ fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egu
                         .inner_margin(egui::Margin::symmetric(14, 10))
                         .show(ui, |ui| {
                             ui.set_max_width(540.0);
-                            ui.label(egui::RichText::new(display_sql).monospace().size(11.5).weak());
+                            ui.label(
+                                egui::RichText::new(display_sql)
+                                    .monospace()
+                                    .size(11.5)
+                                    .weak(),
+                            );
                         });
                 }
 
                 ui.add_space(14.0);
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("✕ Cancel Query")
-                                .color(crate::window_egui::style::theme_danger(ui.ctx()))
-                                .size(12.0),
-                        ),
-                    )
+                    .add(egui::Button::new(
+                        egui::RichText::new("✕ Cancel Query")
+                            .color(crate::window_egui::style::theme_danger(ui.ctx()))
+                            .size(12.0),
+                    ))
                     .clicked()
                 {
                     tabular.cancel_all_active_query_jobs();
@@ -2347,21 +2355,37 @@ fn render_empty_select_result_state(tabular: &mut window_egui::Tabular, ui: &mut
             ui.label(egui::RichText::new("🔍").size(15.0));
             ui.label(egui::RichText::new("0 rows returned").strong().size(14.0));
             ui.add_space(4.0);
-            render_badge(ui, "SELECT", crate::window_egui::style::theme_accent(ui.ctx()));
+            render_badge(
+                ui,
+                "SELECT",
+                crate::window_egui::style::theme_accent(ui.ctx()),
+            );
             if tabular.last_execution_duration_ms > 0 {
                 let dur_str = format!(
                     "⏱ {}",
-                    crate::window_egui::query_jobs::format_duration_human(tabular.last_execution_duration_ms)
+                    crate::window_egui::query_jobs::format_duration_human(
+                        tabular.last_execution_duration_ms
+                    )
                 );
                 render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
             }
             let col_count = tabular.current_table_headers.len();
-            let col_str = format!("{} column{}", col_count, if col_count == 1 { "" } else { "s" });
-            render_badge(ui, &col_str, crate::window_egui::style::theme_info(ui.ctx()));
+            let col_str = format!(
+                "{} column{}",
+                col_count,
+                if col_count == 1 { "" } else { "s" }
+            );
+            render_badge(
+                ui,
+                &col_str,
+                crate::window_egui::style::theme_info(ui.ctx()),
+            );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !tabular.last_executed_sql.is_empty()
-                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
+                    && ui
+                        .add(crate::window_egui::style::btn_secondary("📋 Copy SQL"))
+                        .clicked()
                 {
                     ui.ctx().copy_text(tabular.last_executed_sql.clone());
                 }
@@ -2391,7 +2415,8 @@ fn render_empty_select_result_state(tabular: &mut window_egui::Tabular, ui: &mut
 
 /// Tampilan empty/status saat tidak ada header: query non-SELECT, DDL, error, atau tab baru
 fn render_empty_or_status_state(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    let is_error = tabular.query_message_is_error || tabular.current_table_name.starts_with("Failed");
+    let is_error =
+        tabular.query_message_is_error || tabular.current_table_name.starts_with("Failed");
     let has_executed = tabular
         .query_tabs
         .get(tabular.active_tab_index)
@@ -2427,12 +2452,18 @@ fn render_error_card(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(crate::window_egui::style::btn_secondary("📋 Copy Error")).clicked() {
+                if ui
+                    .add(crate::window_egui::style::btn_secondary("📋 Copy Error"))
+                    .clicked()
+                {
                     ui.ctx().copy_text(tabular.query_message.clone());
                 }
                 if tabular.error_location_in_editor().is_some()
                     && ui
-                        .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "↪ Go to error in editor"))
+                        .add(crate::window_egui::style::btn_primary_ctx(
+                            ui.ctx(),
+                            "↪ Go to error in editor",
+                        ))
                         .clicked()
                 {
                     tabular.jump_to_error_location();
@@ -2469,7 +2500,10 @@ fn render_error_card(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new("Executed SQL:").size(11.5).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(egui::Button::new(egui::RichText::new("📋 Copy SQL").size(11.0).weak()).frame(false))
+                        .add(
+                            egui::Button::new(egui::RichText::new("📋 Copy SQL").size(11.0).weak())
+                                .frame(false),
+                        )
                         .clicked()
                     {
                         ui.ctx().copy_text(tabular.last_executed_sql.clone());
@@ -2512,18 +2546,26 @@ fn render_mutation_success_card(tabular: &mut window_egui::Tabular, ui: &mut egu
             if tabular.last_execution_duration_ms > 0 {
                 let dur_str = format!(
                     "⏱ {}",
-                    crate::window_egui::query_jobs::format_duration_human(tabular.last_execution_duration_ms)
+                    crate::window_egui::query_jobs::format_duration_human(
+                        tabular.last_execution_duration_ms
+                    )
                 );
                 render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
             }
             if let Some(affected) = tabular.last_affected_rows {
                 let aff_str = format!("{} row(s) affected", affected);
-                render_badge(ui, &aff_str, crate::window_egui::style::theme_success(ui.ctx()));
+                render_badge(
+                    ui,
+                    &aff_str,
+                    crate::window_egui::style::theme_success(ui.ctx()),
+                );
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !tabular.last_executed_sql.is_empty()
-                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
+                    && ui
+                        .add(crate::window_egui::style::btn_secondary("📋 Copy SQL"))
+                        .clicked()
                 {
                     ui.ctx().copy_text(tabular.last_executed_sql.clone());
                 }
@@ -2537,7 +2579,14 @@ fn render_mutation_success_card(tabular: &mut window_egui::Tabular, ui: &mut egu
 
         if !tabular.query_message.is_empty() {
             ui.add_space(8.0);
-            ui.add(egui::Label::new(egui::RichText::new(&tabular.query_message).weak().size(11.5)).wrap());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&tabular.query_message)
+                        .weak()
+                        .size(11.5),
+                )
+                .wrap(),
+            );
         }
     });
 }
@@ -2553,18 +2602,26 @@ fn render_idle_state(_tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
                     .color(crate::window_egui::style::theme_accent(ui.ctx())),
             );
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Ready to execute query").strong().size(15.0));
+            ui.label(
+                egui::RichText::new("Ready to execute query")
+                    .strong()
+                    .size(15.0),
+            );
             ui.add_space(2.0);
             ui.label(
-                egui::RichText::new("Write your SQL statement in the editor above and run it to view results here.")
-                    .weak()
-                    .size(12.0),
+                egui::RichText::new(
+                    "Write your SQL statement in the editor above and run it to view results here.",
+                )
+                .weak()
+                .size(12.0),
             );
             ui.add_space(8.0);
             ui.label(
-                egui::RichText::new("⌘+Enter / Ctrl+Enter  Execute query     ⌘+Shift+F / Ctrl+Shift+F  Format SQL")
-                    .weak()
-                    .size(11.5),
+                egui::RichText::new(
+                    "⌘+Enter / Ctrl+Enter  Execute query     ⌘+Shift+F / Ctrl+Shift+F  Format SQL",
+                )
+                .weak()
+                .size(11.5),
             );
         });
     });

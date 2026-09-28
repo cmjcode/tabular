@@ -335,19 +335,19 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
     let rt = tokio::runtime::Runtime::new().ok()?;
 
     rt.block_on(async {
-       // Get or create connection pool
-       let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        // Get or create connection pool
+        let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
 
-       match pool {
-              models::enums::DatabasePool::SQLite(sqlite_pool) => {
-                     list_sqlite_tables(&sqlite_pool, table_type).await
-              },
-              _ => {
-              debug!("Wrong pool type for SQLite connection");
-              None
-              }
-       }
-       })
+        match pool {
+            models::enums::DatabasePool::SQLite(sqlite_pool) => {
+                list_sqlite_tables(&sqlite_pool, table_type).await
+            }
+            _ => {
+                debug!("Wrong pool type for SQLite connection");
+                None
+            }
+        }
+    })
 }
 
 /// Daftar tabel / view SQLite lewat pool yang sudah ada. Aman dipanggil dari

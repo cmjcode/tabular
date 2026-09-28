@@ -688,21 +688,44 @@ pub(crate) async fn list_mysql_tables(
 ) -> Option<Vec<String>> {
     // Safe decoder for first column (handles VARBINARY)
     fn decode_row(row: &sqlx::mysql::MySqlRow) -> Option<String> {
-        if let Ok(s) = row.try_get::<String, _>(0) { return Some(s); }
-        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(0) { return Some(s); }
-        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(0) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
-        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(0) { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+        if let Ok(s) = row.try_get::<String, _>(0) {
+            return Some(s);
+        }
+        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(0) {
+            return Some(s);
+        }
+        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(0) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
+        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(0) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
         None
     }
 
     let query = match table_type {
-        "table" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME",
-        "view" => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME",
-        "procedure" => "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME",
-        "function" => "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME",
-        "trigger" => "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME",
-        "event" => "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME",
-        _ => { debug!("Unsupported table type: {}", table_type); return None; }
+        "table" => {
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+        }
+        "view" => {
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME"
+        }
+        "procedure" => {
+            "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME"
+        }
+        "function" => {
+            "SELECT ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME"
+        }
+        "trigger" => {
+            "SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME"
+        }
+        "event" => {
+            "SELECT EVENT_NAME FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME"
+        }
+        _ => {
+            debug!("Unsupported table type: {}", table_type);
+            return None;
+        }
     };
 
     let rows_res = tokio::time::timeout(
@@ -720,7 +743,10 @@ pub(crate) async fn list_mysql_tables(
             Some(list)
         }
         Err(e) => {
-            debug!("Error querying MySQL {} from database {}: {}", table_type, database_name, e);
+            debug!(
+                "Error querying MySQL {} from database {}: {}",
+                table_type, database_name, e
+            );
             None
         }
     }

@@ -581,22 +581,23 @@ impl super::Tabular {
 
         for (conn_id, db_name) in copy_database_requests {
             self.show_copy_database_dialog = true;
-            self.copy_database_state = Some(crate::dialog_copy_database::CopyDatabaseDialogState::new(
-                conn_id,
-                db_name,
-                &self.connections,
-            ));
+            self.copy_database_state =
+                Some(crate::dialog_copy_database::CopyDatabaseDialogState::new(
+                    conn_id,
+                    db_name,
+                    &self.connections,
+                ));
         }
 
         for (conn_id, db_name) in drop_database_requests {
-            let conn_type = self.connections.iter()
+            let conn_type = self
+                .connections
+                .iter()
                 .find(|c| c.id == Some(conn_id))
                 .map(|c| c.connection_type.clone())
                 .unwrap_or(models::enums::DatabaseType::MySQL);
             self.pending_drop_database = Some(models::structs::PendingDropDatabase::new(
-                conn_id,
-                db_name,
-                conn_type,
+                conn_id, db_name, conn_type,
             ));
         }
 

@@ -277,7 +277,11 @@ fn render_compact_footer_bar(
                             egui::RichText::new(format!(
                                 "({} column{})",
                                 tabular.current_table_headers.len(),
-                                if tabular.current_table_headers.len() == 1 { "" } else { "s" }
+                                if tabular.current_table_headers.len() == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                }
                             ))
                             .size(11.0)
                             .weak(),

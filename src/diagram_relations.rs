@@ -9,7 +9,9 @@
 
 use std::collections::HashSet;
 
-use crate::models::structs::{DiagramNode, DiagramState, RelationOrigin, VirtualRelation};
+use crate::models::structs::{
+    DiagramNode, DiagramState, LinkedDatabase, RelationOrigin, VirtualRelation,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RelationSuggestion {
@@ -1020,6 +1022,76 @@ pub fn suggest_relations_by_column_search_data(
     out
 }
 
+/// Dapatkan nama database asal sebuah tabel / node id.
+pub fn table_database_name<'a>(
+    nodes: &'a [DiagramNode],
+    linked_databases: &'a [LinkedDatabase],
+    table_id: &str,
+) -> Option<&'a str> {
+    if let Some(node) = nodes.iter().find(|n| n.id == table_id) {
+        if let Some(db) = &node.database_name {
+            let trimmed = db.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    if let Some(link_id) = crate::diagram_links::link_id_of(table_id) {
+        if let Some(link) = linked_databases.iter().find(|l| l.link_id == link_id) {
+            let trimmed = link.database_name.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    // Fallback: cari database_name dari sembarang node host (non-link)
+    nodes
+        .iter()
+        .find(|n| !crate::diagram_links::is_linked_id(&n.id))
+        .and_then(|n| n.database_name.as_deref())
+        .map(str::trim)
+        .filter(|db| !db.is_empty())
+}
+
+/// Cek apakah relasi melibatkan database tertentu (child atau parent berada di database tersebut).
+pub fn relation_matches_database(
+    nodes: &[DiagramNode],
+    linked_databases: &[LinkedDatabase],
+    relation: &VirtualRelation,
+    target_db: &str,
+) -> bool {
+    let child_db = table_database_name(nodes, linked_databases, &relation.child);
+    let parent_db = table_database_name(nodes, linked_databases, &relation.parent);
+
+    child_db.is_some_and(|db| db.eq_ignore_ascii_case(target_db))
+        || parent_db.is_some_and(|db| db.eq_ignore_ascii_case(target_db))
+}
+
+/// Kumpulkan semua nama database unik yang ada di diagram (termasuk linked databases).
+pub fn extract_diagram_databases(
+    nodes: &[DiagramNode],
+    linked_databases: &[LinkedDatabase],
+) -> Vec<String> {
+    let mut dbs = Vec::new();
+    for node in nodes {
+        if let Some(db) = &node.database_name {
+            let trimmed = db.trim();
+            if !trimmed.is_empty() && !dbs.iter().any(|d: &String| d.eq_ignore_ascii_case(trimmed))
+            {
+                dbs.push(trimmed.to_string());
+            }
+        }
+    }
+    for link in linked_databases {
+        let trimmed = link.database_name.trim();
+        if !trimmed.is_empty() && !dbs.iter().any(|d: &String| d.eq_ignore_ascii_case(trimmed)) {
+            dbs.push(trimmed.to_string());
+        }
+    }
+    dbs.sort_by_key(|a| a.to_lowercase());
+    dbs
+}
+
 struct TableInfo<'a> {
     node: &'a DiagramNode,
     /// Nama tabel (lowercase) beserta bentuk tunggal / tanpa prefix.
@@ -1572,5 +1644,78 @@ mod tests {
                 .any(|s| s.contains("temp_report_td") && s.contains("devices")),
             "Must link temp_report_td and devices. Found: {p:?}"
         );
+    }
+
+    #[test]
+    fn test_relation_matches_database_filter() {
+        let mut node_a = node("orders", &[("id", "int", true), ("user_id", "int", false)]);
+        node_a.database_name = Some("voltunes_chick".to_string());
+
+        let mut node_b = node("users", &[("id", "int", true), ("name", "text", false)]);
+        node_b.database_name = Some("auth_db".to_string());
+
+        let mut node_c = node("logs", &[("id", "int", true), ("msg", "text", false)]);
+        node_c.database_name = Some("logs_db".to_string());
+
+        let nodes = vec![node_a, node_b, node_c];
+        let linked = Vec::new();
+
+        let rel_ab = VirtualRelation {
+            child: "orders".to_string(),
+            child_column: "user_id".to_string(),
+            parent: "users".to_string(),
+            parent_column: "id".to_string(),
+            origin: RelationOrigin::Inferred,
+        };
+
+        let rel_bc = VirtualRelation {
+            child: "users".to_string(),
+            child_column: "id".to_string(),
+            parent: "logs".to_string(),
+            parent_column: "id".to_string(),
+            origin: RelationOrigin::Inferred,
+        };
+
+        // voltunes_chick: child orders ada di voltunes_chick
+        assert!(relation_matches_database(
+            &nodes,
+            &linked,
+            &rel_ab,
+            "voltunes_chick"
+        ));
+        assert!(!relation_matches_database(
+            &nodes,
+            &linked,
+            &rel_bc,
+            "voltunes_chick"
+        ));
+
+        // auth_db: rel_ab (parent users) dan rel_bc (child users) sama-sama cocok
+        assert!(relation_matches_database(
+            &nodes, &linked, &rel_ab, "auth_db"
+        ));
+        assert!(relation_matches_database(
+            &nodes, &linked, &rel_bc, "auth_db"
+        ));
+
+        // logs_db: rel_bc cocok (parent logs), rel_ab tidak
+        assert!(!relation_matches_database(
+            &nodes, &linked, &rel_ab, "logs_db"
+        ));
+        assert!(relation_matches_database(
+            &nodes, &linked, &rel_bc, "logs_db"
+        ));
+
+        // Case-insensitive test
+        assert!(relation_matches_database(
+            &nodes,
+            &linked,
+            &rel_ab,
+            "VOLTUNES_CHICK"
+        ));
+
+        // extract_diagram_databases
+        let dbs = extract_diagram_databases(&nodes, &linked);
+        assert_eq!(dbs, vec!["auth_db", "logs_db", "voltunes_chick"]);
     }
 }

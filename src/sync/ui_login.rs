@@ -252,7 +252,8 @@ pub fn render_sync_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 if ui.add(style::btn_secondary(&hist_btn)).clicked() {
                     tabular.sync_trigger_history = true;
                 }
-                let queries_btn = format!("{}  Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint);
+                let queries_btn =
+                    format!("{}  Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint);
                 if ui.add(style::btn_secondary(&queries_btn)).clicked() {
                     tabular.sync_trigger_queries = true;
                 }
@@ -384,7 +385,10 @@ pub fn render_account_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 let save_label = if saving {
                                     format!("{}  Saving…", egui_icons::icons::ICON_SAVE.codepoint)
                                 } else {
-                                    format!("{}  Save Changes", egui_icons::icons::ICON_SAVE.codepoint)
+                                    format!(
+                                        "{}  Save Changes",
+                                        egui_icons::icons::ICON_SAVE.codepoint
+                                    )
                                 };
                                 if ui
                                     .add(style::btn_primary_ctx(ui.ctx(), &save_label))
@@ -494,8 +498,14 @@ fn render_account_tab_bar(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
 
-        let profile_label = format!("{}  Profile & Info", egui_icons::icons::ICON_PERSON.codepoint);
-        let security_label = format!("{}  Security & Privacy", egui_icons::icons::ICON_SHIELD.codepoint);
+        let profile_label = format!(
+            "{}  Profile & Info",
+            egui_icons::icons::ICON_PERSON.codepoint
+        );
+        let security_label = format!(
+            "{}  Security & Privacy",
+            egui_icons::icons::ICON_SHIELD.codepoint
+        );
         let tabs = [
             (AccountDialogTab::Profile, profile_label),
             (AccountDialogTab::Security, security_label),
@@ -735,7 +745,9 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             // Klik di luar popup dan avatar → tutup
                             if ui.input(|i| i.pointer.any_click()) {
                                 if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                    if !rect.contains(pos) && !popup_area.response.rect.contains(pos) {
+                                    if !rect.contains(pos)
+                                        && !popup_area.response.rect.contains(pos)
+                                    {
                                         tabular.show_avatar_change_menu = false;
                                     }
                                 }
@@ -774,10 +786,8 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             } else {
                                 egui::Color32::from_rgb(16, 130, 60)
                             };
-                            let verified_label = format!(
-                                "{} Verified",
-                                egui_icons::icons::ICON_VERIFIED.codepoint
-                            );
+                            let verified_label =
+                                format!("{} Verified", egui_icons::icons::ICON_VERIFIED.codepoint);
                             egui::Frame::new()
                                 .fill(badge_bg)
                                 .corner_radius(egui::CornerRadius::same(10))
@@ -819,10 +829,8 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                                     .size(11.5)
                                     .color(ui.visuals().weak_text_color()),
                             );
-                            let copy_label = format!(
-                                "{} Copy",
-                                egui_icons::icons::ICON_CONTENT_COPY.codepoint
-                            );
+                            let copy_label =
+                                format!("{} Copy", egui_icons::icons::ICON_CONTENT_COPY.codepoint);
                             if ui
                                 .add(
                                     egui::Button::new(egui::RichText::new(copy_label).size(10.5))
@@ -842,8 +850,7 @@ fn render_account_profile_tab(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(egui_icons::icons::ICON_LINK.codepoint)
-                                .size(13.0),
+                            egui::RichText::new(egui_icons::icons::ICON_LINK.codepoint).size(13.0),
                         );
                         let avatar_w = ui.available_width() - 40.0;
                         let avatar_edit = style::render_text_field(

@@ -162,10 +162,11 @@ pub(crate) fn fetch_tables_from_mssql_connection(
     let rt = tokio::runtime::Runtime::new().ok()?;
     rt.block_on(async {
         // Get or create pool
-        let pool_enum = crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        let pool_enum =
+            crate::connection::get_or_create_connection_pool(tabular, connection_id).await?;
         let pool = match pool_enum {
-             crate::models::enums::DatabasePool::MsSQL(p) => p,
-             _ => return None,
+            crate::models::enums::DatabasePool::MsSQL(p) => p,
+            _ => return None,
         };
         list_mssql_tables(&pool, table_type).await
     })
@@ -190,25 +191,33 @@ pub(crate) async fn list_mssql_tables(
     // Choose query based on type (include schema for views)
     let query = match table_type {
         // Include schema for tables (some objects not in dbo)
-        "table" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME",
+        "table" => {
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME"
+        }
         // Include schema for views so we can build fully-qualified names
-        "view" => "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME",
+        "view" => {
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS ORDER BY TABLE_NAME"
+        }
         _ => {
             log::debug!("Unsupported MsSQL table_type: {}", table_type);
             return None;
         }
     };
 
-    let stream = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.query(query, &[]),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => { log::debug!("MsSQL list query error: {}", e); return None; }
-        Err(_) => { log::debug!("MsSQL list query timeout"); return None; }
-    };
+    let stream =
+        match tokio::time::timeout(std::time::Duration::from_secs(10), client.query(query, &[]))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                log::debug!("MsSQL list query error: {}", e);
+                return None;
+            }
+            Err(_) => {
+                log::debug!("MsSQL list query timeout");
+                return None;
+            }
+        };
 
     let mut items = Vec::new();
     for row in stream.collect_all().await.ok()? {

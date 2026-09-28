@@ -613,7 +613,8 @@ pub struct Tabular {
     pub ai_provider: crate::config::AiProvider,
     pub ai_base_url: String,
     /// Profil semua CLI agent, keyed by kind (selalu 4 entri).
-    pub ai_cli_profiles: std::collections::BTreeMap<crate::config::CliAgentKind, crate::config::CliAgentProfile>,
+    pub ai_cli_profiles:
+        std::collections::BTreeMap<crate::config::CliAgentKind, crate::config::CliAgentProfile>,
     /// Target untuk fitur non-chat; juga fallback picker.
     pub ai_default_target: crate::config::ChatTarget,
     /// Pilihan picker di panel chat (dipersist sebagai `ai_chat_target`).
@@ -626,7 +627,8 @@ pub struct Tabular {
     /// Tab agent yang sedang diedit di Settings (tidak dipersist).
     pub ai_settings_cli_tab: crate::config::CliAgentKind,
     /// Status registrasi MCP global per agent (agy, gemini).
-    pub ai_cli_mcp: std::collections::HashMap<crate::config::CliAgentKind, models::structs::McpStatus>,
+    pub ai_cli_mcp:
+        std::collections::HashMap<crate::config::CliAgentKind, models::structs::McpStatus>,
     pub ai_cli_auto_apply_edits: bool,
     // Temp buffers for settings UI
     pub ai_settings_api_key_input: String,

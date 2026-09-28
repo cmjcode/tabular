@@ -2759,7 +2759,8 @@ fn render_object_grants_matrix_tab(
         }
 
         ui.add_space(16.0);
-        let is_any_filter_active = (state.schema_filter != "ALL" && !state.schema_filter.is_empty())
+        let is_any_filter_active = (state.schema_filter != "ALL"
+            && !state.schema_filter.is_empty())
             || !state.database_search_text.is_empty()
             || !state.search_text.is_empty();
 
@@ -2864,12 +2865,12 @@ fn render_object_grants_matrix_tab(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("🗄️ Database:").strong());
 
-        let current_schema_label =
-            if state.schema_filter.is_empty() || state.schema_filter == "ALL" {
-                "All Databases".to_string()
-            } else {
-                state.schema_filter.clone()
-            };
+        let current_schema_label = if state.schema_filter.is_empty() || state.schema_filter == "ALL"
+        {
+            "All Databases".to_string()
+        } else {
+            state.schema_filter.clone()
+        };
 
         let mut db_selected = None;
         egui::ComboBox::from_id_salt("matrix_database_combo")
@@ -2881,7 +2882,10 @@ fn render_object_grants_matrix_tab(
                 }
                 for db_name in &unique_dbs {
                     let is_sel = state.schema_filter == *db_name;
-                    if ui.selectable_label(is_sel, format!("🗄️ {}", db_name)).clicked() {
+                    if ui
+                        .selectable_label(is_sel, format!("🗄️ {}", db_name))
+                        .clicked()
+                    {
                         db_selected = Some(db_name.clone());
                     }
                 }
@@ -2933,7 +2937,8 @@ fn render_object_grants_matrix_tab(
             }
         }
 
-        let is_any_filter_active = (state.schema_filter != "ALL" && !state.schema_filter.is_empty())
+        let is_any_filter_active = (state.schema_filter != "ALL"
+            && !state.schema_filter.is_empty())
             || !state.database_search_text.is_empty()
             || !state.search_text.is_empty();
 
@@ -2958,9 +2963,7 @@ fn render_object_grants_matrix_tab(
             let visible_count = state
                 .object_grants
                 .iter()
-                .filter(|e| {
-                    is_object_entry_visible_with_queries(e, &sel_db, &db_query, &obj_query)
-                })
+                .filter(|e| is_object_entry_visible_with_queries(e, &sel_db, &db_query, &obj_query))
                 .count();
 
             ui.label(
@@ -3063,10 +3066,7 @@ fn render_object_grants_matrix_tab(
                     let mut rendered_count = 0;
                     for entry in &mut state.object_grants {
                         if !is_object_entry_visible_with_queries(
-                            entry,
-                            &sel_db,
-                            &db_query,
-                            &obj_query,
+                            entry, &sel_db, &db_query, &obj_query,
                         ) {
                             continue;
                         }
@@ -3666,8 +3666,18 @@ mod tests {
         assert!(is_object_entry_visible(&entry2, "ALL", "", ""));
 
         // Exact schema_filter dropdown
-        assert!(is_object_entry_visible(&entry1, "ACADEMYUP_DEMO_DEV", "", ""));
-        assert!(!is_object_entry_visible(&entry2, "ACADEMYUP_DEMO_DEV", "", ""));
+        assert!(is_object_entry_visible(
+            &entry1,
+            "ACADEMYUP_DEMO_DEV",
+            "",
+            ""
+        ));
+        assert!(!is_object_entry_visible(
+            &entry2,
+            "ACADEMYUP_DEMO_DEV",
+            "",
+            ""
+        ));
 
         // Database search query
         assert!(is_object_entry_visible(&entry1, "ALL", "academy", ""));

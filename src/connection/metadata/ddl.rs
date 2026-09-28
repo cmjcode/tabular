@@ -534,13 +534,12 @@ pub(crate) async fn write_foreign_key_cache(
     if keys.is_empty() {
         return;
     }
-    let _ = sqlx::query(
-        "DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?",
-    )
-    .bind(connection_id)
-    .bind(database_name)
-    .execute(cache_pool)
-    .await;
+    let _ =
+        sqlx::query("DELETE FROM foreign_key_cache WHERE connection_id = ? AND database_name = ?")
+            .bind(connection_id)
+            .bind(database_name)
+            .execute(cache_pool)
+            .await;
     for fk in keys {
         let _ = sqlx::query(
             "INSERT OR REPLACE INTO foreign_key_cache (connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name, constraint_name) VALUES (?, ?, ?, ?, ?, ?, ?)",

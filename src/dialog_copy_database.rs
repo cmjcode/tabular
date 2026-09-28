@@ -457,9 +457,10 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 .iter()
                 .find(|c| c.id == Some(state.connection_id))
             {
-                let target_file_path = state.target_file.clone().unwrap_or_else(|| {
-                    PathBuf::from(&state.target_database_name)
-                });
+                let target_file_path = state
+                    .target_file
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(&state.target_database_name));
 
                 let options = CopyDatabaseOptions {
                     source_database_name: state.source_database_name.trim().to_string(),
@@ -476,7 +477,10 @@ pub fn render_copy_database_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                 let tracker = Arc::new(Mutex::new(ProgressTracker::new(
                     OperationType::CopyDatabase,
-                    format!("{} → {}", state.source_database_name, state.target_database_name),
+                    format!(
+                        "{} → {}",
+                        state.source_database_name, state.target_database_name
+                    ),
                     target_file_path,
                 )));
                 let cancel_token = Arc::new(AtomicBool::new(false));

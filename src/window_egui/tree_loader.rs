@@ -19,7 +19,10 @@ impl super::Tabular {
                     let d_name = db_node.database_name.as_deref().unwrap_or(&db_node.name);
                     let keep = !matches_db(d_name, database_name);
                     if !keep {
-                        debug!("   ✅ Removed database '{}' from DatabasesFolder in tree", d_name);
+                        debug!(
+                            "   ✅ Removed database '{}' from DatabasesFolder in tree",
+                            d_name
+                        );
                     }
                     keep
                 });

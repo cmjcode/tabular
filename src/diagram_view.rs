@@ -49,6 +49,10 @@ const FLOW_SPEED: f64 = 0.45;
 const TOOLBAR_BTN_SIZE: f32 = 46.0;
 const TOOLBAR_ICON_SIZE: f32 = 18.0;
 const TOOLBAR_LABEL_SIZE: f32 = 9.5;
+/// Padding luar floating toolbar diagram (jarak tepi menu ke tombol).
+const TOOLBAR_PADDING: f32 = 2.0;
+/// Opacity latar belakang floating toolbar diagram (60%).
+const TOOLBAR_OPACITY: f32 = 0.60;
 
 /// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault, database).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +212,7 @@ fn toolbar_square_button(
         {
             painter.rect(
                 rect,
-                6.0,
+                4.0,
                 visuals.weak_bg_fill,
                 visuals.bg_stroke,
                 egui::StrokeKind::Inside,
@@ -1688,6 +1692,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             crate::diagram_relations::suggest_relations_for_column(state, &table, &column);
         state.relation_suggestions_title = Some(format!("{table}.{column}"));
         state.relation_column_search_query = column.clone();
+        state.relation_database_filter = None;
         state.relation_suggestions = Some(suggestions.into_iter().map(|s| (s, true)).collect());
     }
     if let Some(id) = remove_node_request {
@@ -1742,18 +1747,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Sync, Save, Import & Export.
     let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
-    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(760.0);
+    let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(720.0);
     let toolbar_width = measured_width.max(TOOLBAR_BTN_SIZE * 4.0);
-    let toolbar_height = TOOLBAR_BTN_SIZE + 8.0;
-    render_focus_chip(ui, state, rect);
+    let toolbar_height = TOOLBAR_BTN_SIZE + TOOLBAR_PADDING * 2.0;
+    let focus_chip_rect = render_focus_chip(ui, state, rect);
 
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
         egui::vec2(toolbar_width, toolbar_height),
     );
 
-    let card_fill = ui.visuals().window_fill;
-    let card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    let card_fill = ui.visuals().window_fill.gamma_multiply(TOOLBAR_OPACITY);
+    let mut card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+    card_stroke.color = card_stroke.color.gamma_multiply(TOOLBAR_OPACITY);
     ui.painter().rect_filled(toolbar_rect, 6.0, card_fill);
     ui.painter()
         .rect_stroke(toolbar_rect, 6.0, card_stroke, egui::StrokeKind::Middle);
@@ -1761,10 +1767,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let toolbar_res = ui.scope_builder(
         egui::UiBuilder::new()
             .id_salt("diagram_floating_toolbar")
-            .max_rect(toolbar_rect.shrink(4.0)),
+            .max_rect(toolbar_rect.shrink(TOOLBAR_PADDING)),
         |ui| {
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = ui
+                .visuals()
+                .widgets
+                .noninteractive
+                .bg_stroke
+                .color
+                .gamma_multiply(TOOLBAR_OPACITY);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
                 // --- 1. Zoom & Navigasi ---
                 if toolbar_square_button(ui, egui_icons::icons::ICON_REMOVE.codepoint, "Out", false)
@@ -1907,6 +1920,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             let suggestions = crate::diagram_relations::suggest_relations(state);
                             state.relation_suggestions_title = Some("all tables".to_string());
                             state.relation_column_search_query.clear();
+                            state.relation_database_filter = None;
                             state.relation_suggestions =
                                 Some(suggestions.into_iter().map(|s| (s, true)).collect());
                         }
@@ -1914,6 +1928,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             ui.close();
                             state.relation_suggestions_title = Some("Search by column name".to_string());
                             state.relation_column_search_query.clear();
+                            state.relation_database_filter = None;
                             state.relation_suggestions = Some(Vec::new());
                         }
                         if let Some((sel_table, sel_col)) = &state.selected_column {
@@ -1929,6 +1944,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                                 state.relation_suggestions_title =
                                     Some(format!("{sel_table}.{sel_col}"));
                                 state.relation_column_search_query = sel_col.clone();
+                                state.relation_database_filter = None;
                                 state.relation_suggestions =
                                     Some(suggestions.into_iter().map(|s| (s, true)).collect());
                             }
@@ -2093,8 +2109,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         },
     );
 
-    let actual_content_width = toolbar_res.response.rect.width() + 20.0;
-    if (actual_content_width - measured_width).abs() > 4.0 {
+    let actual_content_width = toolbar_res.response.rect.width() + TOOLBAR_PADDING * 2.0;
+    if (actual_content_width - measured_width).abs() > 1.0 {
         ui.data_mut(|d| d.insert_temp(toolbar_id, actual_content_width));
     }
 
@@ -2351,7 +2367,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     egui::vec2(295.0, 70.0),
                 )
                 .contains(hover_pos);
-            if in_canvas && !in_toolbar && !in_search {
+            let in_focus_chip = focus_chip_rect.is_some_and(|r| r.contains(hover_pos));
+            if in_canvas && !in_toolbar && !in_search && !in_focus_chip {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
         }
@@ -2361,11 +2378,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 }
 
 /// Chip melayang di tengah atas kanvas selama mode fokus aktif, dengan
-/// tombol untuk keluar.
-fn render_focus_chip(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Rect) {
-    let Some(fid) = state.focus_table.as_deref() else {
-        return;
-    };
+/// tombol bulat terpusat untuk keluar.
+fn render_focus_chip(
+    ui: &mut egui::Ui,
+    state: &mut DiagramState,
+    rect: egui::Rect,
+) -> Option<egui::Rect> {
+    let fid = state.focus_table.as_deref()?;
     let title = state
         .nodes
         .iter()
@@ -2382,12 +2401,18 @@ fn render_focus_chip(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Re
         .layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE)
         .size()
         .x;
-    let size = egui::vec2(text_w + 56.0, 30.0);
+    // Lebar chip: padding kiri (14.0) + teks + jarak (10.0) + tombol (18.0) + padding kanan (6.0)
+    let size = egui::vec2(text_w + 48.0, 30.0);
     let chip = egui::Rect::from_center_size(
         egui::pos2(rect.center().x, rect.top() + 16.0 + size.y / 2.0),
         size,
     );
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
+
+    // Tangkap klik pada badan chip agar tidak tembus ke background canvas
+    let _ = ui.interact(chip, ui.id().with("focus_chip_pill"), egui::Sense::click());
+
+    // Background kapsul dan stroke aksen
     ui.painter()
         .rect_filled(chip, 15.0, ui.visuals().window_fill);
     ui.painter().rect_stroke(
@@ -2396,6 +2421,8 @@ fn render_focus_chip(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Re
         egui::Stroke::new(1.5, accent),
         egui::StrokeKind::Middle,
     );
+
+    // Teks keterangan fokus (vertikal persis di tengah kapsul)
     ui.painter().text(
         egui::pos2(chip.left() + 14.0, chip.center().y),
         egui::Align2::LEFT_CENTER,
@@ -2403,20 +2430,72 @@ fn render_focus_chip(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Re
         font,
         ui.visuals().strong_text_color(),
     );
-    let btn_rect = egui::Rect::from_center_size(
-        chip.right_center() - egui::vec2(18.0, 0.0),
-        egui::vec2(22.0, 22.0),
-    );
-    let close =
-        egui::Button::new(egui::RichText::new(egui_icons::icons::ICON_CLOSE.codepoint).size(13.0))
-            .frame(false);
-    if ui
-        .put(btn_rect, close)
+
+    // Tombol close melingkar konsentris dengan lengkungan kanan kapsul
+    let btn_center = egui::pos2(chip.right() - 15.0, chip.center().y);
+    let hit_rect = egui::Rect::from_center_size(btn_center, egui::vec2(22.0, 22.0));
+    let resp = ui
+        .interact(
+            hit_rect,
+            ui.id().with("focus_chip_close"),
+            egui::Sense::click(),
+        )
         .on_hover_text("Clear focus (Esc)")
-        .clicked()
-    {
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let is_hovered = resp.hovered();
+    let is_down = resp.is_pointer_button_down_on();
+
+    // Lingkaran latar belakang tombol
+    let bg_color = if is_down {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(55)
+        } else {
+            egui::Color32::from_black_alpha(40)
+        }
+    } else if is_hovered {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(35)
+        } else {
+            egui::Color32::from_black_alpha(25)
+        }
+    } else {
+        if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(15)
+        } else {
+            egui::Color32::from_black_alpha(12)
+        }
+    };
+    ui.painter().circle_filled(btn_center, 9.0, bg_color);
+
+    // Ikon silang presisi (vektor) sejajar dengan teks
+    let cross_color = if is_hovered || is_down {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let cross_half = 3.5;
+    let stroke = egui::Stroke::new(1.4, cross_color);
+    ui.painter().line_segment(
+        [
+            btn_center + egui::vec2(-cross_half, -cross_half),
+            btn_center + egui::vec2(cross_half, cross_half),
+        ],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [
+            btn_center + egui::vec2(-cross_half, cross_half),
+            btn_center + egui::vec2(cross_half, -cross_half),
+        ],
+        stroke,
+    );
+
+    if resp.clicked() {
         state.focus_table = None;
     }
+
+    Some(chip)
 }
 
 /// Grid latar mengikuti pan & zoom; tiap garis ke-5 lebih tegas.
@@ -3141,8 +3220,20 @@ fn render_relation_suggestions(
             );
             ui.add_space(10.0);
 
-            // Input pencarian kolom dinamis
+            // Input pencarian kolom dinamis & filter database
             let mut search_triggered = false;
+            let available_dbs = crate::diagram_relations::extract_diagram_databases(
+                &state.nodes,
+                &state.linked_databases,
+            );
+            if let Some(ref current) = state.relation_database_filter {
+                if !available_dbs.iter().any(|d| d.eq_ignore_ascii_case(current)) {
+                    state.relation_database_filter = None;
+                }
+            }
+            let has_dbs = !available_dbs.is_empty();
+            let has_multiple_dbs = available_dbs.len() > 1;
+
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -3151,15 +3242,28 @@ fn render_relation_suggestions(
                             .rich_text()
                             .color(ui.visuals().weak_text_color()),
                     );
-                    let clear_w = if state.relation_column_search_query.is_empty() {
+                    let clear_search_w = if state.relation_column_search_query.is_empty() {
                         0.0
                     } else {
-                        28.0
+                        24.0
                     };
+                    let db_filter_w = if has_dbs {
+                        let clear_db_w = if state.relation_database_filter.is_some() {
+                            24.0
+                        } else {
+                            0.0
+                        };
+                        18.0 + 170.0 + clear_db_w + 24.0
+                    } else {
+                        0.0
+                    };
+
+                    let search_w =
+                        (ui.available_width() - db_filter_w - clear_search_w - 8.0).max(100.0);
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut state.relation_column_search_query)
                             .hint_text("Search by column name (e.g. user_id, imei)")
-                            .desired_width(ui.available_width() - clear_w),
+                            .desired_width(search_w),
                     );
                     if edit.changed() {
                         search_triggered = true;
@@ -3179,6 +3283,67 @@ fn render_relation_suggestions(
                     {
                         state.relation_column_search_query.clear();
                         search_triggered = true;
+                    }
+
+                    if has_dbs {
+                        ui.separator();
+                        let db_icon_color = if state.relation_database_filter.is_some() {
+                            crate::window_egui::style::theme_accent(ui.ctx())
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        ui.label(
+                            egui_icons::icons::MDI_DATABASE
+                                .rich_text()
+                                .color(db_icon_color),
+                        );
+                        let selected_label = match &state.relation_database_filter {
+                            Some(db) => db.clone(),
+                            None => "All databases".to_string(),
+                        };
+                        let combo = egui::ComboBox::from_id_salt("rel_suggest_db_filter")
+                            .selected_text(
+                                egui::RichText::new(&selected_label).color(
+                                    if state.relation_database_filter.is_some() {
+                                        crate::window_egui::style::theme_accent(ui.ctx())
+                                    } else {
+                                        ui.visuals().text_color()
+                                    },
+                                ),
+                            )
+                            .width(170.0);
+
+                        combo.show_ui(ui, |ui| {
+                            let is_all = state.relation_database_filter.is_none();
+                            if ui.selectable_label(is_all, "All databases").clicked() {
+                                state.relation_database_filter = None;
+                            }
+                            for db in &available_dbs {
+                                let is_sel = state
+                                    .relation_database_filter
+                                    .as_deref()
+                                    .is_some_and(|d| d.eq_ignore_ascii_case(db));
+                                if ui.selectable_label(is_sel, db).clicked() {
+                                    state.relation_database_filter = Some(db.clone());
+                                }
+                            }
+                        });
+
+                        if state.relation_database_filter.is_some()
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        egui_icons::icons::ICON_CLOSE
+                                            .rich_text()
+                                            .color(ui.visuals().weak_text_color()),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Reset to all databases")
+                                .clicked()
+                        {
+                            state.relation_database_filter = None;
+                        }
                     }
                 });
             });
@@ -3201,9 +3366,31 @@ fn render_relation_suggestions(
                 }
             }
 
+            let filter_db = state.relation_database_filter.as_deref();
+            let visible_indices: Vec<usize> = suggestions
+                .iter()
+                .enumerate()
+                .filter(|(_, (s, _))| {
+                    if let Some(target) = filter_db {
+                        crate::diagram_relations::relation_matches_database(
+                            &state.nodes,
+                            &state.linked_databases,
+                            &s.relation,
+                            target,
+                        )
+                    } else {
+                        true
+                    }
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+
             let is_searching = !state.relation_column_search_query.trim().is_empty();
-            let total = suggestions.len();
-            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+            let total = visible_indices.len();
+            let chosen = visible_indices
+                .iter()
+                .filter(|&&idx| suggestions[idx].1)
+                .count();
 
             ui.add_space(8.0);
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
@@ -3211,8 +3398,13 @@ fn render_relation_suggestions(
 
                 // Toolbar: jumlah terpilih + aksi massal
                 ui.horizontal(|ui| {
+                    let count_text = if let Some(target) = filter_db {
+                        format!("{chosen} of {total} selected (database: {target})")
+                    } else {
+                        format!("{chosen} of {total} selected")
+                    };
                     ui.label(
-                        egui::RichText::new(format!("{chosen} of {total} selected"))
+                        egui::RichText::new(count_text)
                             .weak()
                             .small(),
                     );
@@ -3221,16 +3413,16 @@ fn render_relation_suggestions(
                             .add_enabled(chosen > 0, egui::Button::new("Select none").small())
                             .clicked()
                         {
-                            for (_, on) in suggestions.iter_mut() {
-                                *on = false;
+                            for &idx in &visible_indices {
+                                suggestions[idx].1 = false;
                             }
                         }
                         if ui
                             .add_enabled(chosen < total, egui::Button::new("Select all").small())
                             .clicked()
                         {
-                            for (_, on) in suggestions.iter_mut() {
-                                *on = true;
+                            for &idx in &visible_indices {
+                                suggestions[idx].1 = true;
                             }
                         }
                     });
@@ -3270,11 +3462,30 @@ fn render_relation_suggestions(
                 let hover_bg = ui.visuals().widgets.hovered.weak_bg_fill;
                 // Label "table.column": nama tabel redup, kolom tegas
                 let body_font = egui::TextStyle::Body.resolve(ui.style());
-                let qualified = |table: &str, column: &str| {
+                let qualified = |table_id: &str, column: &str| {
                     let mut job = egui::text::LayoutJob::default();
                     let font = body_font.clone();
+                    let table_name = crate::diagram_links::local_name(table_id);
+                    let table_db = crate::diagram_relations::table_database_name(
+                        &state.nodes,
+                        &state.linked_databases,
+                        table_id,
+                    );
+
+                    if has_multiple_dbs {
+                        if let Some(db) = table_db {
+                            job.append(
+                                &format!("{db}."),
+                                0.0,
+                                egui::TextFormat::simple(
+                                    font.clone(),
+                                    weak.linear_multiply(0.7),
+                                ),
+                            );
+                        }
+                    }
                     job.append(
-                        &format!("{table}."),
+                        &format!("{table_name}."),
                         0.0,
                         egui::TextFormat::simple(font.clone(), weak),
                     );
@@ -3288,7 +3499,17 @@ fn render_relation_suggestions(
                         egui::vec2(ui.available_width(), list_h),
                         egui::Layout::centered_and_justified(egui::Direction::TopDown),
                         |ui| {
-                            let msg = if is_searching {
+                            let msg = if let Some(db) = filter_db {
+                                if is_searching {
+                                    format!(
+                                        "No relations found matching column \"{}\" in database \"{}\"",
+                                        state.relation_column_search_query.trim(),
+                                        db
+                                    )
+                                } else {
+                                    format!("No relations found involving database \"{}\"", db)
+                                }
+                            } else if is_searching {
                                 format!(
                                     "No relations found matching column \"{}\"",
                                     state.relation_column_search_query.trim()
@@ -3308,7 +3529,8 @@ fn render_relation_suggestions(
                     .min_scrolled_height(list_h)
                     .auto_shrink([false, false])
                     .show_rows(ui, row_h, total, |ui, range| {
-                        for (s, on) in &mut suggestions[range] {
+                        for &idx in &visible_indices[range] {
+                            let (s, on) = &mut suggestions[idx];
                             let r = &s.relation;
                             let (row_rect, row_resp) = ui.allocate_exact_size(
                                 egui::vec2(ui.available_width(), row_h),
@@ -3370,9 +3592,27 @@ fn render_relation_suggestions(
                             if row_resp.clicked() {
                                 *on = !*on;
                             }
+                            let child_name = crate::diagram_links::local_name(&r.child);
+                            let parent_name = crate::diagram_links::local_name(&r.parent);
+                            let child_db_str = crate::diagram_relations::table_database_name(
+                                &state.nodes,
+                                &state.linked_databases,
+                                &r.child,
+                            )
+                            .map(|d| format!("[{d}] "))
+                            .unwrap_or_default();
+                            let parent_db_str = crate::diagram_relations::table_database_name(
+                                &state.nodes,
+                                &state.linked_databases,
+                                &r.parent,
+                            )
+                            .map(|d| format!("[{d}] "))
+                            .unwrap_or_default();
                             row_resp.on_hover_text(format!(
-                                "{}.{} references {}.{}\n{}",
-                                r.child, r.child_column, r.parent, r.parent_column, s.reason
+                                "{}{}.{} references {}{}.{}\n{}",
+                                child_db_str, child_name, r.child_column,
+                                parent_db_str, parent_name, r.parent_column,
+                                s.reason
                             ));
                         }
                     });
@@ -3392,7 +3632,8 @@ fn render_relation_suggestions(
 
                     if ui.add_enabled(chosen > 0, btn).clicked() {
                         let mut added = 0;
-                        for (s, on) in &suggestions {
+                        for &idx in &visible_indices {
+                            let (s, on) = &suggestions[idx];
                             if *on
                                 && crate::diagram_relations::add_virtual_relation(
                                     state,
@@ -3423,6 +3664,7 @@ fn render_relation_suggestions(
             d.remove::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id);
         });
         state.relation_column_search_query.clear();
+        state.relation_database_filter = None;
         state.relation_suggestions_title = None;
     }
     result

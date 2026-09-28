@@ -263,10 +263,8 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 Some("Choose where to save the backup file"),
                                 |ui| {
                                     ui.horizontal(|ui| {
-                                        let mut path_str = state
-                                            .target_file
-                                            .as_ref()
-                                            .map_or(String::new(), |p| {
+                                        let mut path_str =
+                                            state.target_file.as_ref().map_or(String::new(), |p| {
                                                 p.to_string_lossy().to_string()
                                             });
 
@@ -339,11 +337,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .num_columns(2)
                                         .spacing([16.0, 8.0])
                                         .show(ui, |ui| {
-                                            ui.label(
-                                                egui::RichText::new("Format")
-                                                    .weak()
-                                                    .small(),
-                                            );
+                                            ui.label(egui::RichText::new("Format").weak().small());
                                             let prev_format = state.format;
                                             egui::ComboBox::from_id_salt("backup_format_combo")
                                                 .selected_text(state.format.display_label())
@@ -356,9 +350,8 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                         BackupFormat::PostgresTar,
                                                         BackupFormat::SqliteNative,
                                                     ] {
-                                                        if fmt.supported_for(
-                                                            &state.connection_type,
-                                                        ) {
+                                                        if fmt.supported_for(&state.connection_type)
+                                                        {
                                                             ui.selectable_value(
                                                                 &mut state.format,
                                                                 fmt,
@@ -372,11 +365,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                             }
                                             ui.end_row();
 
-                                            ui.label(
-                                                egui::RichText::new("Content")
-                                                    .weak()
-                                                    .small(),
-                                            );
+                                            ui.label(egui::RichText::new("Content").weak().small());
                                             egui::ComboBox::from_id_salt("backup_scope_combo")
                                                 .selected_text(match state.scope {
                                                     BackupContentScope::Both => "Schema & Data",
@@ -539,8 +528,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if state.is_running {
                         let cancel_btn = ui.add(
                             egui::Button::new(
-                                egui::RichText::new("⛔ Cancel Backup")
-                                    .color(egui::Color32::WHITE),
+                                egui::RichText::new("⛔ Cancel Backup").color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(200, 40, 40))
                             .min_size(egui::vec2(140.0, 32.0)),
@@ -989,14 +977,9 @@ pub(crate) fn render_header_card(
                             } else {
                                 short_ver.to_string()
                             };
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Min),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(display_ver).weak().size(10.0),
-                                    );
-                                },
-                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                ui.label(egui::RichText::new(display_ver).weak().size(10.0));
+                            });
                         }
                     });
                 } else {

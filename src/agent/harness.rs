@@ -75,7 +75,6 @@ impl From<&crate::config::CliAgentProfile> for CliAgentConfig {
     }
 }
 
-
 /// Status sebuah tahapan pengerjaan (step) oleh agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProgressStatus {

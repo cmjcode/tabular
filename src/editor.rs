@@ -5328,7 +5328,8 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     tabular.ai_error = None;
     tabular.ai_turn_target = Some(target);
 
-    match crate::ai_assistant::start_chat(&cfg, system, user, native_session.map(|s| s.to_string())) {
+    match crate::ai_assistant::start_chat(&cfg, system, user, native_session.map(|s| s.to_string()))
+    {
         Ok((rx, cancel)) => {
             tabular.ai_stream_receiver = Some(rx);
             tabular.ai_cancel = cancel;
@@ -6066,7 +6067,10 @@ fn ai_export_chat(tabular: &mut window_egui::Tabular) {
             "Exported",
             chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
         ),
-        ("Backend", crate::ai_assistant::backend_label_for(tabular, target)),
+        (
+            "Backend",
+            crate::ai_assistant::backend_label_for(tabular, target),
+        ),
     ];
     if let Some(conn) = tabular
         .current_connection_id
@@ -6179,7 +6183,9 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
     let current_target = tabular.effective_chat_target();
     let backend = crate::ai_assistant::backend_label_for(tabular, current_target);
     let (backend_icon, backend_tip) = match current_target {
-        crate::config::ChatTarget::Api => (icons::ICON_CLOUD.codepoint, "Backend: HTTP API".to_string()),
+        crate::config::ChatTarget::Api => {
+            (icons::ICON_CLOUD.codepoint, "Backend: HTTP API".to_string())
+        }
         crate::config::ChatTarget::Cli(kind) => (
             icons::ICON_TERMINAL.codepoint,
             format!(
@@ -6609,12 +6615,7 @@ fn ai_render_assistant_message(
             Some(label) => format!("Assistant ({label})"),
             None => "Assistant".to_string(),
         };
-        ui.label(
-            egui::RichText::new(title)
-                .size(11.5)
-                .strong()
-                .color(accent),
-        );
+        ui.label(egui::RichText::new(title).size(11.5).strong().color(accent));
         if msg.streaming {
             ui.add(egui::Spinner::new().size(12.0));
         }
@@ -9869,7 +9870,10 @@ pub(crate) fn process_query_result(
 
         if tabular.total_rows == 0 {
             if tabular.last_statement_type.is_mutation() {
-                tabular.current_table_name = format!("{} completed successfully", tabular.last_statement_type.as_str());
+                tabular.current_table_name = format!(
+                    "{} completed successfully",
+                    tabular.last_statement_type.as_str()
+                );
             } else {
                 tabular.current_table_name = "Query executed successfully (0 rows)".to_string();
             }

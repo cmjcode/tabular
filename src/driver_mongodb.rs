@@ -249,4 +249,3 @@ pub async fn drop_database(
         Err("Cannot connect to MongoDB pool".to_string())
     }
 }
-
