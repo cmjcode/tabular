@@ -906,6 +906,37 @@ pub struct DiagramState {
     /// boleh menimpanya.
     #[serde(skip)]
     pub layout_baseline: Option<u64>,
+    /// Mode fokus: hanya tabel ini dan tabel yang berelasi yang tampil
+    /// normal, sisanya diredupkan.
+    #[serde(skip)]
+    pub focus_table: Option<String>,
+    /// Animasi pan/zoom viewport yang sedang berjalan (mis. setelah
+    /// double-click judul tabel).
+    #[serde(skip)]
+    pub view_anim: Option<DiagramViewAnimation>,
+    /// Animasi aliran data di relasi kolom milik tabel ini.
+    #[serde(skip)]
+    pub flow_anim: Option<DiagramFlowAnimation>,
+}
+
+/// Tween viewport diagram dari (pan, zoom) awal ke tujuan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiagramViewAnimation {
+    pub from_pan: eframe::egui::Vec2,
+    pub to_pan: eframe::egui::Vec2,
+    pub from_zoom: f32,
+    pub to_zoom: f32,
+    /// Waktu mulai (detik, dari `egui::InputState::time`).
+    pub start_time: f64,
+    pub duration: f64,
+}
+
+/// Partikel aliran data yang bergerak di relasi kolom sebuah tabel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiagramFlowAnimation {
+    pub table_id: String,
+    /// Waktu mulai (detik, dari `egui::InputState::time`).
+    pub start_time: f64,
 }
 
 impl Default for DiagramState {
@@ -953,6 +984,9 @@ impl Default for DiagramState {
             remote_id: None,
             schema_syncing: false,
             layout_baseline: None,
+            focus_table: None,
+            view_anim: None,
+            flow_anim: None,
         }
     }
 }

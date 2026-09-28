@@ -1,4 +1,7 @@
-use crate::models::structs::{DiagramNode, DiagramState, RelationOrigin, VirtualRelation};
+use crate::models::structs::{
+    DiagramFlowAnimation, DiagramNode, DiagramState, DiagramViewAnimation, RelationOrigin,
+    VirtualRelation,
+};
 use crate::rfd;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -31,6 +34,16 @@ pub const GROUP_COLORS: [egui::Color32; 20] = [
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 1.5;
 pub const DEFAULT_ZOOM: f32 = 1.0;
+/// Zoom tujuan saat double-click judul tabel (nyaman dibaca).
+pub const FOCUS_ZOOM: f32 = 1.0;
+/// Opacity tabel/relasi yang tidak terkait saat mode fokus aktif.
+pub const DIM_OPACITY: f32 = 0.15;
+/// Durasi animasi pan/zoom viewport (detik).
+pub const VIEW_ANIM_SECS: f64 = 0.35;
+/// Jumlah partikel aliran data per relasi.
+const FLOW_PARTICLES: usize = 3;
+/// Kecepatan partikel (putaran kurva per detik).
+const FLOW_SPEED: f64 = 0.45;
 
 /// Ukuran seragam tombol square di floating toolbar diagram.
 const TOOLBAR_BTN_SIZE: f32 = 46.0;
@@ -171,8 +184,13 @@ fn toolbar_square_button(
     label: &str,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(TOOLBAR_BTN_SIZE, TOOLBAR_BTN_SIZE),
+    // ID stabil berbasis label: Popup::menu menyimpan status buka per ID tombol,
+    // sedangkan ID otomatis bisa bergeser antar frame (widget kanvas yang muncul
+    // saat hover) sehingga popup langsung tertutup.
+    let (_, rect) = ui.allocate_space(egui::vec2(TOOLBAR_BTN_SIZE, TOOLBAR_BTN_SIZE));
+    let response = ui.interact(
+        rect,
+        ui.id().with(("toolbar_square_button", label)),
         egui::Sense::click(),
     );
     response.widget_info(|| {
@@ -239,6 +257,119 @@ pub fn center_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
     state.pan = view_center - content_center.to_vec2() * state.zoom;
 }
 
+/// Pan baru supaya titik `anchor` (koordinat lokal kanvas) tetap diam saat
+/// zoom berubah dari `old_zoom` ke `new_zoom`.
+pub fn zoom_around(
+    pan: egui::Vec2,
+    old_zoom: f32,
+    new_zoom: f32,
+    anchor: egui::Vec2,
+) -> egui::Vec2 {
+    if old_zoom <= 0.0 {
+        return pan;
+    }
+    anchor - (anchor - pan) * (new_zoom / old_zoom)
+}
+
+/// Ubah zoom dengan jangkar di tengah viewport (tombol toolbar).
+fn set_zoom_centered(state: &mut DiagramState, zoom: f32, view_size: egui::Vec2) {
+    let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    state.pan = zoom_around(state.pan, state.zoom, zoom, view_size / 2.0);
+    state.zoom = zoom;
+    state.view_anim = None;
+}
+
+/// Pan yang menaruh titik diagram `center` tepat di tengah viewport.
+pub fn pan_to_center(center: egui::Pos2, view_size: egui::Vec2, zoom: f32) -> egui::Vec2 {
+    view_size / 2.0 - center.to_vec2() * zoom
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Nilai (pan, zoom) animasi viewport pada waktu `now`, plus penanda selesai.
+pub fn sample_view_anim(anim: &DiagramViewAnimation, now: f64) -> (egui::Vec2, f32, bool) {
+    let raw = if anim.duration <= 0.0 {
+        1.0
+    } else {
+        ((now - anim.start_time) / anim.duration) as f32
+    };
+    let done = raw >= 1.0;
+    let t = ease_out_cubic(raw);
+    let pan = anim.from_pan + (anim.to_pan - anim.from_pan) * t;
+    let zoom = anim.from_zoom + (anim.to_zoom - anim.from_zoom) * t;
+    (pan, zoom, done)
+}
+
+/// Mulai animasi viewport menuju tabel `node_id` (tengah layar, zoom baca)
+/// dan nyalakan partikel aliran data di relasinya.
+fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egui::Vec2, now: f64) {
+    let Some(node) = state.nodes.iter().find(|n| n.id == node_id) else {
+        return;
+    };
+    let to_zoom = FOCUS_ZOOM.clamp(MIN_ZOOM, MAX_ZOOM);
+    let center = node.pos + node.size / 2.0;
+    state.view_anim = Some(DiagramViewAnimation {
+        from_pan: state.pan,
+        to_pan: pan_to_center(center, view_size, to_zoom),
+        from_zoom: state.zoom,
+        to_zoom,
+        start_time: now,
+        duration: VIEW_ANIM_SECS,
+    });
+    state.flow_anim = Some(DiagramFlowAnimation {
+        table_id: node_id.to_string(),
+        start_time: now,
+    });
+    state.is_centered = true;
+}
+
+/// Tabel `table_id` beserta semua tabel yang berelasi dengannya (FK, relasi
+/// virtual, dan relasi bawaan link database), dua arah.
+pub fn related_tables(state: &DiagramState, table_id: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    set.insert(table_id.to_string());
+    for e in &state.edges {
+        if e.source == table_id {
+            set.insert(e.target.clone());
+        } else if e.target == table_id {
+            set.insert(e.source.clone());
+        }
+    }
+    for r in state
+        .virtual_relations
+        .iter()
+        .chain(&state.linked_relations)
+    {
+        if r.child == table_id {
+            set.insert(r.parent.clone());
+        } else if r.parent == table_id {
+            set.insert(r.child.clone());
+        }
+    }
+    set
+}
+
+/// Faktor opacity relasi virtual/link: redup bila mode fokus aktif dan relasi
+/// tidak menyentuh tabel fokus.
+fn relation_dim(state: &DiagramState, rel: &VirtualRelation) -> f32 {
+    match state.focus_table.as_deref() {
+        Some(f) if rel.child != f && rel.parent != f => DIM_OPACITY,
+        _ => 1.0,
+    }
+}
+
+/// Redupkan warna sesuai faktor opacity mode fokus.
+fn fade(color: egui::Color32, dim: f32) -> egui::Color32 {
+    if dim >= 1.0 {
+        color
+    } else {
+        color.linear_multiply(dim)
+    }
+}
+
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
     let mut action: Option<DiagramAction> = None;
     let rect = ui.available_rect_before_wrap();
@@ -256,6 +387,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Pan with middle mouse or drag on background
     if response.dragged() {
         state.pan += response.drag_delta();
+        state.view_anim = None;
+    }
+    // Klik latar kosong menghentikan animasi aliran data.
+    if response.clicked() {
+        state.flow_anim = None;
     }
 
     // Context Menu for Background
@@ -296,11 +432,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             auto_layout_host(state);
             state.save_requested = true;
         }
+        if state.focus_table.is_some() {
+            ui.separator();
+            if ui.button("Clear focus (Esc)").clicked() {
+                ui.close();
+                state.focus_table = None;
+            }
+        }
     });
 
     // Cek apakah pengguna sedang fokus mengetik teks di widget lain
     let typing = ui.ctx().egui_wants_keyboard_input() || ui.memory(|m| m.focused().is_some());
     let space_held = !typing && ui.input(|i| i.key_down(egui::Key::Space));
+
+    // Pointer benar-benar di atas kanvas (bukan di jendela/popup yang menutupinya).
+    let pointer_over_canvas = ui.rect_contains_pointer(rect);
 
     // Zoom & Shortcut Input Handling
     ui.input_mut(|i| {
@@ -309,10 +455,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
                 state.hand_tool = !state.hand_tool;
             }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::V)
-                || (!state.show_search && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
+            let esc = !state.show_search && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::V) || esc {
                 state.hand_tool = false;
+            }
+            // Esc juga keluar dari mode fokus dan menghentikan aliran data.
+            if esc {
+                state.focus_table = None;
+                state.flow_anim = None;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::L) {
                 state.show_relations = !state.show_relations;
@@ -320,36 +470,56 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
         }
 
+        // Titik jangkar zoom: posisi pointer bila di dalam kanvas, selain itu
+        // tengah viewport. Titik diagram di bawah jangkar tidak bergeser.
+        let pointer_local = i
+            .pointer
+            .hover_pos()
+            .filter(|p| pointer_over_canvas && rect.contains(*p))
+            .map(|p| p - rect.min);
+        let view_center = rect.size() / 2.0;
+        let old_zoom = state.zoom;
+        let mut new_zoom = old_zoom;
+        let mut anchor = view_center;
+
         // Zoom In (Cmd + / Cmd =)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus)
             || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals)
         {
-            state.zoom = (state.zoom * 1.15).min(MAX_ZOOM);
+            new_zoom *= 1.15;
         }
         // Zoom Out (Cmd -)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus) {
-            state.zoom = (state.zoom / 1.15).max(MIN_ZOOM);
+            new_zoom /= 1.15;
         }
         // Reset Zoom (Cmd 0)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0) {
-            state.zoom = DEFAULT_ZOOM;
+            new_zoom = DEFAULT_ZOOM;
         }
 
-        // Mouse Wheel Zoom / Trackpad scroll (damped to prevent runaway zooming)
-        let scroll_delta = i.smooth_scroll_delta.y;
-        if scroll_delta != 0.0 {
-            let zoom_factor = (1.0 + scroll_delta * 0.001).clamp(0.85, 1.15);
-            state.zoom *= zoom_factor;
+        if let Some(p) = pointer_local {
+            // Mouse Wheel Zoom / Trackpad scroll (damped to prevent runaway zooming)
+            let scroll_delta = i.smooth_scroll_delta.y;
+            if scroll_delta != 0.0 {
+                new_zoom *= (1.0 + scroll_delta * 0.001).clamp(0.85, 1.15);
+                anchor = p;
+            }
+
+            // Trackpad pinch gesture
+            let zoom_delta = i.zoom_delta();
+            if zoom_delta != 1.0 {
+                new_zoom *= zoom_delta;
+                anchor = p;
+            }
         }
 
-        // Trackpad pinch gesture
-        let zoom_delta = i.zoom_delta();
-        if zoom_delta != 1.0 {
-            state.zoom *= zoom_delta;
+        let new_zoom = new_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        if (new_zoom - old_zoom).abs() > f32::EPSILON {
+            state.pan = zoom_around(state.pan, old_zoom, new_zoom, anchor);
+            state.zoom = new_zoom;
+            // Zoom manual membatalkan animasi viewport yang sedang jalan.
+            state.view_anim = None;
         }
-
-        // Clamp zoom strictly within bounded range [0.25, 2.0]
-        state.zoom = state.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
 
         // Save Shortcut (Cmd + S)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
@@ -367,6 +537,30 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     });
 
     let is_hand_mode = state.hand_tool || space_held;
+
+    // Terapkan animasi viewport (pan + zoom) yang sedang berjalan.
+    let now = ui.input(|i| i.time);
+    if let Some(anim) = &state.view_anim {
+        let (pan, zoom, done) = sample_view_anim(anim, now);
+        state.pan = pan;
+        state.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        if done {
+            state.view_anim = None;
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+    // Tabel fokus yang sudah hilang dari diagram tidak boleh meredupkan semua.
+    if let Some(f) = &state.focus_table
+        && !state.nodes.iter().any(|n| &n.id == f)
+    {
+        state.focus_table = None;
+    }
+    if let Some(f) = &state.flow_anim
+        && !state.nodes.iter().any(|n| n.id == f.table_id)
+    {
+        state.flow_anim = None;
+    }
 
     // Handle Initial Centering
     if !state.is_centered && !state.nodes.is_empty() {
@@ -389,6 +583,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     // Draw Groups (Containers)
+    // Mode fokus: tabel yang tetap tampil normal (None = tidak ada fokus).
+    let focus_table = state.focus_table.clone();
+    let focus_set = focus_table.as_deref().map(|f| related_tables(state, f));
+
     let mut _group_rename_request: Option<(usize, String)> = None;
     let mut _group_delete_request: Option<String> = None;
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
@@ -466,7 +664,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
         let idx = *idx;
         let group_rect = *group_rect;
-        let color = *color;
+        // Mode fokus: grup tanpa anggota terkait ikut diredupkan.
+        let group_dim = match &focus_set {
+            Some(set)
+                if !state
+                    .nodes
+                    .iter()
+                    .any(|n| n.is_in_group(group_id) && set.contains(&n.id)) =>
+            {
+                DIM_OPACITY
+            }
+            _ => 1.0,
+        };
+        let color = fade(*color, group_dim);
 
         // CAUTION: TextEdit needs `&mut String`.
         // We can get `&mut state.groups[idx]`
@@ -547,7 +757,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 egui::Align2::CENTER_CENTER,
                 &group.title,
                 egui::FontId::proportional(16.0 * scale),
-                egui::Color32::WHITE,
+                fade(egui::Color32::WHITE, group_dim),
             );
 
             // Interaction. Group milik link database mengikuti diagram
@@ -693,11 +903,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     base_color = group.color.linear_multiply(0.8); // Slight transparency
                 }
 
-                let color = if is_active {
-                    egui::Color32::from_rgb(255, 215, 0) // Gold
-                } else {
-                    base_color
-                };
+                // Mode fokus: relasi yang tidak menyentuh tabel fokus diredupkan.
+                let dimmed = focus_table
+                    .as_deref()
+                    .is_some_and(|f| edge.source != f && edge.target != f);
+                let dim = if dimmed { DIM_OPACITY } else { 1.0 };
+
+                let color = fade(
+                    if is_active {
+                        egui::Color32::from_rgb(255, 215, 0) // Gold
+                    } else {
+                        base_color
+                    },
+                    dim,
+                );
 
                 let width = if is_active { 3.0 * scale } else { 1.0 * scale };
                 let stroke = egui::Stroke::new(width, color);
@@ -718,7 +937,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 // Hit detection (Check hover first)
                 let mut is_hovered = false;
                 // Sampling kurva hanya bila pointer di dekat bounding box edge.
-                if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+                // Relasi redup tidak bisa di-hover/klik.
+                if !dimmed
+                    && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
                     && egui::Rect::from_points(&points).expand(20.0).contains(pos)
                 {
                     let num_samples = 30;
@@ -801,16 +1022,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut empty_group_retention: Option<(String, egui::Pos2)> = None;
     let mut add_group_at_pos: Option<egui::Pos2> = None;
     let mut open_source_request: Option<String> = None;
+    let canvas_bg = ui.visuals().panel_fill;
+    let mut focus_request: Option<Option<String>> = None;
+    let mut double_clicked_node: Option<String> = None;
 
     for node in &mut state.nodes {
         node.ensure_groups_migrated();
 
         // Estimate height based on columns
-        let header_height_unscaled = if node.database_name.is_some() {
-            30.0
-        } else {
-            24.0
-        };
+        let header_height_unscaled = node_header_height(node);
         let item_height_unscaled = 16.0;
         let content_height_unscaled = node.columns.len() as f32 * item_height_unscaled;
         let node_height_unscaled = header_height_unscaled + content_height_unscaled + 8.0; // padding
@@ -842,12 +1062,36 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         if !is_hand_mode && node_response.clicked() {
             node_clicked = true;
         }
+        // Double-click judul tabel: pusatkan & zoom, lalu animasikan relasinya.
+        if !is_hand_mode
+            && node_response.double_clicked()
+            && ui
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|p| p.y <= node_rect.top() + header_height_unscaled * scale)
+        {
+            double_clicked_node = Some(node.id.clone());
+        }
 
         let mut toggle_group: Option<(String, bool)> = None;
         let mut new_group_for_node = false;
         if !is_hand_mode {
             node_response.context_menu(|ui| {
             ui.label(egui::RichText::new(&node.title).strong());
+            ui.separator();
+
+            if focus_table.as_deref() == Some(node.id.as_str()) {
+                if ui.button("Clear focus").clicked() {
+                    ui.close();
+                    focus_request = Some(None);
+                }
+            } else if ui
+                .button("Focus on this table")
+                .on_hover_text("Show only this table and its related tables; dim the rest")
+                .clicked()
+            {
+                ui.close();
+                focus_request = Some(Some(node.id.clone()));
+            }
             ui.separator();
 
             if is_linked {
@@ -1082,13 +1326,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
         if !member_group_names.is_empty() {
             node_response.on_hover_text(format!(
-                "Table: {}\nGroups: {}\n(Right-click to manage groups)",
+                "Table: {}\nGroups: {}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or manage groups",
                 node.title,
                 member_group_names.join(", ")
             ));
         } else {
             node_response.on_hover_text(format!(
-                "Table: {}\n(Right-click to add to a group)",
+                "Table: {}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or add to a group",
                 node.title
             ));
         }
@@ -1357,6 +1601,29 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
             y_offset += item_height;
         }
+
+        // Mode fokus: tabel yang tidak terkait ditutup lapisan warna latar
+        // sehingga tampak transparan (setara opacity DIM_OPACITY).
+        if focus_set
+            .as_ref()
+            .is_some_and(|set| !set.contains(&node.id))
+        {
+            ui.painter().rect_filled(
+                node_rect.expand(7.0 * scale),
+                12.0 * scale,
+                canvas_bg.gamma_multiply(1.0 - DIM_OPACITY),
+            );
+        }
+    }
+
+    draw_flow_animation(ui, state, &to_screen, now);
+
+    if let Some(req) = focus_request {
+        state.focus_table = req;
+    }
+    if let Some(id) = double_clicked_node {
+        start_focus_animation(state, &id, rect.size(), now);
+        ui.ctx().request_repaint();
     }
 
     if let Some((gid, pos)) = empty_group_retention {
@@ -1478,6 +1745,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(760.0);
     let toolbar_width = measured_width.max(TOOLBAR_BTN_SIZE * 4.0);
     let toolbar_height = TOOLBAR_BTN_SIZE + 8.0;
+    render_focus_chip(ui, state, rect);
+
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
         egui::vec2(toolbar_width, toolbar_height),
@@ -1490,7 +1759,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         .rect_stroke(toolbar_rect, 6.0, card_stroke, egui::StrokeKind::Middle);
 
     let toolbar_res = ui.scope_builder(
-        egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0)),
+        egui::UiBuilder::new()
+            .id_salt("diagram_floating_toolbar")
+            .max_rect(toolbar_rect.shrink(4.0)),
         |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
@@ -1500,7 +1771,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     .on_hover_text("Zoom Out (Cmd -)")
                     .clicked()
                 {
-                    state.zoom = (state.zoom / 1.15).max(MIN_ZOOM);
+                    set_zoom_centered(state, state.zoom / 1.15, rect.size());
                 }
 
                 // Persentase zoom ditampilkan di posisi ikon.
@@ -1509,14 +1780,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     .on_hover_text("Reset Zoom to 100% (Cmd 0)")
                     .clicked()
                 {
-                    state.zoom = DEFAULT_ZOOM;
+                    set_zoom_centered(state, DEFAULT_ZOOM, rect.size());
                 }
 
                 if toolbar_square_button(ui, egui_icons::icons::ICON_ADD.codepoint, "In", false)
                     .on_hover_text("Zoom In (Cmd +)")
                     .clicked()
                 {
-                    state.zoom = (state.zoom * 1.15).min(MAX_ZOOM);
+                    set_zoom_centered(state, state.zoom * 1.15, rect.size());
                 }
 
                 if toolbar_square_button(
@@ -2089,6 +2360,65 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     action
 }
 
+/// Chip melayang di tengah atas kanvas selama mode fokus aktif, dengan
+/// tombol untuk keluar.
+fn render_focus_chip(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Rect) {
+    let Some(fid) = state.focus_table.as_deref() else {
+        return;
+    };
+    let title = state
+        .nodes
+        .iter()
+        .find(|n| n.id == fid)
+        .map_or(fid, |n| n.title.as_str());
+    let text = format!(
+        "{}  Focusing: {}",
+        egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint,
+        title
+    );
+    let font = egui::FontId::proportional(12.5);
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE)
+        .size()
+        .x;
+    let size = egui::vec2(text_w + 56.0, 30.0);
+    let chip = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.top() + 16.0 + size.y / 2.0),
+        size,
+    );
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    ui.painter()
+        .rect_filled(chip, 15.0, ui.visuals().window_fill);
+    ui.painter().rect_stroke(
+        chip,
+        15.0,
+        egui::Stroke::new(1.5, accent),
+        egui::StrokeKind::Middle,
+    );
+    ui.painter().text(
+        egui::pos2(chip.left() + 14.0, chip.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        ui.visuals().strong_text_color(),
+    );
+    let btn_rect = egui::Rect::from_center_size(
+        chip.right_center() - egui::vec2(18.0, 0.0),
+        egui::vec2(22.0, 22.0),
+    );
+    let close =
+        egui::Button::new(egui::RichText::new(egui_icons::icons::ICON_CLOSE.codepoint).size(13.0))
+            .frame(false);
+    if ui
+        .put(btn_rect, close)
+        .on_hover_text("Clear focus (Esc)")
+        .clicked()
+    {
+        state.focus_table = None;
+    }
+}
+
 /// Grid latar mengikuti pan & zoom; tiap garis ke-5 lebih tegas.
 fn draw_grid(ui: &egui::Ui, rect: egui::Rect, pan: egui::Vec2, scale: f32) {
     let spacing = 40.0 * scale;
@@ -2123,11 +2453,21 @@ fn draw_grid(ui: &egui::Ui, rect: egui::Rect, pan: egui::Vec2, scale: f32) {
     }
 }
 
+/// Tinggi header node (koordinat diagram); header lebih tinggi bila ada
+/// badge nama database. Harus sama dengan layout di `render_diagram`.
+fn node_header_height(node: &DiagramNode) -> f32 {
+    if node.database_name.is_some() {
+        30.0
+    } else {
+        24.0
+    }
+}
+
 /// Titik tengah vertikal baris kolom (koordinat diagram), mengikuti layout
-/// node di `render_diagram`: header 24, padding 4, tinggi baris 16.
+/// node di `render_diagram`: header 24/30, padding 4, tinggi baris 16.
 fn column_anchor_y(node: &DiagramNode, column: &str) -> f32 {
     match node.columns.iter().position(|c| c == column) {
-        Some(i) => node.pos.y + 24.0 + 4.0 + i as f32 * 16.0 + 8.0,
+        Some(i) => node.pos.y + node_header_height(node) + 4.0 + i as f32 * 16.0 + 8.0,
         None => node.pos.y + node.size.y / 2.0,
     }
 }
@@ -2162,14 +2502,34 @@ fn relation_curve(
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     scale: f32,
 ) -> (egui::Pos2, egui::Pos2, f32, egui::epaint::CubicBezierShape) {
+    column_curve(
+        child,
+        &rel.child_column,
+        parent,
+        &rel.parent_column,
+        to_screen,
+        scale,
+    )
+}
+
+/// Kurva dari baris `child_column` di tabel child ke baris `parent_column` di
+/// tabel parent. Dipakai relasi virtual, FK per kolom, dan animasi aliran.
+fn column_curve(
+    child: &DiagramNode,
+    child_column: &str,
+    parent: &DiagramNode,
+    parent_column: &str,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    scale: f32,
+) -> (egui::Pos2, egui::Pos2, f32, egui::epaint::CubicBezierShape) {
     let parent_is_right = parent.pos.x + parent.size.x / 2.0 >= child.pos.x + child.size.x / 2.0;
     let (cx, px, dir) = if parent_is_right {
         (child.pos.x + child.size.x, parent.pos.x, 1.0)
     } else {
         (child.pos.x, parent.pos.x + parent.size.x, -1.0)
     };
-    let start = to_screen(egui::pos2(cx, column_anchor_y(child, &rel.child_column)));
-    let end = to_screen(egui::pos2(px, column_anchor_y(parent, &rel.parent_column)));
+    let start = to_screen(egui::pos2(cx, column_anchor_y(child, child_column)));
+    let end = to_screen(egui::pos2(px, column_anchor_y(parent, parent_column)));
     let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
     let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
         [
@@ -2183,6 +2543,139 @@ fn relation_curve(
         egui::Stroke::NONE,
     );
     (start, end, dir, bezier)
+}
+
+/// Satu relasi kolom untuk animasi aliran: (child, kolom child, parent,
+/// kolom parent). Data mengalir dari parent (sumber) ke child.
+type FlowLink = (String, String, String, String);
+
+/// Semua relasi kolom yang menyentuh `table_id`: FK database, relasi virtual,
+/// dan relasi bawaan link database. Duplikat dibuang.
+pub fn flow_relations(state: &DiagramState, table_id: &str) -> Vec<FlowLink> {
+    let mut out: Vec<FlowLink> = Vec::new();
+    let mut push = |link: FlowLink| {
+        if !out.contains(&link) {
+            out.push(link);
+        }
+    };
+    for node in &state.nodes {
+        for fk in &node.foreign_keys {
+            let parent = &fk.referenced_table_name;
+            if node.id != table_id && parent != table_id {
+                continue;
+            }
+            if !state.nodes.iter().any(|n| &n.id == parent) {
+                continue;
+            }
+            push((
+                node.id.clone(),
+                fk.column_name.clone(),
+                parent.clone(),
+                fk.referenced_column_name.clone(),
+            ));
+        }
+    }
+    for rel in state
+        .virtual_relations
+        .iter()
+        .chain(&state.linked_relations)
+    {
+        if rel.child == table_id || rel.parent == table_id {
+            push((
+                rel.child.clone(),
+                rel.child_column.clone(),
+                rel.parent.clone(),
+                rel.parent_column.clone(),
+            ));
+        }
+    }
+    out
+}
+
+/// Animasi "data mengalir": kurva tiap relasi kolom tabel terpilih disorot,
+/// baris kolom sumber/tujuan diberi warna, dan partikel bergerak dari kolom
+/// parent (sumber data) ke kolom child.
+fn draw_flow_animation(
+    ui: &egui::Ui,
+    state: &DiagramState,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    now: f64,
+) {
+    let Some(flow) = &state.flow_anim else {
+        return;
+    };
+    let scale = state.zoom;
+    let links = flow_relations(state, &flow.table_id);
+    if links.is_empty() {
+        return;
+    }
+    let painter = ui.painter();
+    let source_color = egui::Color32::from_rgb(80, 220, 140);
+    let target_color = egui::Color32::from_rgb(80, 200, 255);
+    let elapsed = (now - flow.start_time).max(0.0);
+    // Denyut halus untuk sorotan baris kolom.
+    let pulse = 0.55 + 0.25 * ((elapsed * 4.0).sin() as f32);
+
+    for (child_id, child_col, parent_id, parent_col) in &links {
+        let (Some(child), Some(parent)) = (
+            state.nodes.iter().find(|n| &n.id == child_id),
+            state.nodes.iter().find(|n| &n.id == parent_id),
+        ) else {
+            continue;
+        };
+
+        // Sorot baris kolom: hijau = sumber data, biru = penerima.
+        for (node, col, color) in [
+            (parent, parent_col, source_color),
+            (child, child_col, target_color),
+        ] {
+            if !node.columns.iter().any(|c| c == col) {
+                continue;
+            }
+            let y = column_anchor_y(node, col);
+            let row = egui::Rect::from_min_max(
+                to_screen(egui::pos2(node.pos.x, y - 8.0)),
+                to_screen(egui::pos2(node.pos.x + node.size.x, y + 8.0)),
+            );
+            painter.rect_filled(row, 0.0, color.linear_multiply(0.18 * pulse));
+            painter.rect_stroke(
+                row,
+                0.0,
+                egui::Stroke::new(1.0 * scale.max(0.6), color.linear_multiply(pulse)),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        let (start, end, _, bezier) =
+            column_curve(child, child_col, parent, parent_col, to_screen, scale);
+        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(2.0 * scale.max(0.6), target_color.linear_multiply(0.45)),
+        ));
+        painter.circle_filled(end, 3.5 * scale, source_color);
+        painter.circle_filled(start, 3.0 * scale, target_color);
+
+        // Partikel bergerak parent -> child (t kurva 1 -> 0) dengan ekor pendek.
+        for k in 0..FLOW_PARTICLES {
+            let phase = (elapsed * FLOW_SPEED + k as f64 / FLOW_PARTICLES as f64).fract() as f32;
+            for tail in 0..4 {
+                let t = phase - tail as f32 * 0.025;
+                if t < 0.0 {
+                    break;
+                }
+                let p = bezier.sample(1.0 - t);
+                let fade_k = 1.0 - tail as f32 * 0.25;
+                let radius = (3.2 - tail as f32 * 0.6) * scale.max(0.6);
+                painter.circle_filled(p, radius, egui::Color32::WHITE.linear_multiply(fade_k));
+                if tail == 0 {
+                    painter.circle_filled(p, radius * 2.2, target_color.linear_multiply(0.25));
+                }
+            }
+        }
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(33));
 }
 
 /// Relasi bawaan diagram sumber link database: garis putus-putus tipis,
@@ -2203,6 +2696,7 @@ fn draw_linked_relations(
         };
         let (_, end, _, bezier) = relation_curve(child, parent, rel, to_screen, scale);
         let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
+        let color = fade(color, relation_dim(state, rel));
         ui.painter().extend(egui::Shape::dashed_line(
             &points,
             egui::Stroke::new(1.2 * scale.max(0.5), color),
@@ -2482,6 +2976,7 @@ fn draw_virtual_relations(
         };
         let (start, end, dir, bezier) = relation_curve(child, parent, rel, to_screen, scale);
         let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
+        let dim = relation_dim(state, rel);
 
         let btn_size = egui::vec2(20.0, 20.0);
         let dist = (end - start).length();
@@ -2491,10 +2986,12 @@ fn draw_virtual_relations(
         let child_btn_rect = egui::Rect::from_center_size(child_btn_pos, btn_size);
         let parent_btn_rect = egui::Rect::from_center_size(parent_btn_pos, btn_size);
 
-        let is_btn_hover = hover.is_some_and(|p| {
-            child_btn_rect.expand(2.0).contains(p) || parent_btn_rect.expand(2.0).contains(p)
-        });
+        let is_btn_hover = dim >= 1.0
+            && hover.is_some_and(|p| {
+                child_btn_rect.expand(2.0).contains(p) || parent_btn_rect.expand(2.0).contains(p)
+            });
         let is_line_hover = !over_node
+            && dim >= 1.0
             && hover.is_some_and(|p| {
                 egui::Rect::from_points(&points).expand(14.0).contains(p)
                     && points
@@ -2520,6 +3017,7 @@ fn draw_virtual_relations(
         } else {
             (base.linear_multiply(0.85), 1.5)
         };
+        let color = fade(color, dim);
         ui.painter().extend(egui::Shape::dashed_line(
             &points,
             egui::Stroke::new(width * scale.max(0.5), color),
@@ -2616,136 +3114,272 @@ fn render_relation_suggestions(
         state.relation_suggestions.is_some(),
     );
 
+    // Ukuran jendela tetap (tidak ikut melebar mengikuti isi) dan dijepit ke layar.
+    let screen = ctx.content_rect();
+    let win_w = (screen.width() - 48.0).clamp(360.0, 760.0);
+    let list_h = (screen.height() * 0.45).clamp(160.0, 380.0);
+
     egui::Window::new(&window_title)
         .title_bar(false)
         .frame(crate::window_egui::style::modal_window_frame(ctx))
         .collapsible(false)
-        .resizable(true)
-        .default_width(520.0)
+        .resizable(false)
+        .fixed_size(egui::vec2(win_w, 0.0))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            crate::window_egui::style::render_modal_header(ui, &window_title, &mut close);
-            ui.add_space(8.0);
+            ui.set_width(win_w);
+            crate::window_egui::style::render_modal_header(ui, "Suggested relations", &mut close);
+            ui.label(
+                egui::RichText::new(match &state.relation_suggestions_title {
+                    Some(t) => format!(
+                        "Target: {t}. Based on column names, similarity and types; accepted relations are saved with the diagram as dashed lines."
+                    ),
+                    None => "Based on column names, similarity and types; accepted relations are saved with the diagram as dashed lines.".to_string(),
+                })
+                .weak()
+                .small(),
+            );
+            ui.add_space(10.0);
 
+            // Input pencarian kolom dinamis
+            let mut search_triggered = false;
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                if let Some(t) = &state.relation_suggestions_title {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Target: {t} — search or filter similar columns below:"
-                        ))
-                        .strong(),
-                    );
-                } else {
-                    ui.label(
-                        egui::RichText::new(
-                            "Based on column names, similarity, and types. Accepted relations are saved with the diagram and shown as dashed lines.",
-                        )
-                        .weak(),
-                    );
-                }
-                ui.add_space(6.0);
-
-                // Input pencarian kolom dinamis
-                let mut search_triggered = false;
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label("🔍 Search column:");
+                    ui.label(
+                        egui_icons::icons::ICON_SEARCH
+                            .rich_text()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    let clear_w = if state.relation_column_search_query.is_empty() {
+                        0.0
+                    } else {
+                        28.0
+                    };
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut state.relation_column_search_query)
-                            .hint_text("Enter column name to search (e.g. user_id, imei)...")
-                            .desired_width(280.0),
+                            .hint_text("Search by column name (e.g. user_id, imei)")
+                            .desired_width(ui.available_width() - clear_w),
                     );
                     if edit.changed() {
                         search_triggered = true;
                     }
-                    if !state.relation_column_search_query.is_empty() && ui.small_button("✖").clicked() {
+                    if !state.relation_column_search_query.is_empty()
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    egui_icons::icons::ICON_CLOSE
+                                        .rich_text()
+                                        .color(ui.visuals().weak_text_color()),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Clear search")
+                            .clicked()
+                    {
                         state.relation_column_search_query.clear();
                         search_triggered = true;
                     }
                 });
-
-                if search_triggered {
-                    let trimmed = state.relation_column_search_query.trim();
-                    if trimmed.is_empty() {
-                        if let Some(base) = ctx.data(|d| {
-                            d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
-                                base_id,
-                            )
-                        }) {
-                            suggestions = base;
-                        }
-                    } else {
-                        let found = crate::diagram_relations::suggest_relations_by_column_search(
-                            state, trimmed,
-                        );
-                        suggestions = found.into_iter().map(|s| (s, true)).collect();
-                    }
-                }
             });
 
-            let is_searching = !state.relation_column_search_query.trim().is_empty();
-
-            if suggestions.is_empty() {
-                ui.add_space(8.0);
-                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                    if is_searching {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "No relations found matching column \"{}\"",
-                                state.relation_column_search_query.trim()
-                            ))
-                            .italics()
-                            .weak(),
-                        );
-                    } else {
-                        ui.label("No automatic relations found. Enter a column name above to search across the diagram.");
+            if search_triggered {
+                let trimmed = state.relation_column_search_query.trim();
+                if trimmed.is_empty() {
+                    if let Some(base) = ctx.data(|d| {
+                        d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
+                            base_id,
+                        )
+                    }) {
+                        suggestions = base;
                     }
-                });
-                return;
+                } else {
+                    let found = crate::diagram_relations::suggest_relations_by_column_search(
+                        state, trimmed,
+                    );
+                    suggestions = found.into_iter().map(|s| (s, true)).collect();
+                }
             }
 
-            ui.add_space(8.0);
+            let is_searching = !state.relation_column_search_query.trim().is_empty();
+            let total = suggestions.len();
+            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
 
+            ui.add_space(8.0);
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+
+                // Toolbar: jumlah terpilih + aksi massal
                 ui.horizontal(|ui| {
-                    if ui.small_button("Select all").clicked() {
-                        for (_, on) in suggestions.iter_mut() {
-                            *on = true;
-                        }
-                    }
-                    if ui.small_button("Select none").clicked() {
-                        for (_, on) in suggestions.iter_mut() {
-                            *on = false;
-                        }
-                    }
-                    let total = suggestions.len();
-                    let chosen = suggestions.iter().filter(|(_, on)| *on).count();
                     ui.label(
                         egui::RichText::new(format!("{chosen} of {total} selected"))
                             .weak()
                             .small(),
                     );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(chosen > 0, egui::Button::new("Select none").small())
+                            .clicked()
+                        {
+                            for (_, on) in suggestions.iter_mut() {
+                                *on = false;
+                            }
+                        }
+                        if ui
+                            .add_enabled(chosen < total, egui::Button::new("Select all").small())
+                            .clicked()
+                        {
+                            for (_, on) in suggestions.iter_mut() {
+                                *on = true;
+                            }
+                        }
+                    });
                 });
+                ui.add_space(4.0);
 
-                ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                    for (s, on) in suggestions.iter_mut() {
-                        let r = &s.relation;
-                        ui.horizontal(|ui| {
-                            ui.checkbox(
-                                on,
-                                format!("{}.{} → {}.{}", r.child, r.child_column, r.parent, r.parent_column),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{:.0}% · {}", s.score * 100.0, s.reason))
-                                    .weak()
-                                    .small(),
-                            );
-                        });
-                    }
+                let row_h = 26.0;
+                let check_w = 24.0;
+                let arrow_w = 24.0;
+                let score_w = 52.0;
+                let spacing = ui.spacing().item_spacing.x;
+                let col_w = ((ui.available_width() - check_w - arrow_w - score_w - spacing * 4.0)
+                    / 2.0)
+                    .max(80.0);
+
+                // Header kolom
+                let header = |ui: &mut egui::Ui, text: &str, w: f32, align: egui::Align| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(w, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_align(align),
+                        |ui| {
+                            ui.label(egui::RichText::new(text).small().strong().weak());
+                        },
+                    );
+                };
+                ui.horizontal(|ui| {
+                    ui.add_space(check_w + spacing);
+                    header(ui, "COLUMN", col_w, egui::Align::Min);
+                    ui.add_space(arrow_w + spacing);
+                    header(ui, "REFERENCES", col_w, egui::Align::Min);
+                    header(ui, "MATCH", score_w, egui::Align::Max);
                 });
+                ui.separator();
+
+                let weak = ui.visuals().weak_text_color();
+                let text_color = ui.visuals().text_color();
+                let hover_bg = ui.visuals().widgets.hovered.weak_bg_fill;
+                // Label "table.column": nama tabel redup, kolom tegas
+                let body_font = egui::TextStyle::Body.resolve(ui.style());
+                let qualified = |table: &str, column: &str| {
+                    let mut job = egui::text::LayoutJob::default();
+                    let font = body_font.clone();
+                    job.append(
+                        &format!("{table}."),
+                        0.0,
+                        egui::TextFormat::simple(font.clone(), weak),
+                    );
+                    job.append(column, 0.0, egui::TextFormat::simple(font, text_color));
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(col_w);
+                    job
+                };
+
+                if total == 0 {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), list_h),
+                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                        |ui| {
+                            let msg = if is_searching {
+                                format!(
+                                    "No relations found matching column \"{}\"",
+                                    state.relation_column_search_query.trim()
+                                )
+                            } else {
+                                "No automatic relations found. Search a column name above to scan the diagram.".to_string()
+                            };
+                            ui.label(egui::RichText::new(msg).italics().weak());
+                        },
+                    );
+                    return;
+                }
+
+                // Hanya baris yang terlihat yang dirender; daftar bisa puluhan ribu.
+                egui::ScrollArea::vertical()
+                    .max_height(list_h)
+                    .min_scrolled_height(list_h)
+                    .auto_shrink([false, false])
+                    .show_rows(ui, row_h, total, |ui, range| {
+                        for (s, on) in &mut suggestions[range] {
+                            let r = &s.relation;
+                            let (row_rect, row_resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), row_h),
+                                egui::Sense::click(),
+                            );
+                            if row_resp.hovered() {
+                                ui.painter().rect_filled(row_rect, 4.0, hover_bg);
+                            }
+                            let mut row_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(row_rect)
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            );
+                            row_ui.allocate_ui_with_layout(
+                                egui::vec2(check_w, row_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.checkbox(on, "");
+                                },
+                            );
+                            row_ui.allocate_ui_with_layout(
+                                egui::vec2(col_w, row_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(egui::Label::new(qualified(&r.child, &r.child_column)).selectable(false));
+                                },
+                            );
+                            row_ui.allocate_ui_with_layout(
+                                egui::vec2(arrow_w, row_h),
+                                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                                |ui| {
+                                    ui.label(egui_icons::icons::ICON_ARROW_FORWARD.rich_text().color(weak));
+                                },
+                            );
+                            row_ui.allocate_ui_with_layout(
+                                egui::vec2(col_w, row_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(egui::Label::new(qualified(&r.parent, &r.parent_column)).selectable(false));
+                                },
+                            );
+                            row_ui.allocate_ui_with_layout(
+                                egui::vec2(score_w, row_h),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let pct = s.score * 100.0;
+                                    let color = if pct >= 80.0 {
+                                        egui::Color32::from_rgb(80, 180, 110)
+                                    } else if pct >= 60.0 {
+                                        egui::Color32::from_rgb(210, 160, 60)
+                                    } else {
+                                        weak
+                                    };
+                                    ui.label(egui::RichText::new(format!("{pct:.0}%")).small().strong().color(color));
+                                },
+                            );
+
+                            // Klik di mana pun pada baris mengubah centang
+                            if row_resp.clicked() {
+                                *on = !*on;
+                            }
+                            row_resp.on_hover_text(format!(
+                                "{}.{} references {}.{}\n{}",
+                                r.child, r.child_column, r.parent, r.parent_column, s.reason
+                            ));
+                        }
+                    });
             });
 
-            ui.add_space(10.0);
-            let chosen = suggestions.iter().filter(|(_, on)| *on).count();
+            // Footer
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let btn = egui::Button::new(
@@ -2753,20 +3387,29 @@ fn render_relation_suggestions(
                             .color(egui::Color32::WHITE)
                             .strong(),
                     )
-                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()))
+                    .min_size(egui::vec2(0.0, 28.0));
 
-                    if ui
-                        .add_enabled(chosen > 0, btn)
-                        .clicked()
-                    {
+                    if ui.add_enabled(chosen > 0, btn).clicked() {
                         let mut added = 0;
                         for (s, on) in &suggestions {
-                            if *on && crate::diagram_relations::add_virtual_relation(state, s.relation.clone()) {
+                            if *on
+                                && crate::diagram_relations::add_virtual_relation(
+                                    state,
+                                    s.relation.clone(),
+                                )
+                            {
                                 added += 1;
                             }
                         }
                         state.save_requested = true;
                         result = Some(DiagramAction::Info(format!("Added {added} relation(s)")));
+                        close = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 28.0)))
+                        .clicked()
+                    {
                         close = true;
                     }
                 });
@@ -3696,5 +4339,210 @@ mod tests {
         let deserialized: DiagramState =
             serde_json::from_str(&serialized).expect("should deserialize");
         assert!(!deserialized.show_relations);
+    }
+
+    fn node(id: &str, columns: &[&str]) -> DiagramNode {
+        DiagramNode {
+            id: id.to_string(),
+            title: id.to_string(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn fk(
+        table: &str,
+        col: &str,
+        ref_table: &str,
+        ref_col: &str,
+    ) -> crate::models::structs::ForeignKey {
+        crate::models::structs::ForeignKey {
+            constraint_name: format!("fk_{table}_{col}"),
+            table_name: table.to_string(),
+            column_name: col.to_string(),
+            referenced_table_name: ref_table.to_string(),
+            referenced_column_name: ref_col.to_string(),
+        }
+    }
+
+    /// users <- orders (FK), orders <- items (virtual), audit terisolasi.
+    fn focus_fixture() -> DiagramState {
+        let mut orders = node("orders", &["id", "user_id"]);
+        orders
+            .foreign_keys
+            .push(fk("orders", "user_id", "users", "id"));
+        DiagramState {
+            nodes: vec![
+                node("users", &["id", "name"]),
+                orders,
+                node("items", &["id", "order_id"]),
+                node("audit", &["id"]),
+            ],
+            edges: vec![crate::models::structs::DiagramEdge {
+                source: "orders".to_string(),
+                target: "users".to_string(),
+                label: String::new(),
+            }],
+            virtual_relations: vec![VirtualRelation {
+                child: "items".to_string(),
+                child_column: "order_id".to_string(),
+                parent: "orders".to_string(),
+                parent_column: "id".to_string(),
+                origin: RelationOrigin::Manual,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_zoom_around_keeps_anchor_fixed() {
+        let pan = egui::vec2(40.0, -20.0);
+        let anchor = egui::vec2(300.0, 200.0);
+        let (old_zoom, new_zoom) = (1.0, 1.4);
+        // Titik diagram di bawah jangkar sebelum zoom.
+        let world = (anchor - pan) / old_zoom;
+        let new_pan = zoom_around(pan, old_zoom, new_zoom, anchor);
+        let screen_after = new_pan + world * new_zoom;
+        assert!((screen_after - anchor).length() < 1e-3);
+    }
+
+    #[test]
+    fn test_zoom_around_zero_old_zoom_is_noop() {
+        let pan = egui::vec2(5.0, 6.0);
+        assert_eq!(zoom_around(pan, 0.0, 1.0, egui::vec2(1.0, 1.0)), pan);
+    }
+
+    #[test]
+    fn test_pan_to_center_puts_point_in_middle() {
+        let pan = pan_to_center(egui::pos2(100.0, 50.0), egui::vec2(800.0, 600.0), 1.0);
+        assert_eq!(pan, egui::vec2(300.0, 250.0));
+    }
+
+    #[test]
+    fn test_sample_view_anim_endpoints() {
+        let anim = DiagramViewAnimation {
+            from_pan: egui::vec2(0.0, 0.0),
+            to_pan: egui::vec2(100.0, 200.0),
+            from_zoom: 0.5,
+            to_zoom: 1.0,
+            start_time: 10.0,
+            duration: 0.5,
+        };
+        let (pan, zoom, done) = sample_view_anim(&anim, 10.0);
+        assert_eq!((pan, zoom, done), (egui::vec2(0.0, 0.0), 0.5, false));
+        let (pan, zoom, _) = sample_view_anim(&anim, 10.25);
+        assert!(
+            pan.x > 50.0 && pan.x < 100.0,
+            "ease-out melewati titik linear"
+        );
+        assert!(zoom > 0.75 && zoom < 1.0);
+        let (pan, zoom, done) = sample_view_anim(&anim, 11.0);
+        assert_eq!((pan, zoom, done), (egui::vec2(100.0, 200.0), 1.0, true));
+    }
+
+    #[test]
+    fn test_related_tables_includes_fk_and_virtual_both_ways() {
+        let state = focus_fixture();
+        let set = related_tables(&state, "orders");
+        assert!(set.contains("orders"));
+        assert!(set.contains("users"));
+        assert!(set.contains("items"));
+        assert!(!set.contains("audit"));
+
+        let users = related_tables(&state, "users");
+        assert!(users.contains("orders"));
+        assert!(!users.contains("items"), "hanya relasi langsung");
+
+        let audit = related_tables(&state, "audit");
+        assert_eq!(audit.len(), 1);
+    }
+
+    #[test]
+    fn test_flow_relations_lists_column_links_parent_to_child() {
+        let state = focus_fixture();
+        let links = flow_relations(&state, "orders");
+        assert_eq!(links.len(), 2);
+        assert!(links.contains(&(
+            "orders".to_string(),
+            "user_id".to_string(),
+            "users".to_string(),
+            "id".to_string()
+        )));
+        assert!(links.contains(&(
+            "items".to_string(),
+            "order_id".to_string(),
+            "orders".to_string(),
+            "id".to_string()
+        )));
+        assert!(flow_relations(&state, "audit").is_empty());
+    }
+
+    #[test]
+    fn test_flow_relations_skips_missing_parent_and_dedupes() {
+        let mut state = focus_fixture();
+        state.nodes[1]
+            .foreign_keys
+            .push(fk("orders", "ghost_id", "ghost", "id"));
+        // Relasi virtual yang sama persis dengan FK tidak digandakan.
+        state.virtual_relations.push(VirtualRelation {
+            child: "orders".to_string(),
+            child_column: "user_id".to_string(),
+            parent: "users".to_string(),
+            parent_column: "id".to_string(),
+            origin: RelationOrigin::Inferred,
+        });
+        assert_eq!(flow_relations(&state, "orders").len(), 2);
+    }
+
+    #[test]
+    fn test_column_anchor_y_follows_header_height() {
+        let mut n = node("t", &["a", "b"]);
+        assert_eq!(column_anchor_y(&n, "b"), 24.0 + 4.0 + 16.0 + 8.0);
+        n.database_name = Some("db".to_string());
+        assert_eq!(column_anchor_y(&n, "b"), 30.0 + 4.0 + 16.0 + 8.0);
+    }
+
+    #[test]
+    fn test_start_focus_animation_targets_node_center() {
+        let mut state = focus_fixture();
+        state.nodes[0].pos = egui::pos2(100.0, 100.0);
+        state.nodes[0].size = egui::vec2(200.0, 100.0);
+        state.zoom = 0.6;
+        start_focus_animation(&mut state, "users", egui::vec2(800.0, 600.0), 5.0);
+        let anim = state.view_anim.as_ref().expect("animasi viewport dimulai");
+        assert_eq!(anim.to_zoom, FOCUS_ZOOM);
+        assert_eq!(anim.from_zoom, 0.6);
+        assert_eq!(anim.to_pan, egui::vec2(200.0, 150.0));
+        assert_eq!(
+            state.flow_anim.as_ref().map(|f| f.table_id.as_str()),
+            Some("users")
+        );
+
+        // Tabel yang tidak ada tidak memulai apa pun.
+        let mut empty = DiagramState::default();
+        start_focus_animation(&mut empty, "nope", egui::vec2(800.0, 600.0), 0.0);
+        assert!(empty.view_anim.is_none() && empty.flow_anim.is_none());
+    }
+
+    #[test]
+    fn test_relation_dim_only_when_focus_elsewhere() {
+        let mut state = focus_fixture();
+        let rel = state.virtual_relations[0].clone();
+        assert_eq!(relation_dim(&state, &rel), 1.0);
+        state.focus_table = Some("items".to_string());
+        assert_eq!(relation_dim(&state, &rel), 1.0);
+        state.focus_table = Some("users".to_string());
+        assert_eq!(relation_dim(&state, &rel), DIM_OPACITY);
+    }
+
+    #[test]
+    fn test_focus_state_is_not_serialized() {
+        let state = DiagramState {
+            focus_table: Some("users".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&state).expect("serialize");
+        assert!(!json.contains("focus_table"));
+        assert!(!json.contains("flow_anim"));
     }
 }
