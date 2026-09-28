@@ -844,6 +844,15 @@ pub struct DiagramState {
     /// Tampilkan garis relasi / link kolom antar tabel.
     #[serde(default = "default_true")]
     pub show_relations: bool,
+    /// Tampilkan relasi foreign key database.
+    #[serde(default = "default_true")]
+    pub show_fk_relations: bool,
+    /// Tampilkan relasi virtual (disarankan, manual, impor).
+    #[serde(default = "default_true")]
+    pub show_virtual_relations: bool,
+    /// Tampilkan relasi bawaan database yang di-link.
+    #[serde(default = "default_true")]
+    pub show_linked_relations: bool,
     /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
     #[serde(default)]
     pub virtual_relations: Vec<VirtualRelation>,
@@ -920,6 +929,12 @@ pub struct DiagramState {
     /// Animasi aliran data di relasi kolom milik tabel ini.
     #[serde(skip)]
     pub flow_anim: Option<DiagramFlowAnimation>,
+    /// Panel daftar relasi untuk tabel ini (None = panel tertutup).
+    #[serde(skip)]
+    pub relations_panel: Option<String>,
+    /// Teks pencarian di panel relasi.
+    #[serde(skip)]
+    pub relations_panel_query: String,
 }
 
 /// Tween viewport diagram dari (pan, zoom) awal ke tujuan.
@@ -968,6 +983,9 @@ impl Default for DiagramState {
             show_grid: true,
             prevent_overlap: true,
             show_relations: true,
+            show_fk_relations: true,
+            show_virtual_relations: true,
+            show_linked_relations: true,
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
@@ -991,6 +1009,8 @@ impl Default for DiagramState {
             focus_table: None,
             view_anim: None,
             flow_anim: None,
+            relations_panel: None,
+            relations_panel_query: String::new(),
         }
     }
 }

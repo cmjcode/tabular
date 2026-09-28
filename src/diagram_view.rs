@@ -1,7 +1,12 @@
+use crate::diagram_lod::{
+    DASH_BUDGET, Emphasis, KindFilter, Lod, TableLink, curve_samples, curve_visible, lod_for_zoom,
+    node_index, quantize_font,
+};
 use crate::models::structs::{
     DiagramFlowAnimation, DiagramNode, DiagramState, DiagramViewAnimation, RelationOrigin,
     VirtualRelation,
 };
+use std::collections::{HashMap, HashSet};
 use crate::rfd;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -31,7 +36,10 @@ pub const GROUP_COLORS: [egui::Color32; 20] = [
     egui::Color32::from_rgb(255, 140, 0),   // Dark Orange
 ];
 
-pub const MIN_ZOOM: f32 = 0.5;
+/// Zoom terkecil. Cukup jauh supaya diagram ratusan tabel muat di layar;
+/// di zoom kecil tampilan beralih ke kartu ringkas / overview (lihat
+/// `diagram_lod::Lod`).
+pub const MIN_ZOOM: f32 = 0.1;
 pub const MAX_ZOOM: f32 = 1.5;
 pub const DEFAULT_ZOOM: f32 = 1.0;
 /// Zoom tujuan saat double-click judul tabel (nyaman dibaca).
@@ -307,9 +315,8 @@ pub fn sample_view_anim(anim: &DiagramViewAnimation, now: f64) -> (egui::Vec2, f
     (pan, zoom, done)
 }
 
-/// Mulai animasi viewport menuju tabel `node_id` (tengah layar, zoom baca)
-/// dan nyalakan partikel aliran data di relasinya.
-fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egui::Vec2, now: f64) {
+/// Mulai animasi viewport menuju tabel `node_id` (tengah layar, zoom baca).
+fn start_view_animation(state: &mut DiagramState, node_id: &str, view_size: egui::Vec2, now: f64) {
     let Some(node) = state.nodes.iter().find(|n| n.id == node_id) else {
         return;
     };
@@ -323,11 +330,33 @@ fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egu
         start_time: now,
         duration: VIEW_ANIM_SECS,
     });
+    state.is_centered = true;
+}
+
+/// Seperti `start_view_animation`, plus partikel aliran data di relasi
+/// tabel tersebut (berhenti sendiri setelah `FLOW_ANIM_SECS`).
+fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egui::Vec2, now: f64) {
+    if !state.nodes.iter().any(|n| n.id == node_id) {
+        return;
+    }
+    start_view_animation(state, node_id, view_size, now);
     state.flow_anim = Some(DiagramFlowAnimation {
         table_id: node_id.to_string(),
         start_time: now,
     });
-    state.is_centered = true;
+}
+
+/// Zoom sampai seluruh diagram muat di viewport, lalu pusatkan. Tidak
+/// memperbesar melebihi zoom normal.
+pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
+    let Some(bounds) = crate::diagram_lod::content_bounds(&state.nodes) else {
+        state.pan = egui::Vec2::ZERO;
+        return;
+    };
+    let zoom = crate::diagram_lod::fit_zoom(bounds.size(), view_size, MIN_ZOOM, DEFAULT_ZOOM);
+    state.zoom = zoom;
+    state.pan = pan_to_center(bounds.center(), view_size, zoom);
+    state.view_anim = None;
 }
 
 /// Tabel `table_id` beserta semua tabel yang berelasi dengannya (FK, relasi
@@ -356,15 +385,6 @@ pub fn related_tables(state: &DiagramState, table_id: &str) -> std::collections:
     set
 }
 
-/// Faktor opacity relasi virtual/link: redup bila mode fokus aktif dan relasi
-/// tidak menyentuh tabel fokus.
-fn relation_dim(state: &DiagramState, rel: &VirtualRelation) -> f32 {
-    match state.focus_table.as_deref() {
-        Some(f) if rel.child != f && rel.parent != f => DIM_OPACITY,
-        _ => 1.0,
-    }
-}
-
 /// Redupkan warna sesuai faktor opacity mode fokus.
 fn fade(color: egui::Color32, dim: f32) -> egui::Color32 {
     if dim >= 1.0 {
@@ -375,6 +395,7 @@ fn fade(color: egui::Color32, dim: f32) -> egui::Color32 {
 }
 
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
+    let frame_start = std::time::Instant::now();
     let mut action: Option<DiagramAction> = None;
     let rect = ui.available_rect_before_wrap();
     // Semua gambar & interaksi dibatasi ke area diagram, supaya node/group
@@ -599,21 +620,30 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
 
     let shift_held = ui.input(|i| i.modifiers.shift);
+    // Extent tiap group dihitung dalam satu lintasan node, bukan
+    // O(group × node). Node yang di-drag dengan Shift tidak ikut (sedang
+    // dipindah ke group lain).
+    let excluded = state.dragging_node.as_deref().filter(|_| shift_held);
+    let mut group_extent: std::collections::HashMap<&str, (egui::Pos2, egui::Pos2)> =
+        std::collections::HashMap::new();
+    for n in &state.nodes {
+        if excluded == Some(n.id.as_str()) {
+            continue;
+        }
+        let extra = n.group_id.as_deref().filter(|g| !n.group_ids.iter().any(|x| x == g));
+        for gid in n.group_ids.iter().map(String::as_str).chain(extra) {
+            let (lo, hi) = (n.pos, n.pos + n.size);
+            group_extent
+                .entry(gid)
+                .and_modify(|(a, b)| {
+                    *a = a.min(lo);
+                    *b = b.max(hi);
+                })
+                .or_insert((lo, hi));
+        }
+    }
     for (idx, group) in state.groups.iter().enumerate() {
-        let group_nodes: Vec<&DiagramNode> = state
-            .nodes
-            .iter()
-            .filter(|n| n.is_in_group(&group.id))
-            .filter(|n| {
-                if Some(n.id.clone()) == state.dragging_node {
-                    !shift_held
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        if group_nodes.is_empty() {
+        let Some(&(mut min_pos, mut max_pos)) = group_extent.get(group.id.as_str()) else {
             // Handle Empty Groups with manual_pos
             if let Some(pos) = group.manual_pos {
                 let size = egui::vec2(400.0, 300.0);
@@ -627,15 +657,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ));
             }
             continue;
-        }
-
-        let mut min_pos = group_nodes[0].pos;
-        let mut max_pos = group_nodes[0].pos + group_nodes[0].size;
-
-        for node in &group_nodes {
-            min_pos = min_pos.min(node.pos);
-            max_pos = max_pos.max(node.pos + node.size);
-        }
+        };
 
         // Padding
         let padding = 20.0;
@@ -656,11 +678,28 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         ));
     }
 
+    // Mode fokus: group yang punya anggota terkait (lainnya diredupkan).
+    let focus_groups: Option<std::collections::HashSet<String>> = focus_set.as_ref().map(|set| {
+        state
+            .nodes
+            .iter()
+            .filter(|n| set.contains(&n.id))
+            .flat_map(|n| n.group_ids.iter().chain(n.group_id.as_ref()).cloned())
+            .collect()
+    });
+    let clip = ui.clip_rect();
+
     // 2. Render Groups (requires mutable access to groups for Rename, but NOT nodes)
     // We used state.nodes in step 1, now we are done with nodes.
     // But we need to update state.groups.
 
     for (idx, group_id, group_rect, color, _) in &group_bounds {
+        // Group di luar layar tidak digambar (kecuali sedang di-rename).
+        if !clip.intersects(*group_rect)
+            && state.renaming_group.as_deref() != Some(group_id.as_str())
+        {
+            continue;
+        }
         // Retrieve mutable reference to group
         // We know it exists because we just got it from state.groups
         // But we can't iterate state.groups directly while modifying?
@@ -669,15 +708,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         let idx = *idx;
         let group_rect = *group_rect;
         // Mode fokus: grup tanpa anggota terkait ikut diredupkan.
-        let group_dim = match &focus_set {
-            Some(set)
-                if !state
-                    .nodes
-                    .iter()
-                    .any(|n| n.is_in_group(group_id) && set.contains(&n.id)) =>
-            {
-                DIM_OPACITY
-            }
+        let group_dim = match &focus_groups {
+            Some(set) if !set.contains(group_id) => DIM_OPACITY,
             _ => 1.0,
         };
         let color = fade(*color, group_dim);
@@ -756,13 +788,26 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 response.request_focus();
             }
         } else {
-            ui.painter().text(
-                title_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                &group.title,
-                egui::FontId::proportional(16.0 * scale),
-                fade(egui::Color32::WHITE, group_dim),
-            );
+            // Zoom kecil: header terlalu pendek untuk teks, jadi judul
+            // digambar di atas kontainer dengan ukuran minimum yang terbaca.
+            let title_px = 16.0 * scale;
+            if title_px < 11.0 {
+                ui.painter().text(
+                    group_rect.center_top() - egui::vec2(0.0, 3.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    &group.title,
+                    egui::FontId::proportional(12.0),
+                    fade(color, group_dim),
+                );
+            } else {
+                ui.painter().text(
+                    title_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &group.title,
+                    egui::FontId::proportional(quantize_font(title_px)),
+                    fade(egui::Color32::WHITE, group_dim),
+                );
+            }
 
             // Interaction. Group milik link database mengikuti diagram
             // sumbernya, jadi tidak bisa digeser/diubah di sini.
@@ -861,133 +906,113 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     // Draw edges (relationships)
-    let mut clicked_edge = None;
-    let _pointer_pos = ui.input(|i| i.pointer.interact_pos());
+    let mut clicked_edge: Option<(String, String)> = None;
     let pointer_down = !is_hand_mode && ui.input(|i| i.pointer.primary_clicked());
-    let mut edge_was_clicked = false;
 
-    if state.show_relations {
-        for edge in &state.edges {
-            // Resolve source and target nodes
-            let src_node = state.nodes.iter().find(|n| n.id == edge.source);
-            let dst_node = state.nodes.iter().find(|n| n.id == edge.target);
+    let lod = lod_for_zoom(scale);
+    let kind_filter = KindFilter::from_state(state);
+    let hover_pos = ui
+        .input(|i| i.pointer.hover_pos())
+        .filter(|p| pointer_over_canvas && rect.contains(*p));
+    // Tabel di bawah pointer: relasinya disorot, relasi lain disamarkan.
+    let hovered_table: Option<String> = hover_pos
+        .filter(|_| state.dragging_node.is_none())
+        .and_then(|p| crate::diagram_lod::node_at(&state.nodes, &to_screen, scale, p))
+        .map(|i| state.nodes[i].id.clone());
+    // Jumlah relasi terlihat pada frame sebelumnya; menentukan mode padat
+    // dan garis putus-putus tanpa perlu dua lintasan per frame.
+    let visible_key = ui.id().with("diagram_visible_relations");
+    let visible_prev: usize = ui.data(|d| d.get_temp(visible_key)).unwrap_or(0);
+    let mut rel_stats = RelStats::default();
+    // Jumlah relasi per tabel (index = `state.nodes`) untuk badge kartu ringkas.
+    let mut node_relation_counts: Vec<u32> = Vec::new();
+    let mut virtual_outcome = VirtualOutcome::None;
 
-            if let (Some(src), Some(dst)) = (src_node, dst_node) {
-                let src_rect_size = src.size * scale;
-                let dst_rect_size = dst.size * scale;
-
-                let src_pos =
-                    to_screen(src.pos) + egui::vec2(src_rect_size.x, src_rect_size.y / 2.0); // right side
-                let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_rect_size.y / 2.0); // left side
-
-                // Determine if selected
-                let is_selected = state.selected_edge.as_ref()
-                    == Some(&(edge.source.clone(), edge.target.clone()));
-
-                // Determine if highlighted by column
-                let is_highlighted_by_col =
-                    if let Some((sel_table, sel_col)) = &state.selected_column {
-                        src.foreign_keys.iter().any(|fk| {
-                            fk.referenced_table_name == edge.target
-                                && ((fk.table_name == *sel_table && fk.column_name == *sel_col)
-                                    || (fk.referenced_table_name == *sel_table
-                                        && fk.referenced_column_name == *sel_col))
-                        })
-                    } else {
-                        false
-                    };
-
-                let is_active = is_selected || is_highlighted_by_col;
-
-                // Determine base color from source group
-                let mut base_color = egui::Color32::from_gray(100);
-                if let Some(group_id) = src.group_ids.first().or(src.group_id.as_ref())
-                    && let Some(group) = state.groups.iter().find(|g| &g.id == group_id)
-                {
-                    base_color = group.color.linear_multiply(0.8); // Slight transparency
-                }
-
-                // Mode fokus: relasi yang tidak menyentuh tabel fokus diredupkan.
-                let dimmed = focus_table
-                    .as_deref()
-                    .is_some_and(|f| edge.source != f && edge.target != f);
-                let dim = if dimmed { DIM_OPACITY } else { 1.0 };
-
-                let color = fade(
-                    if is_active {
-                        egui::Color32::from_rgb(255, 215, 0) // Gold
-                    } else {
-                        base_color
-                    },
-                    dim,
-                );
-
-                let width = if is_active { 3.0 * scale } else { 1.0 * scale };
-                let stroke = egui::Stroke::new(width, color);
-
-                // Cubic bezier for smooth connection
-                let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
-                let control1 = src_pos + egui::vec2(control_scale, 0.0);
-                let control2 = dst_pos - egui::vec2(control_scale, 0.0);
-
-                let points = [src_pos, control1, control2, dst_pos];
-                let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-                    points,
-                    false,
-                    egui::Color32::TRANSPARENT,
-                    stroke,
-                );
-
-                // Hit detection (Check hover first)
-                let mut is_hovered = false;
-                // Sampling kurva hanya bila pointer di dekat bounding box edge.
-                // Relasi redup tidak bisa di-hover/klik.
-                if !dimmed
-                    && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
-                    && egui::Rect::from_points(&points).expand(20.0).contains(pos)
-                {
-                    let num_samples = 30;
-                    for i in 0..=num_samples {
-                        let t = i as f32 / num_samples as f32;
-                        let p = bezier.sample(t);
-                        if p.distance(pos) < 20.0 {
-                            // Increased tolerance
-                            is_hovered = true;
-                            break;
-                        }
+    {
+        let index = node_index(&state.nodes);
+        let ctx = RelCtx {
+            index: &index,
+            clip,
+            hover: hover_pos,
+            dashed: visible_prev <= DASH_BUDGET,
+            emphasis: Emphasis {
+                focus: focus_table.as_deref(),
+                hovered: hovered_table.as_deref(),
+                visible: visible_prev,
+                dim_opacity: DIM_OPACITY,
+            },
+        };
+        let links = (lod != Lod::Detail)
+            .then(|| crate::diagram_lod::aggregate_table_links(state, &index, kind_filter));
+        if let Some(links) = &links {
+            node_relation_counts = crate::diagram_lod::relation_counts(links, state.nodes.len());
+        }
+        if state.show_relations {
+            match &links {
+                None => {
+                    if kind_filter.fk {
+                        clicked_edge = draw_fk_edges(
+                            ui,
+                            state,
+                            &ctx,
+                            &to_screen,
+                            pointer_down,
+                            &mut rel_stats,
+                        );
+                    }
+                    if kind_filter.linked {
+                        draw_linked_relations(ui, state, &ctx, &to_screen, &mut rel_stats);
+                    }
+                    if kind_filter.virtual_ {
+                        virtual_outcome = draw_virtual_relations(
+                            ui,
+                            state,
+                            &ctx,
+                            &to_screen,
+                            pointer_down,
+                            &mut rel_stats,
+                        );
                     }
                 }
-
-                if is_hovered {
-                    if !is_hand_mode && pointer_down {
-                        clicked_edge = Some((edge.source.clone(), edge.target.clone()));
-                    }
-                    if !is_selected {
-                        // Hover feedback
-                        let hover_stroke =
-                            egui::Stroke::new(2.0 * scale, egui::Color32::from_gray(180));
-                        ui.painter()
-                            .add(egui::epaint::CubicBezierShape::from_points_stroke(
-                                points,
-                                false,
-                                egui::Color32::TRANSPARENT,
-                                hover_stroke,
-                            ));
+                Some(links) => {
+                    if let Some(pair) = draw_aggregated_links(
+                        ui,
+                        state,
+                        lod,
+                        links,
+                        &group_bounds,
+                        &ctx,
+                        &to_screen,
+                        pointer_down,
+                        &mut rel_stats,
+                    ) {
+                        // Klik garis ringkas: sorot kedua tabel dan buka daftar relasinya.
+                        state.relations_panel = Some(pair.0.clone());
+                        clicked_edge = Some(pair);
                     }
                 }
-
-                ui.painter().add(bezier);
             }
         }
+    }
+    ui.data_mut(|d| d.insert_temp(visible_key, rel_stats.drawn));
 
-        draw_linked_relations(ui, state, &to_screen);
-        let virtual_clicked = draw_virtual_relations(ui, state, rect, &to_screen, pointer_down);
-        edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
-        if let Some(edge) = clicked_edge {
-            if !is_hand_mode {
-                state.selected_edge = Some(edge);
-            }
+    let virtual_clicked = match virtual_outcome {
+        VirtualOutcome::None => false,
+        VirtualOutcome::Remove(idx) => {
+            remove_virtual(state, idx);
+            true
         }
+        VirtualOutcome::Select(idx) => {
+            state.selected_virtual = Some(idx);
+            state.selected_edge = None;
+            true
+        }
+    };
+    let edge_was_clicked = clicked_edge.is_some() || virtual_clicked;
+    if let Some(edge) = clicked_edge
+        && !is_hand_mode
+    {
+        state.selected_edge = Some(edge);
     }
 
     // Draw nodes
@@ -997,8 +1022,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut node_clicked = false;
     let mut column_clicked_request: Option<(String, String)> = None;
 
-    // Snapshot nodes untuk deteksi tabrakan saat dragging
-    let nodes_snapshot = state.nodes.clone();
+    // Snapshot nodes untuk deteksi tabrakan, hanya saat ada node di-drag
+    // (clone penuh tiap frame mahal untuk diagram besar).
+    let nodes_snapshot = if state.prevent_overlap && state.dragging_node.is_some() {
+        state.nodes.clone()
+    } else {
+        Vec::new()
+    };
+    let search_lower = state.search_query.to_lowercase();
+    let mut nodes_drawn = 0usize;
+    let mut relations_request: Option<String> = None;
 
     // For manual interaction & relation search:
     let selected_column = state.selected_column.clone();
@@ -1030,7 +1063,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut focus_request: Option<Option<String>> = None;
     let mut double_clicked_node: Option<String> = None;
 
-    for node in &mut state.nodes {
+    for (node_idx, node) in state.nodes.iter_mut().enumerate() {
         node.ensure_groups_migrated();
 
         // Estimate height based on columns
@@ -1049,6 +1082,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         let node_pos_screen = to_screen(node.pos);
         let node_rect = egui::Rect::from_min_size(node_pos_screen, node_size_scaled);
 
+        // Node di luar layar tidak digambar dan tidak mendaftarkan widget,
+        // kecuali yang sedang di-drag (drag harus tetap tersambung).
+        if !clip.intersects(node_rect.expand(8.0 * scale))
+            && state.dragging_node.as_deref() != Some(node.id.as_str())
+        {
+            continue;
+        }
+        nodes_drawn += 1;
+
         // Interact
         let node_id = ui.id().with("node").with(&node.id);
         // Tabel milik link database: posisinya mengikuti diagram sumber, jadi
@@ -1066,12 +1108,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         if !is_hand_mode && node_response.clicked() {
             node_clicked = true;
         }
-        // Double-click judul tabel: pusatkan & zoom, lalu animasikan relasinya.
+        // Double-click judul tabel (atau di mana saja pada kartu ringkas):
+        // pusatkan & zoom, lalu animasikan relasinya.
         if !is_hand_mode
             && node_response.double_clicked()
-            && ui
-                .input(|i| i.pointer.interact_pos())
-                .is_some_and(|p| p.y <= node_rect.top() + header_height_unscaled * scale)
+            && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| {
+                lod != Lod::Detail || p.y <= node_rect.top() + header_height_unscaled * scale
+            })
         {
             double_clicked_node = Some(node.id.clone());
         }
@@ -1095,6 +1138,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             {
                 ui.close();
                 focus_request = Some(Some(node.id.clone()));
+            }
+            if ui
+                .button("Show relations")
+                .on_hover_text("List every relation of this table in a searchable panel")
+                .clicked()
+            {
+                ui.close();
+                relations_request = Some(node.id.clone());
             }
             ui.separator();
 
@@ -1217,14 +1268,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         };
 
         // Check if node matches search
-        let is_search_match = if state.show_search && !state.search_query.is_empty() {
-            let query = state.search_query.to_lowercase();
-            (state.search_tables && node.title.to_lowercase().contains(&query))
+        let is_search_match = if state.show_search && !search_lower.is_empty() {
+            let query = &search_lower;
+            (state.search_tables && node.title.to_lowercase().contains(query))
                 || (state.search_columns
                     && node
                         .columns
                         .iter()
-                        .any(|c| c.to_lowercase().contains(&query)))
+                        .any(|c| c.to_lowercase().contains(query)))
         } else {
             false
         };
@@ -1282,6 +1333,33 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             egui::StrokeKind::Middle,
         );
 
+        let is_dimmed = focus_set
+            .as_ref()
+            .is_some_and(|set| !set.contains(&node.id));
+
+        // Zoom kecil: kartu ringkas tanpa baris kolom (tidak terbaca dan mahal
+        // digambar). Yang tetap sampai ke user: nama tabel, group, jumlah
+        // kolom dan relasi; detail relasi ada di panel "Show relations".
+        if lod != Lod::Detail {
+            let rel_count = node_relation_counts.get(node_idx).copied().unwrap_or(0);
+            let group_color = node
+                .group_ids
+                .first()
+                .and_then(|g| available_groups.iter().find(|(id, _, _)| id == g))
+                .map(|(_, _, c)| *c);
+            draw_node_card(ui, node, node_rect, lod, rel_count, group_color);
+            node_response.on_hover_text(format!(
+                "Table: {}\n{} columns · {} relations\nRight-click → Show relations for details\nDouble-click to zoom in",
+                node.title,
+                node.columns.len(),
+                rel_count
+            ));
+            if is_dimmed {
+                dim_node(ui, node_rect, scale, canvas_bg);
+            }
+            continue;
+        }
+
         // Header
         let header_height = header_height_unscaled * scale;
         let header_rect = egui::Rect::from_min_size(
@@ -1303,7 +1381,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 egui::pos2(header_rect.right() - 6.0 * scale, header_rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 "not in DB",
-                egui::FontId::proportional(9.0 * scale),
+                egui::FontId::proportional(quantize_font(9.0 * scale)),
                 egui::Color32::from_gray(190),
             );
         }
@@ -1354,14 +1432,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 title_pos,
                 egui::Align2::CENTER_CENTER,
                 &node.title,
-                egui::FontId::proportional(12.5 * scale),
+                egui::FontId::proportional(quantize_font(12.5 * scale)),
                 egui::Color32::WHITE,
             );
             ui.painter().text(
                 db_pos,
                 egui::Align2::CENTER_CENTER,
                 format!("[{}]", db_label),
-                egui::FontId::proportional(9.0 * scale),
+                egui::FontId::proportional(quantize_font(9.0 * scale)),
                 egui::Color32::from_white_alpha(190),
             );
         } else {
@@ -1369,7 +1447,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 header_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 &node.title,
-                egui::FontId::proportional(14.0 * scale),
+                egui::FontId::proportional(quantize_font(14.0 * scale)),
                 egui::Color32::WHITE,
             );
         }
@@ -1393,6 +1471,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 col_pos_screen,
                 egui::vec2(node_rect.width(), item_height),
             );
+            // Tabel panjang yang terpotong layar: baris di luar layar dilewati.
+            if !clip.intersects(col_rect) {
+                y_offset += item_height;
+                continue;
+            }
 
             let col_id = ui.id().with("col").with(&node.id).with(col);
             let col_sense = if is_hand_mode {
@@ -1515,9 +1598,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             let is_col_search_match = state.show_search
                 && state.search_columns
                 && !state.search_query.is_empty()
-                && col
-                    .to_lowercase()
-                    .contains(&state.search_query.to_lowercase());
+                && col.to_lowercase().contains(&search_lower);
 
             if is_selected_col {
                 // Highlight jelas kolom sumber terpilih (emas dengan border)
@@ -1576,7 +1657,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 node_pos_screen + egui::vec2(8.0 * scale, y_offset),
                 egui::Align2::LEFT_TOP,
                 col,
-                egui::FontId::monospace(12.0 * scale),
+                egui::FontId::monospace(quantize_font(12.0 * scale)),
                 name_color,
             );
 
@@ -1599,28 +1680,25 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     egui::pos2(node_rect.right() - 8.0 * scale, col_pos_screen.y),
                     egui::Align2::RIGHT_TOP,
                     right.trim_end(),
-                    egui::FontId::monospace(10.0 * scale),
+                    egui::FontId::monospace(quantize_font(10.0 * scale)),
                     egui::Color32::from_gray(130),
                 );
             }
             y_offset += item_height;
         }
 
-        // Mode fokus: tabel yang tidak terkait ditutup lapisan warna latar
-        // sehingga tampak transparan (setara opacity DIM_OPACITY).
-        if focus_set
-            .as_ref()
-            .is_some_and(|set| !set.contains(&node.id))
-        {
-            ui.painter().rect_filled(
-                node_rect.expand(7.0 * scale),
-                12.0 * scale,
-                canvas_bg.gamma_multiply(1.0 - DIM_OPACITY),
-            );
+        if is_dimmed {
+            dim_node(ui, node_rect, scale, canvas_bg);
         }
     }
+    if let Some(table) = relations_request {
+        state.relations_panel = Some(table);
+        state.relations_panel_query.clear();
+    }
 
-    draw_flow_animation(ui, state, &to_screen, now);
+    if !draw_flow_animation(ui, state, &to_screen, now) {
+        state.flow_anim = None;
+    }
 
     if let Some(req) = focus_request {
         state.focus_table = req;
@@ -1806,13 +1884,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 if toolbar_square_button(
                     ui,
                     egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint,
-                    "Center",
+                    "Fit",
                     false,
                 )
-                .on_hover_text("Move diagram to center of view")
+                .on_hover_text("Zoom out until the whole diagram fits, then center it")
                 .clicked()
                 {
-                    center_diagram(state, rect.size());
+                    fit_diagram(state, rect.size());
                 }
 
                 if toolbar_square_button(
@@ -1914,6 +1992,38 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         {
                             state.save_requested = true;
                         }
+                        ui.add_enabled_ui(state.show_relations, |ui| {
+                            ui.indent("relation_kinds", |ui| {
+                                for (value, label, hint) in [
+                                    (
+                                        &mut state.show_fk_relations,
+                                        "Foreign keys",
+                                        "Relations defined by database foreign keys",
+                                    ),
+                                    (
+                                        &mut state.show_virtual_relations,
+                                        "Virtual relations",
+                                        "Suggested, manual and imported relations",
+                                    ),
+                                    (
+                                        &mut state.show_linked_relations,
+                                        "Linked database relations",
+                                        "Relations that come from linked databases",
+                                    ),
+                                ] {
+                                    if ui.checkbox(value, label).on_hover_text(hint).changed() {
+                                        state.save_requested = true;
+                                    }
+                                }
+                            });
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Zoom out to see relations merged per table pair\n(and per group below 25%).",
+                            )
+                            .weak()
+                            .small(),
+                        );
                         ui.separator();
                         if ui.button("🔍 Suggest from all similar columns…").clicked() {
                             ui.close();
@@ -2353,6 +2463,44 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         action = Some(a);
     }
 
+    render_relations_panel(ui, state, rect, now);
+
+    // Overlay performa (build debug, toggle F3): waktu CPU membangun frame
+    // diagram dan jumlah relasi/tabel yang benar-benar digambar.
+    if cfg!(debug_assertions) {
+        let overlay_key = ui.id().with("diagram_perf_overlay");
+        if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F3)) {
+            let on: bool = ui.data(|d| d.get_temp(overlay_key)).unwrap_or(false);
+            ui.data_mut(|d| d.insert_temp(overlay_key, !on));
+        }
+        if ui.data(|d| d.get_temp(overlay_key)).unwrap_or(false) {
+            let text = format!(
+                "build {:.1} ms · zoom {:.2} ({:?})\nrelations drawn {}/{}\ntables drawn {}/{}",
+                frame_start.elapsed().as_secs_f64() * 1000.0,
+                state.zoom,
+                lod,
+                rel_stats.drawn,
+                rel_stats.total,
+                nodes_drawn,
+                state.nodes.len(),
+            );
+            let galley = ui.painter().layout_no_wrap(
+                text,
+                egui::FontId::monospace(11.0),
+                egui::Color32::from_rgb(120, 255, 160),
+            );
+            let r = egui::Rect::from_min_size(
+                rect.right_top() + egui::vec2(-galley.size().x - 28.0, 12.0),
+                galley.size() + egui::vec2(16.0, 10.0),
+            );
+            ui.painter()
+                .rect_filled(r, 4.0, egui::Color32::from_black_alpha(190));
+            ui.painter()
+                .galley(r.min + egui::vec2(8.0, 5.0), galley, egui::Color32::WHITE);
+            ui.ctx().request_repaint();
+        }
+    }
+
     // Atur kursor mouse untuk mode Hand Tool
     if is_hand_mode {
         let pointer_down = ui.input(|i| i.pointer.primary_down() || i.pointer.middle_down());
@@ -2496,6 +2644,225 @@ fn render_focus_chip(
     }
 
     Some(chip)
+}
+
+/// Panel daftar relasi sebuah tabel: semua FK, relasi virtual, dan relasi
+/// link, bisa dicari. Inilah jalan informasi relasi sampai ke user saat
+/// garisnya terlalu padat untuk dibaca. Baris divirtualisasi (`show_rows`),
+/// jadi ribuan relasi tetap ringan. Klik baris = animasi ke tabel ujungnya.
+fn render_relations_panel(ui: &mut egui::Ui, state: &mut DiagramState, rect: egui::Rect, now: f64) {
+    let Some(table) = state.relations_panel.clone() else {
+        return;
+    };
+    if !state.nodes.iter().any(|n| n.id == table) {
+        state.relations_panel = None;
+        return;
+    }
+    let rows = crate::diagram_lod::relations_of(state, &table, KindFilter::from_state(state));
+    let query = state.relations_panel_query.to_lowercase();
+    let shown: Vec<&crate::diagram_lod::RelationRow> =
+        rows.iter().filter(|r| r.matches(&query)).collect();
+    let count_of = |k: crate::diagram_lod::RelationKind| rows.iter().filter(|r| r.kind == k).count();
+    let summary = {
+        use crate::diagram_lod::RelationKind::*;
+        let parts: Vec<String> = [ForeignKey, Virtual, Linked]
+            .into_iter()
+            .map(|k| (count_of(k), k.label()))
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, l)| format!("{n} {l}"))
+            .collect();
+        if parts.is_empty() {
+            "No relations".to_string()
+        } else {
+            parts.join(" · ")
+        }
+    };
+    let title = state
+        .nodes
+        .iter()
+        .find(|n| n.id == table)
+        .map(|n| n.title.clone())
+        .unwrap_or_else(|| table.clone());
+
+    let mut open = true;
+    let mut jump: Option<(String, String, String)> = None; // (tabel tujuan, child, parent)
+    egui::Window::new(format!("Relations · {title}"))
+        .id(ui.id().with("diagram_relations_panel"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_pos(rect.right_top() + egui::vec2(-360.0, 16.0))
+        .default_size(egui::vec2(340.0, 420.0))
+        .constrain_to(rect)
+        .show(ui.ctx(), |ui| {
+            ui.label(egui::RichText::new(summary).weak());
+            ui.add_space(4.0);
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut state.relations_panel_query,
+                "Filter by table or column…",
+                ui.available_width(),
+            );
+            ui.add_space(4.0);
+            if shown.is_empty() {
+                ui.label(egui::RichText::new("No relations match.").weak());
+                return;
+            }
+            let row_h = 36.0;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, row_h, shown.len(), |ui, range| {
+                    for row in &shown[range] {
+                        let (resp, painter) = ui.allocate_painter(
+                            egui::vec2(ui.available_width(), row_h),
+                            egui::Sense::click(),
+                        );
+                        let r = resp.rect;
+                        if resp.hovered() {
+                            painter.rect_filled(r, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                        }
+                        let kind_color = match row.kind {
+                            crate::diagram_lod::RelationKind::ForeignKey => {
+                                egui::Color32::from_rgb(150, 160, 185)
+                            }
+                            crate::diagram_lod::RelationKind::Virtual => {
+                                egui::Color32::from_rgb(0, 190, 200)
+                            }
+                            crate::diagram_lod::RelationKind::Linked => {
+                                egui::Color32::from_rgb(0, 150, 160)
+                            }
+                        };
+                        // Badge jenis relasi di kiri.
+                        let badge = egui::Rect::from_min_size(
+                            r.left_top() + egui::vec2(4.0, 9.0),
+                            egui::vec2(48.0, 18.0),
+                        );
+                        painter.rect_filled(badge, 3.0, kind_color.linear_multiply(0.25));
+                        painter.text(
+                            badge.center(),
+                            egui::Align2::CENTER_CENTER,
+                            row.kind.label(),
+                            egui::FontId::proportional(10.0),
+                            kind_color,
+                        );
+                        let other = row.other(&table);
+                        let outgoing = row.child == table && row.parent != table;
+                        let headline = if outgoing {
+                            format!("references {other}")
+                        } else {
+                            format!("referenced by {other}")
+                        };
+                        let text_x = badge.right() + 8.0;
+                        painter.text(
+                            egui::pos2(text_x, r.top() + 4.0),
+                            egui::Align2::LEFT_TOP,
+                            headline,
+                            egui::FontId::proportional(12.5),
+                            ui.visuals().strong_text_color(),
+                        );
+                        let detail = if row.child_column.is_empty() {
+                            format!("{} → {}", row.child, row.parent)
+                        } else {
+                            format!(
+                                "{}.{} → {}.{}",
+                                row.child, row.child_column, row.parent, row.parent_column
+                            )
+                        };
+                        painter.text(
+                            egui::pos2(text_x, r.top() + 20.0),
+                            egui::Align2::LEFT_TOP,
+                            detail,
+                            egui::FontId::monospace(10.5),
+                            ui.visuals().weak_text_color(),
+                        );
+                        if resp
+                            .on_hover_text(format!("Click to jump to {other}"))
+                            .clicked()
+                        {
+                            jump = Some((other.to_string(), row.child.clone(), row.parent.clone()));
+                        }
+                    }
+                });
+        });
+
+    if !open {
+        state.relations_panel = None;
+    }
+    if let Some((target, child, parent)) = jump {
+        start_view_animation(state, &target, rect.size(), now);
+        // Kedua tabel ujung relasi diberi glow emas.
+        state.selected_edge = Some((child, parent));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Mode fokus: tabel yang tidak terkait ditutup lapisan warna latar
+/// sehingga tampak transparan (setara opacity DIM_OPACITY).
+fn dim_node(ui: &egui::Ui, node_rect: egui::Rect, scale: f32, canvas_bg: egui::Color32) {
+    ui.painter().rect_filled(
+        node_rect.expand(7.0 * scale),
+        12.0 * scale,
+        canvas_bg.gamma_multiply(1.0 - DIM_OPACITY),
+    );
+}
+
+/// Kartu tabel untuk tampilan ringkas/overview: nama tabel (ukuran font
+/// tetap terbaca), strip warna group, dan jumlah kolom/relasi bila muat.
+fn draw_node_card(
+    ui: &egui::Ui,
+    node: &DiagramNode,
+    r: egui::Rect,
+    lod: Lod,
+    rel_count: u32,
+    group_color: Option<egui::Color32>,
+) {
+    let painter = ui.painter();
+    let rounding = (r.width() * 0.04).min(4.0);
+    let fill = if node.detached {
+        egui::Color32::from_rgb(72, 52, 100)
+    } else {
+        egui::Color32::from_rgb(50, 50, 60)
+    };
+    painter.rect_filled(r, rounding, fill);
+    if let Some(c) = group_color {
+        if lod == Lod::Overview {
+            painter.rect_filled(r, rounding, c.linear_multiply(0.3));
+        }
+        let strip = egui::Rect::from_min_size(
+            r.min,
+            egui::vec2((r.width() * 0.05).clamp(2.0, 5.0), r.height()),
+        );
+        painter.rect_filled(strip, 0.0, c);
+    }
+    if r.width() < 28.0 {
+        return;
+    }
+    let title_px = quantize_font((r.width() / 11.0).clamp(9.0, 15.0));
+    let title = crate::diagram_lod::truncate_for_width(&node.title, r.width() - 10.0, title_px);
+    let show_sub = lod == Lod::Compact && r.height() > title_px * 3.5;
+    let title_pos = if show_sub {
+        r.center() - egui::vec2(0.0, title_px * 0.6)
+    } else {
+        r.center()
+    };
+    painter.text(
+        title_pos,
+        egui::Align2::CENTER_CENTER,
+        title,
+        egui::FontId::proportional(title_px),
+        egui::Color32::WHITE,
+    );
+    if show_sub {
+        let sub_px = quantize_font((title_px * 0.8).max(8.0));
+        let sub = format!("{} cols · {} rel", node.columns.len(), rel_count);
+        painter.text(
+            r.center() + egui::vec2(0.0, sub_px * 0.9),
+            egui::Align2::CENTER_CENTER,
+            crate::diagram_lod::truncate_for_width(&sub, r.width() - 10.0, sub_px),
+            egui::FontId::proportional(sub_px),
+            egui::Color32::from_gray(170),
+        );
+    }
 }
 
 /// Grid latar mengikuti pan & zoom; tiap garis ke-5 lebih tegas.
@@ -2673,35 +3040,56 @@ pub fn flow_relations(state: &DiagramState, table_id: &str) -> Vec<FlowLink> {
 
 /// Animasi "data mengalir": kurva tiap relasi kolom tabel terpilih disorot,
 /// baris kolom sumber/tujuan diberi warna, dan partikel bergerak dari kolom
-/// parent (sumber data) ke kolom child.
+/// parent (sumber data) ke kolom child. Mengembalikan `false` bila animasi
+/// sudah selesai sehingga `flow_anim` boleh dibersihkan.
 fn draw_flow_animation(
     ui: &egui::Ui,
     state: &DiagramState,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     now: f64,
-) {
+) -> bool {
     let Some(flow) = &state.flow_anim else {
-        return;
+        return false;
     };
+    let elapsed = (now - flow.start_time).max(0.0);
+    // Animasi berhenti sendiri: tanpa batas, seluruh diagram digambar ulang
+    // 30x/detik terus-menerus walau user diam.
+    if elapsed > crate::diagram_lod::FLOW_ANIM_SECS {
+        return false;
+    }
+    // Baris kolom tidak digambar di zoom kecil; animasi ditahan tapi waktu
+    // tetap berjalan.
+    if lod_for_zoom(state.zoom) != Lod::Detail {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(250));
+        return true;
+    }
     let scale = state.zoom;
     let links = flow_relations(state, &flow.table_id);
     if links.is_empty() {
-        return;
+        return false;
     }
+    let index = node_index(&state.nodes);
+    let clip = ui.clip_rect();
     let painter = ui.painter();
     let source_color = egui::Color32::from_rgb(80, 220, 140);
     let target_color = egui::Color32::from_rgb(80, 200, 255);
-    let elapsed = (now - flow.start_time).max(0.0);
     // Denyut halus untuk sorotan baris kolom.
     let pulse = 0.55 + 0.25 * ((elapsed * 4.0).sin() as f32);
+    let mut any_visible = false;
 
     for (child_id, child_col, parent_id, parent_col) in &links {
-        let (Some(child), Some(parent)) = (
-            state.nodes.iter().find(|n| &n.id == child_id),
-            state.nodes.iter().find(|n| &n.id == parent_id),
-        ) else {
+        let (Some(&ci), Some(&pi)) = (index.get(child_id.as_str()), index.get(parent_id.as_str()))
+        else {
             continue;
         };
+        let (child, parent) = (&state.nodes[ci], &state.nodes[pi]);
+        let (start, end, _, bezier) =
+            column_curve(child, child_col, parent, parent_col, to_screen, scale);
+        if !curve_visible(&bezier.points, clip, 16.0) {
+            continue;
+        }
+        any_visible = true;
 
         // Sorot baris kolom: hijau = sumber data, biru = penerima.
         for (node, col, color) in [
@@ -2725,11 +3113,8 @@ fn draw_flow_animation(
             );
         }
 
-        let (start, end, _, bezier) =
-            column_curve(child, child_col, parent, parent_col, to_screen, scale);
-        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
         painter.add(egui::Shape::line(
-            points,
+            sample_curve(&bezier),
             egui::Stroke::new(2.0 * scale.max(0.6), target_color.linear_multiply(0.45)),
         ));
         painter.circle_filled(end, 3.5 * scale, source_color);
@@ -2753,39 +3138,16 @@ fn draw_flow_animation(
             }
         }
     }
+    // Repaint cepat hanya bila ada partikel di layar; selain itu cukup
+    // bangun sesekali untuk menghentikan animasi tepat waktu.
+    let next = if any_visible { 33 } else { 250 };
     ui.ctx()
-        .request_repaint_after(std::time::Duration::from_millis(33));
+        .request_repaint_after(std::time::Duration::from_millis(next));
+    true
 }
 
 /// Relasi bawaan diagram sumber link database: garis putus-putus tipis,
 /// read-only (tanpa seleksi/hapus; diubah dari diagram sumbernya).
-fn draw_linked_relations(
-    ui: &egui::Ui,
-    state: &DiagramState,
-    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
-) {
-    let scale = state.zoom;
-    let color = egui::Color32::from_rgb(0, 190, 200).linear_multiply(0.5);
-    for rel in &state.linked_relations {
-        let (Some(child), Some(parent)) = (
-            state.nodes.iter().find(|n| n.id == rel.child),
-            state.nodes.iter().find(|n| n.id == rel.parent),
-        ) else {
-            continue;
-        };
-        let (_, end, _, bezier) = relation_curve(child, parent, rel, to_screen, scale);
-        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
-        let color = fade(color, relation_dim(state, rel));
-        ui.painter().extend(egui::Shape::dashed_line(
-            &points,
-            egui::Stroke::new(1.2 * scale.max(0.5), color),
-            6.0 * scale,
-            4.0 * scale,
-        ));
-        ui.painter().circle_filled(end, 2.5 * scale, color);
-    }
-}
-
 /// Gambar kontainer database: satu untuk tabel host (bila ada link) dan satu
 /// per link. Header kontainer bisa digeser; kontainer link punya tombol buka
 /// sumber / refresh / unlink, dan tampil sebagai placeholder bila gagal dimuat.
@@ -3025,64 +3387,290 @@ fn draw_link_containers(
 
 /// Gambar relasi virtual sebagai garis putus-putus dari baris kolom child ke
 /// baris kolom parent. Mengembalikan `true` bila salah satunya diklik.
-fn draw_virtual_relations(
-    ui: &mut egui::Ui,
-    state: &mut DiagramState,
-    rect: egui::Rect,
+/// Hitungan relasi per frame (untuk mode padat dan overlay performa).
+#[derive(Default)]
+struct RelStats {
+    /// Semua relasi yang dipertimbangkan.
+    total: usize,
+    /// Relasi yang benar-benar digambar (lolos culling).
+    drawn: usize,
+}
+
+/// Konteks bersama penggambaran relasi dalam satu frame.
+struct RelCtx<'a> {
+    index: &'a HashMap<&'a str, usize>,
+    clip: egui::Rect,
+    hover: Option<egui::Pos2>,
+    /// Garis putus-putus hanya bila relasi terlihat sedikit.
+    dashed: bool,
+    emphasis: Emphasis<'a>,
+}
+
+impl RelCtx<'_> {
+    fn nodes<'s>(
+        &self,
+        state: &'s DiagramState,
+        a: &str,
+        b: &str,
+    ) -> Option<(&'s DiagramNode, &'s DiagramNode)> {
+        let (Some(&i), Some(&j)) = (self.index.get(a), self.index.get(b)) else {
+            return None;
+        };
+        Some((&state.nodes[i], &state.nodes[j]))
+    }
+
+    /// Pointer dekat polyline `points` (dalam `tol` px).
+    fn hovers(&self, points: &[egui::Pos2], tol: f32) -> bool {
+        self.hover.is_some_and(|p| {
+            egui::Rect::from_points(points).expand(tol + 2.0).contains(p)
+                && points.windows(2).any(|w| dist_to_segment(p, w[0], w[1]) < tol)
+        })
+    }
+}
+
+/// Titik sample kurva, jumlahnya mengikuti panjang kurva di layar.
+fn sample_curve(bezier: &egui::epaint::CubicBezierShape) -> Vec<egui::Pos2> {
+    let [start, .., end] = bezier.points;
+    let n = curve_samples(start, end);
+    (0..=n).map(|i| bezier.sample(i as f32 / n as f32)).collect()
+}
+
+/// Garis relasi virtual/linked: putus-putus bila relasi sedikit, solid bila
+/// padat (satu shape, bukan satu shape per dash).
+fn relation_line(
+    shapes: &mut Vec<egui::Shape>,
+    points: &[egui::Pos2],
+    clip: egui::Rect,
+    stroke: egui::Stroke,
+    dashed: bool,
+    scale: f32,
+) {
+    // Hanya potongan yang terlihat yang di-tessellate.
+    for run in crate::diagram_lod::clip_polyline(points, clip.expand(stroke.width + 2.0)) {
+        if dashed {
+            shapes.extend(egui::Shape::dashed_line(
+                &run,
+                stroke,
+                6.0 * scale,
+                4.0 * scale,
+            ));
+        } else {
+            shapes.push(egui::Shape::line(run, stroke));
+        }
+    }
+}
+
+/// Relasi FK database (tampilan detail): satu kurva per pasangan tabel,
+/// dari sisi kanan tabel sumber ke sisi kiri tabel tujuan. Mengembalikan
+/// edge yang diklik.
+fn draw_fk_edges(
+    ui: &egui::Ui,
+    state: &DiagramState,
+    ctx: &RelCtx,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     pointer_down: bool,
-) -> bool {
+    stats: &mut RelStats,
+) -> Option<(String, String)> {
     let scale = state.zoom;
-    let hover = ui
-        .input(|i| i.pointer.hover_pos())
-        .filter(|p| rect.contains(*p));
+    let group_colors: HashMap<&str, egui::Color32> = state
+        .groups
+        .iter()
+        .map(|g| (g.id.as_str(), g.color.linear_multiply(0.8)))
+        .collect();
+    // Beberapa FK antar pasangan tabel yang sama menghasilkan kurva identik.
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    let mut clicked = None;
+
+    for edge in &state.edges {
+        stats.total += 1;
+        if !seen.insert((edge.source.as_str(), edge.target.as_str())) {
+            continue;
+        }
+        let Some((src, dst)) = ctx.nodes(state, &edge.source, &edge.target) else {
+            continue;
+        };
+        let src_size = src.size * scale;
+        let dst_size = dst.size * scale;
+        let src_pos = to_screen(src.pos) + egui::vec2(src_size.x, src_size.y / 2.0); // right side
+        let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_size.y / 2.0); // left side
+        let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
+        let points = [
+            src_pos,
+            src_pos + egui::vec2(control_scale, 0.0),
+            dst_pos - egui::vec2(control_scale, 0.0),
+            dst_pos,
+        ];
+        if !curve_visible(&points, ctx.clip, 4.0) {
+            continue;
+        }
+        stats.drawn += 1;
+
+        let is_selected = state
+            .selected_edge
+            .as_ref()
+            .is_some_and(|(s, t)| *s == edge.source && *t == edge.target);
+        // Sorot bila kolom terpilih adalah ujung salah satu FK pasangan ini.
+        let is_highlighted_by_col = state.selected_column.as_ref().is_some_and(|(t, c)| {
+            src.foreign_keys.iter().any(|fk| {
+                fk.referenced_table_name == edge.target
+                    && ((fk.table_name == *t && fk.column_name == *c)
+                        || (fk.referenced_table_name == *t && fk.referenced_column_name == *c))
+            })
+        });
+        let is_active = is_selected || is_highlighted_by_col;
+        let emph = ctx.emphasis.of(&edge.source, &edge.target);
+
+        let base_color = src
+            .group_ids
+            .first()
+            .or(src.group_id.as_ref())
+            .and_then(|g| group_colors.get(g.as_str()).copied())
+            .unwrap_or(egui::Color32::from_gray(100));
+        let (color, width) = if is_active {
+            (egui::Color32::from_rgb(255, 215, 0), 3.0) // Gold
+        } else if emph.highlight {
+            (egui::Color32::from_rgb(140, 200, 255), 2.0)
+        } else {
+            (base_color, 1.0)
+        };
+        let stroke = egui::Stroke::new(width * scale.max(0.5), fade(color, emph.alpha));
+        let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+            points,
+            false,
+            egui::Color32::TRANSPARENT,
+            stroke,
+        );
+        let sampled = sample_curve(&bezier);
+
+        // Hit test hanya bila pointer dekat bounding box kurva. Relasi redup
+        // (mode fokus) tidak bisa di-hover/klik.
+        let is_hovered = emph.interactive
+            && ctx.hover.is_some_and(|p| {
+                egui::Rect::from_points(&points).expand(20.0).contains(p)
+                    && (0..=30).any(|i| bezier.sample(i as f32 / 30.0).distance(p) < 20.0)
+            });
+        if is_hovered {
+            if pointer_down {
+                clicked = Some((edge.source.clone(), edge.target.clone()));
+            }
+            if !is_selected {
+                relation_line(
+                    &mut shapes,
+                    &sampled,
+                    ctx.clip,
+                    egui::Stroke::new(2.0 * scale, egui::Color32::from_gray(180)),
+                    false,
+                    scale,
+                );
+            }
+        }
+        relation_line(&mut shapes, &sampled, ctx.clip, stroke, false, scale);
+    }
+    ui.painter().extend(shapes);
+    clicked
+}
+
+/// Relasi bawaan diagram sumber link database (read-only, putus-putus tipis).
+fn draw_linked_relations(
+    ui: &egui::Ui,
+    state: &DiagramState,
+    ctx: &RelCtx,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    stats: &mut RelStats,
+) {
+    let scale = state.zoom;
+    let base = egui::Color32::from_rgb(0, 190, 200).linear_multiply(0.5);
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    for rel in &state.linked_relations {
+        stats.total += 1;
+        let Some((child, parent)) = ctx.nodes(state, &rel.child, &rel.parent) else {
+            continue;
+        };
+        let (_, end, _, bezier) = relation_curve(child, parent, rel, to_screen, scale);
+        if !curve_visible(&bezier.points, ctx.clip, 4.0) {
+            continue;
+        }
+        stats.drawn += 1;
+        let emph = ctx.emphasis.of(&rel.child, &rel.parent);
+        let width = if emph.highlight { 2.2 } else { 1.2 };
+        let color = fade(base, emph.alpha);
+        relation_line(
+            &mut shapes,
+            &sample_curve(&bezier),
+            ctx.clip,
+            egui::Stroke::new(width * scale.max(0.5), color),
+            ctx.dashed,
+            scale,
+        );
+        shapes.push(egui::Shape::circle_filled(end, 2.5 * scale, color));
+    }
+    ui.painter().extend(shapes);
+}
+
+/// Hasil interaksi relasi virtual; diterapkan setelah penggambaran karena
+/// penggambaran hanya meminjam state secara immutable.
+enum VirtualOutcome {
+    None,
+    Select(usize),
+    Remove(usize),
+}
+
+/// Relasi virtual (putus-putus bila sedikit). Relasi yang di-hover atau
+/// terpilih menampilkan label dan dua tombol hapus.
+fn draw_virtual_relations(
+    ui: &mut egui::Ui,
+    state: &DiagramState,
+    ctx: &RelCtx,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    pointer_down: bool,
+    stats: &mut RelStats,
+) -> VirtualOutcome {
+    let scale = state.zoom;
     // Klik di atas node milik node, bukan garis di bawahnya.
-    let over_node = hover.is_some_and(|p| {
-        state
-            .nodes
-            .iter()
-            .any(|n| egui::Rect::from_min_size(to_screen(n.pos), n.size * scale).contains(p))
+    let over_node = ctx.hover.is_some_and(|p| {
+        crate::diagram_lod::node_at(&state.nodes, to_screen, scale, p).is_some()
     });
 
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    // Label + tombol hapus relasi yang di-hover/terpilih, digambar setelah
+    // semua garis supaya tidak tertutup garis lain.
+    let mut overlays: Vec<(usize, egui::Pos2, String, egui::Color32, egui::Rect, egui::Rect)> =
+        Vec::new();
     let mut clicked: Option<usize> = None;
     let mut remove: Option<usize> = None;
     for (idx, rel) in state.virtual_relations.iter().enumerate() {
-        let (Some(child), Some(parent)) = (
-            state.nodes.iter().find(|n| n.id == rel.child),
-            state.nodes.iter().find(|n| n.id == rel.parent),
-        ) else {
+        stats.total += 1;
+        let Some((child, parent)) = ctx.nodes(state, &rel.child, &rel.parent) else {
             continue;
         };
         let (start, end, dir, bezier) = relation_curve(child, parent, rel, to_screen, scale);
-        let points: Vec<egui::Pos2> = (0..=40).map(|i| bezier.sample(i as f32 / 40.0)).collect();
-        let dim = relation_dim(state, rel);
+        let selected = state.selected_virtual == Some(idx);
+        if !selected && !curve_visible(&bezier.points, ctx.clip, 16.0) {
+            continue;
+        }
+        stats.drawn += 1;
+        let points = sample_curve(&bezier);
+        let emph = ctx.emphasis.of(&rel.child, &rel.parent);
 
         let btn_size = egui::vec2(20.0, 20.0);
         let dist = (end - start).length();
         let offset = 28.0f32.min(dist * 0.35).max(14.0);
-        let child_btn_pos = start + egui::vec2(dir * offset, 0.0);
-        let parent_btn_pos = end - egui::vec2(dir * offset, 0.0);
-        let child_btn_rect = egui::Rect::from_center_size(child_btn_pos, btn_size);
-        let parent_btn_rect = egui::Rect::from_center_size(parent_btn_pos, btn_size);
+        let child_btn_rect =
+            egui::Rect::from_center_size(start + egui::vec2(dir * offset, 0.0), btn_size);
+        let parent_btn_rect =
+            egui::Rect::from_center_size(end - egui::vec2(dir * offset, 0.0), btn_size);
 
-        let is_btn_hover = dim >= 1.0
-            && hover.is_some_and(|p| {
+        let is_btn_hover = emph.interactive
+            && ctx.hover.is_some_and(|p| {
                 child_btn_rect.expand(2.0).contains(p) || parent_btn_rect.expand(2.0).contains(p)
             });
-        let is_line_hover = !over_node
-            && dim >= 1.0
-            && hover.is_some_and(|p| {
-                egui::Rect::from_points(&points).expand(14.0).contains(p)
-                    && points
-                        .windows(2)
-                        .any(|w| dist_to_segment(p, w[0], w[1]) < 12.0)
-            });
+        let is_line_hover = !over_node && emph.interactive && ctx.hovers(&points, 12.0);
         let hovered = is_btn_hover || is_line_hover;
 
         if hovered && pointer_down {
             clicked = Some(idx);
         }
-        let selected = state.selected_virtual == Some(idx);
         let base = match rel.origin {
             RelationOrigin::Imported => egui::Color32::from_rgb(147, 112, 219),
             RelationOrigin::Inferred | RelationOrigin::Manual => {
@@ -3091,73 +3679,278 @@ fn draw_virtual_relations(
         };
         let (color, width) = if selected {
             (egui::Color32::from_rgb(255, 215, 0), 2.5)
-        } else if hovered {
+        } else if hovered || emph.highlight {
             (base, 2.5)
         } else {
             (base.linear_multiply(0.85), 1.5)
         };
-        let color = fade(color, dim);
-        ui.painter().extend(egui::Shape::dashed_line(
+        let color = if selected || hovered {
+            color
+        } else {
+            fade(color, emph.alpha)
+        };
+        relation_line(
+            &mut shapes,
             &points,
+            ctx.clip,
             egui::Stroke::new(width * scale.max(0.5), color),
-            6.0 * scale,
-            4.0 * scale,
-        ));
-        ui.painter().circle_filled(end, 3.0 * scale, color);
+            ctx.dashed || selected || hovered,
+            scale,
+        );
+        shapes.push(egui::Shape::circle_filled(end, 3.0 * scale, color));
 
         if selected || hovered {
-            let mid = bezier.sample(0.5);
             let origin = match rel.origin {
                 RelationOrigin::Inferred => "suggested",
                 RelationOrigin::Manual => "manual",
                 RelationOrigin::Imported => "imported",
             };
-            ui.painter().text(
-                mid - egui::vec2(0.0, 10.0),
-                egui::Align2::CENTER_BOTTOM,
+            overlays.push((
+                idx,
+                bezier.sample(0.5),
                 format!("{} x {} ({origin})", rel.child_column, rel.parent_column),
-                egui::FontId::proportional(11.0),
                 color,
-            );
+                child_btn_rect,
+                parent_btn_rect,
+            ));
+        }
+    }
+    ui.painter().extend(shapes);
 
-            // Dua tombol tong sampah untuk menghapus relasi: dekat kolom child dan parent
-            let make_del_btn = |ui: &egui::Ui| {
-                egui::Button::new(
-                    egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(240, 80, 80)),
-                )
-                .fill(ui.visuals().window_fill)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgb(240, 80, 80).linear_multiply(0.7),
-                ))
-                .corner_radius(4.0)
-            };
+    for (idx, mid, text, color, child_btn_rect, parent_btn_rect) in overlays {
+        ui.painter().text(
+            mid - egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_BOTTOM,
+            text,
+            egui::FontId::proportional(11.0),
+            color,
+        );
 
-            let child_res = ui
-                .put(child_btn_rect, make_del_btn(ui))
-                .on_hover_text("Remove relation");
-            let parent_res = ui
-                .put(parent_btn_rect, make_del_btn(ui))
-                .on_hover_text("Remove relation");
-
-            if child_res.clicked() || parent_res.clicked() {
-                remove = Some(idx);
-            }
+        // Dua tombol tong sampah untuk menghapus relasi: dekat kolom child dan parent
+        let make_del_btn = |ui: &egui::Ui| {
+            egui::Button::new(
+                egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(240, 80, 80)),
+            )
+            .fill(ui.visuals().window_fill)
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(240, 80, 80).linear_multiply(0.7),
+            ))
+            .corner_radius(4.0)
+        };
+        let child_res = ui
+            .put(child_btn_rect, make_del_btn(ui))
+            .on_hover_text("Remove relation");
+        let parent_res = ui
+            .put(parent_btn_rect, make_del_btn(ui))
+            .on_hover_text("Remove relation");
+        if child_res.clicked() || parent_res.clicked() {
+            remove = Some(idx);
         }
     }
 
-    if let Some(idx) = remove {
-        remove_virtual(state, idx);
-        return true;
+    match (remove, clicked) {
+        (Some(idx), _) => VirtualOutcome::Remove(idx),
+        (None, Some(idx)) => VirtualOutcome::Select(idx),
+        _ => VirtualOutcome::None,
     }
-    if let Some(idx) = clicked {
-        state.selected_virtual = Some(idx);
-        state.selected_edge = None;
-        return true;
+}
+
+/// Titik sambung garis ringkas antara dua kotak layar: sisi yang saling
+/// menghadap, di tengah tinggi kotak.
+fn facing_points(a: egui::Rect, b: egui::Rect) -> [egui::Pos2; 4] {
+    let a_left = a.center().x > b.center().x;
+    let (start, end) = if a_left {
+        (a.left_center(), b.right_center())
+    } else {
+        (a.right_center(), b.left_center())
+    };
+    let bend = ((end.x - start.x).abs() * 0.5).max(12.0) * if a_left { -1.0 } else { 1.0 };
+    [
+        start,
+        start + egui::vec2(bend, 0.0),
+        end - egui::vec2(bend, 0.0),
+        end,
+    ]
+}
+
+/// Tebal garis ringkas menurut jumlah relasi yang diwakilinya.
+fn bundle_width(count: u32) -> f32 {
+    (1.0 + (count.max(1) as f32).log2() * 0.9).min(7.0)
+}
+
+/// Label kecil berlatar di layar (dipakai garis ringkas yang di-hover).
+fn draw_chip_label(ui: &egui::Ui, at: egui::Pos2, text: String, color: egui::Color32) {
+    let galley = ui.painter().layout_no_wrap(
+        text,
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+    let r = egui::Rect::from_center_size(at, galley.size() + egui::vec2(10.0, 4.0));
+    ui.painter()
+        .rect_filled(r, 4.0, egui::Color32::from_black_alpha(200));
+    ui.painter()
+        .rect_stroke(r, 4.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    ui.painter()
+        .galley(r.min + egui::vec2(5.0, 2.0), galley, egui::Color32::WHITE);
+}
+
+/// Tampilan ringkas/overview: satu garis per pasangan tabel (tebal menurut
+/// jumlah relasi) dan, di overview, satu garis per pasangan group.
+/// Mengembalikan pasangan tabel yang diklik.
+#[allow(clippy::too_many_arguments)]
+fn draw_aggregated_links(
+    ui: &egui::Ui,
+    state: &DiagramState,
+    lod: Lod,
+    links: &[TableLink],
+    group_bounds: &[(usize, String, egui::Rect, egui::Color32, String)],
+    ctx: &RelCtx,
+    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
+    pointer_down: bool,
+    stats: &mut RelStats,
+) -> Option<(String, String)> {
+    let scale = state.zoom;
+    let node_rect = |i: usize| {
+        let n = &state.nodes[i];
+        egui::Rect::from_min_size(to_screen(n.pos), n.size * scale)
+    };
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    // Teks digambar setelah semua garis supaya tidak tertutup.
+    let mut texts: Vec<(egui::Pos2, egui::Align2, String, egui::Color32)> = Vec::new();
+    let mut label: Option<(egui::Pos2, String, egui::Color32)> = None;
+    let mut clicked = None;
+
+    let (group_links, table_links, intra) = if lod == Lod::Overview && !state.groups.is_empty() {
+        let b = crate::diagram_lod::bundle_by_group(state, links);
+        (b.groups, std::borrow::Cow::Owned(b.rest), b.intra)
+    } else {
+        (Vec::new(), std::borrow::Cow::Borrowed(links), Vec::new())
+    };
+
+    // Bundel antar group (overview).
+    let group_rect: HashMap<usize, egui::Rect> =
+        group_bounds.iter().map(|(i, _, r, _, _)| (*i, *r)).collect();
+    for gl in &group_links {
+        stats.total += 1;
+        let (Some(ra), Some(rb)) = (group_rect.get(&gl.a), group_rect.get(&gl.b)) else {
+            continue;
+        };
+        let points = facing_points(*ra, *rb);
+        if !curve_visible(&points, ctx.clip, 8.0) {
+            continue;
+        }
+        stats.drawn += 1;
+        let color = egui::Color32::from_rgb(170, 180, 200);
+        let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+            points,
+            false,
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::NONE,
+        );
+        let pts = sample_curve(&bezier);
+        let hovered = ctx.hovers(&pts, 8.0);
+        let width = bundle_width(gl.count) * if hovered { 1.6 } else { 1.0 };
+        let alpha = if hovered { 0.95 } else { 0.55 };
+        relation_line(
+            &mut shapes,
+            &pts,
+            ctx.clip,
+            egui::Stroke::new(width, color.linear_multiply(alpha)),
+            false,
+            scale,
+        );
+        let mid = bezier.sample(0.5);
+        if hovered {
+            let ga = &state.groups[gl.a].title;
+            let gb = &state.groups[gl.b].title;
+            label = Some((mid, format!("{ga} ↔ {gb}: {} relations", gl.count), color));
+        } else if (points[3] - points[0]).length() > 80.0 {
+            texts.push((mid, egui::Align2::CENTER_CENTER, gl.count.to_string(), color));
+        }
     }
-    false
+    // Jumlah relasi internal tiap group, di pojok kanan header group.
+    for (gi, count) in intra.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        if let Some(r) = group_rect.get(&gi).filter(|r| ctx.clip.intersects(**r)) {
+            texts.push((
+                r.right_bottom() - egui::vec2(8.0, 6.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("{count} internal relations"),
+                egui::Color32::from_gray(170),
+            ));
+        }
+    }
+
+    // Garis per pasangan tabel.
+    for link in table_links.iter() {
+        stats.total += 1;
+        let (ra, rb) = (node_rect(link.a), node_rect(link.b));
+        let points = facing_points(ra, rb);
+        if !curve_visible(&points, ctx.clip, 8.0) {
+            continue;
+        }
+        stats.drawn += 1;
+        let (ida, idb) = (&state.nodes[link.a].id, &state.nodes[link.b].id);
+        let emph = ctx.emphasis.of(ida, idb);
+        let selected = state
+            .selected_edge
+            .as_ref()
+            .is_some_and(|(s, t)| (s == ida && t == idb) || (s == idb && t == ida));
+        let only_virtual = link.fk == 0;
+        let base = if only_virtual {
+            egui::Color32::from_rgb(0, 190, 200)
+        } else {
+            egui::Color32::from_rgb(150, 160, 185)
+        };
+        let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+            points,
+            false,
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::NONE,
+        );
+        let pts = sample_curve(&bezier);
+        let hovered = emph.interactive && ctx.hovers(&pts, 8.0);
+        if hovered && pointer_down {
+            clicked = Some((ida.clone(), idb.clone()));
+        }
+        let (color, alpha, boost) = if selected {
+            (egui::Color32::from_rgb(255, 215, 0), 1.0, 1.5)
+        } else if hovered || emph.highlight {
+            (base, 1.0, 1.5)
+        } else {
+            (base, emph.alpha * 0.8, 1.0)
+        };
+        relation_line(
+            &mut shapes,
+            &pts,
+            ctx.clip,
+            egui::Stroke::new(bundle_width(link.total()) * boost, color.linear_multiply(alpha)),
+            false,
+            scale,
+        );
+        if hovered || selected {
+            let (ta, tb) = (&state.nodes[link.a].title, &state.nodes[link.b].title);
+            label = Some((
+                bezier.sample(0.5),
+                format!("{ta} ↔ {tb}: {}", link.breakdown()),
+                color,
+            ));
+        }
+    }
+    ui.painter().extend(shapes);
+    for (at, align, text, color) in texts {
+        ui.painter()
+            .text(at, align, text, egui::FontId::proportional(10.0), color);
+    }
+    if let Some((at, text, color)) = label {
+        draw_chip_label(ui, at, text, color);
+    }
+    clicked
 }
 
 /// Jendela daftar saran relasi; user mencentang lalu menambahkan.
@@ -4768,13 +5561,21 @@ mod tests {
 
     #[test]
     fn test_relation_dim_only_when_focus_elsewhere() {
-        let mut state = focus_fixture();
-        let rel = state.virtual_relations[0].clone();
-        assert_eq!(relation_dim(&state, &rel), 1.0);
-        state.focus_table = Some("items".to_string());
-        assert_eq!(relation_dim(&state, &rel), 1.0);
-        state.focus_table = Some("users".to_string());
-        assert_eq!(relation_dim(&state, &rel), DIM_OPACITY);
+        let state = focus_fixture();
+        let rel = &state.virtual_relations[0];
+        let alpha = |focus: Option<&str>| {
+            Emphasis {
+                focus,
+                hovered: None,
+                visible: 0,
+                dim_opacity: DIM_OPACITY,
+            }
+            .of(&rel.child, &rel.parent)
+            .alpha
+        };
+        assert_eq!(alpha(None), 1.0);
+        assert_eq!(alpha(Some("items")), 1.0);
+        assert_eq!(alpha(Some("users")), DIM_OPACITY);
     }
 
     #[test]
@@ -4786,5 +5587,190 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         assert!(!json.contains("focus_table"));
         assert!(!json.contains("flow_anim"));
+    }
+
+    /// Jalankan satu frame `render_diagram` tanpa jendela (1600x1000) dan
+    /// tessellate hasilnya. Mengembalikan (jumlah vertex, waktu build+tessellate).
+    fn render_frame(
+        ctx: &egui::Context,
+        state: &mut DiagramState,
+        pointer: Option<egui::Pos2>,
+    ) -> (usize, std::time::Duration) {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        if let Some(p) = pointer {
+            input.events.push(egui::Event::PointerMoved(p));
+        }
+        let t = std::time::Instant::now();
+        let mut out = ctx.run_ui(input, |ui| {
+            render_diagram(ui, state);
+        });
+        // Tanpa renderer, perubahan tekstur font dibuang saja.
+        out.textures_delta.clear();
+        let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+        let vertices = prims
+            .iter()
+            .map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                _ => 0,
+            })
+            .sum();
+        (vertices, t.elapsed())
+    }
+
+    /// Diagram besar tapi viewport di area kosong: relasi dan tabel di luar
+    /// layar tidak boleh menghasilkan geometri.
+    #[test]
+    fn test_large_diagram_culls_offscreen_content() {
+        let ctx = egui::Context::default();
+        let mut empty = DiagramState {
+            is_centered: true,
+            ..Default::default()
+        };
+        render_frame(&ctx, &mut empty, None);
+        let (baseline, _) = render_frame(&ctx, &mut empty, None);
+
+        let mut state = crate::diagram_lod::synthetic_state(800, 16, 2000, 1000);
+        state.is_centered = true;
+        state.zoom = 1.0;
+        state.pan = egui::vec2(50_000.0, 50_000.0);
+        render_frame(&ctx, &mut state, None);
+        let (far, _) = render_frame(&ctx, &mut state, None);
+        assert!(
+            far <= baseline + 2_000,
+            "off-screen diagram produced {far} vertices (empty canvas: {baseline})"
+        );
+
+        state.pan = egui::Vec2::ZERO;
+        render_frame(&ctx, &mut state, None);
+        let (near, _) = render_frame(&ctx, &mut state, None);
+        assert!(near > far, "visible part must still be drawn");
+    }
+
+    /// Zoom kecil memakai kartu ringkas + garis gabungan: jauh lebih sedikit
+    /// geometri daripada tampilan detail dengan jumlah relasi yang sama.
+    #[test]
+    fn test_overview_is_lighter_than_detail() {
+        let ctx = egui::Context::default();
+        let mut state = crate::diagram_lod::synthetic_state(400, 8, 1500, 800);
+        state.is_centered = true;
+        fit_diagram(&mut state, egui::vec2(1600.0, 1000.0));
+        assert!(state.zoom < crate::diagram_lod::DETAIL_MIN_ZOOM);
+        render_frame(&ctx, &mut state, None);
+        let (overview, _) = render_frame(&ctx, &mut state, None);
+
+        // Kontrol: diagram kecil yang seluruhnya tampil pada zoom detail.
+        let mut detail = crate::diagram_lod::synthetic_state(24, 2, 90, 50);
+        detail.is_centered = true;
+        fit_diagram(&mut detail, egui::vec2(1600.0, 1000.0));
+        detail.zoom = crate::diagram_lod::DETAIL_MIN_ZOOM;
+        render_frame(&ctx, &mut detail, None);
+        let (detail_vertices, _) = render_frame(&ctx, &mut detail, None);
+        assert!(
+            overview < detail_vertices * 8,
+            "overview of 400 tables: {overview} vertices, detail of 24 tables: {detail_vertices}"
+        );
+    }
+
+    #[test]
+    fn test_flow_animation_stops_by_itself() {
+        let ctx = egui::Context::default();
+        let mut state = focus_fixture();
+        state.is_centered = true;
+        state.flow_anim = Some(DiagramFlowAnimation {
+            table_id: "users".into(),
+            start_time: -(crate::diagram_lod::FLOW_ANIM_SECS + 1.0),
+        });
+        render_frame(&ctx, &mut state, None);
+        assert!(state.flow_anim.is_none());
+    }
+
+    #[test]
+    fn test_fit_diagram_shows_everything() {
+        let mut state = crate::diagram_lod::synthetic_state(900, 0, 0, 0);
+        let view = egui::vec2(1600.0, 1000.0);
+        fit_diagram(&mut state, view);
+        let bounds = crate::diagram_lod::content_bounds(&state.nodes).expect("bounds");
+        let min = state.pan + bounds.min.to_vec2() * state.zoom;
+        let max = state.pan + bounds.max.to_vec2() * state.zoom;
+        assert!(min.x >= -1.0 && min.y >= -1.0, "{min:?}");
+        assert!(max.x <= view.x + 1.0 && max.y <= view.y + 1.0, "{max:?}");
+        assert!(state.zoom >= MIN_ZOOM && state.zoom <= DEFAULT_ZOOM);
+    }
+
+    /// Benchmark manual (tidak jalan di CI):
+    /// `cargo test --release --lib bench_large_diagram -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_large_diagram() {
+        let ctx = egui::Context::default();
+        let view = egui::vec2(1600.0, 1000.0);
+        for (label, zoom) in [("fit", None), ("compact 0.4", Some(0.4)), ("detail 1.0", Some(1.0))] {
+            let mut state = crate::diagram_lod::synthetic_state(800, 16, 2000, 1000);
+            state.is_centered = true;
+            fit_diagram(&mut state, view);
+            if let Some(z) = zoom {
+                set_zoom_centered(&mut state, z, view);
+            }
+            for _ in 0..3 {
+                render_frame(&ctx, &mut state, Some(egui::pos2(800.0, 500.0)));
+            }
+            let frames = 20;
+            let mut total = std::time::Duration::ZERO;
+            let mut vertices = 0;
+            for i in 0..frames {
+                // Pointer bergerak supaya hit-test hover ikut terukur.
+                let p = egui::pos2(700.0 + i as f32 * 10.0, 500.0);
+                let (v, t) = render_frame(&ctx, &mut state, Some(p));
+                total += t;
+                vertices = v;
+            }
+            println!(
+                "{label:>12}: zoom {:.2}  {:>7.2} ms/frame  {vertices:>8} vertices",
+                state.zoom,
+                total.as_secs_f64() * 1000.0 / frames as f64
+            );
+        }
+    }
+
+    /// Benchmark pembanding sebelum/sesudah (kode sama di kedua versi):
+    /// `cargo test --release --lib bench_compare -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_compare() {
+        let ctx = egui::Context::default();
+        let view = egui::vec2(1600.0, 1000.0);
+        for zoom in [0.5f32, 1.0] {
+            let mut state = crate::diagram_lod::synthetic_state(800, 16, 2000, 1000);
+            state.is_centered = true;
+            let (mut lo, mut hi) = (state.nodes[0].pos, state.nodes[0].pos);
+            for n in &state.nodes {
+                lo = lo.min(n.pos);
+                hi = hi.max(n.pos + n.size);
+            }
+            state.zoom = zoom;
+            state.pan = pan_to_center(lo + (hi - lo) / 2.0, view, zoom);
+            for _ in 0..3 {
+                render_frame(&ctx, &mut state, Some(egui::pos2(800.0, 500.0)));
+            }
+            let frames = 20;
+            let mut total = std::time::Duration::ZERO;
+            let mut vertices = 0;
+            for i in 0..frames {
+                let p = egui::pos2(700.0 + i as f32 * 10.0, 500.0);
+                let (v, t) = render_frame(&ctx, &mut state, Some(p));
+                total += t;
+                vertices = v;
+            }
+            println!(
+                "compare zoom {zoom:.1}: {:>8.2} ms/frame  {vertices:>9} vertices",
+                total.as_secs_f64() * 1000.0 / frames as f64
+            );
+        }
     }
 }

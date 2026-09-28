@@ -9,6 +9,58 @@ pub struct DiagramSchemaJob {
     rx: std::sync::mpsc::Receiver<Result<crate::diagram_schema::SchemaSnapshot, String>>,
 }
 
+/// Nomor urut simpan diagram (global, naik terus).
+static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Nomor urut simpan terbaru per file. Tulisan yang lebih tua dari ini
+/// dibuang supaya layout lama tidak menimpa layout baru.
+static LATEST_SAVE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>,
+> = std::sync::OnceLock::new();
+
+/// Simpan diagram ke `path` di thread background. Isi kontainer link database
+/// tidak disimpan, hanya referensinya. Penulisan atomik dan berurutan: bila
+/// dua simpan berjalan bersamaan, hanya yang terbaru yang menulis.
+pub(crate) fn save_diagram_file_async(
+    path: std::path::PathBuf,
+    state: models::structs::DiagramState,
+) -> std::thread::JoinHandle<()> {
+    let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let latest = LATEST_SAVE.get_or_init(Default::default);
+    match latest.lock() {
+        Ok(mut map) => {
+            map.insert(path.clone(), seq);
+        }
+        Err(e) => log::warn!("[DIAGRAM] save sequence lock poisoned: {e}"),
+    }
+    std::thread::spawn(move || {
+        let state = crate::diagram_links::persistable(&state);
+        let bytes = match serde_json::to_vec_pretty(&state) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("[DIAGRAM] Failed to serialize diagram {:?}: {}", path, e);
+                return;
+            }
+        };
+        // Lock ditahan selama menulis supaya dua penulis tidak berselang-seling.
+        let map = match latest.lock() {
+            Ok(m) => m,
+            Err(e) => {
+                log::error!("[DIAGRAM] save sequence lock poisoned: {e}");
+                return;
+            }
+        };
+        if map.get(&path) != Some(&seq) {
+            log::debug!("[DIAGRAM] Skipping stale save of {:?}", path);
+            return;
+        }
+        // Tulis atomik supaya layout lama tidak rusak bila app crash saat menyimpan.
+        match crate::diagram_view::write_atomic(&path, &bytes) {
+            Ok(()) => log::debug!("Diagram layout saved to {:?}", path),
+            Err(e) => log::error!("Failed to save diagram {:?}: {}", path, e),
+        }
+    })
+}
+
 impl super::Tabular {
     pub fn get_diagram_path(&self, conn_id: i64, db_name: &str) -> Option<std::path::PathBuf> {
         let mut path = if !self.data_directory.is_empty() {
@@ -162,18 +214,9 @@ impl super::Tabular {
         let Some(path) = self.get_diagram_path(conn_id, db_name) else {
             return;
         };
-        // Isi kontainer link database tidak disimpan; hanya referensinya.
-        let state = crate::diagram_links::persistable(state);
-        // Tulis atomik supaya layout lama tidak rusak bila app crash saat menyimpan.
-        let result = serde_json::to_vec_pretty(&state)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| {
-                crate::diagram_view::write_atomic(&path, &bytes).map_err(|e| e.to_string())
-            });
-        match result {
-            Ok(()) => log::debug!("Diagram layout saved to {:?}", path),
-            Err(e) => log::error!("Failed to save diagram {:?}: {}", path, e),
-        }
+        // Serialisasi + tulis file di background: diagram besar bisa makan
+        // puluhan ms dan membuat UI tersendat setiap kali drag dilepas.
+        save_diagram_file_async(path, state.clone());
     }
     /// Jalankan aksi toolbar diagram yang butuh state aplikasi.
     pub fn handle_diagram_action(
@@ -1483,5 +1526,39 @@ impl super::Tabular {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_save_keeps_latest_layout() {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular_diagram_save_{}_{}",
+            std::process::id(),
+            SAVE_SEQ.load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("layout.json");
+
+        let mut old = crate::diagram_lod::synthetic_state(200, 4, 400, 100);
+        old.diagram_title = Some("old".into());
+        let new = models::structs::DiagramState {
+            diagram_title: Some("new".into()),
+            ..Default::default()
+        };
+
+        let h1 = save_diagram_file_async(path.clone(), old);
+        let h2 = save_diagram_file_async(path.clone(), new);
+        h1.join().expect("first save thread");
+        h2.join().expect("second save thread");
+
+        let saved: models::structs::DiagramState =
+            serde_json::from_slice(&std::fs::read(&path).expect("read saved diagram"))
+                .expect("parse saved diagram");
+        assert_eq!(saved.diagram_title.as_deref(), Some("new"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -22,6 +22,7 @@ pub mod curl_import;
 pub mod data_table;
 pub mod dba_monitor;
 pub mod diagram_links;
+pub mod diagram_lod;
 pub mod diagram_mermaid;
 pub mod diagram_relations;
 pub mod diagram_schema;
