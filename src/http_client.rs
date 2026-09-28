@@ -627,8 +627,15 @@ fn render_url_bar(
             egui::pos2(method_rect.right() + 10.0, field_rect.top()),
             egui::pos2(field_rect.right() - 10.0, field_rect.bottom()),
         );
-        let url_resp = ui.put(
-            url_rect,
+        // Pakai child UI agar kursor layout tidak mundur ke url_rect; `ui.put`
+        // memajukan kursor dari url_rect.right sehingga tombol Send menimpa field.
+        let mut url_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(url_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let url_resp = url_ui.add_sized(
+            url_rect.size(),
             egui::TextEdit::singleline(&mut state.url)
                 .id_salt("http_url_field")
                 .frame(egui::Frame::NONE)

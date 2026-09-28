@@ -2661,26 +2661,31 @@ impl Tabular {
                                 let active_db = tab_db_name
                                     .clone()
                                     .unwrap_or_else(|| "(default)".to_string());
-                                egui::ComboBox::from_id_salt("query_db_select")
-                                    .width(90.0)
-                                    .selected_text(active_db.clone())
-                                    .show_ui(ui, |ui| {
-                                        for db in &dbs {
-                                            if ui.selectable_label(active_db == *db, db).clicked() {
-                                                if let Some(tab) =
-                                                    self.query_tabs.get_mut(self.active_tab_index)
-                                                {
-                                                    tab.database_name = if db == "(default)" {
-                                                        None
-                                                    } else {
-                                                        Some(db.clone())
-                                                    };
-                                                }
-                                                self.current_table_headers.clear();
-                                                self.current_table_data.clear();
-                                            }
-                                        }
-                                    });
+                                let db_picker = crate::window_egui::searchable_picker::PickerConfig {
+                                    id_salt: "query_db_select",
+                                    icon: egui_icons::icons::ICON_STORAGE.codepoint,
+                                    title: "Databases",
+                                    search_hint: "Search databases…",
+                                    tooltip: "Active database",
+                                    min_width: if metrics.is_touch { 150.0 } else { 130.0 },
+                                    max_width: if metrics.is_touch { 260.0 } else { 220.0 },
+                                    is_touch: metrics.is_touch,
+                                };
+                                let db_selected = dbs.iter().position(|d| *d == active_db);
+                                if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
+                                    ui, &db_picker, &active_db, &dbs, db_selected,
+                                ) {
+                                    let db = &dbs[i];
+                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                        tab.database_name = if db == "(default)" {
+                                            None
+                                        } else {
+                                            Some(db.clone())
+                                        };
+                                    }
+                                    self.current_table_headers.clear();
+                                    self.current_table_data.clear();
+                                }
 
                                 // 3.5 Active Schema / Search Path selector (Only for databases supporting schemas e.g. PostgreSQL & MsSQL)
                                 let (tab_schema, active_conn_type) = self
@@ -2701,45 +2706,57 @@ impl Tabular {
                                     }
                                     let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
 
-                                    egui::ComboBox::from_id_salt("query_schema_select")
-                                        .width(90.0)
-                                        .selected_text(format!("s: {}", active_schema))
-                                        .show_ui(ui, |ui| {
-                                            for s in &schemas {
-                                                if ui.selectable_label(active_schema == *s, s).clicked() {
-                                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                        tab.schema_name = Some(s.clone());
-                                                    }
-                                                    // search_path diterapkan executor pada koneksi yang
-                                                    // menjalankan query (lihat QueryExecutionOptions::schema_name).
-                                                    self.toasts.info(format!("Switched active schema to '{}'", s));
-                                                }
-                                            }
-                                        });
+                                    let schema_picker = crate::window_egui::searchable_picker::PickerConfig {
+                                        id_salt: "query_schema_select",
+                                        icon: egui_icons::icons::ICON_SCHEMA.codepoint,
+                                        title: "Schemas",
+                                        search_hint: "Search schemas…",
+                                        tooltip: "Active schema",
+                                        min_width: if metrics.is_touch { 120.0 } else { 100.0 },
+                                        max_width: if metrics.is_touch { 200.0 } else { 170.0 },
+                                        is_touch: metrics.is_touch,
+                                    };
+                                    let schema_selected = schemas.iter().position(|s| *s == active_schema);
+                                    if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
+                                        ui, &schema_picker, &active_schema, &schemas, schema_selected,
+                                    ) {
+                                        let s = &schemas[i];
+                                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                            tab.schema_name = Some(s.clone());
+                                        }
+                                        // search_path diterapkan executor pada koneksi yang
+                                        // menjalankan query (lihat QueryExecutionOptions::schema_name).
+                                        self.toasts.info(format!("Switched active schema to '{}'", s));
+                                    }
                                 }
                             }
 
                             add_divider(ui);
 
                             // 4. Connection selector (Leftmost in group)
-                            egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(140.0)
-                                .selected_text(current_conn_name)
-                                .show_ui(ui, |ui| {
-                                    for (cid, name) in &conn_list {
-                                        let selected = tab_conn_id == Some(*cid);
-                                        if ui.selectable_label(selected, name).clicked() {
-                                            if let Some(tab) =
-                                                self.query_tabs.get_mut(self.active_tab_index)
-                                            {
-                                                tab.connection_id = Some(*cid);
-                                                tab.database_name = None; // reset db for new connection
-                                            }
-                                            self.current_table_headers.clear();
-                                            self.current_table_data.clear();
-                                        }
-                                    }
-                                });
+                            let conn_picker = crate::window_egui::searchable_picker::PickerConfig {
+                                id_salt: "query_conn_select",
+                                icon: egui_icons::icons::ICON_DNS.codepoint,
+                                title: "Connections",
+                                search_hint: "Search connections…",
+                                tooltip: "Active connection",
+                                min_width: if metrics.is_touch { 170.0 } else { 150.0 },
+                                max_width: if metrics.is_touch { 280.0 } else { 240.0 },
+                                is_touch: metrics.is_touch,
+                            };
+                            let conn_names: Vec<String> = conn_list.iter().map(|(_, n)| n.clone()).collect();
+                            let conn_selected = conn_list.iter().position(|(cid, _)| tab_conn_id == Some(*cid));
+                            if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
+                                ui, &conn_picker, &current_conn_name, &conn_names, conn_selected,
+                            ) {
+                                let cid = conn_list[i].0;
+                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                                    tab.connection_id = Some(cid);
+                                    tab.database_name = None; // reset db for new connection
+                                }
+                                self.current_table_headers.clear();
+                                self.current_table_data.clear();
+                            }
                         },
                     );
 

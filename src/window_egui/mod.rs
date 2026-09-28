@@ -20,6 +20,7 @@ pub(crate) mod preferences;
 pub mod query_jobs;
 pub mod render_dialogs;
 pub mod search;
+pub mod searchable_picker;
 pub mod settings;
 pub mod sidebar_tree;
 pub mod style;

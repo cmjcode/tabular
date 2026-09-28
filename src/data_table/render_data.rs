@@ -2179,7 +2179,40 @@ fn render_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         });
 }
 
-/// Helper kotak kode SQL monospace dengan scroll horizontal
+/// Potong string ke maksimal `max_chars` karakter tanpa memotong di tengah UTF-8
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => format!("{}...", &text[..idx]),
+        None => text.to_string(),
+    }
+}
+
+/// Wadah flat untuk state panel hasil (0 rows, error, sukses, idle): tanpa kartu berwarna,
+/// menyatu dengan latar panel, dan scrollbar vertikal hanya muncul bila konten benar-benar overflow
+fn render_flat_state_body<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) {
+    egui::ScrollArea::vertical()
+        .id_salt(id_salt)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: 10,
+                    bottom: 10,
+                })
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    add_contents(ui);
+                });
+        });
+}
+
+/// Helper kotak kode SQL monospace; tinggi dibatasi agar SQL panjang tidak mendorong panel hasil
 fn render_sql_code_box(ui: &mut egui::Ui, sql: &str) {
     let bg = if ui.visuals().dark_mode {
         egui::Color32::from_rgb(18, 20, 25)
@@ -2195,18 +2228,23 @@ fn render_sql_code_box(ui: &mut egui::Ui, sql: &str) {
         .fill(bg)
         .stroke(stroke)
         .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let display_sql = if sql.len() > 600 {
-                format!("{}...", &sql[..600])
-            } else {
-                sql.to_string()
-            };
-            egui::ScrollArea::horizontal()
+            let display_sql = truncate_chars(sql, 600);
+            egui::ScrollArea::both()
                 .id_salt("sql_code_box_scroll")
+                .max_height(96.0)
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(display_sql).monospace().size(11.5));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(display_sql)
+                                .family(egui::FontFamily::Monospace)
+                                .size(11.5),
+                        )
+                        .extend(),
+                    );
                 });
         });
 }
@@ -2258,11 +2296,7 @@ fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egu
                 };
 
                 if !sql_preview.is_empty() {
-                    let display_sql = if sql_preview.len() > 300 {
-                        format!("{}...", &sql_preview[..300])
-                    } else {
-                        sql_preview.to_string()
-                    };
+                    let display_sql = truncate_chars(sql_preview, 300);
 
                     let bg = if ui.visuals().dark_mode {
                         egui::Color32::from_rgb(22, 24, 30)
@@ -2307,132 +2341,52 @@ fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egu
 
 /// Tampilan saat query SELECT selesai dieksekusi tetapi mengembalikan 0 baris data
 fn render_empty_select_result_state(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    egui::ScrollArea::both()
-        .id_salt("empty_select_scroll")
-        .show(ui, |ui| {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| {
-                egui::Frame::new()
-                    .fill(if ui.visuals().dark_mode {
-                        egui::Color32::from_rgb(22, 26, 34)
-                    } else {
-                        egui::Color32::from_rgb(246, 248, 252)
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(45, 52, 68)
-                        } else {
-                            egui::Color32::from_rgb(215, 222, 235)
-                        },
-                    ))
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(24, 18))
-                    .show(ui, |ui| {
-                        ui.set_max_width(620.0);
+    render_flat_state_body(ui, "empty_select_scroll", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(egui::RichText::new("🔍").size(15.0));
+            ui.label(egui::RichText::new("0 rows returned").strong().size(14.0));
+            ui.add_space(4.0);
+            render_badge(ui, "SELECT", crate::window_egui::style::theme_accent(ui.ctx()));
+            if tabular.last_execution_duration_ms > 0 {
+                let dur_str = format!(
+                    "⏱ {}",
+                    crate::window_egui::query_jobs::format_duration_human(tabular.last_execution_duration_ms)
+                );
+                render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
+            }
+            let col_count = tabular.current_table_headers.len();
+            let col_str = format!("{} column{}", col_count, if col_count == 1 { "" } else { "s" });
+            render_badge(ui, &col_str, crate::window_egui::style::theme_info(ui.ctx()));
 
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("🔍").size(18.0));
-                            ui.label(egui::RichText::new("0 rows returned").strong().size(15.0));
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if !tabular.last_executed_sql.is_empty()
-                                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
-                                {
-                                    ui.ctx().copy_text(tabular.last_executed_sql.clone());
-                                }
-                            });
-                        });
-
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            render_badge(ui, "SELECT", crate::window_egui::style::theme_accent(ui.ctx()));
-                            if tabular.last_execution_duration_ms > 0 {
-                                let dur_str = format!(
-                                    "⏱ {}",
-                                    crate::window_egui::query_jobs::format_duration_human(
-                                        tabular.last_execution_duration_ms
-                                    )
-                                );
-                                render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
-                            }
-                            let col_str = format!("📋 {} column(s)", tabular.current_table_headers.len());
-                            render_badge(ui, &col_str, crate::window_egui::style::theme_info(ui.ctx()));
-                        });
-
-                        if !tabular.last_executed_sql.is_empty() {
-                            ui.add_space(10.0);
-                            render_sql_code_box(ui, &tabular.last_executed_sql);
-                        }
-
-                        if !tabular.current_table_headers.is_empty() {
-                            ui.add_space(12.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Columns:").size(12.0).strong());
-                            });
-                            ui.add_space(4.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                                for col in &tabular.current_table_headers {
-                                    egui::Frame::new()
-                                        .fill(if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(32, 36, 46)
-                                        } else {
-                                            egui::Color32::from_rgb(235, 238, 245)
-                                        })
-                                        .stroke(egui::Stroke::new(
-                                            1.0,
-                                            if ui.visuals().dark_mode {
-                                                egui::Color32::from_rgb(55, 62, 78)
-                                            } else {
-                                                egui::Color32::from_rgb(210, 215, 225)
-                                            },
-                                        ))
-                                        .corner_radius(4.0)
-                                        .inner_margin(egui::Margin::symmetric(6, 2))
-                                        .show(ui, |ui| {
-                                            ui.label(egui::RichText::new(col).monospace().size(11.0));
-                                        });
-                                }
-                            });
-                        }
-
-                        ui.add_space(14.0);
-                        egui::Frame::new()
-                            .fill(if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(26, 29, 36)
-                            } else {
-                                egui::Color32::from_rgb(240, 242, 246)
-                            })
-                            .corner_radius(6.0)
-                            .inner_margin(egui::Margin::symmetric(12, 8))
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.vertical(|ui| {
-                                    ui.label(egui::RichText::new("💡 Tips:").size(11.5).strong());
-                                    ui.add_space(2.0);
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "• Check your WHERE clause, filter conditions, or table join keys",
-                                        )
-                                        .size(11.0)
-                                        .weak(),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "• Verify that the connected database and schema contain matching data",
-                                        )
-                                        .size(11.0)
-                                        .weak(),
-                                    );
-                                });
-                            });
-                    });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !tabular.last_executed_sql.is_empty()
+                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
+                {
+                    ui.ctx().copy_text(tabular.last_executed_sql.clone());
+                }
             });
-            ui.add_space(20.0);
         });
+
+        if !tabular.last_executed_sql.is_empty() {
+            ui.add_space(8.0);
+            render_sql_code_box(ui, &tabular.last_executed_sql);
+        }
+
+        if !tabular.current_table_headers.is_empty() {
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(egui::RichText::new("Columns:").size(11.5).weak());
+                ui.label(
+                    egui::RichText::new(tabular.current_table_headers.join(", "))
+                        .family(egui::FontFamily::Monospace)
+                        .size(11.5)
+                        .weak(),
+                );
+            });
+        }
+    });
 }
 
 /// Tampilan empty/status saat tidak ada header: query non-SELECT, DDL, error, atau tab baru
@@ -2458,269 +2412,175 @@ fn render_empty_or_status_state(tabular: &mut window_egui::Tabular, ui: &mut egu
     render_idle_state(tabular, ui);
 }
 
-/// Kartu tampilan ketika query mengalami error eksekusi
+/// Tampilan flat ketika query gagal dieksekusi
 fn render_error_card(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    egui::ScrollArea::both()
-        .id_salt("error_card_scroll")
-        .show(ui, |ui| {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                egui::Frame::new()
-                    .fill(if ui.visuals().dark_mode {
-                        egui::Color32::from_rgb(36, 18, 20)
-                    } else {
-                        egui::Color32::from_rgb(254, 242, 242)
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        crate::window_egui::style::theme_danger(ui.ctx()),
-                    ))
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(24, 18))
-                    .show(ui, |ui| {
-                        ui.set_max_width(620.0);
+    render_flat_state_body(ui, "error_card_scroll", |ui| {
+        let danger = crate::window_egui::style::theme_danger(ui.ctx());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(egui::RichText::new("❌").size(15.0));
+            ui.label(
+                egui::RichText::new("Query Execution Error")
+                    .strong()
+                    .size(14.0)
+                    .color(danger),
+            );
 
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("❌").size(18.0));
-                            ui.label(
-                                egui::RichText::new("Query Execution Error")
-                                    .strong()
-                                    .size(15.0)
-                                    .color(crate::window_egui::style::theme_danger(ui.ctx())),
-                            );
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.add(crate::window_egui::style::btn_secondary("📋 Copy Error")).clicked() {
-                                    ui.ctx().copy_text(tabular.query_message.clone());
-                                }
-                                if tabular.error_location_in_editor().is_some()
-                                    && ui
-                                        .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "↪ Go to error in editor"))
-                                        .clicked()
-                                {
-                                    tabular.jump_to_error_location();
-                                }
-                            });
-                        });
-
-                        ui.add_space(10.0);
-
-                        let err_text = if tabular.query_message.starts_with("Error: ") {
-                            &tabular.query_message["Error: ".len()..]
-                        } else if !tabular.query_message.is_empty() {
-                            &tabular.query_message
-                        } else {
-                            &tabular.current_table_name
-                        };
-
-                        egui::Frame::new()
-                            .fill(if ui.visuals().dark_mode {
-                                egui::Color32::from_rgb(24, 12, 14)
-                            } else {
-                                egui::Color32::from_rgb(255, 255, 255)
-                            })
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(75, 28, 30)
-                                } else {
-                                    egui::Color32::from_rgb(240, 180, 180)
-                                },
-                            ))
-                            .corner_radius(6.0)
-                            .inner_margin(egui::Margin::symmetric(12, 10))
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.label(
-                                    egui::RichText::new(err_text)
-                                        .monospace()
-                                        .size(12.0)
-                                        .color(if ui.visuals().dark_mode {
-                                            egui::Color32::from_rgb(250, 160, 160)
-                                        } else {
-                                            egui::Color32::from_rgb(180, 20, 20)
-                                        }),
-                                );
-                            });
-
-                        if !tabular.last_executed_sql.is_empty() {
-                            ui.add_space(12.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Executed SQL:").size(11.5).weak());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                egui::RichText::new("📋 Copy SQL").size(11.0).weak(),
-                                            )
-                                            .frame(false),
-                                        )
-                                        .clicked()
-                                    {
-                                        ui.ctx().copy_text(tabular.last_executed_sql.clone());
-                                    }
-                                });
-                            });
-                            ui.add_space(4.0);
-                            render_sql_code_box(ui, &tabular.last_executed_sql);
-                        }
-                    });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(crate::window_egui::style::btn_secondary("📋 Copy Error")).clicked() {
+                    ui.ctx().copy_text(tabular.query_message.clone());
+                }
+                if tabular.error_location_in_editor().is_some()
+                    && ui
+                        .add(crate::window_egui::style::btn_primary_ctx(ui.ctx(), "↪ Go to error in editor"))
+                        .clicked()
+                {
+                    tabular.jump_to_error_location();
+                }
             });
-            ui.add_space(24.0);
         });
+
+        let err_text = if let Some(stripped) = tabular.query_message.strip_prefix("Error: ") {
+            stripped.to_string()
+        } else if !tabular.query_message.is_empty() {
+            tabular.query_message.clone()
+        } else {
+            tabular.current_table_name.clone()
+        };
+
+        ui.add_space(8.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(err_text)
+                    .family(egui::FontFamily::Monospace)
+                    .size(12.0)
+                    .color(if ui.visuals().dark_mode {
+                        egui::Color32::from_rgb(250, 160, 160)
+                    } else {
+                        egui::Color32::from_rgb(180, 20, 20)
+                    }),
+            )
+            .wrap(),
+        );
+
+        if !tabular.last_executed_sql.is_empty() {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Executed SQL:").size(11.5).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("📋 Copy SQL").size(11.0).weak()).frame(false))
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(tabular.last_executed_sql.clone());
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            render_sql_code_box(ui, &tabular.last_executed_sql);
+        }
+    });
 }
 
-/// Kartu tampilan ketika query non-SELECT / mutasi / DDL sukses
+/// Tampilan flat ketika query non-SELECT / mutasi / DDL sukses
 fn render_mutation_success_card(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    egui::ScrollArea::both()
-        .id_salt("mutation_success_scroll")
-        .show(ui, |ui| {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-                egui::Frame::new()
-                    .fill(if ui.visuals().dark_mode {
-                        egui::Color32::from_rgb(20, 28, 22)
-                    } else {
-                        egui::Color32::from_rgb(240, 253, 244)
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        crate::window_egui::style::theme_success(ui.ctx()).linear_multiply(0.6),
-                    ))
-                    .corner_radius(8.0)
-                    .inner_margin(egui::Margin::symmetric(24, 18))
-                    .show(ui, |ui| {
-                        ui.set_max_width(620.0);
+    render_flat_state_body(ui, "mutation_success_scroll", |ui| {
+        let type_label = match tabular.last_statement_type {
+            crate::models::structs::StatementType::Insert => "Insert statement completed",
+            crate::models::structs::StatementType::Update => "Update statement completed",
+            crate::models::structs::StatementType::Delete => "Delete statement completed",
+            crate::models::structs::StatementType::Ddl => "DDL statement completed",
+            crate::models::structs::StatementType::Transaction => "Transaction completed",
+            _ => "Statement executed successfully",
+        };
 
-                        let type_label = match tabular.last_statement_type {
-                            crate::models::structs::StatementType::Insert => "Insert statement completed",
-                            crate::models::structs::StatementType::Update => "Update statement completed",
-                            crate::models::structs::StatementType::Delete => "Delete statement completed",
-                            crate::models::structs::StatementType::Ddl => "DDL statement completed",
-                            crate::models::structs::StatementType::Transaction => "Transaction completed",
-                            _ => "Statement executed successfully",
-                        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(
+                egui::RichText::new("✓")
+                    .size(16.0)
+                    .color(crate::window_egui::style::theme_success(ui.ctx()))
+                    .strong(),
+            );
+            ui.label(egui::RichText::new(type_label).strong().size(14.0));
+            ui.add_space(4.0);
+            render_badge(
+                ui,
+                tabular.last_statement_type.as_str(),
+                crate::window_egui::style::theme_accent(ui.ctx()),
+            );
+            if tabular.last_execution_duration_ms > 0 {
+                let dur_str = format!(
+                    "⏱ {}",
+                    crate::window_egui::query_jobs::format_duration_human(tabular.last_execution_duration_ms)
+                );
+                render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
+            }
+            if let Some(affected) = tabular.last_affected_rows {
+                let aff_str = format!("{} row(s) affected", affected);
+                render_badge(ui, &aff_str, crate::window_egui::style::theme_success(ui.ctx()));
+            }
 
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("✓")
-                                    .size(20.0)
-                                    .color(crate::window_egui::style::theme_success(ui.ctx()))
-                                    .strong(),
-                            );
-                            ui.label(egui::RichText::new(type_label).strong().size(15.0));
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if !tabular.last_executed_sql.is_empty()
-                                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
-                                {
-                                    ui.ctx().copy_text(tabular.last_executed_sql.clone());
-                                }
-                            });
-                        });
-
-                        ui.add_space(10.0);
-
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
-                            render_badge(
-                                ui,
-                                tabular.last_statement_type.as_str(),
-                                crate::window_egui::style::theme_accent(ui.ctx()),
-                            );
-
-                            if tabular.last_execution_duration_ms > 0 {
-                                let dur_str = format!(
-                                    "⏱ {}",
-                                    crate::window_egui::query_jobs::format_duration_human(
-                                        tabular.last_execution_duration_ms
-                                    )
-                                );
-                                render_badge(ui, &dur_str, egui::Color32::from_rgb(100, 116, 139));
-                            }
-
-                            if let Some(affected) = tabular.last_affected_rows {
-                                let aff_str = format!("📝 {} row(s) affected", affected);
-                                render_badge(ui, &aff_str, crate::window_egui::style::theme_success(ui.ctx()));
-                            } else {
-                                render_badge(ui, "0 rows returned", egui::Color32::from_rgb(100, 116, 139));
-                            }
-                        });
-
-                        if !tabular.last_executed_sql.is_empty() {
-                            ui.add_space(12.0);
-                            render_sql_code_box(ui, &tabular.last_executed_sql);
-                        }
-
-                        if !tabular.query_message.is_empty() {
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&tabular.query_message).weak().size(11.5));
-                            });
-                        }
-                    });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !tabular.last_executed_sql.is_empty()
+                    && ui.add(crate::window_egui::style::btn_secondary("📋 Copy SQL")).clicked()
+                {
+                    ui.ctx().copy_text(tabular.last_executed_sql.clone());
+                }
             });
-            ui.add_space(24.0);
         });
+
+        if !tabular.last_executed_sql.is_empty() {
+            ui.add_space(8.0);
+            render_sql_code_box(ui, &tabular.last_executed_sql);
+        }
+
+        if !tabular.query_message.is_empty() {
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(egui::RichText::new(&tabular.query_message).weak().size(11.5)).wrap());
+        }
+    });
 }
 
 /// Tampilan idle ketika tab baru dibuka dan belum ada query yang dijalankan
 fn render_idle_state(_tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    egui::ScrollArea::both()
-        .id_salt("idle_state_scroll")
-        .show(ui, |ui| {
-            ui.add_space(36.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("⚡")
-                        .size(26.0)
-                        .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                );
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new("Ready to execute query").strong().size(16.0));
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Write your SQL statement in the editor above and run it to view results here.",
-                    )
+    render_flat_state_body(ui, "idle_state_scroll", |ui| {
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("⚡")
+                    .size(22.0)
+                    .color(crate::window_egui::style::theme_accent(ui.ctx())),
+            );
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Ready to execute query").strong().size(15.0));
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("Write your SQL statement in the editor above and run it to view results here.")
                     .weak()
-                    .size(12.5),
-                );
-
-                ui.add_space(18.0);
-                egui::Frame::new()
-                    .fill(if ui.visuals().dark_mode {
-                        egui::Color32::from_rgb(24, 26, 32)
-                    } else {
-                        egui::Color32::from_rgb(246, 247, 250)
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(44, 48, 58)
-                        } else {
-                            egui::Color32::from_rgb(220, 224, 230)
-                        },
-                    ))
-                    .corner_radius(6.0)
-                    .inner_margin(egui::Margin::symmetric(18, 12))
-                    .show(ui, |ui| {
-                        ui.set_max_width(420.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            ui.label(egui::RichText::new("⌘+Enter / Ctrl+Enter").strong().size(11.5));
-                            ui.label(egui::RichText::new("Execute query").weak().size(11.5));
-                        });
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            ui.label(egui::RichText::new("⌘+⇧+F / Ctrl+Shift+F").strong().size(11.5));
-                            ui.label(egui::RichText::new("Format SQL").weak().size(11.5));
-                        });
-                    });
-            });
-            ui.add_space(24.0);
+                    .size(12.0),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("⌘+Enter / Ctrl+Enter  Execute query     ⌘+Shift+F / Ctrl+Shift+F  Format SQL")
+                    .weak()
+                    .size(11.5),
+            );
         });
+    });
 }
 
 // Helper baru: render pagination bar (dipakai baik ada data maupun kosong)
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncate_chars_tidak_memotong_di_tengah_utf8() {
+        // "é" berukuran 2 byte; slicing byte ke-1 akan panic, versi karakter harus aman
+        assert_eq!(truncate_chars("éé", 1), "é...");
+        assert_eq!(truncate_chars("SELECT 1", 100), "SELECT 1");
+        assert_eq!(truncate_chars("abcdef", 3), "abc...");
+    }
+}
