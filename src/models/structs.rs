@@ -77,6 +77,13 @@ pub enum HttpResponseTab {
     #[default]
     Body,
     Headers,
+    Raw,
+    /// Penjelasan response dari AI.
+    Ai,
+}
+
+fn default_http_split_ratio() -> f32 {
+    0.5
 }
 
 /// Target language/tool for the "Copy as Code" request-export dialog.
@@ -168,6 +175,26 @@ pub struct HttpClientState {
     pub response_tab: HttpResponseTab,
     pub is_loading: bool,
 
+    // ── Layout editor ────────────────────────────────────────────────────────
+    /// Porsi panel request (0..1) terhadap panel response; bisa digeser user.
+    #[serde(default = "default_http_split_ratio")]
+    pub split_ratio: f32,
+    /// true = request di atas, response di bawah.
+    #[serde(default)]
+    pub layout_vertical: bool,
+    /// Wrap baris panjang pada body response.
+    #[serde(default = "default_true")]
+    pub response_wrap: bool,
+    /// Teks pencarian di body response (transient).
+    #[serde(skip)]
+    pub response_search: String,
+    /// Waktu mulai request yang sedang berjalan, untuk timer live.
+    #[serde(skip)]
+    pub request_started: Option<std::time::Instant>,
+    /// Bantuan AI (prompt, jawaban tertunda, penjelasan). Tidak disimpan.
+    #[serde(skip)]
+    pub ai: crate::http_ai::HttpAiState,
+
     /// Channel receiver from background HTTP thread (Arc so Clone works).
     /// Skipped during serialization — recreated at runtime.
     #[serde(skip)]
@@ -233,6 +260,12 @@ impl Default for HttpClientState {
             response_error: None,
             response_tab: HttpResponseTab::Body,
             is_loading: false,
+            split_ratio: default_http_split_ratio(),
+            layout_vertical: false,
+            response_wrap: true,
+            response_search: String::new(),
+            request_started: None,
+            ai: Default::default(),
             response_receiver: None,
             workspaces: Vec::new(),
             collection_panel: crate::http_collection::CollectionPanelState::default(),
@@ -1169,7 +1202,25 @@ pub struct AiChatMessage {
     pub usage: Option<String>,
     /// Tahapan kemajuan / aktivitas yang dijalankan agent pada giliran ini.
     pub progress_steps: Vec<crate::agent::harness::ProgressStep>,
+    /// Nama backend/agent yang menjawab; hanya diisi untuk role Assistant.
+    pub agent_label: Option<String>,
 }
+
+/// Sesi CLI aktif untuk melanjutkan percakapan (agy --conversation / claude --resume).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSession {
+    pub kind: crate::config::CliAgentKind,
+    pub id: String,
+}
+
+#[derive(Default)]
+pub struct McpStatus {
+    /// None = belum diperiksa; Some(true) = MCP Tabular terdaftar di CLI global.
+    pub registered: Option<bool>,
+    pub message: Option<String>,
+    pub receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
+}
+
 
 /// Cache badge skema di header panel AI. Sumbernya query SQLite yang blocking,
 /// jadi hanya dihitung ulang saat koneksi/database berubah atau cache kedaluwarsa.
@@ -1732,7 +1783,52 @@ pub type RenderTreeNodeResult = (
     Option<(i64, String)>,
     // New: request to open Restore dialog prefilled with (connection_id, database_name)
     Option<(i64, String)>,
+    // New: request to open Copy Database dialog prefilled with (connection_id, database_name)
+    Option<(i64, String)>,
+    // New: request to drop a database (connection_id, database_name)
+    Option<(i64, String)>,
 );
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingDropDatabase {
+    pub connection_id: i64,
+    pub database_name: String,
+    pub database_type: models::enums::DatabaseType,
+    pub drop_statement: String,
+}
+
+impl PendingDropDatabase {
+    pub fn new(
+        connection_id: i64,
+        database_name: String,
+        database_type: models::enums::DatabaseType,
+    ) -> Self {
+        let drop_statement = match database_type {
+            models::enums::DatabaseType::MySQL => {
+                format!("DROP DATABASE IF EXISTS `{}`;", database_name.replace('`', "``"))
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", database_name.replace('"', "\"\""))
+            }
+            models::enums::DatabaseType::MsSQL => {
+                format!(
+                    "USE master;\nALTER DATABASE [{0}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE [{0}];",
+                    database_name.replace(']', "]]")
+                )
+            }
+            models::enums::DatabaseType::MongoDB => {
+                format!("use {};\ndb.dropDatabase();", database_name)
+            }
+            _ => format!("DROP DATABASE \"{}\";", database_name),
+        };
+        Self {
+            connection_id,
+            database_name,
+            database_type,
+            drop_statement,
+        }
+    }
+}
 
 // ── CSV Import Wizard ─────────────────────────────────────────────────────────
 
@@ -2306,4 +2402,21 @@ mod tests {
         assert_eq!(StatementType::from_sql("SHOW TABLES;"), StatementType::Show);
         assert_eq!(StatementType::from_sql("EXPLAIN SELECT 1;"), StatementType::Show);
     }
+
+    #[test]
+    fn test_pending_drop_database_statements() {
+        let p_mysql = PendingDropDatabase::new(1, "my_db".to_string(), models::enums::DatabaseType::MySQL);
+        assert_eq!(p_mysql.drop_statement, "DROP DATABASE IF EXISTS `my_db`;");
+
+        let p_pg = PendingDropDatabase::new(2, "pg_db".to_string(), models::enums::DatabaseType::PostgreSQL);
+        assert_eq!(p_pg.drop_statement, "DROP DATABASE IF EXISTS \"pg_db\" WITH (FORCE);");
+
+        let p_mssql = PendingDropDatabase::new(3, "ms_db".to_string(), models::enums::DatabaseType::MsSQL);
+        assert!(p_mssql.drop_statement.contains("ALTER DATABASE [ms_db] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"));
+        assert!(p_mssql.drop_statement.contains("DROP DATABASE [ms_db];"));
+
+        let p_mongo = PendingDropDatabase::new(4, "mongo_db".to_string(), models::enums::DatabaseType::MongoDB);
+        assert_eq!(p_mongo.drop_statement, "use mongo_db;\ndb.dropDatabase();");
+    }
 }
+

@@ -1,5 +1,5 @@
-//! Bagian "Backend" di Settings → AI Assistant: memilih HTTP API atau CLI
-//! agent (`agy` / `claude` / `gemini` / custom), plus pekerjaan latar yang juga
+//! Bagian "CLI Agents" di Settings → AI Assistant: mengonfigurasi beberapa CLI
+//! agent sekaligus (`agy` / `claude` / `gemini` / custom), plus pekerjaan latar yang juga
 //! dipakai panel chat: tes koneksi CLI dan pemeriksaan/registrasi MCP server
 //! Tabular di konfigurasi global CLI. Juga bagian "Memory": vault Obsidian yang
 //! dipakai sebagai memory AI (pemilihan folder, indeks latar, simpan catatan).
@@ -14,7 +14,7 @@ use super::preferences::{
 };
 use super::style;
 use crate::agent::harness::{self, CliAgentConfig};
-use crate::config::{AiBackend, CliAgentKind};
+use crate::config::{ChatTarget, CliAgentKind, CliAgentProfile};
 
 /// Backend CLI tidak ada sama sekali di mobile: tidak ada binary agent yang
 /// bisa dijalankan.
@@ -27,51 +27,107 @@ fn cli_backend_available() -> bool {
 }
 
 impl Tabular {
-    pub(crate) fn ai_cli_config(&self) -> CliAgentConfig {
-        CliAgentConfig {
-            kind: self.ai_cli_kind,
-            bin: self.ai_cli_bin.clone(),
-            model: self.ai_cli_model.clone(),
-            effort: self.ai_cli_effort.clone(),
-            extra_args: self.ai_cli_extra_args.clone(),
+    pub(crate) fn cli_profile(&self, kind: CliAgentKind) -> &CliAgentProfile {
+        self.ai_cli_profiles
+            .get(&kind)
+            .expect("cli profile must exist after normalization")
+    }
+
+    pub(crate) fn cli_profile_mut(&mut self, kind: CliAgentKind) -> &mut CliAgentProfile {
+        self.ai_cli_profiles
+            .entry(kind)
+            .or_insert_with(|| CliAgentProfile::new(kind))
+    }
+
+    pub(crate) fn ai_cli_config_for(&self, kind: CliAgentKind) -> CliAgentConfig {
+        let p = self.cli_profile(kind);
+        CliAgentConfig::from(p)
+    }
+
+    pub(crate) fn target_enabled(&self, target: ChatTarget) -> bool {
+        match target {
+            ChatTarget::Api => true,
+            ChatTarget::Cli(kind) => cli_backend_available() && self.cli_profile(kind).enabled,
         }
     }
 
-    /// Mulai pemeriksaan "apakah MCP Tabular terdaftar di CLI" bila belum
+    pub(crate) fn enabled_chat_targets(&self) -> Vec<ChatTarget> {
+        let mut list = vec![ChatTarget::Api];
+        if cli_backend_available() {
+            for kind in CliAgentKind::ALL {
+                if self.cli_profile(kind).enabled {
+                    list.push(ChatTarget::Cli(kind));
+                }
+            }
+        }
+        list
+    }
+
+    pub(crate) fn effective_chat_target(&self) -> ChatTarget {
+        let target = self.ai_chat_target;
+        if self.target_enabled(target) {
+            target
+        } else {
+            self.enabled_chat_targets()
+                .into_iter()
+                .next()
+                .unwrap_or(ChatTarget::Api)
+        }
+    }
+
+    pub(crate) fn effective_default_target(&self) -> ChatTarget {
+        let target = self.ai_default_target;
+        if self.target_enabled(target) {
+            target
+        } else {
+            self.enabled_chat_targets()
+                .into_iter()
+                .next()
+                .unwrap_or(ChatTarget::Api)
+        }
+    }
+
+    pub(crate) fn mcp_registered(&self, kind: CliAgentKind) -> Option<bool> {
+        self.ai_cli_mcp.get(&kind).and_then(|s| s.registered)
+    }
+
+    /// Mulai pemeriksaan "apakah MCP Tabular terdaftar di CLI" untuk agen tertentu bila belum
     /// diketahui. Idempoten; hasilnya diambil oleh [`Self::poll_ai_cli_background`].
-    pub(crate) fn ensure_ai_mcp_check(&mut self) {
-        if !cli_backend_available()
-            || self.ai_backend != AiBackend::Cli
-            || !self.ai_cli_kind.needs_global_mcp_registration()
-            || self.ai_cli_mcp_registered.is_some()
-            || self.ai_cli_mcp_receiver.is_some()
-        {
+    pub(crate) fn ensure_ai_mcp_check(&mut self, kind: CliAgentKind) {
+        if !cli_backend_available() || !kind.needs_global_mcp_registration() {
             return;
         }
-        let cfg = self.ai_cli_config();
+        if let Some(status) = self.ai_cli_mcp.get(&kind) {
+            if status.registered.is_some() || status.receiver.is_some() {
+                return;
+            }
+        }
+        let cfg = self.ai_cli_config_for(kind);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(harness::check_mcp_registered(&cfg));
         });
-        self.ai_cli_mcp_receiver = Some(rx);
+        let status = self.ai_cli_mcp.entry(kind).or_default();
+        status.receiver = Some(rx);
     }
 
     /// Daftarkan MCP Tabular lewat `<cli> mcp add …`, lalu periksa ulang.
-    pub(crate) fn start_ai_mcp_register(&mut self) {
-        let cfg = self.ai_cli_config();
+    pub(crate) fn start_ai_mcp_register(&mut self, kind: CliAgentKind) {
+        let cfg = self.ai_cli_config_for(kind);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let result =
                 harness::register_mcp(&cfg).and_then(|_| harness::check_mcp_registered(&cfg));
             let _ = tx.send(result);
         });
-        self.ai_cli_mcp_registered = None;
-        self.ai_cli_mcp_message = None;
-        self.ai_cli_mcp_receiver = Some(rx);
+        let status = self.ai_cli_mcp.entry(kind).or_default();
+        status.registered = None;
+        status.message = None;
+        status.receiver = Some(rx);
     }
 
-    fn start_ai_cli_test(&mut self) {
-        let cfg = self.ai_cli_config();
+    fn start_ai_cli_test(&mut self, kind: CliAgentKind) {
+        let cfg = self.ai_cli_config_for(kind);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(harness::test_connection(&cfg));
@@ -103,25 +159,27 @@ impl Tabular {
                 }
             }
         }
-        if let Some(rx) = &self.ai_cli_mcp_receiver {
-            match rx.try_recv() {
-                Ok(Ok(registered)) => {
-                    self.ai_cli_mcp_registered = Some(registered);
-                    self.ai_cli_mcp_message = None;
-                    self.ai_cli_mcp_receiver = None;
-                }
-                Ok(Err(e)) => {
-                    log::warn!("[AGENT] MCP registration check failed: {e}");
-                    self.ai_cli_mcp_registered = Some(false);
-                    self.ai_cli_mcp_message = Some(e);
-                    self.ai_cli_mcp_receiver = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.ai_cli_mcp_registered = Some(false);
-                    self.ai_cli_mcp_receiver = None;
+        for (kind, mcp_status) in &mut self.ai_cli_mcp {
+            if let Some(rx) = &mcp_status.receiver {
+                match rx.try_recv() {
+                    Ok(Ok(registered)) => {
+                        mcp_status.registered = Some(registered);
+                        mcp_status.message = None;
+                        mcp_status.receiver = None;
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!("[AGENT] MCP registration check failed for {kind:?}: {e}");
+                        mcp_status.registered = Some(false);
+                        mcp_status.message = Some(e);
+                        mcp_status.receiver = None;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        mcp_status.registered = Some(false);
+                        mcp_status.receiver = None;
+                    }
                 }
             }
         }
@@ -143,114 +201,87 @@ impl Tabular {
         }
     }
 
-    fn save_ai_prefs(&mut self) {
+    pub(crate) fn save_ai_prefs(&mut self) {
         self.prefs_dirty = true;
         self.try_save_prefs();
     }
 
-    /// Bagian atas tab AI Assistant: pemilihan backend dan, untuk CLI, semua
-    /// pengaturannya. Pengaturan API digambar oleh pemanggil bila backend = API.
-    pub(crate) fn render_ai_backend_settings(&mut self, ui: &mut egui::Ui) {
+    /// Bagian "CLI Agents" di Settings → AI Assistant.
+    pub(crate) fn render_ai_cli_section(&mut self, ui: &mut egui::Ui) {
         self.poll_ai_cli_background(ui.ctx());
 
-        section(ui, "Backend", |ui| {
-            row(
+        section(ui, "CLI Agents", |ui| {
+            hint(
                 ui,
-                "Backend",
-                Some(
-                    "CLI agents use the login of a tool already installed on this machine (no API key) \
-                     and can inspect your databases through Tabular's built-in MCP server.",
-                ),
-                |ui| {
-                    let mut backend = self.ai_backend;
-                    ui.radio_value(&mut backend, AiBackend::Api, AiBackend::Api.display_name());
-                    if !IS_MOBILE {
-                        // Di build App Store tetap ditampilkan (nonaktif) supaya user tahu
-                        // fitur ini ada di versi download langsung.
-                        let resp = ui
-                            .add_enabled(
-                                cli_backend_available(),
-                                egui::RadioButton::new(
-                                    backend == AiBackend::Cli,
-                                    AiBackend::Cli.display_name(),
-                                ),
-                            )
-                            .on_disabled_hover_text(harness::SANDBOX_UNAVAILABLE_MESSAGE);
-                        if resp.clicked() {
-                            backend = AiBackend::Cli;
-                        }
-                    }
-                    if backend != self.ai_backend {
-                        self.ai_backend = backend;
-                        self.ai_cli_mcp_registered = None;
-                        self.save_ai_prefs();
-                    }
-                },
+                "Configure local CLI coding agents. Enabled agents can be selected in the AI Assistant chat panel.",
             );
             if !IS_MOBILE && harness::is_app_sandboxed() {
                 ui.add_space(4.0);
                 callout(ui, Tone::Warning, |ui| {
                     status(ui, Tone::Warning, harness::SANDBOX_UNAVAILABLE_MESSAGE);
                 });
-                // Preferensi CLI yang terbawa dari build lain: kembalikan ke API
-                // supaya pengaturan provider di bawah langsung tampil.
-                if self.ai_backend == AiBackend::Cli {
-                    self.ai_backend = AiBackend::Api;
-                    self.save_ai_prefs();
-                }
+                return;
             }
+            if IS_MOBILE {
+                return;
+            }
+
+            ui.add_space(6.0);
+            // Tab bar pemilih agen CLI
+            ui.horizontal(|ui| {
+                for kind in CliAgentKind::ALL {
+                    let is_sel = self.ai_settings_cli_tab == kind;
+                    let profile_enabled = self.cli_profile(kind).enabled;
+                    let label = if profile_enabled {
+                        format!("{} ✓", kind.display_name())
+                    } else {
+                        kind.display_name().to_string()
+                    };
+                    if ui.selectable_label(is_sel, label).clicked() {
+                        self.ai_settings_cli_tab = kind;
+                        self.ai_cli_test_result = None;
+                    }
+                }
+            });
+            divider(ui);
+
+            self.render_ai_cli_agent_rows(ui);
         });
 
-        if self.ai_backend != AiBackend::Cli {
-            return;
+        if !IS_MOBILE && !harness::is_app_sandboxed() {
+            let tab = self.ai_settings_cli_tab;
+            section(ui, "Database Access", |ui| {
+                self.render_ai_cli_mcp_status(ui, tab)
+            });
+            section(ui, "Connection Test", |ui| {
+                self.render_ai_cli_test(ui, tab)
+            });
         }
-
-        section(ui, "CLI Agent", |ui| self.render_ai_cli_agent_rows(ui));
-        section(ui, "Database Access", |ui| {
-            self.render_ai_cli_mcp_status(ui)
-        });
-        section(ui, "Connection Test", |ui| self.render_ai_cli_test(ui));
     }
 
     fn render_ai_cli_agent_rows(&mut self, ui: &mut egui::Ui) {
-        // ── Jenis CLI ───────────────────────────────────────────────────
-        row(ui, "Agent", None, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let mut kind = self.ai_cli_kind;
-                for k in [
-                    CliAgentKind::Antigravity,
-                    CliAgentKind::ClaudeCode,
-                    CliAgentKind::GeminiCli,
-                    CliAgentKind::Custom,
-                ] {
-                    ui.radio_value(&mut kind, k, k.display_name());
-                }
-                if kind != self.ai_cli_kind {
-                    self.ai_cli_kind = kind;
-                    self.ai_cli_bin.clear();
-                    self.ai_settings_cli_bin_input.clear();
-                    self.ai_cli_model.clear();
-                    self.ai_settings_cli_model_input.clear();
-                    self.ai_cli_effort.clear();
-                    self.ai_cli_extra_args.clear();
-                    self.ai_settings_cli_extra_args_input.clear();
-                    self.ai_cli_mcp_registered = None;
-                    self.ai_cli_mcp_message = None;
-                    self.ai_cli_test_result = None;
-                    self.ai_session_id = None;
-                    self.save_ai_prefs();
-                }
-            });
-        });
+        let tab = self.ai_settings_cli_tab;
+
+        // ── Enable checkbox ─────────────────────────────────────────────
+        let mut enabled = self.cli_profile(tab).enabled;
+        if ui
+            .checkbox(&mut enabled, "Enable this agent for chat")
+            .changed()
+        {
+            self.cli_profile_mut(tab).enabled = enabled;
+            self.save_ai_prefs();
+        }
         divider(ui);
 
-        // ── Binary ──────────────────────────────────────────────────────
-        let is_custom = self.ai_cli_kind == CliAgentKind::Custom;
-        let default_bin = self.ai_cli_kind.default_binary();
+        // ── Binary / Command ────────────────────────────────────────────
+        let is_custom = tab == CliAgentKind::Custom;
+        let default_bin = tab.default_binary();
         let bin_hint = is_custom.then_some(
             "The command is run with the arguments below; use {prompt}, {system}, {model} and \
              {session} as placeholders. Output is read as plain text.",
         );
+        let mut bin_changed = false;
+        let mut detected_path = None;
         row(
             ui,
             if is_custom {
@@ -269,18 +300,16 @@ impl Tabular {
                 let buttons_w = if has_detect { 140.0 } else { 70.0 };
                 let spacing = 6.0;
                 let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
+                let profile = self.cli_profile_mut(tab);
                 let resp = style::render_text_field(
                     ui,
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_bin_input)
-                        .hint_text(hint_text),
+                    egui::TextEdit::singleline(&mut profile.bin).hint_text(hint_text),
                     field_w,
                     None,
                 );
                 ui.add_space(spacing);
                 if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
-                    self.ai_cli_bin = self.ai_settings_cli_bin_input.trim().to_string();
-                    self.ai_cli_mcp_registered = None;
-                    self.save_ai_prefs();
+                    bin_changed = true;
                 }
                 if has_detect {
                     ui.add_space(spacing);
@@ -291,43 +320,54 @@ impl Tabular {
                     {
                         match harness::resolve_binary(default_bin) {
                             Some(path) => {
-                                self.ai_settings_cli_bin_input = path.to_string_lossy().to_string();
-                                self.ai_cli_bin = self.ai_settings_cli_bin_input.clone();
-                                self.ai_cli_mcp_registered = None;
-                                self.save_ai_prefs();
-                                self.toasts.success(format!("Found {}", path.display()));
+                                detected_path = Some(path.to_string_lossy().to_string());
                             }
                             None => {
-                                self.toasts
-                                    .error(format!("`{default_bin}` not found. Install it or enter its full path."));
+                                self.toasts.error(format!(
+                                    "`{default_bin}` not found. Install it or enter its full path."
+                                ));
                             }
                         }
                     }
                 }
             },
         );
+        if let Some(p) = detected_path {
+            self.cli_profile_mut(tab).bin = p.clone();
+            if let Some(status) = self.ai_cli_mcp.get_mut(&tab) {
+                status.registered = None;
+            }
+            self.save_ai_prefs();
+            self.toasts.success(format!("Found {p}"));
+        } else if bin_changed {
+            if let Some(status) = self.ai_cli_mcp.get_mut(&tab) {
+                status.registered = None;
+            }
+            self.save_ai_prefs();
+        }
         divider(ui);
 
         // ── Model ───────────────────────────────────────────────────────
-        let model_hint = (self.ai_cli_kind == CliAgentKind::Antigravity).then_some(
+        let model_hint = (tab == CliAgentKind::Antigravity).then_some(
             "Run `agy models` for the full list. Gemini models carry their effort level in the name \
              (…-low/-medium/-high); the effort setting is then ignored.",
         );
+        let mut model_changed = false;
+        let mut clear_model = false;
         row(ui, "Model", model_hint, |ui| {
             let buttons_w = 140.0;
             let spacing = 6.0;
             let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
+            let profile = self.cli_profile_mut(tab);
             let resp = style::render_text_field(
                 ui,
-                egui::TextEdit::singleline(&mut self.ai_settings_cli_model_input)
-                    .hint_text("(CLI default)"),
+                egui::TextEdit::singleline(&mut profile.model).hint_text("(CLI default)"),
                 field_w,
                 None,
             );
             ui.add_space(spacing);
             if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
-                self.ai_cli_model = self.ai_settings_cli_model_input.trim().to_string();
-                self.save_ai_prefs();
+                model_changed = true;
             }
             ui.add_space(spacing);
             if ui
@@ -335,40 +375,41 @@ impl Tabular {
                 .on_hover_text("Let the CLI pick its own default model")
                 .clicked()
             {
-                self.ai_settings_cli_model_input.clear();
-                self.ai_cli_model.clear();
-                self.save_ai_prefs();
+                clear_model = true;
             }
         });
-        if let Some(m) = quick_pick(
-            ui,
-            self.ai_cli_kind.preset_models(),
-            &self.ai_settings_cli_model_input,
-        ) {
-            self.ai_settings_cli_model_input = m.to_string();
-            self.ai_cli_model = m.to_string();
+        if clear_model {
+            self.cli_profile_mut(tab).model.clear();
+            self.save_ai_prefs();
+        } else if model_changed {
+            self.save_ai_prefs();
+        }
+        if let Some(m) = quick_pick(ui, tab.preset_models(), &self.cli_profile(tab).model) {
+            self.cli_profile_mut(tab).model = m.to_string();
             self.save_ai_prefs();
         }
 
         // ── Effort ──────────────────────────────────────────────────────
-        if self.ai_cli_kind.supports_effort() {
+        if tab.supports_effort() {
             divider(ui);
             row(ui, "Reasoning effort", None, |ui| {
-                let before = self.ai_cli_effort.clone();
-                egui::ComboBox::from_id_salt("ai_cli_effort")
-                    .selected_text(if before.is_empty() {
+                let before = self.cli_profile(tab).effort.clone();
+                let mut current = before.clone();
+                egui::ComboBox::from_id_salt(format!("ai_cli_effort_{tab:?}"))
+                    .selected_text(if current.is_empty() {
                         "(default)"
                     } else {
-                        before.as_str()
+                        current.as_str()
                     })
                     .width(140.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.ai_cli_effort, String::new(), "(default)");
+                        ui.selectable_value(&mut current, String::new(), "(default)");
                         for lvl in ["low", "medium", "high"] {
-                            ui.selectable_value(&mut self.ai_cli_effort, lvl.to_string(), lvl);
+                            ui.selectable_value(&mut current, lvl.to_string(), lvl);
                         }
                     });
-                if self.ai_cli_effort != before {
+                if current != before {
+                    self.cli_profile_mut(tab).effort = current;
                     self.save_ai_prefs();
                 }
             });
@@ -376,6 +417,7 @@ impl Tabular {
         divider(ui);
 
         // ── Extra args ──────────────────────────────────────────────────
+        let mut args_changed = false;
         row(
             ui,
             if is_custom {
@@ -385,7 +427,7 @@ impl Tabular {
             },
             None,
             |ui| {
-                let hint_text = match self.ai_cli_kind {
+                let hint_text = match tab {
                     CliAgentKind::Antigravity => "e.g. --sandbox",
                     CliAgentKind::ClaudeCode => "e.g. --max-turns 8",
                     CliAgentKind::GeminiCli => "e.g. --approval-mode yolo",
@@ -394,21 +436,22 @@ impl Tabular {
                 let buttons_w = 70.0;
                 let spacing = 6.0;
                 let field_w = (ui.available_width() - buttons_w - spacing).clamp(160.0, 320.0);
+                let profile = self.cli_profile_mut(tab);
                 let resp = style::render_text_field(
                     ui,
-                    egui::TextEdit::singleline(&mut self.ai_settings_cli_extra_args_input)
-                        .hint_text(hint_text),
+                    egui::TextEdit::singleline(&mut profile.extra_args).hint_text(hint_text),
                     field_w,
                     None,
                 );
                 ui.add_space(spacing);
                 if resp.lost_focus() || ui.add(style::btn_field_action(ui, "Apply")).clicked() {
-                    self.ai_cli_extra_args =
-                        self.ai_settings_cli_extra_args_input.trim().to_string();
-                    self.save_ai_prefs();
+                    args_changed = true;
                 }
             },
         );
+        if args_changed {
+            self.save_ai_prefs();
+        }
         divider(ui);
 
         // ── Live edit ───────────────────────────────────────────────────
@@ -425,13 +468,13 @@ impl Tabular {
         }
     }
 
-    fn render_ai_cli_mcp_status(&mut self, ui: &mut egui::Ui) {
+    fn render_ai_cli_mcp_status(&mut self, ui: &mut egui::Ui, kind: CliAgentKind) {
         hint(
             ui,
             "Tabular's MCP server gives the agent read-only access to your databases.",
         );
         ui.add_space(2.0);
-        match self.ai_cli_kind {
+        match kind {
             CliAgentKind::ClaudeCode => {
                 status(
                     ui,
@@ -447,9 +490,17 @@ impl Tabular {
                 );
             }
             _ => {
-                self.ensure_ai_mcp_check();
+                self.ensure_ai_mcp_check(kind);
+                let (reg, msg, is_busy) = {
+                    let s = self.ai_cli_mcp.get(&kind);
+                    (
+                        s.and_then(|x| x.registered),
+                        s.and_then(|x| x.message.clone()),
+                        s.and_then(|x| x.receiver.as_ref()).is_some(),
+                    )
+                };
                 ui.horizontal_wrapped(|ui| {
-                    match self.ai_cli_mcp_registered {
+                    match reg {
                         None => {
                             ui.spinner();
                             hint(ui, "Checking…");
@@ -458,34 +509,40 @@ impl Tabular {
                             status(ui, Tone::Success, "✓ Registered in the CLI's global MCP config");
                         }
                         Some(false) => {
-                            status(ui, Tone::Warning, "⚠ Not registered: the agent cannot query your databases");
+                            status(
+                                ui,
+                                Tone::Warning,
+                                "⚠ Not registered: the agent cannot query your databases",
+                            );
                             if ui
                                 .add(style::btn_primary_ctx(ui.ctx(), "Register"))
                                 .on_hover_text(format!(
                                     "Runs `{} mcp add tabular -- {} mcp` (modifies the CLI's global config)",
-                                    self.ai_cli_kind.default_binary(),
+                                    kind.default_binary(),
                                     harness::tabular_exe()
                                 ))
                                 .clicked()
                             {
-                                self.start_ai_mcp_register();
+                                self.start_ai_mcp_register(kind);
                             }
                         }
                     }
-                    if self.ai_cli_mcp_receiver.is_none() && ui.add(style::btn_secondary("Re-check")).clicked() {
-                        self.ai_cli_mcp_registered = None;
-                        self.ai_cli_mcp_message = None;
-                        self.ensure_ai_mcp_check();
+                    if !is_busy && ui.add(style::btn_secondary("Re-check")).clicked() {
+                        if let Some(s) = self.ai_cli_mcp.get_mut(&kind) {
+                            s.registered = None;
+                            s.message = None;
+                        }
+                        self.ensure_ai_mcp_check(kind);
                     }
                 });
-                if let Some(msg) = &self.ai_cli_mcp_message {
-                    status(ui, Tone::Danger, msg.clone());
+                if let Some(m) = msg {
+                    status(ui, Tone::Danger, m);
                 }
             }
         }
     }
 
-    fn render_ai_cli_test(&mut self, ui: &mut egui::Ui) {
+    fn render_ai_cli_test(&mut self, ui: &mut egui::Ui, kind: CliAgentKind) {
         ui.horizontal(|ui| {
             let testing = self.ai_cli_test_receiver.is_some();
             if ui
@@ -493,7 +550,7 @@ impl Tabular {
                 .on_hover_text("Checks the binary, its version and sends a one-word prompt")
                 .clicked()
             {
-                self.start_ai_cli_test();
+                self.start_ai_cli_test(kind);
             }
             if testing {
                 ui.spinner();
@@ -512,6 +569,38 @@ impl Tabular {
              under Tabular's data folder. Database access goes through Tabular's read-only MCP tools; \
              write statements must still be run by you.",
         );
+    }
+
+    /// Bagian "Default Target" di Settings → AI Assistant.
+    pub(crate) fn render_ai_default_target(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Default Target", |ui| {
+            row(
+                ui,
+                "Default agent",
+                Some(
+                    "Used by non-chat AI features: the inline `--AI` block in the SQL editor \
+                     and AI generation in the HTTP Client.",
+                ),
+                |ui| {
+                    let targets = self.enabled_chat_targets();
+                    let current = self.effective_default_target();
+                    let mut selected = current;
+                    egui::ComboBox::from_id_salt("ai_default_target_select")
+                        .selected_text(crate::ai_assistant::backend_label_for(self, current))
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for t in targets {
+                                let label = crate::ai_assistant::backend_label_for(self, t);
+                                ui.selectable_value(&mut selected, t, label);
+                            }
+                        });
+                    if selected != self.ai_default_target {
+                        self.ai_default_target = selected;
+                        self.save_ai_prefs();
+                    }
+                },
+            );
+        });
     }
 }
 

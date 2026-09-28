@@ -849,7 +849,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "• [{}] {} ➔ {}",
+                                    "• [{}] {} → {}",
                                     sf.resource_type.to_uppercase(),
                                     sf.folder_path,
                                     team_name

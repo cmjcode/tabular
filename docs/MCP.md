@@ -109,9 +109,10 @@ CI machine with its own connections.
 
 ## Using a CLI agent inside Tabular
 
-The AI Assistant panel (Cmd+Shift+A) can run an installed coding agent instead of
-calling an HTTP API. Pick **Settings → AI Assistant → Backend → CLI Agent** and
-choose the tool:
+The AI Assistant panel (Cmd+Shift+A) can run installed coding agents instead of
+or alongside an HTTP API. In **Settings → AI Assistant → CLI Agents**, configure and
+enable any supported agent. You can enable multiple agents simultaneously and switch
+between them directly in the AI Assistant chat panel:
 
 | Agent | Binary | How the Tabular MCP server reaches it | Conversation continuity |
 |---|---|---|---|

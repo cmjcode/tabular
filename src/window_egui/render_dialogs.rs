@@ -1868,6 +1868,211 @@ impl super::Tabular {
         }
     }
 
+    /// Render the confirmation popup dialog when attempting to drop an entire database.
+    pub fn render_drop_database_confirmation(&mut self, ctx: &egui::Context) {
+        if let Some(pending) = self.pending_drop_database.clone() {
+            let mut close_dialog = false;
+            let mut confirm_drop = false;
+
+            crate::window_egui::style::render_modal_backdrop(ctx, "modal_drop_database", true);
+
+            let title = format!("Drop Database '{}'?", pending.database_name);
+
+            egui::Window::new(&title)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        &title,
+                        &mut close_dialog,
+                    );
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("⚠️ Warning")
+                                .strong()
+                                .color(super::style::theme_danger(ctx)),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(format!(
+                            "Are you sure you want to drop database '{}'?",
+                            pending.database_name
+                        ));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "This action is permanent and cannot be undone. All tables, views, and data will be destroyed."
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Command to execute:").small().strong());
+                        ui.code(&pending.drop_statement);
+                    });
+
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let drop_btn = egui::Button::new(
+                                egui::RichText::new("🗑 Drop Database")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(super::style::theme_danger(ctx));
+
+                            if ui.add(drop_btn).clicked() {
+                                confirm_drop = true;
+                                close_dialog = true;
+                            }
+
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+                });
+
+            if confirm_drop {
+                self.execute_drop_database(
+                    pending.connection_id,
+                    pending.database_name,
+                    pending.database_type,
+                    pending.drop_statement,
+                );
+                self.pending_drop_database = None;
+            }
+            if close_dialog {
+                self.pending_drop_database = None;
+            }
+        }
+    }
+
+    pub(crate) fn execute_drop_database(
+        &mut self,
+        conn_id: i64,
+        db_name: String,
+        db_type: models::enums::DatabaseType,
+        stmt: String,
+    ) {
+        use log::{debug, error};
+
+        debug!("🗑️ Executing DROP DATABASE '{}' on conn {}", db_name, conn_id);
+
+        match db_type {
+            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::MsSQL => {
+                let db_name_clone = db_name.clone();
+                self.run_query_with_callback(conn_id, stmt, move |tabular, message| {
+                    if message.success {
+                        debug!("✅ DROP DATABASE succeeded for '{}'", db_name_clone);
+                        tabular.remove_database_from_tree(conn_id, &db_name_clone);
+                        tabular.clear_database_cache(conn_id, &db_name_clone);
+                        tabular.cleanup_dropped_database(conn_id, &db_name_clone);
+                        tabular.toasts.success(format!("Database '{}' dropped successfully", db_name_clone));
+                    } else {
+                        let err = message.error.clone().unwrap_or_default();
+                        error!("❌ DROP DATABASE failed for '{}': {}", db_name_clone, err);
+                        tabular.toasts.error(format!("Failed to drop database '{}': {}", db_name_clone, err));
+                    }
+                });
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                let conn_config = self.connections.iter().find(|c| c.id == Some(conn_id)).cloned();
+                if let Some(config) = conn_config {
+                    let rt = self.get_runtime();
+                    let db_name_clone = db_name.clone();
+                    let res = rt.block_on(async {
+                        crate::driver_postgres::drop_database(&config, &db_name_clone).await
+                    });
+                    match res {
+                        Ok(_) => {
+                            debug!("✅ DROP DATABASE (PostgreSQL) succeeded for '{}'", db_name);
+                            self.remove_database_from_tree(conn_id, &db_name);
+                            self.clear_database_cache(conn_id, &db_name);
+                            self.cleanup_dropped_database(conn_id, &db_name);
+                            self.toasts.success(format!("Database '{}' dropped successfully", db_name));
+                        }
+                        Err(err) => {
+                            error!("❌ DROP DATABASE (PostgreSQL) failed for '{}': {}", db_name, err);
+                            self.toasts.error(format!("Failed to drop database '{}': {}", db_name, err));
+                        }
+                    }
+                } else {
+                    self.toasts.error(format!("Connection config not found for conn {}", conn_id));
+                }
+            }
+            models::enums::DatabaseType::MongoDB => {
+                let db_name_clone = db_name.clone();
+                let rt = self.get_runtime();
+                let res = rt.block_on(async {
+                    crate::driver_mongodb::drop_database(self, conn_id, &db_name_clone).await
+                });
+                match res {
+                    Ok(_) => {
+                        debug!("✅ DROP DATABASE (MongoDB) succeeded for '{}'", db_name);
+                        self.remove_database_from_tree(conn_id, &db_name);
+                        self.clear_database_cache(conn_id, &db_name);
+                        self.cleanup_dropped_database(conn_id, &db_name);
+                        self.toasts.success(format!("Database '{}' dropped successfully", db_name));
+                    }
+                    Err(err) => {
+                        error!("❌ DROP DATABASE (MongoDB) failed for '{}': {}", db_name, err);
+                        self.toasts.error(format!("Failed to drop database '{}': {}", db_name, err));
+                    }
+                }
+            }
+            _ => {
+                self.toasts.error(format!("Drop database not supported for {:?}", db_type));
+            }
+        }
+    }
+
+    pub(crate) fn cleanup_dropped_database(&mut self, connection_id: i64, database_name: &str) {
+        // 1. Reset query tabs if pointing to the dropped database
+        for tab in &mut self.query_tabs {
+            if tab.connection_id == Some(connection_id) {
+                if let Some(ref t_db) = tab.database_name {
+                    if t_db.eq_ignore_ascii_case(database_name) {
+                        tab.database_name = None;
+                    }
+                }
+            }
+        }
+
+        // 2. Clear structure view if currently displaying dropped database
+        if let Some((target_conn, ref target_db, _)) = self.last_structure_target {
+            if target_conn == connection_id && target_db.eq_ignore_ascii_case(database_name) {
+                self.structure_columns.clear();
+                self.structure_indexes.clear();
+                self.last_structure_target = None;
+            }
+        }
+
+        // 3. Clear data table view if currently viewing a table in dropped database
+        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            if tab.connection_id == Some(connection_id)
+                && tab.database_name.as_deref().map(|d| d.eq_ignore_ascii_case(database_name)).unwrap_or(false)
+                && tab.is_table_browse_mode
+            {
+                tab.result_rows.clear();
+                tab.result_all_rows.clear();
+                tab.result_headers.clear();
+            }
+        }
+
+        // 4. If connection was configured with this database, reset connection pool
+        if let Some(conn) = self.connections.iter().find(|c| c.id == Some(connection_id)) {
+            if conn.database.eq_ignore_ascii_case(database_name) {
+                self.connection_pools.remove(&connection_id);
+            }
+        }
+    }
+
     /// Render the confirmation popup dialog when attempting to clear all query history.
     pub fn render_clear_history_confirmation(&mut self, ctx: &egui::Context) {
         if self.show_clear_history_confirm {

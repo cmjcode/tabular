@@ -3027,6 +3027,20 @@ impl Tabular {
                             rendered_user_manager = true;
                         }
 
+                        // Snapshot backend AI untuk bantuan AI di REST client. Diambil
+                        // sebelum `query_tabs` dipinjam mutable; hanya clone konfigurasi.
+                        let http_ai_backend: crate::http_client::AiBackend = if self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .is_some_and(|t| t.http_client_state.is_some())
+                        {
+                            let target = self.effective_default_target();
+                            crate::ai_assistant::backend_ready_for(self, target)
+                                .map(|()| crate::ai_assistant::chat_backend_for(self, target))
+                        } else {
+                            Err(String::new())
+                        };
+
                         // Check for HTTP client tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && tab.http_client_state.is_some()
@@ -3037,7 +3051,7 @@ impl Tabular {
                             let mut saved_folder_id = None;
                             let mut workspaces_saved = false;
                             if let Some(state) = &mut tab.http_client_state {
-                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
+                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id, &http_ai_backend);
                                 if workspaces_saved {
                                     saved_ws_id = state.saved_workspace_id.clone();
                                     saved_folder_id = state.saved_folder_id.clone();
@@ -3555,6 +3569,7 @@ impl Tabular {
 
                     // Delete Connection confirmation dialog
                     self.render_delete_connection_confirmation(ui.ctx());
+                    self.render_drop_database_confirmation(ui.ctx());
                     self.render_clear_history_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());
@@ -4075,12 +4090,9 @@ impl Tabular {
                     ai_model: self.ai_model.clone(),
                     ai_provider: self.ai_provider,
                     ai_base_url: self.ai_base_url.clone(),
-                    ai_backend: self.ai_backend,
-                    ai_cli_kind: self.ai_cli_kind,
-                    ai_cli_bin: self.ai_cli_bin.clone(),
-                    ai_cli_model: self.ai_cli_model.clone(),
-                    ai_cli_effort: self.ai_cli_effort.clone(),
-                    ai_cli_extra_args: self.ai_cli_extra_args.clone(),
+                    ai_default_target: self.ai_default_target,
+                    ai_chat_target: Some(self.ai_chat_target),
+                    ai_cli_profiles: self.ai_cli_profiles.values().cloned().collect(),
                     ai_cli_auto_apply_edits: self.ai_cli_auto_apply_edits,
                     ai_obsidian_vault_path: self.ai_obsidian_vault_path.clone(),
                     ai_obsidian_enabled: self.ai_obsidian_enabled,
@@ -5091,6 +5103,11 @@ impl App for Tabular {
         // Database Restore dialog
         if self.show_restore_dialog {
             crate::dialog_backup_restore::render_restore_dialog(self, ctx);
+        }
+
+        // Copy Database dialog
+        if self.show_copy_database_dialog {
+            crate::dialog_copy_database::render_copy_database_dialog(self, ctx);
         }
 
         // Export All Data (ZIP) dialog

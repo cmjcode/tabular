@@ -461,3 +461,90 @@ pub(crate) fn convert_postgres_rows_to_table_data(
         })
         .collect()
 }
+
+/// Drop a PostgreSQL database by connecting to a maintenance database (postgres or template1),
+/// terminating existing connections to the target database, and executing DROP DATABASE.
+pub async fn drop_database(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+) -> Result<(), String> {
+    use sqlx::postgres::PgConnectOptions;
+
+    let (target_host, target_port) = match crate::connection::pool::resolve_connection_target_async(connection).await {
+        Ok(t) => t,
+        Err(e) => return Err(format!("Cannot resolve target host: {}", e)),
+    };
+    let port_num = target_port.parse::<u16>().unwrap_or(5432);
+
+    // Never connect to the database being dropped
+    let conn_db = if database_name.eq_ignore_ascii_case("postgres") {
+        "template1"
+    } else {
+        "postgres"
+    };
+
+    let mut connect_opts = PgConnectOptions::new()
+        .host(&target_host)
+        .port(port_num)
+        .username(&connection.username)
+        .password(&connection.password)
+        .database(conn_db);
+
+    if connection.ssl_enabled {
+        let ssl_mode = if !connection.ssl_verify_server {
+            sqlx::postgres::PgSslMode::Require
+        } else if !connection.ssl_ca_cert.trim().is_empty() {
+            sqlx::postgres::PgSslMode::VerifyCa
+        } else {
+            sqlx::postgres::PgSslMode::Require
+        };
+        connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+        if !connection.ssl_ca_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_root_cert(connection.ssl_ca_cert.trim());
+        }
+        if !connection.ssl_client_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+        }
+        if !connection.ssl_client_key.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+        }
+    } else {
+        connect_opts = connect_opts.ssl_mode(sqlx::postgres::PgSslMode::Prefer);
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(connect_opts)
+        .await
+        .map_err(|e| format!("PostgreSQL connect failed (to maintenance db '{}'): {}", conn_db, e))?;
+
+    // Terminate existing connections to target database
+    let term_query = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()";
+    let _ = sqlx::query(term_query).bind(database_name).execute(&pool).await;
+
+    // Drop database with FORCE (PG 13+)
+    let safe_name = database_name.replace('"', "\"\"");
+    let drop_query_force = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", safe_name);
+    let res = sqlx::query(sqlx::AssertSqlSafe(drop_query_force.as_str())).execute(&pool).await;
+
+    match res {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let err_msg = err.to_string();
+            // Fallback for PostgreSQL < 13
+            if err_msg.to_lowercase().contains("syntax error") || err_msg.contains("42601") {
+                let drop_query = format!("DROP DATABASE IF EXISTS \"{}\";", safe_name);
+                sqlx::query(sqlx::AssertSqlSafe(drop_query.as_str()))
+                    .execute(&pool)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("PostgreSQL drop database error: {}", e))
+            } else {
+                Err(format!("PostgreSQL drop database error: {}", err))
+            }
+        }
+    }
+}
+

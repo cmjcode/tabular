@@ -412,6 +412,8 @@ pub struct Tabular {
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
     // Pending drop table confirmation
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
+    // Pending drop database confirmation
+    pub pending_drop_database: Option<models::structs::PendingDropDatabase>,
     // Pending delete connection confirmation
     pub pending_delete_connection: Option<(i64, String)>, // (connection_id, connection_name)
     pub pending_delete_http_request: Option<(String, String)>, // (request_id, request_name)
@@ -595,8 +597,6 @@ pub struct Tabular {
     pub ai_chat: Vec<models::structs::AiChatMessage>,
     pub ai_stream_receiver: Option<std::sync::mpsc::Receiver<crate::agent::harness::AgentEvent>>,
     pub ai_cancel: Option<crate::agent::harness::CancelHandle>,
-    /// Id sesi CLI untuk melanjutkan percakapan (agy --conversation / claude --resume)
-    pub ai_session_id: Option<String>,
     /// Tab lain yang dilampirkan sebagai konteks (QueryTab::id); tab aktif selalu ikut
     pub ai_attached_tab_ids: Vec<usize>,
     pub ai_live_edit_parser: Option<crate::agent::live_edit::LiveEditParser>,
@@ -611,27 +611,29 @@ pub struct Tabular {
     pub ai_model: String,
     pub ai_provider: crate::config::AiProvider,
     pub ai_base_url: String,
-    pub ai_backend: crate::config::AiBackend,
-    pub ai_cli_kind: crate::config::CliAgentKind,
-    pub ai_cli_bin: String,
-    pub ai_cli_model: String,
-    pub ai_cli_effort: String,
-    pub ai_cli_extra_args: String,
+    /// Profil semua CLI agent, keyed by kind (selalu 4 entri).
+    pub ai_cli_profiles: std::collections::BTreeMap<crate::config::CliAgentKind, crate::config::CliAgentProfile>,
+    /// Target untuk fitur non-chat; juga fallback picker.
+    pub ai_default_target: crate::config::ChatTarget,
+    /// Pilihan picker di panel chat (dipersist sebagai `ai_chat_target`).
+    pub ai_chat_target: crate::config::ChatTarget,
+    /// Target yang dipakai giliran yang sedang berjalan; menentukan `kind` saat
+    /// `AgentEvent::Session` diterima.
+    pub ai_turn_target: Option<crate::config::ChatTarget>,
+    /// Sesi CLI aktif; hanya dipakai bila `kind` sama dengan target giliran berikutnya.
+    pub ai_session: Option<models::structs::AgentSession>,
+    /// Tab agent yang sedang diedit di Settings (tidak dipersist).
+    pub ai_settings_cli_tab: crate::config::CliAgentKind,
+    /// Status registrasi MCP global per agent (agy, gemini).
+    pub ai_cli_mcp: std::collections::HashMap<crate::config::CliAgentKind, models::structs::McpStatus>,
     pub ai_cli_auto_apply_edits: bool,
     // Temp buffers for settings UI
     pub ai_settings_api_key_input: String,
     pub ai_settings_model_input: String,
     pub ai_settings_base_url_input: String,
-    pub ai_settings_cli_bin_input: String,
-    pub ai_settings_cli_model_input: String,
-    pub ai_settings_cli_extra_args_input: String,
     // Hasil "Test" dan pemeriksaan registrasi MCP di settings (dijalankan di thread)
     pub ai_cli_test_receiver: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub ai_cli_test_result: Option<Result<String, String>>,
-    /// None = belum diperiksa; Some(true) = MCP Tabular terdaftar di CLI global
-    pub ai_cli_mcp_registered: Option<bool>,
-    pub ai_cli_mcp_receiver: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
-    pub ai_cli_mcp_message: Option<String>,
     // Vault Obsidian sebagai memory AI (lihat `crate::obsidian`)
     pub ai_obsidian_vault_path: String,
     pub ai_obsidian_enabled: bool,
@@ -685,6 +687,9 @@ pub struct Tabular {
     pub show_restore_dialog: bool,
     pub backup_state: Option<crate::dialog_backup_restore::BackupDialogState>,
     pub restore_state: Option<crate::dialog_backup_restore::RestoreDialogState>,
+    // Copy Database dialog
+    pub show_copy_database_dialog: bool,
+    pub copy_database_state: Option<crate::dialog_copy_database::CopyDatabaseDialogState>,
 
     // ─── Sync & Collaboration ────────────────────────────────────────────────
     /// Logged-in Tabular cloud account (None = not signed in)

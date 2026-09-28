@@ -322,13 +322,14 @@ use crate::agent::harness::{
     self, AgentEvent, AgentRequest, CancelHandle, CliAgentConfig, ProgressStatus, ProgressStep,
 };
 use crate::agent::live_edit;
-use crate::config::{AiBackend, CliAgentKind};
-use crate::models::structs::{AiChatMessage, AiChatRole, QueryTab};
+use crate::config::{AiBackend, ChatTarget, CliAgentKind};
+use crate::models::structs::{AgentSession, AiChatMessage, AiChatRole, QueryTab};
 use crate::window_egui::Tabular;
 
 /// Snapshot konfigurasi backend dari state UI; aman dipindahkan ke thread.
 #[derive(Debug, Clone)]
 pub struct ChatBackend {
+    pub target: ChatTarget,
     pub backend: AiBackend,
     pub provider: AiProvider,
     pub api_key: String,
@@ -351,23 +352,22 @@ impl ChatBackend {
     }
 }
 
-pub fn chat_backend(tabular: &Tabular) -> ChatBackend {
-    let cli = CliAgentConfig {
-        kind: tabular.ai_cli_kind,
-        bin: tabular.ai_cli_bin.clone(),
-        model: tabular.ai_cli_model.clone(),
-        effort: tabular.ai_cli_effort.clone(),
-        extra_args: tabular.ai_cli_extra_args.clone(),
+pub fn chat_backend_for(tabular: &Tabular, target: ChatTarget) -> ChatBackend {
+    let (cli, mcp_available) = match target {
+        ChatTarget::Cli(kind) => {
+            let config = tabular.ai_cli_config_for(kind);
+            let mcp = match kind {
+                CliAgentKind::ClaudeCode => true,
+                CliAgentKind::Custom => false,
+                _ => tabular.mcp_registered(kind) == Some(true),
+            };
+            (config, mcp)
+        }
+        ChatTarget::Api => (CliAgentConfig::default(), false),
     };
-    let mcp_available = tabular.ai_backend == AiBackend::Cli
-        && match tabular.ai_cli_kind {
-            // Konfigurasi MCP dikirim per-invocation lewat --mcp-config.
-            CliAgentKind::ClaudeCode => true,
-            CliAgentKind::Custom => false,
-            _ => tabular.ai_cli_mcp_registered == Some(true),
-        };
     ChatBackend {
-        backend: tabular.ai_backend,
+        target,
+        backend: target.backend(),
         provider: tabular.ai_provider,
         api_key: tabular.ai_api_key.clone(),
         model: tabular.ai_model.clone(),
@@ -379,14 +379,15 @@ pub fn chat_backend(tabular: &Tabular) -> ChatBackend {
     }
 }
 
-/// Label singkat backend aktif untuk header panel.
-pub fn backend_label(tabular: &Tabular) -> String {
-    match tabular.ai_backend {
-        AiBackend::Api => tabular.ai_provider.display_name().to_string(),
-        AiBackend::Cli => {
+/// Label singkat backend aktif untuk header panel dan picker.
+pub fn backend_label_for(tabular: &Tabular, target: ChatTarget) -> String {
+    match target {
+        ChatTarget::Api => tabular.ai_provider.display_name().to_string(),
+        ChatTarget::Cli(kind) => {
+            let profile = tabular.cli_profile(kind);
             let bin = CliAgentConfig {
-                kind: tabular.ai_cli_kind,
-                bin: tabular.ai_cli_bin.clone(),
+                kind,
+                bin: profile.bin.clone(),
                 ..Default::default()
             }
             .effective_bin();
@@ -394,37 +395,53 @@ pub fn backend_label(tabular: &Tabular) -> String {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or(bin);
-            if tabular.ai_cli_model.trim().is_empty() {
+            if profile.model.trim().is_empty() {
                 bin_name
             } else {
-                format!("{bin_name} · {}", tabular.ai_cli_model.trim())
+                format!("{bin_name} · {}", profile.model.trim())
             }
         }
     }
 }
 
 /// Pemeriksaan murah (tanpa menyentuh filesystem) apakah backend bisa dipakai.
-pub fn backend_ready(tabular: &Tabular) -> Result<(), String> {
-    match tabular.ai_backend {
-        AiBackend::Api => {
+pub fn backend_ready_for(tabular: &Tabular, target: ChatTarget) -> Result<(), String> {
+    match target {
+        ChatTarget::Api => {
             if tabular.ai_api_key.is_empty() {
                 Err("No API key configured. Open Settings → AI Assistant to add one, or switch to a CLI agent.".to_string())
             } else {
                 Ok(())
             }
         }
-        AiBackend::Cli => {
-            // Preferensi bisa terbawa dari build download langsung ke build App Store.
+        ChatTarget::Cli(kind) => {
             if harness::is_app_sandboxed() {
                 Err(harness::SANDBOX_UNAVAILABLE_MESSAGE.to_string())
-            } else if tabular.ai_cli_kind == CliAgentKind::Custom
-                && tabular.ai_cli_bin.trim().is_empty()
-            {
-                Err("No CLI command configured. Open Settings → AI Assistant.".to_string())
             } else {
-                Ok(())
+                let profile = tabular.cli_profile(kind);
+                if !profile.enabled {
+                    Err(format!(
+                        "Agent {} is disabled. Enable it in Settings → AI Assistant.",
+                        kind.display_name()
+                    ))
+                } else if kind == CliAgentKind::Custom && profile.bin.trim().is_empty() {
+                    Err("No CLI command configured. Open Settings → AI Assistant.".to_string())
+                } else {
+                    Ok(())
+                }
             }
         }
+    }
+}
+
+/// Id sesi yang boleh dipakai untuk `target`: hanya bila sesi berasal dari kind yang sama.
+pub fn session_for(
+    session: Option<&AgentSession>,
+    target: ChatTarget,
+) -> Option<&str> {
+    match (session, target) {
+        (Some(s), ChatTarget::Cli(k)) if s.kind == k && k.supports_resume() => Some(&s.id),
+        _ => None,
     }
 }
 
@@ -830,10 +847,13 @@ pub fn build_notes_context(tabular: &Tabular, query: &str) -> String {
 }
 
 /// Susun (system, user) prompt untuk satu giliran chat dari state UI.
+/// `has_native_session`: true jika agen yang dituju sudah memiliki sesi native yang aktif.
+/// Jika false (misal target API, atau CLI yang berganti jenis agen), `history_prefix` akan disertakan.
 pub fn build_chat_prompts(
     tabular: &Tabular,
     cfg: &ChatBackend,
     user_text: &str,
+    has_native_session: bool,
 ) -> (String, String) {
     let editor_context = build_editor_context(tabular);
     let retrieval_query = format!(
@@ -844,7 +864,7 @@ pub fn build_chat_prompts(
     let system = system_prompt_for(cfg, &schema);
 
     let mut user = String::new();
-    if !cfg.keeps_history_natively() {
+    if !has_native_session {
         user.push_str(&history_prefix(&tabular.ai_chat, 12_000));
     }
     // Query retrieval catatan: permintaan user + awal konteks editor (nama
@@ -898,8 +918,30 @@ mod tests {
         assert_eq!(history_prefix(&[], 100), "");
     }
 
+    #[test]
+    fn session_for_matches_only_same_kind() {
+        let s = AgentSession {
+            kind: CliAgentKind::ClaudeCode,
+            id: "session-123".into(),
+        };
+        assert_eq!(
+            session_for(Some(&s), ChatTarget::Cli(CliAgentKind::ClaudeCode)),
+            Some("session-123")
+        );
+        assert_eq!(
+            session_for(Some(&s), ChatTarget::Cli(CliAgentKind::Antigravity)),
+            None
+        );
+        assert_eq!(session_for(Some(&s), ChatTarget::Api), None);
+        assert_eq!(
+            session_for(None, ChatTarget::Cli(CliAgentKind::ClaudeCode)),
+            None
+        );
+    }
+
     fn backend(mcp_available: bool, notes_enabled: bool, notes_writable: bool) -> ChatBackend {
         ChatBackend {
+            target: ChatTarget::Cli(CliAgentKind::Antigravity),
             backend: AiBackend::Cli,
             provider: AiProvider::OpenAI,
             api_key: String::new(),
@@ -965,6 +1007,7 @@ mod tests {
         use crate::agent::live_edit::{LiveEditEvent, LiveEditParser};
 
         let cfg = ChatBackend {
+            target: ChatTarget::Cli(CliAgentKind::Antigravity),
             backend: AiBackend::Cli,
             provider: AiProvider::OpenAI,
             api_key: String::new(),
