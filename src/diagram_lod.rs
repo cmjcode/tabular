@@ -10,8 +10,10 @@ use std::collections::{HashMap, HashSet};
 use crate::models::structs::{DiagramNode, DiagramState};
 use eframe::egui;
 
-/// Zoom minimal untuk tampilan detail (baris kolom + relasi per kolom).
-pub const DETAIL_MIN_ZOOM: f32 = 0.55;
+/// Zoom minimal untuk relasi per kolom. Di bawahnya relasi digabung per
+/// pasangan tabel. Tabel selalu digambar sebagai ERD (header + kolom).
+/// Rentang zoom lama (50%–150%) tetap memakai relasi per kolom.
+pub const DETAIL_MIN_ZOOM: f32 = 0.4;
 /// Di bawah zoom ini tampilan jadi overview: relasi dibundel per group.
 pub const OVERVIEW_MAX_ZOOM: f32 = 0.25;
 /// Relasi virtual/linked digambar putus-putus hanya bila yang terlihat
@@ -32,11 +34,11 @@ pub const FLOW_ANIM_SECS: f64 = 6.0;
 /// Tingkat detail gambar diagram, ditentukan oleh zoom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lod {
-    /// Baris kolom tampil, relasi per kolom, kolom bisa diklik.
+    /// Relasi per kolom.
     Detail,
-    /// Tabel jadi kartu ringkas; relasi digabung per pasangan tabel.
+    /// Relasi digabung per pasangan tabel.
     Compact,
-    /// Relasi antar group dibundel; tabel jadi blok berwarna.
+    /// Relasi antar group dibundel.
     Overview,
 }
 
@@ -648,7 +650,7 @@ mod tests {
     fn lod_follows_zoom_thresholds() {
         assert_eq!(lod_for_zoom(1.0), Lod::Detail);
         assert_eq!(lod_for_zoom(DETAIL_MIN_ZOOM), Lod::Detail);
-        assert_eq!(lod_for_zoom(0.4), Lod::Compact);
+        assert_eq!(lod_for_zoom(0.3), Lod::Compact);
         assert_eq!(lod_for_zoom(OVERVIEW_MAX_ZOOM), Lod::Compact);
         assert_eq!(lod_for_zoom(0.1), Lod::Overview);
     }
