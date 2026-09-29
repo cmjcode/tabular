@@ -361,6 +361,8 @@ pub struct GridRequests {
     pub reset_order: bool,
     pub move_column_physical: Option<String>,
     pub toggle_delete_rows: Option<Vec<usize>>,
+    /// Baris yang diduplikasi (disisipkan tepat di bawahnya).
+    pub duplicate_row: Option<usize>,
     pub undo: bool,
     pub redo: bool,
     pub open_find: bool,
@@ -1586,6 +1588,10 @@ pub(crate) fn apply_grid_requests(t: &mut Tabular, req: GridRequests) {
     }
     if let Some(rows) = req.toggle_delete_rows {
         t.grid_toggle_delete_rows(rows);
+    }
+    if let Some(row) = req.duplicate_row {
+        t.selected_row = Some(row);
+        t.spreadsheet_duplicate_selected_row();
     }
     if let Some((column, op, value)) = req.filter_by {
         let condition = if matches!(op, FilterOperator::IsNull | FilterOperator::IsNotNull) {

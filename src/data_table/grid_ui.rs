@@ -758,6 +758,17 @@ pub(crate) fn render_cell_menu_extras(
         ui.separator();
         return;
     }
+    if !ctx.pending_delete
+        && ui
+            .button(format!(
+                "{} Duplicate Row",
+                egui_icons::icons::ICON_CONTENT_COPY.codepoint
+            ))
+            .clicked()
+    {
+        req.duplicate_row = Some(ctx.row);
+        ui.close();
+    }
     let rows: Vec<usize> = if ctx.selected_rows.contains(&ctx.row) {
         ctx.selected_rows.iter().copied().collect()
     } else {

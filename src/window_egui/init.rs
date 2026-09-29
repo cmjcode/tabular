@@ -551,10 +551,6 @@ impl super::Tabular {
             suppress_editor_arrow_once: false,
             sql_semantic_snapshot: None,
             // Context menu for row operations
-            show_row_context_menu: false,
-            context_menu_row: None,
-            context_menu_just_opened: false,
-            context_menu_pos: egui::Pos2::ZERO,
             newly_created_rows: std::collections::HashSet::new(),
             // Query AST debug defaults
             show_query_ast_debug: false,

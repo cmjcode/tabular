@@ -3638,56 +3638,6 @@ impl Tabular {
                     self.render_delete_http_workspace_confirmation(ui.ctx());
                     self.render_rename_http_workspace_dialog(ui.ctx());
 
-                    // Render context menu for row operations
-                    if self.show_row_context_menu {
-                        let mut close_menu = false;
-
-                        let area_response = egui::Area::new(egui::Id::new("row_context_menu"))
-                            .order(egui::Order::Foreground)
-                            .fixed_pos(self.context_menu_pos)
-                            .show(ui.ctx(), |ui| {
-                                let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                    ui.set_min_width(150.0);
-                                    if ui.button("📋 Duplicate Row").clicked() {
-                                        self.spreadsheet_duplicate_selected_row();
-                                        close_menu = true;
-                                    }
-                                    ui.separator();
-                                    if ui.button("🗑️ Delete Row").clicked() {
-                                        self.spreadsheet_delete_selected_row();
-                                        close_menu = true;
-                                    }
-                                });
-                                frame_response.response.hovered()
-                            });
-                        let hovered_menu = area_response.inner;
-                        // Close context menu when clicking elsewhere or pressing Escape
-                        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-                            self.show_row_context_menu = false;
-                            self.context_menu_row = None;
-                            self.context_menu_just_opened = false;
-                            self.context_menu_pos = egui::Pos2::ZERO;
-                        }
-                        if close_menu {
-                            self.show_row_context_menu = false;
-                            self.context_menu_row = None;
-                            self.context_menu_just_opened = false;
-                            self.context_menu_pos = egui::Pos2::ZERO;
-                        }
-                        // Close context menu when clicking anywhere outside the menu
-                        // Skip the first frame after opening to avoid immediate closure from the right-click event
-                        if !self.context_menu_just_opened {
-                            if ui.ctx().input(|i| i.pointer.any_click()) && !hovered_menu {
-                                self.show_row_context_menu = false;
-                                self.context_menu_row = None;
-                                self.context_menu_pos = egui::Pos2::ZERO;
-                            }
-                        } else {
-                            // Clear the flag after first frame
-                            self.context_menu_just_opened = false;
-                        }
-                    }
-
                     // Render MongoDB drop collection confirmation dialog if pending
                     if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
                         crate::window_egui::style::render_modal_backdrop(

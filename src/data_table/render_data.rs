@@ -1977,23 +1977,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.table_dragging = false;
             }
 
-            // Handle right-click context menu for selected row
-            if tabular.is_table_browse_mode && tabular.selected_row.is_some() {
-                // Check for right-click separately to avoid conflict with any_click detection
-                let (should_show_menu, pointer_pos) = ui.input(|i| {
-                    (
-                        i.pointer.secondary_clicked(),
-                        i.pointer.hover_pos().unwrap_or(egui::Pos2::ZERO),
-                    )
-                });
-
-                if should_show_menu && !tabular.show_row_context_menu {
-                    tabular.show_row_context_menu = true;
-                    tabular.context_menu_row = tabular.selected_row;
-                    tabular.context_menu_just_opened = true;
-                    tabular.context_menu_pos = pointer_pos; // Save the position when menu opens
-                }
-            }
             if let Some((r, c)) = cell_sel_requests.last().copied() {
                 // If currently editing a different cell, commit and finish editing first
                 if let Some(editing) = tabular.spreadsheet_state.editing_cell

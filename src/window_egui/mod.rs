@@ -571,11 +571,6 @@ pub struct Tabular {
     // Lapce buffer integration for editor (replaces egui_code_editor)
     // Deprecated standalone lapce buffer (now integrated in EditorBuffer)
     // pub lapce_buffer: Option<Buffer>,
-    // Context menu for row operations
-    pub show_row_context_menu: bool,
-    pub context_menu_row: Option<usize>,
-    pub context_menu_just_opened: bool,
-    pub context_menu_pos: egui::Pos2,
     // Track newly created/duplicated rows for highlighting
     pub newly_created_rows: std::collections::HashSet<usize>,
     // --- Query AST Debug Panel (feature gated at runtime; safe if feature off) ---
