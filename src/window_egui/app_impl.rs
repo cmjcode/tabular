@@ -349,6 +349,7 @@ impl Tabular {
 
                     if success {
                         self.connection_errors.remove(&connection_id);
+                        self.auto_sync_disabled.remove(&connection_id);
                         self.record_connection_synced(connection_id);
                         debug!(
                             "✅ Background refresh completed successfully for connection {}",
@@ -489,6 +490,13 @@ impl Tabular {
                         debug!("Background refresh failed for connection {}", connection_id);
                         self.connection_errors
                             .insert(connection_id, "Connection refresh failed".to_string());
+                        // Matikan auto-sync koneksi ini agar idle-sync tidak mencoba ulang tiap 15 detik
+                        if self.auto_sync_disabled.insert(connection_id) {
+                            log::warn!(
+                                "[AUTO-SYNC] disabling auto-sync for connection {} after failed refresh; refresh manually to re-enable",
+                                connection_id
+                            );
+                        }
                         // Clean up pending restore state on failure
                         self.pending_expansion_restore.remove(&connection_id);
                         ctx.request_repaint();

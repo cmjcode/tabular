@@ -258,6 +258,11 @@ impl super::Tabular {
             return false;
         }
 
+        // Jangan ulangi auto-sync untuk koneksi yang terakhir gagal dibuat pool-nya
+        if self.auto_sync_disabled.contains(&connection_id) {
+            return false;
+        }
+
         // Check if connection was already synced within the last 24 hours
         if let Some(last_sync) = self.connection_last_synced.get(&connection_id) {
             let elapsed = chrono::Utc::now().signed_duration_since(*last_sync);

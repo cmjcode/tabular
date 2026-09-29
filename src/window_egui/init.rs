@@ -300,6 +300,7 @@ impl super::Tabular {
             last_user_interaction: std::time::Instant::now(),
             last_idle_sync_check: std::time::Instant::now(),
             connection_last_synced: std::collections::HashMap::new(),
+            auto_sync_disabled: std::collections::HashSet::new(),
             query_tabs: Vec::new(),
             active_tab_index: 0,
             next_tab_id: 1,

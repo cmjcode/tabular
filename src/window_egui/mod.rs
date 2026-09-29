@@ -216,6 +216,9 @@ pub struct Tabular {
     pub last_idle_sync_check: std::time::Instant,
     // Last sync timestamp per connection
     pub connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>>,
+    // Koneksi yang auto-sync-nya dimatikan karena refresh terakhir gagal;
+    // aktif lagi setelah refresh (manual) berhasil
+    pub auto_sync_disabled: std::collections::HashSet<i64>,
     // Query tab system
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,

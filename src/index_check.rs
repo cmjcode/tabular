@@ -169,9 +169,21 @@ fn update(app: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
+/// Offset byte awal statement yang sedang dianalisis (untuk posisi badge).
+pub fn statement_start(app: &Tabular) -> Option<usize> {
+    app.index_check.stmt.as_ref().map(|(r, _)| r.start)
+}
+
 /// Dipanggil tiap frame dari editor. `anchor` = kiri-bawah baris kursor,
-/// `editor_rect` = area editor (untuk badge di pojok kanan atas).
-pub fn show(app: &mut Tabular, ui: &mut egui::Ui, anchor: egui::Pos2, editor_rect: egui::Rect) {
+/// `stmt_top_left` = kiri-atas baris pertama statement (badge diletakkan tepat
+/// di atasnya), `editor_rect` = area editor yang terlihat.
+pub fn show(
+    app: &mut Tabular,
+    ui: &mut egui::Ui,
+    anchor: egui::Pos2,
+    stmt_top_left: Option<egui::Pos2>,
+    editor_rect: egui::Rect,
+) {
     update(app, ui.ctx());
     if app.index_check.report.is_none() {
         return;
@@ -183,7 +195,9 @@ pub fn show(app: &mut Tabular, ui: &mut egui::Ui, anchor: egui::Pos2, editor_rec
     if app.index_check.open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         close(app);
     }
-    render_badge(app, ui, editor_rect);
+    if let Some(p) = stmt_top_left {
+        render_badge(app, ui, p, editor_rect);
+    }
     if app.index_check.open {
         render_panel(app, ui, anchor);
     }
@@ -195,7 +209,12 @@ fn close(app: &mut Tabular) {
     st.dismissed = st.stmt.as_ref().map(|(_, h)| *h);
 }
 
-fn render_badge(app: &mut Tabular, ui: &mut egui::Ui, editor_rect: egui::Rect) {
+fn render_badge(
+    app: &mut Tabular,
+    ui: &mut egui::Ui,
+    stmt_top_left: egui::Pos2,
+    editor_rect: egui::Rect,
+) {
     let Some(report) = app.index_check.report.as_ref() else {
         return;
     };
@@ -222,17 +241,30 @@ fn render_badge(app: &mut Tabular, ui: &mut egui::Ui, editor_rect: egui::Rect) {
             crate::window_egui::style::theme_success(ui.ctx()),
         )
     };
-    let pos = egui::pos2(editor_rect.right() - 12.0, editor_rect.top() + 6.0);
+    // Tepat di atas baris pertama statement; bila baris itu ter-scroll ke
+    // atas, tahan di tepi atas editor supaya tetap terlihat.
+    const BADGE_H: f32 = 18.0;
+    // Jarak badge dari tepi atas editor dan geseran ke kanan dari awal baris
+    const BADGE_TOP_GAP: f32 = 6.0;
+    const BADGE_SHIFT_X: f32 = 12.0;
+    if stmt_top_left.y > editor_rect.bottom() {
+        return;
+    }
+    let pos = egui::pos2(
+        stmt_top_left.x + BADGE_SHIFT_X,
+        (stmt_top_left.y - 1.0).max(editor_rect.top() + BADGE_TOP_GAP + BADGE_H),
+    );
     let mut clicked = false;
     egui::Area::new(egui::Id::new("index_check_badge"))
         .fixed_pos(pos)
-        .pivot(egui::Align2::RIGHT_TOP)
+        .pivot(egui::Align2::LEFT_BOTTOM)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             let resp = ui
                 .add(
                     egui::Button::new(egui::RichText::new(&text).small().color(color))
                         .wrap_mode(egui::TextWrapMode::Extend)
+                        .min_size(egui::vec2(0.0, BADGE_H))
                         .corner_radius(egui::CornerRadius::same(10u8)),
                 )
                 .on_hover_text("Index Check: how the statement at the cursor uses indexes");

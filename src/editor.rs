@@ -4636,7 +4636,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             response.rect.left() + 48.0,
             caret_line_rect.top() + line_h + 6.0,
         );
-        crate::index_check::show(tabular, ui, anchor, response.rect);
+        // Offset dari frame sebelumnya; abaikan bila teks sudah berubah bentuk
+        let stmt_top_left = crate::index_check::statement_start(tabular)
+            .filter(|&b| tabular.editor.text.is_char_boundary(b))
+            .map(|b| {
+                let ci = tabular.editor.text[..b].chars().count();
+                galley
+                    .pos_from_cursor(CCursor::new(ci))
+                    .translate(galley_pos.to_vec2())
+                    .left_top()
+            });
+        let visible = response.rect.intersect(ui.clip_rect());
+        crate::index_check::show(tabular, ui, anchor, stmt_top_left, visible);
     }
 
     // Render autocomplete popup positioned under cursor

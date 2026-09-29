@@ -89,8 +89,23 @@ pub fn tab_has_unsaved_changes(tabular: &Tabular, index: usize) -> bool {
     if !is_plain_query_tab(tab) || current_content(tabular, index).trim().is_empty() {
         return false;
     }
-    let editor_diverged = index == tabular.active_tab_index && tab.content != tabular.editor.text;
+    let editor_diverged = index == tabular.active_tab_index
+        && strip_tabular_headers(&tab.content) != strip_tabular_headers(&tabular.editor.text);
     tab.is_modified || editor_diverged
+}
+
+/// Isi query tanpa baris metadata `-- tabular:`. Saat save, header itu
+/// disisipkan ke `tab.content` tetapi tidak ke teks editor, jadi keduanya
+/// harus dibandingkan tanpa header agar tab yang sudah disimpan tidak
+/// dianggap berubah.
+fn strip_tabular_headers(content: &str) -> String {
+    content
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("-- tabular:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_start_matches('\n')
+        .to_string()
 }
 
 fn snapshot(tabular: &Tabular, window: Option<WindowGeometry>) -> SessionSnapshot {
@@ -626,6 +641,13 @@ mod tests {
             is_pinned: false,
             is_modified: true,
         }
+    }
+
+    #[test]
+    fn saved_content_with_headers_matches_editor_text() {
+        let saved = "-- tabular: connection_id=4\n-- tabular: database=app\n\nSELECT 1;";
+        assert_eq!(strip_tabular_headers(saved), strip_tabular_headers("SELECT 1;"));
+        assert_ne!(strip_tabular_headers(saved), strip_tabular_headers("SELECT 2;"));
     }
 
     #[test]
