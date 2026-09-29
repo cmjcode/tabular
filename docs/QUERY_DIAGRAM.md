@@ -56,11 +56,11 @@ when an `UPDATE` or `DELETE` has no WHERE clause.
 - Drag a table card to move it; drag the empty canvas to pan. Scroll or pinch to zoom,
   double-click to fit.
 - Floating buttons in the top-right corner: **Refresh** re-analyzes the statement at the
-  cursor, **Replay** restarts the animation, **Reset** moves every table back, **Fit** fits
+  cursor, **Replay** restarts the intro animation, **Reset** moves every table back, **Fit** fits
   the diagram, and **X** closes the panel.
 - Hover a column to highlight its full lineage (upstream and downstream) and see the full
   expression in a tooltip.
-- The animation stops by itself after 30 seconds so an idle panel does not keep redrawing.
+- The animation loops for as long as the panel is visible; Replay restarts the intro where cards and lines appear stage by stage.
 - Drag the divider to resize the panel.
 
 ---

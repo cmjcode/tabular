@@ -4984,17 +4984,19 @@ fn default_source_column(nodes: &[DiagramNode], table: &str) -> Option<String> {
         .or_else(|| node.columns.first().cloned())
 }
 
-/// Input mode Source → Destination: sumber (tabel + kolom, sisi parent) dan tujuan
-/// (tabel opsional + pola kolom, sisi child). Mengembalikan `true` bila input
-/// berubah sehingga saran perlu dihitung ulang.
+/// Input mode Source → Destination dalam dua kartu berdampingan: kiri SOURCE
+/// (tabel + kolom, sisi parent), kanan DESTINATION (tabel opsional + pencarian
+/// nama kolom mirip, sisi child). Mengembalikan `true` bila input berubah
+/// sehingga saran perlu dihitung ulang.
 fn render_relation_pair_picker(ui: &mut egui::Ui, state: &mut DiagramState, show_db: bool) -> bool {
     use crate::window_egui::searchable_picker::{PickerConfig, searchable_picker};
 
     let mut changed = false;
     let is_touch = ui.spacing().interact_size.y >= 30.0;
-    let spacing = ui.spacing().item_spacing.x;
-    let label_w = 84.0;
-    let field_w = ((ui.available_width() - label_w - spacing * 2.0) / 2.0).max(120.0);
+    let gap = 32.0;
+    let card_margin = 14.0 * 2.0 + 2.0;
+    let card_w = ((ui.available_width() - gap) / 2.0).floor();
+    let field_w = (card_w - card_margin).max(120.0);
 
     // (node id, label); label "db.tabel" bila diagram berisi lebih dari satu database.
     let mut tables: Vec<(String, String)> = state
@@ -5019,15 +5021,6 @@ fn render_relation_pair_picker(ui: &mut egui::Ui, state: &mut DiagramState, show
     let position_of = |id: &str| tables.iter().position(|(t, _)| t == id);
     let label_of = |id: &str| position_of(id).map(|i| tables[i].1.clone());
 
-    let row_label = |ui: &mut egui::Ui, text: &str| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(label_w, 26.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(egui::RichText::new(text).small().strong().weak());
-            },
-        );
-    };
     let picker = |id_salt: &'static str,
                   icon: &'static str,
                   title: &'static str,
@@ -5042,107 +5035,180 @@ fn render_relation_pair_picker(ui: &mut egui::Ui, state: &mut DiagramState, show
         max_width: field_w,
         is_touch,
     };
+    // Judul kartu + keterangan singkat di bawahnya.
+    let card_header = |ui: &mut egui::Ui, title: &str, hint: &str| {
+        ui.label(egui::RichText::new(title).small().strong().weak());
+        ui.label(egui::RichText::new(hint).small().weak());
+        ui.add_space(6.0);
+    };
+    let field_label = |ui: &mut egui::Ui, text: &str| {
+        ui.label(egui::RichText::new(text).small());
+    };
 
-    ui.horizontal(|ui| {
-        row_label(ui, "SOURCE");
-        let table_text = state
-            .relation_source_table
-            .as_deref()
-            .and_then(label_of)
-            .unwrap_or_else(|| "Select table…".to_string());
-        let table_sel = state.relation_source_table.as_deref().and_then(position_of);
-        let cfg = picker(
-            "rel_pair_src_table",
-            egui_icons::icons::MDI_TABLE.codepoint,
-            "Tables",
-            "Search tables…",
-            "Source table (the referenced side, e.g. users)",
-        );
-        if let Some(i) = searchable_picker(ui, &cfg, &table_text, &labels, table_sel) {
-            let id = tables[i].0.clone();
-            if state.relation_source_table.as_deref() != Some(id.as_str()) {
-                state.relation_source_column = default_source_column(&state.nodes, &id);
-                state.relation_source_table = Some(id);
-                changed = true;
-            }
-        }
+    // Tinggi kartu disamakan memakai tinggi tertinggi dari frame sebelumnya.
+    let height_id = ui.id().with("rel_pair_card_h");
+    let min_h: f32 = ui.ctx().data(|d| d.get_temp(height_id)).unwrap_or(0.0);
+    let mut max_h: f32 = 0.0;
 
-        let columns: Vec<String> = state
-            .relation_source_table
-            .as_deref()
-            .and_then(|id| state.nodes.iter().find(|n| n.id == id))
-            .map(|n| n.columns.clone())
-            .unwrap_or_default();
-        let col_text = state
-            .relation_source_column
-            .clone()
-            .unwrap_or_else(|| "Select column…".to_string());
-        let col_sel = state
-            .relation_source_column
-            .as_deref()
-            .and_then(|c| columns.iter().position(|x| x == c));
-        let cfg = picker(
-            "rel_pair_src_col",
-            egui_icons::icons::MDI_TABLE_COLUMN.codepoint,
-            "Columns",
-            "Search columns…",
-            "Source column (usually the primary key, e.g. id)",
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        // --- SOURCE ---
+        let resp = ui.allocate_ui_with_layout(
+            egui::vec2(card_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.set_width(field_w);
+                    ui.set_min_height(min_h);
+                    card_header(ui, "SOURCE", "The referenced column, e.g. users.id");
+
+                    field_label(ui, "Table");
+                    let table_text = state
+                        .relation_source_table
+                        .as_deref()
+                        .and_then(label_of)
+                        .unwrap_or_else(|| "Select table…".to_string());
+                    let table_sel = state.relation_source_table.as_deref().and_then(position_of);
+                    let cfg = picker(
+                        "rel_pair_src_table",
+                        egui_icons::icons::MDI_TABLE.codepoint,
+                        "Tables",
+                        "Search tables…",
+                        "Source table (the referenced side, e.g. users)",
+                    );
+                    if let Some(i) = searchable_picker(ui, &cfg, &table_text, &labels, table_sel) {
+                        let id = tables[i].0.clone();
+                        if state.relation_source_table.as_deref() != Some(id.as_str()) {
+                            state.relation_source_column = default_source_column(&state.nodes, &id);
+                            state.relation_source_table = Some(id);
+                            changed = true;
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    field_label(ui, "Column");
+                    let columns: Vec<String> = state
+                        .relation_source_table
+                        .as_deref()
+                        .and_then(|id| state.nodes.iter().find(|n| n.id == id))
+                        .map(|n| n.columns.clone())
+                        .unwrap_or_default();
+                    let col_text = state
+                        .relation_source_column
+                        .clone()
+                        .unwrap_or_else(|| "Select column…".to_string());
+                    let col_sel = state
+                        .relation_source_column
+                        .as_deref()
+                        .and_then(|c| columns.iter().position(|x| x == c));
+                    let cfg = picker(
+                        "rel_pair_src_col",
+                        egui_icons::icons::MDI_TABLE_COLUMN.codepoint,
+                        "Columns",
+                        "Search columns…",
+                        "Source column (usually the primary key, e.g. id)",
+                    );
+                    ui.add_enabled_ui(!columns.is_empty(), |ui| {
+                        if let Some(i) = searchable_picker(ui, &cfg, &col_text, &columns, col_sel) {
+                            if state.relation_source_column.as_deref() != Some(columns[i].as_str())
+                            {
+                                state.relation_source_column = Some(columns[i].clone());
+                                changed = true;
+                            }
+                        }
+                    });
+                })
+            },
         );
-        ui.add_enabled_ui(!columns.is_empty(), |ui| {
-            if let Some(i) = searchable_picker(ui, &cfg, &col_text, &columns, col_sel) {
-                if state.relation_source_column.as_deref() != Some(columns[i].as_str()) {
-                    state.relation_source_column = Some(columns[i].clone());
-                    changed = true;
-                }
-            }
-        });
+        max_h = max_h.max(resp.inner.response.rect.height() - card_margin);
+
+        // Panah penghubung di antara kedua kartu.
+        ui.allocate_ui_with_layout(
+            egui::vec2(gap, resp.response.rect.height()),
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+                ui.label(
+                    egui_icons::icons::ICON_ARROW_FORWARD
+                        .rich_text()
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .on_hover_text("Destination columns will reference the source column");
+            },
+        );
+
+        // --- DESTINATION ---
+        let resp = ui.allocate_ui_with_layout(
+            egui::vec2(card_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    ui.set_width(field_w);
+                    ui.set_min_height(min_h);
+                    card_header(
+                        ui,
+                        "DESTINATION",
+                        "Columns that point to the source, e.g. created_by_id",
+                    );
+
+                    field_label(ui, "Table");
+                    let mut items = Vec::with_capacity(labels.len() + 1);
+                    items.push("All tables".to_string());
+                    items.extend(labels.iter().cloned());
+                    let table_text = state
+                        .relation_dest_table
+                        .as_deref()
+                        .and_then(label_of)
+                        .unwrap_or_else(|| "All tables".to_string());
+                    let table_sel = match state.relation_dest_table.as_deref() {
+                        None => Some(0),
+                        Some(id) => position_of(id).map(|i| i + 1),
+                    };
+                    let cfg = picker(
+                        "rel_pair_dest_table",
+                        egui_icons::icons::MDI_TABLE.codepoint,
+                        "Tables",
+                        "Search tables…",
+                        "Destination table (the referencing side), or all tables",
+                    );
+                    if let Some(i) = searchable_picker(ui, &cfg, &table_text, &items, table_sel) {
+                        let picked = (i > 0).then(|| tables[i - 1].0.clone());
+                        if picked != state.relation_dest_table {
+                            state.relation_dest_table = picked;
+                            changed = true;
+                        }
+                    }
+                    ui.add_space(6.0);
+
+                    field_label(ui, "Similar column name");
+                    let muted = crate::window_egui::style::nav_text_muted(ui.ctx());
+                    let resp = crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.relation_dest_columns).hint_text(
+                            egui::RichText::new("created_by, updated_by_id or *_by_id")
+                                .color(muted),
+                        ),
+                        field_w,
+                        Some(egui_icons::icons::ICON_SEARCH.codepoint),
+                    );
+                    if resp.changed() {
+                        changed = true;
+                    }
+                    resp.on_hover_text(
+                        "Column names to look for, separated by commas. Partial and similar \
+                         names match too; use * as a wildcard (e.g. *_by_id). Leave empty for \
+                         conventional guesses such as user_id.",
+                    );
+                })
+            },
+        );
+        max_h = max_h.max(resp.inner.response.rect.height() - card_margin);
     });
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        row_label(ui, "DESTINATION");
-        let mut items = Vec::with_capacity(labels.len() + 1);
-        items.push("All tables".to_string());
-        items.extend(labels.iter().cloned());
-        let table_text = state
-            .relation_dest_table
-            .as_deref()
-            .and_then(label_of)
-            .unwrap_or_else(|| "All tables".to_string());
-        let table_sel = match state.relation_dest_table.as_deref() {
-            None => Some(0),
-            Some(id) => position_of(id).map(|i| i + 1),
-        };
-        let cfg = picker(
-            "rel_pair_dest_table",
-            egui_icons::icons::MDI_TABLE.codepoint,
-            "Tables",
-            "Search tables…",
-            "Destination table (the referencing side), or all tables",
-        );
-        if let Some(i) = searchable_picker(ui, &cfg, &table_text, &items, table_sel) {
-            let picked = (i > 0).then(|| tables[i - 1].0.clone());
-            if picked != state.relation_dest_table {
-                state.relation_dest_table = picked;
-                changed = true;
-            }
-        }
 
-        let muted = crate::window_egui::style::nav_text_muted(ui.ctx());
-        let resp = crate::window_egui::style::render_text_field(
-            ui,
-            egui::TextEdit::singleline(&mut state.relation_dest_columns).hint_text(
-                egui::RichText::new("created_by_id, updated_by_id or *_by_id").color(muted),
-            ),
-            field_w,
-            Some(egui_icons::icons::MDI_TABLE_COLUMN.codepoint),
-        );
-        if resp.changed() {
-            changed = true;
-        }
-        resp.on_hover_text(
-            "Destination column names, separated by commas. Use * as a wildcard (e.g. *_by_id).",
-        );
-    });
+    if (max_h - min_h).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(height_id, max_h));
+        ui.ctx().request_repaint();
+    }
     changed
 }
 
@@ -5252,12 +5318,11 @@ fn render_relation_suggestions(
             });
             ui.add_space(8.0);
 
+            if state.relation_pair_mode {
+                pair_triggered |= render_relation_pair_picker(ui, state, has_multiple_dbs);
+            } else {
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                if state.relation_pair_mode {
-                    pair_triggered |= render_relation_pair_picker(ui, state, has_multiple_dbs);
-                    return;
-                }
                 ui.horizontal(|ui| {
                     let clear_search_w = if state.relation_column_search_query.is_empty() {
                         0.0
@@ -5365,6 +5430,7 @@ fn render_relation_suggestions(
                     }
                 });
             });
+            }
 
             if search_triggered {
                 let trimmed = state.relation_column_search_query.trim();
@@ -5562,7 +5628,7 @@ fn render_relation_suggestions(
                                 if state.relation_source_column.is_none() {
                                     "Pick a source table and column, then the destination column names to link.".to_string()
                                 } else if state.relation_dest_columns.trim().is_empty() {
-                                    "Enter destination column names, e.g. created_by_id, updated_by_id or *_by_id".to_string()
+                                    "No conventional matches (e.g. user_id). Type a destination column name, e.g. created_by_id or *_by_id".to_string()
                                 } else {
                                     format!(
                                         "No unlinked columns matching \"{}\"",

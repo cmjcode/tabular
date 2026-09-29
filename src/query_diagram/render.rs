@@ -14,9 +14,6 @@ use super::StatementKind;
 use super::clip;
 use super::layout::{CARD_PAD, CardRole, FlowKind, HEADER_H, QueryLayout, ROW_H, RowState};
 
-/// Lama animasi berjalan sebelum berhenti sendiri (detik). Setelah itu
-/// diagram statis supaya tidak menggambar ulang terus-menerus.
-pub const ANIM_SECS: f64 = 30.0;
 const MIN_ZOOM: f32 = 0.3;
 const MAX_ZOOM: f32 = 2.0;
 /// Jeda muncul antar tahap (lane) dan lama fade kartu.
@@ -68,10 +65,6 @@ impl QueryDiagramView {
     pub fn reset_positions(&mut self) {
         self.offsets.clear();
         self.fitted = false;
-    }
-
-    pub fn is_animating(&self, now: f64) -> bool {
-        self.start_time.is_none_or(|s| now - s < ANIM_SECS)
     }
 }
 
@@ -276,7 +269,9 @@ pub fn render_query_diagram(
     let now = ui.input(|i| i.time);
     let start = *view.start_time.get_or_insert(now);
     let t = (now - start).max(0.0);
-    let animating = t < ANIM_SECS;
+    // Animasi (partikel, glow, chip, coretan) berjalan terus selama panel
+    // tampil; kanvas hanya digambar saat panel terlihat.
+    let animating = true;
     let pal = Palette::new(ui.visuals().dark_mode, layout.kind);
 
     // --- Interaksi ---
@@ -1032,12 +1027,12 @@ mod tests {
     }
 
     #[test]
-    fn test_animation_stops_by_itself() {
-        let mut v = QueryDiagramView::default();
-        assert!(v.is_animating(0.0));
-        v.start_time = Some(0.0);
-        assert!(!v.is_animating(ANIM_SECS + 1.0));
+    fn test_replay_restarts_the_intro() {
+        let mut v = QueryDiagramView {
+            start_time: Some(5.0),
+            ..Default::default()
+        };
         v.replay();
-        assert!(v.is_animating(1000.0));
+        assert!(v.start_time.is_none());
     }
 }

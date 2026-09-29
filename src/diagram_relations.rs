@@ -1058,10 +1058,73 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|&c| c == '*')
 }
 
-/// Saran relasi eksplisit Source → Destination: setiap kolom di tabel tujuan yang
-/// cocok dengan `dest_pattern` dijadikan child yang mereferensikan
-/// `source_table.source_column`. Contoh: `users.id` + `created_by_id, updated_by_id,
-/// deleted_by_id` (atau `*_by_id`) → semua tabel yang punya kolom tersebut.
+/// Skor kecocokan satu kolom tujuan terhadap satu kata kunci pencarian.
+/// Kata kunci dengan `*` diperlakukan sebagai glob; tanpa `*` dicocokkan secara
+/// persis, lalu substring, lalu kemiripan nama (`column_similarity`).
+fn dest_column_match(term: &str, col: &str) -> Option<(f32, String)> {
+    let col_lower = col.to_lowercase();
+    if term.contains('*') {
+        return glob_match(term, col).then(|| (0.95, format!("`{col}` matches `{term}`")));
+    }
+    if col_lower == term {
+        return Some((1.0, format!("`{col}` matches `{term}`")));
+    }
+    if term.len() >= 2 && col_lower.contains(term) {
+        // Makin besar porsi nama kolom yang tercakup kata kunci, makin tinggi skornya.
+        let coverage = term.len() as f32 / col_lower.len().max(1) as f32;
+        return Some((
+            0.7 + 0.2 * coverage.min(1.0),
+            format!("`{col}` contains `{term}`"),
+        ));
+    }
+    column_similarity(term, col).map(|(score, _)| {
+        (
+            (score * 0.85).min(0.85),
+            format!("`{col}` is similar to `{term}`"),
+        )
+    })
+}
+
+/// Tebakan kolom tujuan saat kata kunci kosong: kolom yang lazim mereferensikan
+/// `source_table.source_column`, misalnya `user_id`, `owner_user_id`, atau
+/// `created_by_id` untuk tabel pengguna.
+fn dest_column_guess(source_table: &str, source_column: &str, col: &str) -> Option<(f32, String)> {
+    let table = crate::diagram_links::local_name(source_table);
+    let table = table.rsplit('.').next().unwrap_or(table).to_lowercase();
+    let entity = singular(strip_table_prefix(&table));
+    if entity.is_empty() {
+        return None;
+    }
+    let src_col = source_column.to_lowercase();
+    let col_lower = col.to_lowercase();
+    let fk = format!("{entity}_{src_col}");
+    if col_lower == fk || col_lower == format!("{entity}{src_col}") {
+        return Some((1.0, format!("`{col}` follows the `{fk}` convention")));
+    }
+    if col_lower.ends_with(&format!("_{fk}")) {
+        return Some((0.9, format!("`{col}` ends with `{fk}`")));
+    }
+    let tokens = column_tokens(col);
+    let refers_entity = tokens.iter().any(|t| *t == entity || singular(t) == entity);
+    if refers_entity && (col_lower.ends_with("_id") || col_lower.ends_with(&src_col)) {
+        return Some((0.8, format!("`{col}` mentions `{entity}`")));
+    }
+    // Kolom audit (`created_by_id`, `updated_by`) hampir selalu mengarah ke tabel pengguna.
+    const PEOPLE: &[&str] = &[
+        "user", "account", "member", "employee", "staff", "admin", "person",
+    ];
+    let is_people = PEOPLE.iter().any(|p| entity.contains(p));
+    if is_people && (col_lower.ends_with("_by_id") || col_lower.ends_with("_by")) {
+        return Some((0.8, format!("`{col}` looks like an audit column")));
+    }
+    None
+}
+
+/// Saran relasi Source → Destination: setiap kolom di tabel tujuan yang cocok
+/// dengan `dest_query` dijadikan child yang mereferensikan
+/// `source_table.source_column`. `dest_query` berisi kata kunci dipisah koma/spasi;
+/// dicocokkan persis, glob (`*_by_id`), substring, atau kemiripan nama. Bila kosong,
+/// dipakai tebakan konvensi FK (`user_id`, `*_by_id` untuk tabel pengguna).
 /// `dest_table = None` berarti semua tabel di diagram.
 pub fn suggest_relations_source_to_destination_data(
     nodes: &[DiagramNode],
@@ -1069,13 +1132,13 @@ pub fn suggest_relations_source_to_destination_data(
     source_table: &str,
     source_column: &str,
     dest_table: Option<&str>,
-    dest_pattern: &str,
+    dest_query: &str,
 ) -> Vec<RelationSuggestion> {
-    let patterns = parse_column_patterns(dest_pattern);
+    let terms = parse_column_patterns(dest_query);
     let Some(source) = nodes.iter().find(|n| n.id == source_table) else {
         return Vec::new();
     };
-    if patterns.is_empty() || !source.columns.iter().any(|c| c == source_column) {
+    if !source.columns.iter().any(|c| c == source_column) {
         return Vec::new();
     }
     let source_type = source
@@ -1092,8 +1155,15 @@ pub fn suggest_relations_source_to_destination_data(
             if node.id == source_table && col == source_column {
                 continue;
             }
-            // Pola tanpa wildcard = kecocokan persis (skor penuh).
-            let Some(pattern) = patterns.iter().find(|p| glob_match(p, col)) else {
+            let matched = if terms.is_empty() {
+                dest_column_guess(source_table, source_column, col)
+            } else {
+                terms
+                    .iter()
+                    .filter_map(|t| dest_column_match(t, col))
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+            };
+            let Some((mut score, mut reason)) = matched else {
                 continue;
             };
             if is_already_related(
@@ -1106,13 +1176,15 @@ pub fn suggest_relations_source_to_destination_data(
             ) {
                 continue;
             }
-            let mut score: f32 = if pattern.contains('*') { 0.95 } else { 1.0 };
-            let mut reason = format!("`{col}` matches `{pattern}`");
             let dest_type = node
                 .column_info(col)
                 .map(|c| c.type_name.as_str())
                 .filter(|t| !t.is_empty());
             if !types_compatible(dest_type, source_type) {
+                // Tebakan tanpa kata kunci dengan tipe berbeda terlalu berisik.
+                if terms.is_empty() {
+                    continue;
+                }
                 score -= 0.1;
                 reason.push_str(&format!(
                     " ({} ~ {})",
@@ -1913,10 +1985,31 @@ mod tests {
         );
         assert_eq!(again.len(), 4);
 
-        assert!(
-            suggest_relations_source_to_destination_data(&nodes, &[], "users", "id", None, " ,")
-                .is_empty()
+        // Kata kunci kosong: tebakan konvensi (kolom audit untuk tabel pengguna),
+        // tipe yang tidak cocok (tags.created_by_id varchar) dilewati.
+        let guessed = pairs(&suggest_relations_source_to_destination_data(
+            &nodes,
+            &[],
+            "users",
+            "id",
+            None,
+            " ,",
+        ));
+        assert_eq!(guessed.len(), 4, "{guessed:?}");
+        assert!(!guessed.iter().any(|p| p.starts_with("tags.")));
+        assert!(!guessed.iter().any(|p| p.contains("customer_id")));
+
+        // Kata kunci sebagian dicocokkan lewat substring / kemiripan.
+        let partial = suggest_relations_source_to_destination_data(
+            &nodes,
+            &[],
+            "users",
+            "id",
+            Some("orders"),
+            "created",
         );
+        assert_eq!(pairs(&partial), vec!["orders.created_by_id->users.id"]);
+        assert!(partial[0].score < 1.0);
         assert!(
             suggest_relations_source_to_destination_data(
                 &nodes,
