@@ -601,6 +601,8 @@ impl super::Tabular {
             ai_live_edit_parser: None,
             ai_live_edit_active: None,
             ai_markdown_cache: egui_commonmark::CommonMarkCache::default(),
+            query_insights: std::collections::HashMap::new(),
+            query_insight_width: super::query_insight::DEFAULT_PANEL_W,
             ai_schema_badge: None,
             ai_confirm_clear_until: None,
             ai_api_key: String::new(),

@@ -900,6 +900,20 @@ pub struct DiagramState {
     /// Ambang minimum skor kecocokan (persen, 0 = tampilkan semua) pada jendela saran relasi.
     #[serde(skip)]
     pub relation_min_match: u8,
+    /// Mode Source → Destination pada jendela saran relasi (false = cari nama kolom).
+    #[serde(skip)]
+    pub relation_pair_mode: bool,
+    /// Tabel + kolom sumber (parent) pada mode Source → Destination, mis. `users.id`.
+    #[serde(skip)]
+    pub relation_source_table: Option<String>,
+    #[serde(skip)]
+    pub relation_source_column: Option<String>,
+    /// Tabel tujuan (None = semua tabel) pada mode Source → Destination.
+    #[serde(skip)]
+    pub relation_dest_table: Option<String>,
+    /// Pola kolom tujuan (child), dipisah koma, mendukung wildcard `*`.
+    #[serde(skip)]
+    pub relation_dest_columns: String,
     /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
     #[serde(skip)]
     pub hand_tool: bool,
@@ -982,6 +996,97 @@ pub struct DiagramState {
     /// Jendela saran tabel dari repository (sedang memindai atau hasil).
     #[serde(skip)]
     pub group_table_suggestions: Option<GroupTableSuggestions>,
+    /// Sticky note Markdown yang ditempel ke tabel atau group. Ikut disimpan
+    /// dan disinkron bersama diagram, jadi bisa dibaca semua user yang
+    /// membuka diagram database ini.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<DiagramNote>,
+    /// Tampilkan kartu note di kanvas.
+    #[serde(default = "default_true")]
+    pub show_notes: bool,
+    /// Note yang sedang dibuka di kanvas oleh user ini (tidak disimpan;
+    /// note `pinned` selalu tampil).
+    #[serde(skip)]
+    pub open_notes: std::collections::HashSet<String>,
+    /// Jendela daftar note: `Some(None)` = semua note, `Some(Some(a))` =
+    /// hanya note milik anchor `a`.
+    #[serde(skip)]
+    pub notes_panel: Option<Option<NoteAnchor>>,
+    #[serde(skip)]
+    pub notes_panel_query: String,
+    /// Modal editor note yang sedang terbuka.
+    #[serde(skip)]
+    pub note_editor: Option<NoteDraft>,
+}
+
+/// Tempat sebuah note ditempelkan.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum NoteAnchor {
+    /// Id node tabel.
+    Table(String),
+    /// Id group.
+    Group(String),
+}
+
+impl NoteAnchor {
+    pub fn id(&self) -> &str {
+        match self {
+            NoteAnchor::Table(id) | NoteAnchor::Group(id) => id,
+        }
+    }
+}
+
+/// Sticky note Markdown. Link `[[tabel]]` gaya Obsidian di `body` digambar
+/// sebagai garis putus-putus dari kartu ke tabel tujuan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DiagramNote {
+    pub id: String,
+    pub anchor: NoteAnchor,
+    #[serde(default)]
+    pub title: String,
+    /// Isi Markdown.
+    #[serde(default)]
+    pub body: String,
+    #[serde(with = "serde_color")]
+    pub color: eframe::egui::Color32,
+    /// Posisi kartu relatif ke pojok kiri atas anchor (koordinat diagram).
+    /// `None` = belum ditata; ditata otomatis saat pertama tampil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<[f32; 2]>,
+    /// Ukuran kartu (koordinat diagram).
+    #[serde(default = "default_note_size")]
+    pub size: [f32; 2],
+    /// Selalu tampil di kanvas untuk semua user.
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// RFC 3339.
+    #[serde(default)]
+    pub created_at: String,
+    /// RFC 3339.
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+fn default_note_size() -> [f32; 2] {
+    crate::diagram_notes::DEFAULT_NOTE_SIZE
+}
+
+/// Isi modal editor note. `note_id` = `None` berarti note baru.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteDraft {
+    pub note_id: Option<String>,
+    pub anchor: NoteAnchor,
+    pub title: String,
+    pub body: String,
+    pub color: eframe::egui::Color32,
+    pub pinned: bool,
+    /// Tampilkan pratinjau Markdown di samping editor.
+    pub preview: bool,
+    /// Konfirmasi hapus sedang ditampilkan.
+    pub confirm_delete: bool,
 }
 
 /// Isi modal "Group Repository" yang sedang diedit.
@@ -1080,6 +1185,11 @@ impl Default for DiagramState {
             relation_column_search_query: String::new(),
             relation_database_filter: None,
             relation_min_match: 0,
+            relation_pair_mode: false,
+            relation_source_table: None,
+            relation_source_column: None,
+            relation_dest_table: None,
+            relation_dest_columns: String::new(),
             hand_tool: false,
             linked_databases: Vec::new(),
             linked_relations: Vec::new(),
@@ -1103,6 +1213,12 @@ impl Default for DiagramState {
             scoped_to: None,
             group_repo_editor: None,
             group_table_suggestions: None,
+            notes: Vec::new(),
+            show_notes: true,
+            open_notes: std::collections::HashSet::new(),
+            notes_panel: None,
+            notes_panel_query: String::new(),
+            note_editor: None,
         }
     }
 }

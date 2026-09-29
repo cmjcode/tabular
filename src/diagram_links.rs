@@ -81,6 +81,8 @@ pub fn strip_linked(state: &mut DiagramState) {
         .edges
         .retain(|e| !is_linked_id(&e.source) && !is_linked_id(&e.target));
     state.linked_relations.clear();
+    // Note hanya milik tabel/group diagram ini, bukan isi kontainer link.
+    state.notes.retain(|n| !is_linked_id(n.anchor.id()));
 }
 
 /// Salinan state yang aman disimpan: tanpa item hasil materialisasi link.

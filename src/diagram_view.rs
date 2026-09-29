@@ -465,6 +465,14 @@ pub fn group_subset_state(source: &DiagramState, group_id: &str) -> Option<Diagr
         manual_pos: None,
         ..group.clone()
     }];
+    let group_anchor = crate::models::structs::NoteAnchor::Group(group_id.to_string());
+    out.notes.extend(
+        source
+            .notes
+            .iter()
+            .filter(|n| n.anchor == group_anchor)
+            .cloned(),
+    );
     Some(out)
 }
 
@@ -496,11 +504,22 @@ fn subset_with_relations(
         .filter(|r| inside(&r.child, &r.parent))
         .cloned()
         .collect();
+    let notes = source
+        .notes
+        .iter()
+        .filter(|n| match &n.anchor {
+            crate::models::structs::NoteAnchor::Table(t) => keep.contains(t.as_str()),
+            crate::models::structs::NoteAnchor::Group(_) => false,
+        })
+        .cloned()
+        .collect();
     DiagramState {
         nodes,
         edges,
         virtual_relations,
         linked_relations,
+        notes,
+        show_notes: source.show_notes,
         show_grid: source.show_grid,
         prevent_overlap: source.prevent_overlap,
         show_relations: source.show_relations,
@@ -791,6 +810,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             state.save_requested = true;
         }
         if ui
+            .checkbox(&mut state.show_notes, "Show notes")
+            .on_hover_text("Show Markdown sticky notes and their dashed links")
+            .clicked()
+        {
+            state.save_requested = true;
+        }
+        if ui
             .checkbox(&mut state.prevent_overlap, "Prevent table & group overlap")
             .clicked()
         {
@@ -825,6 +851,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Pointer benar-benar di atas kanvas (bukan di jendela/popup yang menutupinya).
     let pointer_over_canvas = ui.rect_contains_pointer(rect);
+    // Scroll di atas kartu note menggulung isinya, bukan zoom diagram.
+    let note_card_rects = crate::diagram_notes_view::last_card_rects(ui);
 
     // Zoom & Shortcut Input Handling
     ui.input_mut(|i| {
@@ -855,6 +883,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             .pointer
             .hover_pos()
             .filter(|p| pointer_over_canvas && rect.contains(*p))
+            .filter(|p| !note_card_rects.iter().any(|r| r.contains(*p)))
             .map(|p| p - rect.min);
         let view_center = rect.size() / 2.0;
         let old_zoom = state.zoom;
@@ -991,6 +1020,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
     let mut group_drag_stopped: Option<String> = None;
     let mut group_focus_request: Option<Option<String>> = None;
+    let mut note_request: Option<crate::diagram_notes_view::NoteRequest> = None;
+    let note_counts = crate::diagram_notes::note_counts(&state.notes);
 
     // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
@@ -1300,6 +1331,31 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         group_suggest_request = Some(group_id.clone());
                     }
                     ui.separator();
+                    let anchor = crate::models::structs::NoteAnchor::Group(group_id.clone());
+                    if ui
+                        .button(format!(
+                            "{} Add Note…",
+                            egui_icons::icons::ICON_NOTE_ADD.codepoint
+                        ))
+                        .clicked()
+                    {
+                        ui.close();
+                        note_request =
+                            Some(crate::diagram_notes_view::NoteRequest::New(anchor.clone()));
+                    }
+                    let count = note_counts.get(&anchor).copied().unwrap_or(0);
+                    if count > 0
+                        && ui
+                            .button(format!(
+                                "{} Notes ({count})…",
+                                egui_icons::icons::ICON_STICKY_NOTE_2.codepoint
+                            ))
+                            .clicked()
+                    {
+                        ui.close();
+                        note_request = Some(crate::diagram_notes_view::NoteRequest::List(anchor));
+                    }
+                    ui.separator();
                     if ui.button("Delete Group").clicked() {
                         ui.close();
                         _group_delete_request = Some(group_id.clone());
@@ -1377,6 +1433,39 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     action = Some(DiagramAction::OpenGroupInNewTab(group_id.clone()));
                 }
             }
+
+            // Badge jumlah note group, di kiri tombol "Open in new tab".
+            let anchor = crate::models::structs::NoteAnchor::Group(group_id.clone());
+            if let Some(&count) = note_counts.get(&anchor) {
+                let right = if btn_size >= 14.0 && group_extent.contains_key(group_id.as_str()) {
+                    title_rect.right() - 12.0 * scale - btn_size
+                } else {
+                    title_rect.right() - 6.0 * scale
+                };
+                let active = state
+                    .notes
+                    .iter()
+                    .any(|n| n.anchor == anchor && state.open_notes.contains(&n.id));
+                if let Some(resp) = crate::diagram_notes_view::draw_badge(
+                    ui,
+                    egui::pos2(right, title_rect.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    count,
+                    scale,
+                    ui.id().with("group_note_badge").with(idx),
+                    active,
+                ) {
+                    let resp = resp.on_hover_text(crate::diagram_notes_view::badge_tooltip(count));
+                    if resp.clicked() {
+                        note_request = Some(crate::diagram_notes_view::NoteRequest::Toggle(
+                            anchor.clone(),
+                        ));
+                    }
+                    if resp.secondary_clicked() {
+                        note_request = Some(crate::diagram_notes_view::NoteRequest::List(anchor));
+                    }
+                }
+            }
         }
     }
 
@@ -1409,6 +1498,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
     // Apply group deletion request
     if let Some(del_gid) = _group_delete_request {
+        let anchor = crate::models::structs::NoteAnchor::Group(del_gid.clone());
+        state.notes.retain(|n| n.anchor != anchor);
         state.groups.retain(|g| g.id != del_gid);
         for node in &mut state.nodes {
             node.remove_from_group(&del_gid);
@@ -1526,6 +1617,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
     ui.data_mut(|d| d.insert_temp(visible_key, rel_stats.drawn));
 
+    let visible_notes = crate::diagram_notes_view::prepare_visible(state);
+    crate::diagram_notes_view::draw_note_links(
+        ui,
+        state,
+        &visible_notes,
+        &to_screen,
+        clip,
+        hover_pos,
+    );
+
     let virtual_clicked = match virtual_outcome {
         VirtualOutcome::None => false,
         VirtualOutcome::Remove(idx) => {
@@ -1594,6 +1695,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut focus_request: Option<Option<String>> = None;
     let mut double_clicked_node: Option<String> = None;
 
+    // Lebar glyph monospace pada ukuran unscaled; dipakai untuk menyesuaikan
+    // lebar node dengan nama kolom terpanjang.
+    let (name_advance, small_advance) = ui.fonts_mut(|f| {
+        (
+            f.glyph_width(&egui::FontId::monospace(12.0), 'M'),
+            f.glyph_width(&egui::FontId::monospace(10.0), 'M'),
+        )
+    });
+
     for node in &mut state.nodes {
         node.ensure_groups_migrated();
 
@@ -1602,11 +1712,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         let item_height_unscaled = 16.0;
         let content_height_unscaled = node.columns.len() as f32 * item_height_unscaled;
         let node_height_unscaled = header_height_unscaled + content_height_unscaled + 8.0; // padding
-        let node_width = if node.column_meta.is_empty() {
-            180.0
-        } else {
-            240.0
-        };
+        let node_width = node_content_width(node, name_advance, small_advance);
         node.size = egui::vec2(node_width, node_height_unscaled);
 
         let node_size_scaled = node.size * scale;
@@ -1701,6 +1807,32 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 }
                 return;
             }
+
+            let anchor = crate::models::structs::NoteAnchor::Table(node.id.clone());
+            if ui
+                .button(format!(
+                    "{} Add note…",
+                    egui_icons::icons::ICON_NOTE_ADD.codepoint
+                ))
+                .on_hover_text("Add a Markdown sticky note to this table")
+                .clicked()
+            {
+                ui.close();
+                note_request = Some(crate::diagram_notes_view::NoteRequest::New(anchor.clone()));
+            }
+            let count = note_counts.get(&anchor).copied().unwrap_or(0);
+            if count > 0
+                && ui
+                    .button(format!(
+                        "{} Notes ({count})…",
+                        egui_icons::icons::ICON_STICKY_NOTE_2.codepoint
+                    ))
+                    .clicked()
+            {
+                ui.close();
+                note_request = Some(crate::diagram_notes_view::NoteRequest::List(anchor));
+            }
+            ui.separator();
 
             if node.detached {
                 ui.label(
@@ -2258,6 +2390,33 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         if is_dimmed {
             dim_node(ui, node_rect, scale, canvas_bg);
         }
+
+        let anchor = crate::models::structs::NoteAnchor::Table(node.id.clone());
+        if let Some(&count) = note_counts.get(&anchor) {
+            let active = state
+                .notes
+                .iter()
+                .any(|n| n.anchor == anchor && state.open_notes.contains(&n.id));
+            if let Some(resp) = crate::diagram_notes_view::draw_badge(
+                ui,
+                egui::pos2(node_rect.right() - 10.0 * scale, node_rect.top()),
+                egui::Align2::RIGHT_CENTER,
+                count,
+                scale,
+                ui.id().with("node_note_badge").with(&node.id),
+                active,
+            ) {
+                let resp = resp.on_hover_text(crate::diagram_notes_view::badge_tooltip(count));
+                if resp.clicked() {
+                    note_request = Some(crate::diagram_notes_view::NoteRequest::Toggle(
+                        anchor.clone(),
+                    ));
+                }
+                if resp.secondary_clicked() {
+                    note_request = Some(crate::diagram_notes_view::NoteRequest::List(anchor));
+                }
+            }
+        }
     }
     if let Some(table) = relations_request {
         state.relations_panel = Some(table);
@@ -2369,6 +2528,25 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             resolve_all_overlaps(&mut state.nodes, 20.0, Some(&id));
             state.save_requested = true;
         }
+    }
+
+    // Kartu note digambar di atas tabel dan di bawah toolbar.
+    let cards = crate::diagram_notes_view::render_note_cards(
+        ui,
+        state,
+        &visible_notes,
+        &to_screen,
+        !is_hand_mode,
+    );
+    if let Some(id) = cards.edit {
+        crate::diagram_notes_view::open_note_editor(state, &id);
+    }
+    if let Some(table) = cards.jump_table {
+        start_view_animation(state, &table, rect.size(), now);
+        ui.ctx().request_repaint();
+    }
+    if let Some(req) = note_request {
+        crate::diagram_notes_view::apply_request(state, req);
     }
 
     // Indikator sinkronisasi skema live (tampilan masih dari cache).
@@ -2660,6 +2838,25 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         .clicked()
                 {
                     action = Some(DiagramAction::RefreshLinks(None));
+                }
+
+                // --- 4b. Notes ---
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_STICKY_NOTE_2.codepoint,
+                    "Notes",
+                    state.notes_panel.is_some(),
+                )
+                .on_hover_text(
+                    "Notes\nMarkdown sticky notes on tables and groups, saved with the diagram.\nRight-click a table or group to add one.",
+                )
+                .clicked()
+                {
+                    state.notes_panel = if state.notes_panel.is_some() {
+                        None
+                    } else {
+                        Some(None)
+                    };
                 }
 
                 ui.separator();
@@ -3025,6 +3222,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     render_relations_panel(ui, state, rect, now);
+    crate::diagram_notes_view::render_notes_panel(ui, state, rect, now);
+    crate::diagram_notes_view::render_note_editor(ui.ctx(), state);
 
     if lod == Lod::Detail && !state.nodes.is_empty() {
         draw_key_legend(ui, rect);
@@ -3530,6 +3729,68 @@ fn draw_grid(ui: &egui::Ui, rect: egui::Rect, pan: egui::Vec2, scale: f32) {
     }
 }
 
+/// Lebar node (koordinat diagram) mengikuti isinya: nama kolom terpanjang
+/// beserta badge kunci dan tipe di kanannya, serta judul header. Tidak pernah
+/// lebih sempit dari lebar default lama (180 / 240). `name_adv` dan
+/// `small_adv` adalah lebar satu glyph monospace 12 px dan 10 px.
+fn node_content_width(node: &DiagramNode, name_adv: f32, small_adv: f32) -> f32 {
+    // Cadangan kecil: ukuran font di-quantize ke 0.5 px saat zoom, sehingga
+    // teks bisa sedikit lebih lebar dari skala linear.
+    const SLACK: f32 = 1.05;
+    const PAD: f32 = 8.0;
+    let min = if node.column_meta.is_empty() {
+        180.0
+    } else {
+        240.0
+    };
+
+    let mut widest: f32 = 0.0;
+    for (i, col) in node.columns.iter().enumerate() {
+        let info = node
+            .column_meta
+            .get(i)
+            .filter(|m| m.name == *col)
+            .or_else(|| node.column_info(col));
+        let key = KeyKind::of(info.is_some_and(|c| c.is_pk), node.is_fk_column(col));
+        // Tipe dipotong 14 karakter + elipsis saat digambar.
+        let type_chars = info.map_or(0, |c| c.type_name.chars().count().min(15));
+        let badge_chars = key.badge().chars().count();
+        let mut right = 0.0;
+        if type_chars > 0 {
+            right += type_chars as f32 * small_adv;
+        }
+        if badge_chars > 0 {
+            if type_chars > 0 {
+                right += 5.0;
+            }
+            right += badge_chars as f32 * small_adv;
+        }
+        let gap = if right > 0.0 { 10.0 } else { 0.0 };
+        let w = PAD + col.chars().count() as f32 * name_adv + gap + right + PAD;
+        widest = widest.max(w);
+    }
+
+    // Judul proporsional: perkiraan lebar rata-rata glyph ≈ 0.6 × ukuran font.
+    let title_px = if node.database_name.is_some() {
+        12.5
+    } else {
+        14.0
+    };
+    let mut header = node.title.chars().count() as f32 * title_px * 0.6;
+    if let Some(db) = &node.database_name {
+        let label_chars = db.chars().count()
+            + node
+                .connection_name
+                .as_ref()
+                .map_or(0, |c| c.chars().count() + 1)
+            + 2;
+        header = header.max(label_chars as f32 * 9.0 * 0.6);
+    }
+    let header = header + 2.0 * PAD + if node.detached { 90.0 } else { 0.0 };
+
+    (widest.max(header) * SLACK).max(min).ceil()
+}
+
 /// Tinggi header node (koordinat diagram); header lebih tinggi bila ada
 /// badge nama database. Harus sama dengan layout di `render_diagram`.
 fn node_header_height(node: &DiagramNode) -> f32 {
@@ -3542,7 +3803,7 @@ fn node_header_height(node: &DiagramNode) -> f32 {
 
 /// Titik tengah vertikal baris kolom (koordinat diagram), mengikuti layout
 /// node di `render_diagram`: header 24/30, padding 4, tinggi baris 16.
-fn column_anchor_y(node: &DiagramNode, column: &str) -> f32 {
+pub(crate) fn column_anchor_y(node: &DiagramNode, column: &str) -> f32 {
     match node.columns.iter().position(|c| c == column) {
         Some(i) => node.pos.y + node_header_height(node) + 4.0 + i as f32 * 16.0 + 8.0,
         None => node.pos.y + node.size.y / 2.0,
@@ -3578,7 +3839,12 @@ fn relation_curve(
     rel: &VirtualRelation,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     scale: f32,
-) -> (egui::Pos2, egui::Pos2, f32, egui::epaint::CubicBezierShape) {
+) -> (
+    egui::Pos2,
+    egui::Pos2,
+    (f32, f32),
+    egui::epaint::CubicBezierShape,
+) {
     column_curve(
         child,
         &rel.child_column,
@@ -3589,8 +3855,31 @@ fn relation_curve(
     )
 }
 
+/// Jarak horizontal minimum (koordinat diagram) antara dua tabel supaya relasi
+/// ditarik sisi-ke-sisi yang berhadapan. Di bawah ini tabel dianggap bertumpuk
+/// atas-bawah dan relasi ditarik lewat sisi yang sama agar tidak membentuk S.
+const FACING_SIDES_MIN_GAP: f32 = 40.0;
+
+/// Sisi anchor relasi: x child, x parent, dan arah keluar (-1 kiri, +1 kanan)
+/// di masing-masing ujung.
+fn relation_sides(child: &DiagramNode, parent: &DiagramNode) -> (f32, f32, f32, f32) {
+    let (cl, cr) = (child.pos.x, child.pos.x + child.size.x);
+    let (pl, pr) = (parent.pos.x, parent.pos.x + parent.size.x);
+    if pl - cr >= FACING_SIDES_MIN_GAP {
+        (cr, pl, 1.0, -1.0)
+    } else if cl - pr >= FACING_SIDES_MIN_GAP {
+        (cl, pr, -1.0, 1.0)
+    } else if (cl - pl).abs() <= (cr - pr).abs() {
+        // Bertumpuk: sisi kiri ke kiri (default), kecuali sisi kanan lebih sejajar.
+        (cl, pl, -1.0, -1.0)
+    } else {
+        (cr, pr, 1.0, 1.0)
+    }
+}
+
 /// Kurva dari baris `child_column` di tabel child ke baris `parent_column` di
 /// tabel parent. Dipakai relasi virtual, FK per kolom, dan animasi aliran.
+/// Mengembalikan (start, end, (arah keluar start, arah keluar end), kurva).
 fn column_curve(
     child: &DiagramNode,
     child_column: &str,
@@ -3598,28 +3887,39 @@ fn column_curve(
     parent_column: &str,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     scale: f32,
-) -> (egui::Pos2, egui::Pos2, f32, egui::epaint::CubicBezierShape) {
-    let parent_is_right = parent.pos.x + parent.size.x / 2.0 >= child.pos.x + child.size.x / 2.0;
-    let (cx, px, dir) = if parent_is_right {
-        (child.pos.x + child.size.x, parent.pos.x, 1.0)
-    } else {
-        (child.pos.x, parent.pos.x + parent.size.x, -1.0)
-    };
+) -> (
+    egui::Pos2,
+    egui::Pos2,
+    (f32, f32),
+    egui::epaint::CubicBezierShape,
+) {
+    let (cx, px, start_dir, end_dir) = relation_sides(child, parent);
     let start = to_screen(egui::pos2(cx, column_anchor_y(child, child_column)));
     let end = to_screen(egui::pos2(px, column_anchor_y(parent, parent_column)));
-    let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
+    let (c1, c2) = if start_dir == end_dir {
+        // Sisi sama: kedua titik kontrol di luar tepi terluar, lengkungnya
+        // melebar sesuai jarak vertikal supaya tidak menempel ke tabel.
+        let bend = ((end.y - start.y).abs() * 0.15).clamp(30.0 * scale, 80.0 * scale);
+        let outer = if start_dir < 0.0 {
+            start.x.min(end.x) - bend
+        } else {
+            start.x.max(end.x) + bend
+        };
+        (egui::pos2(outer, start.y), egui::pos2(outer, end.y))
+    } else {
+        let bend = (end.x - start.x).abs().max(60.0 * scale) * 0.5;
+        (
+            start + egui::vec2(bend * start_dir, 0.0),
+            end + egui::vec2(bend * end_dir, 0.0),
+        )
+    };
     let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-        [
-            start,
-            start + egui::vec2(bend * dir, 0.0),
-            end - egui::vec2(bend * dir, 0.0),
-            end,
-        ],
+        [start, c1, c2, end],
         false,
         egui::Color32::TRANSPARENT,
         egui::Stroke::NONE,
     );
-    (start, end, dir, bezier)
+    (start, end, (start_dir, end_dir), bezier)
 }
 
 /// Satu relasi kolom untuk animasi aliran: (child, kolom child, parent,
@@ -4142,20 +4442,9 @@ fn draw_fk_edges(
             }
         }
         let curves: Vec<(Option<(&str, &str)>, [egui::Pos2; 4])> = if pairs.is_empty() {
-            let src_size = src.size * scale;
-            let dst_size = dst.size * scale;
-            let src_pos = to_screen(src.pos) + egui::vec2(src_size.x, src_size.y / 2.0);
-            let dst_pos = to_screen(dst.pos) + egui::vec2(0.0, dst_size.y / 2.0);
-            let control_scale = (dst_pos.x - src_pos.x).abs().max(50.0 * scale) * 0.5;
-            vec![(
-                None,
-                [
-                    src_pos,
-                    src_pos + egui::vec2(control_scale, 0.0),
-                    dst_pos - egui::vec2(control_scale, 0.0),
-                    dst_pos,
-                ],
-            )]
+            // Kolom kosong tidak ditemukan, jadi anchor jatuh ke tengah tabel.
+            let (_, _, _, bezier) = column_curve(src, "", dst, "", to_screen, scale);
+            vec![(None, bezier.points)]
         } else {
             pairs
                 .iter()
@@ -4371,9 +4660,9 @@ fn draw_virtual_relations(
         let dist = (end - start).length();
         let offset = 28.0f32.min(dist * 0.35).max(14.0);
         let child_btn_rect =
-            egui::Rect::from_center_size(start + egui::vec2(dir * offset, 0.0), btn_size);
+            egui::Rect::from_center_size(start + egui::vec2(dir.0 * offset, 0.0), btn_size);
         let parent_btn_rect =
-            egui::Rect::from_center_size(end - egui::vec2(dir * offset, 0.0), btn_size);
+            egui::Rect::from_center_size(end + egui::vec2(dir.1 * offset, 0.0), btn_size);
 
         let is_btn_hover = emph.interactive
             && ctx.hover.is_some_and(|p| {
@@ -4679,6 +4968,184 @@ fn draw_aggregated_links(
     clicked
 }
 
+/// Kolom sumber default saat tabel sumber dipilih: primary key, lalu `id`, lalu kolom pertama.
+fn default_source_column(nodes: &[DiagramNode], table: &str) -> Option<String> {
+    let node = nodes.iter().find(|n| n.id == table)?;
+    node.column_meta
+        .iter()
+        .find(|c| c.is_pk)
+        .map(|c| c.name.clone())
+        .or_else(|| {
+            node.columns
+                .iter()
+                .find(|c| c.eq_ignore_ascii_case("id"))
+                .cloned()
+        })
+        .or_else(|| node.columns.first().cloned())
+}
+
+/// Input mode Source → Destination: sumber (tabel + kolom, sisi parent) dan tujuan
+/// (tabel opsional + pola kolom, sisi child). Mengembalikan `true` bila input
+/// berubah sehingga saran perlu dihitung ulang.
+fn render_relation_pair_picker(ui: &mut egui::Ui, state: &mut DiagramState, show_db: bool) -> bool {
+    use crate::window_egui::searchable_picker::{PickerConfig, searchable_picker};
+
+    let mut changed = false;
+    let is_touch = ui.spacing().interact_size.y >= 30.0;
+    let spacing = ui.spacing().item_spacing.x;
+    let label_w = 84.0;
+    let field_w = ((ui.available_width() - label_w - spacing * 2.0) / 2.0).max(120.0);
+
+    // (node id, label); label "db.tabel" bila diagram berisi lebih dari satu database.
+    let mut tables: Vec<(String, String)> = state
+        .nodes
+        .iter()
+        .map(|n| {
+            let name = crate::diagram_links::local_name(&n.id);
+            let db = crate::diagram_relations::table_database_name(
+                &state.nodes,
+                &state.linked_databases,
+                &n.id,
+            );
+            let label = match db {
+                Some(db) if show_db => format!("{db}.{name}"),
+                _ => name.to_string(),
+            };
+            (n.id.clone(), label)
+        })
+        .collect();
+    tables.sort_by_key(|(_, l)| l.to_lowercase());
+    let labels: Vec<String> = tables.iter().map(|(_, l)| l.clone()).collect();
+    let position_of = |id: &str| tables.iter().position(|(t, _)| t == id);
+    let label_of = |id: &str| position_of(id).map(|i| tables[i].1.clone());
+
+    let row_label = |ui: &mut egui::Ui, text: &str| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_w, 26.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(egui::RichText::new(text).small().strong().weak());
+            },
+        );
+    };
+    let picker = |id_salt: &'static str,
+                  icon: &'static str,
+                  title: &'static str,
+                  search_hint: &'static str,
+                  tooltip: &'static str| PickerConfig {
+        id_salt,
+        icon,
+        title,
+        search_hint,
+        tooltip,
+        min_width: field_w,
+        max_width: field_w,
+        is_touch,
+    };
+
+    ui.horizontal(|ui| {
+        row_label(ui, "SOURCE");
+        let table_text = state
+            .relation_source_table
+            .as_deref()
+            .and_then(label_of)
+            .unwrap_or_else(|| "Select table…".to_string());
+        let table_sel = state.relation_source_table.as_deref().and_then(position_of);
+        let cfg = picker(
+            "rel_pair_src_table",
+            egui_icons::icons::MDI_TABLE.codepoint,
+            "Tables",
+            "Search tables…",
+            "Source table (the referenced side, e.g. users)",
+        );
+        if let Some(i) = searchable_picker(ui, &cfg, &table_text, &labels, table_sel) {
+            let id = tables[i].0.clone();
+            if state.relation_source_table.as_deref() != Some(id.as_str()) {
+                state.relation_source_column = default_source_column(&state.nodes, &id);
+                state.relation_source_table = Some(id);
+                changed = true;
+            }
+        }
+
+        let columns: Vec<String> = state
+            .relation_source_table
+            .as_deref()
+            .and_then(|id| state.nodes.iter().find(|n| n.id == id))
+            .map(|n| n.columns.clone())
+            .unwrap_or_default();
+        let col_text = state
+            .relation_source_column
+            .clone()
+            .unwrap_or_else(|| "Select column…".to_string());
+        let col_sel = state
+            .relation_source_column
+            .as_deref()
+            .and_then(|c| columns.iter().position(|x| x == c));
+        let cfg = picker(
+            "rel_pair_src_col",
+            egui_icons::icons::MDI_TABLE_COLUMN.codepoint,
+            "Columns",
+            "Search columns…",
+            "Source column (usually the primary key, e.g. id)",
+        );
+        ui.add_enabled_ui(!columns.is_empty(), |ui| {
+            if let Some(i) = searchable_picker(ui, &cfg, &col_text, &columns, col_sel) {
+                if state.relation_source_column.as_deref() != Some(columns[i].as_str()) {
+                    state.relation_source_column = Some(columns[i].clone());
+                    changed = true;
+                }
+            }
+        });
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        row_label(ui, "DESTINATION");
+        let mut items = Vec::with_capacity(labels.len() + 1);
+        items.push("All tables".to_string());
+        items.extend(labels.iter().cloned());
+        let table_text = state
+            .relation_dest_table
+            .as_deref()
+            .and_then(label_of)
+            .unwrap_or_else(|| "All tables".to_string());
+        let table_sel = match state.relation_dest_table.as_deref() {
+            None => Some(0),
+            Some(id) => position_of(id).map(|i| i + 1),
+        };
+        let cfg = picker(
+            "rel_pair_dest_table",
+            egui_icons::icons::MDI_TABLE.codepoint,
+            "Tables",
+            "Search tables…",
+            "Destination table (the referencing side), or all tables",
+        );
+        if let Some(i) = searchable_picker(ui, &cfg, &table_text, &items, table_sel) {
+            let picked = (i > 0).then(|| tables[i - 1].0.clone());
+            if picked != state.relation_dest_table {
+                state.relation_dest_table = picked;
+                changed = true;
+            }
+        }
+
+        let muted = crate::window_egui::style::nav_text_muted(ui.ctx());
+        let resp = crate::window_egui::style::render_text_field(
+            ui,
+            egui::TextEdit::singleline(&mut state.relation_dest_columns).hint_text(
+                egui::RichText::new("created_by_id, updated_by_id or *_by_id").color(muted),
+            ),
+            field_w,
+            Some(egui_icons::icons::MDI_TABLE_COLUMN.codepoint),
+        );
+        if resp.changed() {
+            changed = true;
+        }
+        resp.on_hover_text(
+            "Destination column names, separated by commas. Use * as a wildcard (e.g. *_by_id).",
+        );
+    });
+    changed
+}
+
 /// Jendela daftar saran relasi; user mencentang lalu menambahkan.
 fn render_relation_suggestions(
     ctx: &egui::Context,
@@ -4690,7 +5157,7 @@ fn render_relation_suggestions(
 
     // Cache saran awal (sebelum user mengetik kolom pencarian baru)
     let base_id = egui::Id::new("rel_suggest_base");
-    if state.relation_column_search_query.is_empty() {
+    if state.relation_column_search_query.is_empty() && !state.relation_pair_mode {
         ctx.data_mut(|d| {
             if d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id)
                 .is_none()
@@ -4729,6 +5196,7 @@ fn render_relation_suggestions(
             crate::window_egui::style::render_modal_header(ui, "Suggested relations", &mut close);
             ui.label(
                 egui::RichText::new(match &state.relation_suggestions_title {
+                    _ if state.relation_pair_mode => "Link one source column to destination columns with different names (e.g. users.id to created_by_id, updated_by_id). Accepted relations are saved with the diagram as dashed lines.".to_string(),
                     Some(t) => format!(
                         "Target: {t}. Based on column names, similarity and types; accepted relations are saved with the diagram as dashed lines."
                     ),
@@ -4753,8 +5221,43 @@ fn render_relation_suggestions(
             let has_dbs = !available_dbs.is_empty();
             let has_multiple_dbs = available_dbs.len() > 1;
 
+            let mut pair_triggered = false;
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(!state.relation_pair_mode, "By column name")
+                    .on_hover_text("Find columns with the same or a similar name")
+                    .clicked()
+                    && state.relation_pair_mode
+                {
+                    state.relation_pair_mode = false;
+                    search_triggered = true;
+                }
+                if ui
+                    .selectable_label(state.relation_pair_mode, "Source to destination")
+                    .on_hover_text(
+                        "Link one source column (e.g. users.id) to destination columns \
+                         with other names (e.g. created_by_id, updated_by_id)",
+                    )
+                    .clicked()
+                    && !state.relation_pair_mode
+                {
+                    state.relation_pair_mode = true;
+                    state.relation_database_filter = None;
+                    if state.relation_dest_columns.trim().is_empty() {
+                        state.relation_dest_columns =
+                            state.relation_column_search_query.trim().to_string();
+                    }
+                    pair_triggered = true;
+                }
+            });
+            ui.add_space(8.0);
+
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                if state.relation_pair_mode {
+                    pair_triggered |= render_relation_pair_picker(ui, state, has_multiple_dbs);
+                    return;
+                }
                 ui.horizontal(|ui| {
                     let clear_search_w = if state.relation_column_search_query.is_empty() {
                         0.0
@@ -4872,6 +5375,8 @@ fn render_relation_suggestions(
                         )
                     }) {
                         suggestions = base;
+                    } else if !state.relation_pair_mode {
+                        suggestions = Vec::new();
                     }
                 } else {
                     let found = crate::diagram_relations::suggest_relations_by_column_search(
@@ -4879,6 +5384,24 @@ fn render_relation_suggestions(
                     );
                     suggestions = found.into_iter().map(|s| (s, true)).collect();
                 }
+            }
+            if pair_triggered {
+                suggestions = match (&state.relation_source_table, &state.relation_source_column) {
+                    (Some(table), Some(column)) => {
+                        crate::diagram_relations::suggest_relations_source_to_destination_data(
+                            &state.nodes,
+                            &state.virtual_relations,
+                            table,
+                            column,
+                            state.relation_dest_table.as_deref(),
+                            &state.relation_dest_columns,
+                        )
+                        .into_iter()
+                        .map(|s| (s, true))
+                        .collect()
+                    }
+                    _ => Vec::new(),
+                };
             }
 
             let filter_db = state.relation_database_filter.as_deref();
@@ -5035,6 +5558,17 @@ fn render_relation_suggestions(
                                     "No suggestions with a match of {}% or higher",
                                     state.relation_min_match
                                 )
+                            } else if state.relation_pair_mode {
+                                if state.relation_source_column.is_none() {
+                                    "Pick a source table and column, then the destination column names to link.".to_string()
+                                } else if state.relation_dest_columns.trim().is_empty() {
+                                    "Enter destination column names, e.g. created_by_id, updated_by_id or *_by_id".to_string()
+                                } else {
+                                    format!(
+                                        "No unlinked columns matching \"{}\"",
+                                        state.relation_dest_columns.trim()
+                                    )
+                                }
                             } else if let Some(db) = filter_db {
                                 if is_searching {
                                     format!(
@@ -5203,6 +5737,8 @@ fn render_relation_suggestions(
         state.relation_database_filter = None;
         state.relation_min_match = 0;
         state.relation_suggestions_title = None;
+        // Pilihan source/destination dipertahankan agar mudah dipakai ulang.
+        state.relation_pair_mode = false;
     }
     result
 }
@@ -6023,6 +6559,42 @@ pub fn render_explain_plan_viewer(ui: &mut egui::Ui, raw_plan: &str) {
 mod tests {
     use super::*;
 
+    fn meta_node(columns: &[(&str, &str)]) -> DiagramNode {
+        DiagramNode {
+            id: "t".into(),
+            title: "t".into(),
+            columns: columns.iter().map(|(c, _)| c.to_string()).collect(),
+            column_meta: columns
+                .iter()
+                .map(|(c, t)| crate::models::structs::DiagramColumn {
+                    name: c.to_string(),
+                    type_name: t.to_string(),
+                    is_pk: false,
+                    nullable: true,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn node_width_keeps_default_for_short_columns() {
+        let node = meta_node(&[("id", "bigint"), ("name", "varchar(50)")]);
+        assert_eq!(node_content_width(&node, 7.2, 6.0), 240.0);
+        let mut bare = node.clone();
+        bare.column_meta.clear();
+        assert_eq!(node_content_width(&bare, 7.2, 6.0), 180.0);
+    }
+
+    #[test]
+    fn node_width_grows_to_fit_long_column_and_type() {
+        let long = "material_request_detail_kandang_partnership_type";
+        let node = meta_node(&[("id", "bigint"), (long, "varchar(191)")]);
+        let w = node_content_width(&node, 7.2, 6.0);
+        let needed = 8.0 + long.len() as f32 * 7.2 + 10.0 + 12.0 * 6.0 + 8.0;
+        assert!(w >= needed, "width {w} < needed {needed}");
+    }
+
     #[test]
     fn test_parse_postgres_explain_json() {
         let pg_json = r#"[
@@ -6576,6 +7148,29 @@ mod tests {
     }
 
     #[test]
+    fn test_relation_sides_stacked_tables_use_same_side() {
+        let mut child = node("child", &["a"]);
+        let mut parent = node("parent", &["id"]);
+        child.size = egui::vec2(300.0, 200.0);
+        parent.size = egui::vec2(300.0, 200.0);
+
+        // Berdampingan: sisi yang berhadapan.
+        parent.pos = egui::pos2(400.0, 0.0);
+        assert_eq!(relation_sides(&child, &parent), (300.0, 400.0, 1.0, -1.0));
+        parent.pos = egui::pos2(-400.0, 0.0);
+        assert_eq!(relation_sides(&child, &parent), (0.0, -100.0, -1.0, 1.0));
+
+        // Atas-bawah (sedikit bergeser): kiri ke kiri, bukan bentuk S.
+        parent.pos = egui::pos2(12.0, 400.0);
+        assert_eq!(relation_sides(&child, &parent), (0.0, 12.0, -1.0, -1.0));
+
+        // Tepi kanan lebih sejajar: kanan ke kanan.
+        parent.size = egui::vec2(250.0, 200.0);
+        parent.pos = egui::pos2(50.0, 400.0);
+        assert_eq!(relation_sides(&child, &parent), (300.0, 300.0, 1.0, 1.0));
+    }
+
+    #[test]
     fn test_column_anchor_y_follows_header_height() {
         let mut n = node("t", &["a", "b"]);
         assert_eq!(column_anchor_y(&n, "b"), 24.0 + 4.0 + 16.0 + 8.0);
@@ -6857,6 +7452,61 @@ mod tests {
         state.focus_group = Some("missing".into());
         render_frame(&ctx, &mut state, None);
         assert!(state.focus_group.is_none());
+    }
+
+    fn note_fixture(id: &str, table: &str, body: &str) -> crate::models::structs::DiagramNote {
+        crate::models::structs::DiagramNote {
+            id: id.into(),
+            anchor: crate::models::structs::NoteAnchor::Table(table.into()),
+            title: format!("Note {id}"),
+            body: body.into(),
+            color: crate::diagram_notes::NOTE_COLORS[0],
+            offset: None,
+            size: crate::diagram_notes::DEFAULT_NOTE_SIZE,
+            pinned: true,
+            author: None,
+            created_at: id.into(),
+            updated_at: String::new(),
+        }
+    }
+
+    /// Kartu note dengan link `[[...]]` dirender tanpa panic, ditata di
+    /// sekitar tabelnya tanpa saling tumpuk, dan jendela daftarnya terbuka.
+    #[test]
+    fn test_notes_render_and_arrange() {
+        let ctx = egui::Context::default();
+        let mut state = focus_fixture();
+        state.is_centered = true;
+        state.notes = vec![
+            note_fixture(
+                "a",
+                "orders",
+                "# Orders\nSee [[users]] and [[items#order_id]].",
+            ),
+            note_fixture("b", "orders", "- [[ghost]]\n`[[not a link]]`"),
+        ];
+        state.notes_panel = Some(None);
+        render_frame(&ctx, &mut state, None);
+        render_frame(&ctx, &mut state, Some(egui::pos2(800.0, 500.0)));
+        let a = state.notes[0].offset.expect("note a placed");
+        let b = state.notes[1].offset.expect("note b placed");
+        let size = egui::vec2(280.0, 220.0);
+        let ra = egui::Rect::from_min_size(egui::pos2(a[0], a[1]), size);
+        let rb = egui::Rect::from_min_size(egui::pos2(b[0], b[1]), size);
+        assert!(!ra.intersects(rb));
+    }
+
+    /// Tab subset membawa note milik tabel/group di dalamnya saja.
+    #[test]
+    fn test_subset_keeps_notes_inside() {
+        let mut state = focus_fixture();
+        state.notes = vec![
+            note_fixture("a", "orders", ""),
+            note_fixture("b", "audit", ""),
+        ];
+        let sub = focus_subset_state(&state, "orders");
+        let ids: Vec<&str> = sub.notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
     }
 
     /// Chip fokus dengan tombol barunya tetap bisa dirender.

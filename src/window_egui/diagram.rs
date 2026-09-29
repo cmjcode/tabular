@@ -623,6 +623,8 @@ impl super::Tabular {
                     current_state.groups = loaded_state.groups;
                     current_state.virtual_relations = loaded_state.virtual_relations;
                     current_state.linked_databases = loaded_state.linked_databases;
+                    current_state.notes = loaded_state.notes;
+                    current_state.show_notes = loaded_state.show_notes;
                     current_state.pan = loaded_state.pan;
                     current_state.zoom = loaded_state.zoom;
                     current_state.show_grid = loaded_state.show_grid;

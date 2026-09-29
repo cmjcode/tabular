@@ -918,6 +918,21 @@ impl super::Tabular {
         ui: &mut egui::Ui,
         context_id: &str, // "view_query" or "regular_query"
     ) {
+        // Panel "Query Diagram" tampil sebagai split view di kanan editor.
+        if super::query_insight::has_panel(self) {
+            super::query_insight::render_split(self, ui, |app, ui| {
+                app.render_query_editor_with_split_inner(ui, context_id)
+            });
+            return;
+        }
+        self.render_query_editor_with_split_inner(ui, context_id);
+    }
+
+    fn render_query_editor_with_split_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        context_id: &str,
+    ) {
         let avail = ui.available_height();
         let executed = self
             .query_tabs

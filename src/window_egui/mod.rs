@@ -17,6 +17,7 @@ pub mod init;
 pub mod notifications;
 pub mod pagination;
 pub(crate) mod preferences;
+pub mod query_insight;
 pub mod query_jobs;
 pub mod render_dialogs;
 pub mod search;
@@ -591,6 +592,10 @@ pub struct Tabular {
     // --- AI Assistant ---
     pub show_ai_panel: bool,
     pub ai_panel_width: f32,
+    /// Panel "Query Diagram" per tab (kunci: `QueryTab::id`).
+    pub query_insights: std::collections::HashMap<usize, query_insight::QueryInsight>,
+    /// Lebar panel "Query Diagram" di kanan editor.
+    pub query_insight_width: f32,
     pub ai_input: String,
     pub ai_is_loading: bool,
     pub ai_error: Option<String>,

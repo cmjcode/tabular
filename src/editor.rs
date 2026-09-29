@@ -3329,6 +3329,28 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             reformat_current_sql(tabular, ui);
             ui.close();
         }
+        // Diagram alur query + saran optimasi AI di panel kanan.
+        let is_sql = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .is_none_or(crate::ai_assistant::is_sql_tab);
+        if is_sql {
+            ui.separator();
+            let label = format!(
+                "{}  Show Query Diagram",
+                String::from(egui_icons::icons::ICON_ACCOUNT_TREE)
+            );
+            if ui
+                .button(label)
+                .on_hover_text(
+                    "Explain the selected statement (or the one at the cursor) as an animated diagram, with AI suggestions to make it faster",
+                )
+                .clicked()
+            {
+                crate::window_egui::query_insight::open_query_insight(tabular);
+                ui.close();
+            }
+        }
     });
 
     // Rely on egui's built-in double-click word selection.
@@ -4956,7 +4978,7 @@ fn ai_current_tab_text(tabular: &window_egui::Tabular, idx: usize) -> String {
 /// `record_undo` = true memakai `set_text` (satu entri undo); false menulis
 /// langsung tanpa entri undo (dipakai saat streaming supaya undo stack tidak
 /// penuh oleh potongan-potongan kecil).
-fn ai_write_tab_content(
+pub(crate) fn ai_write_tab_content(
     tabular: &mut window_egui::Tabular,
     tab_index: usize,
     new_text: String,

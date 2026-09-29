@@ -1022,6 +1022,127 @@ pub fn suggest_relations_by_column_search_data(
     out
 }
 
+/// Pecah pola kolom tujuan (dipisah koma, titik koma, atau spasi) menjadi daftar
+/// pola lowercase. Contoh: `"created_by_id, updated_by_id"` atau `"*_by_id"`.
+pub fn parse_column_patterns(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Pencocokan glob sederhana (`*` = sembarang urutan karakter), case-insensitive.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.to_lowercase().chars().collect();
+    let t: Vec<char> = text.to_lowercase().chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    // Posisi `*` terakhir dan posisi teks saat itu, untuk backtracking.
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if pi < p.len() && p[pi] == t[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
+/// Saran relasi eksplisit Source → Destination: setiap kolom di tabel tujuan yang
+/// cocok dengan `dest_pattern` dijadikan child yang mereferensikan
+/// `source_table.source_column`. Contoh: `users.id` + `created_by_id, updated_by_id,
+/// deleted_by_id` (atau `*_by_id`) → semua tabel yang punya kolom tersebut.
+/// `dest_table = None` berarti semua tabel di diagram.
+pub fn suggest_relations_source_to_destination_data(
+    nodes: &[DiagramNode],
+    virtual_relations: &[VirtualRelation],
+    source_table: &str,
+    source_column: &str,
+    dest_table: Option<&str>,
+    dest_pattern: &str,
+) -> Vec<RelationSuggestion> {
+    let patterns = parse_column_patterns(dest_pattern);
+    let Some(source) = nodes.iter().find(|n| n.id == source_table) else {
+        return Vec::new();
+    };
+    if patterns.is_empty() || !source.columns.iter().any(|c| c == source_column) {
+        return Vec::new();
+    }
+    let source_type = source
+        .column_info(source_column)
+        .map(|c| c.type_name.as_str())
+        .filter(|t| !t.is_empty());
+
+    let mut out = Vec::new();
+    for node in nodes {
+        if dest_table.is_some_and(|d| d != node.id) {
+            continue;
+        }
+        for col in &node.columns {
+            if node.id == source_table && col == source_column {
+                continue;
+            }
+            // Pola tanpa wildcard = kecocokan persis (skor penuh).
+            let Some(pattern) = patterns.iter().find(|p| glob_match(p, col)) else {
+                continue;
+            };
+            if is_already_related(
+                nodes,
+                virtual_relations,
+                &node.id,
+                col,
+                source_table,
+                source_column,
+            ) {
+                continue;
+            }
+            let mut score: f32 = if pattern.contains('*') { 0.95 } else { 1.0 };
+            let mut reason = format!("`{col}` matches `{pattern}`");
+            let dest_type = node
+                .column_info(col)
+                .map(|c| c.type_name.as_str())
+                .filter(|t| !t.is_empty());
+            if !types_compatible(dest_type, source_type) {
+                score -= 0.1;
+                reason.push_str(&format!(
+                    " ({} ~ {})",
+                    dest_type.unwrap_or("unknown"),
+                    source_type.unwrap_or("unknown")
+                ));
+            }
+            out.push(RelationSuggestion {
+                relation: VirtualRelation {
+                    child: node.id.clone(),
+                    child_column: col.clone(),
+                    parent: source_table.to_string(),
+                    parent_column: source_column.to_string(),
+                    origin: RelationOrigin::Inferred,
+                },
+                score,
+                reason,
+            });
+        }
+    }
+
+    out.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.relation.child.cmp(&b.relation.child))
+            .then_with(|| a.relation.child_column.cmp(&b.relation.child_column))
+    });
+    out
+}
+
 /// Dapatkan nama database asal sebuah tabel / node id.
 pub fn table_database_name<'a>(
     nodes: &'a [DiagramNode],
@@ -1717,5 +1838,104 @@ mod tests {
         // extract_diagram_databases
         let dbs = extract_diagram_databases(&nodes, &linked);
         assert_eq!(dbs, vec!["auth_db", "logs_db", "voltunes_chick"]);
+    }
+
+    #[test]
+    fn source_to_destination_links_audit_columns_to_users_id() {
+        let nodes = vec![
+            node(
+                "users",
+                &[("id", "bigint", true), ("created_by_id", "bigint", false)],
+            ),
+            node(
+                "orders",
+                &[
+                    ("id", "bigint", true),
+                    ("created_by_id", "bigint", false),
+                    ("updated_by_id", "bigint", false),
+                    ("deleted_by_id", "bigint", false),
+                    ("customer_id", "bigint", false),
+                ],
+            ),
+            node(
+                "tags",
+                &[("id", "int", true), ("created_by_id", "varchar(36)", false)],
+            ),
+        ];
+
+        let explicit = suggest_relations_source_to_destination_data(
+            &nodes,
+            &[],
+            "users",
+            "id",
+            None,
+            "created_by_id, updated_by_id deleted_by_id",
+        );
+        let got = pairs(&explicit);
+        assert_eq!(got.len(), 5);
+        for want in [
+            "orders.created_by_id->users.id",
+            "orders.updated_by_id->users.id",
+            "orders.deleted_by_id->users.id",
+            "users.created_by_id->users.id",
+            "tags.created_by_id->users.id",
+        ] {
+            assert!(got.contains(&want.to_string()), "missing {want}: {got:?}");
+        }
+        assert!(!got.iter().any(|p| p.contains("customer_id")));
+        // Tipe tidak cocok (varchar vs bigint) tetap tampil dengan skor lebih rendah.
+        let tags = explicit
+            .iter()
+            .find(|s| s.relation.child == "tags")
+            .unwrap();
+        assert!(tags.score < 1.0);
+
+        // Wildcard + tabel tujuan tertentu.
+        let wild = suggest_relations_source_to_destination_data(
+            &nodes,
+            &[],
+            "users",
+            "id",
+            Some("orders"),
+            "*_BY_ID",
+        );
+        assert_eq!(pairs(&wild).len(), 3);
+
+        // Relasi yang sudah ada tidak disarankan lagi.
+        let existing = vec![explicit[0].relation.clone()];
+        let again = suggest_relations_source_to_destination_data(
+            &nodes,
+            &existing,
+            "users",
+            "id",
+            None,
+            "created_by_id, updated_by_id, deleted_by_id",
+        );
+        assert_eq!(again.len(), 4);
+
+        assert!(
+            suggest_relations_source_to_destination_data(&nodes, &[], "users", "id", None, " ,")
+                .is_empty()
+        );
+        assert!(
+            suggest_relations_source_to_destination_data(
+                &nodes,
+                &[],
+                "users",
+                "missing",
+                None,
+                "created_by_id"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn glob_match_basics() {
+        assert!(glob_match("*_by_id", "created_by_id"));
+        assert!(glob_match("created_*", "CREATED_BY_ID"));
+        assert!(glob_match("*by*", "updated_by_id"));
+        assert!(!glob_match("*_by_id", "customer_id"));
+        assert!(!glob_match("created_by_id", "created_by_id2"));
     }
 }
