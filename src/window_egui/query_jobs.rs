@@ -721,5 +721,6 @@ pub(crate) fn failed_query_message(
         column_metadata: None,
         truncated: false,
         error_location: None,
+        timing: None,
     }
 }

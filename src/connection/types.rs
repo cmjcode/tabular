@@ -113,6 +113,8 @@ pub struct QueryResultMessage {
     pub truncated: bool,
     /// Posisi error di statement (untuk tombol "Go to error").
     pub error_location: Option<ErrorLocation>,
+    /// Rincian waktu (tunggu/server/transfer/klien) bila driver mengukurnya.
+    pub timing: Option<super::timing::QueryTiming>,
 }
 
 #[derive(Debug, Clone)]

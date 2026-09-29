@@ -419,6 +419,7 @@ fn session_message(
             affected_rows: affected.map(|n| n as usize),
             truncated: false,
             error_location: None,
+            timing: None,
             headers,
             rows,
             error: None,
@@ -446,6 +447,7 @@ fn session_message(
             column_metadata: None,
             truncated: false,
             error_location: None,
+            timing: None,
         },
     }
 }

@@ -16,6 +16,7 @@ pub mod metadata;
 pub mod pool;
 pub mod session;
 pub mod sql;
+pub mod timing;
 pub mod types;
 pub mod ui;
 

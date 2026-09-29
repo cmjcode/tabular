@@ -22,16 +22,21 @@ use futures_util::TryStreamExt;
 macro_rules! fetch_rows_limited {
     ($query:expr, $executor:expr, $max:expr) => {
         async {
+            super::timing::mark_statement_start();
             let mut stream = $query.fetch($executor);
             let mut rows = Vec::new();
             let mut truncated = false;
             while let Some(row) = stream.try_next().await? {
+                if rows.is_empty() {
+                    super::timing::mark_first_row();
+                }
                 if rows.len() >= $max {
                     truncated = true;
                     break;
                 }
                 rows.push(row);
             }
+            super::timing::mark_fetch_end();
             Ok::<_, sqlx::Error>((rows, truncated))
         }
     };
@@ -268,6 +273,7 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
         column_metadata: None,
         truncated: false,
         error_location: None,
+        timing: None,
     }
 }
 
@@ -309,6 +315,7 @@ pub(crate) async fn execute_query_job_all(job: QueryJob) -> Vec<QueryResultMessa
         column_metadata: None,
         truncated: false,
         error_location: None,
+        timing: None,
     };
     match outcome {
         Ok(Ok(sets)) if !sets.is_empty() => {
@@ -352,7 +359,8 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
     let query = job.options.query.clone();
     let dba_special_mode = job.options.dba_special_mode.clone();
 
-    let outcome = match job.options.connection.connection_type {
+    let (outcome, timing) = super::timing::with_probe(start, async {
+        match job.options.connection.connection_type {
         models::enums::DatabaseType::MySQL => {
             execute_mysql_query_job(&job.options, job.connection_pool.clone()).await
         }
@@ -377,7 +385,9 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
         models::enums::DatabaseType::Plugin(_) => {
             execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
         }
-    };
+        }
+    })
+    .await;
 
     match outcome {
         Ok(output) => QueryResultMessage {
@@ -397,6 +407,7 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
             column_metadata: output.column_metadata,
             truncated: output.truncated,
             error_location: None,
+            timing,
         },
         Err(err) => {
             let (message, error_location) = describe_execution_error(err);
@@ -417,6 +428,7 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
                 column_metadata: None,
                 truncated: false,
                 error_location,
+                timing: None,
             }
         }
     }
