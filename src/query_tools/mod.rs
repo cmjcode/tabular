@@ -20,6 +20,8 @@ pub struct LintMessage {
     pub message: String,
     pub span: Option<Range<usize>>,
     pub hint: Option<String>,
+    /// SQL perbaikan siap salin (mis. `CREATE INDEX ...`).
+    pub fix: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +228,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "Avoid SELECT * to minimize payload and leverage indexes.".to_string(),
             span: Some(idx..idx + "SELECT *".len()),
             hint: Some("Enumerate the columns you actually need.".to_string()),
+            fix: None,
         });
     }
 
@@ -236,6 +239,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "DELETE without a WHERE clause will remove every row.".to_string(),
             span: None,
             hint: Some("Add a WHERE clause or run inside a transaction.".to_string()),
+            fix: None,
         });
     }
     if upper.starts_with("UPDATE") && !upper.contains("WHERE") {
@@ -244,6 +248,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "UPDATE without a WHERE clause will touch every row.".to_string(),
             span: None,
             hint: Some("Add a WHERE clause to scope the update.".to_string()),
+            fix: None,
         });
     }
     if upper.contains("DROP TABLE")
@@ -255,6 +260,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "DROP TABLE without IF EXISTS may fail if the table is missing.".to_string(),
             span: Some(idx..idx + "DROP TABLE".len()),
             hint: Some("Consider DROP TABLE IF EXISTS ...".to_string()),
+            fix: None,
         });
     }
 

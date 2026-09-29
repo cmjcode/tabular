@@ -1,7 +1,8 @@
 //! UI penghubung group diagram dengan repository kode:
 //! - modal "Group Repository" untuk mengisi URL git / folder lokal;
 //! - jendela "Suggested tables" yang menampilkan kemajuan pemindaian dan
-//!   hasil saran tabel dari [`crate::repo_scan`].
+//!   hasil saran tabel dari [`crate::repo_scan`];
+//! - popup "Search Table to Add" untuk memilih tabel diagram secara manual.
 //!
 //! Pemindaian sendiri berjalan di `window_egui::diagram` (butuh konfigurasi AI
 //! dari `Tabular`); modul ini hanya membaca/menulis `DiagramState`.
@@ -692,6 +693,270 @@ pub fn render_group_table_suggestions(
     result
 }
 
+/// Satu baris kandidat di popup "Search Table to Add".
+struct PickerRow {
+    id: String,
+    title: String,
+    /// Judul group lain tempat tabel ini sudah tergabung.
+    other_groups: Vec<String>,
+    is_member: bool,
+}
+
+/// Cocokkan `query` (tanpa beda huruf besar/kecil) dengan judul atau id tabel.
+fn picker_matches(query: &str, title: &str, id: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    q.is_empty() || title.to_lowercase().contains(&q) || id.to_lowercase().contains(&q)
+}
+
+/// Popup "Search Table to Add": daftar seluruh tabel diagram yang bisa dicari,
+/// lalu tabel yang dicentang dimasukkan ke group. Enter tanpa centangan
+/// menambahkan hasil teratas.
+pub fn render_group_table_picker(
+    ctx: &egui::Context,
+    state: &mut DiagramState,
+) -> Option<DiagramAction> {
+    let mut picker = state.group_table_picker.take()?;
+    let gid = picker.group_id.clone();
+    if !state.groups.iter().any(|g| g.id == gid) {
+        return None; // group sudah dihapus
+    }
+
+    let group_titles: std::collections::HashMap<&str, &str> = state
+        .groups
+        .iter()
+        .map(|g| (g.id.as_str(), g.title.as_str()))
+        .collect();
+    // Tabel milik database yang di-link mengikuti diagram sumbernya.
+    let mut rows: Vec<PickerRow> = state
+        .nodes
+        .iter()
+        .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+        .filter(|n| picker_matches(&picker.query, &n.title, &n.id))
+        .map(|n| {
+            let mut other_groups: Vec<String> = n
+                .group_ids
+                .iter()
+                .chain(n.group_id.as_ref())
+                .filter(|g| **g != gid)
+                .filter_map(|g| group_titles.get(g.as_str()).map(|t| t.to_string()))
+                .collect();
+            other_groups.dedup();
+            PickerRow {
+                id: n.id.clone(),
+                title: n.title.clone(),
+                other_groups,
+                is_member: n.is_in_group(&gid),
+            }
+        })
+        .collect();
+    rows.sort_by_key(|r| (r.is_member, r.title.to_lowercase()));
+    let total_tables = state
+        .nodes
+        .iter()
+        .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+        .count();
+    let shown_selectable: Vec<&str> = rows
+        .iter()
+        .filter(|r| !r.is_member)
+        .map(|r| r.id.as_str())
+        .collect();
+
+    let mut close = false;
+    let mut add_ids: Option<Vec<String>> = None;
+    let mut arrange: bool = ctx.data(|d| d.get_temp(arrange_pref_id())).unwrap_or(true);
+
+    style::render_modal_backdrop(ctx, "group_table_picker_backdrop", true);
+    let screen = ctx.content_rect();
+    let win_w = (screen.width() - 48.0).clamp(340.0, 520.0);
+    let list_h = (screen.height() * 0.5).clamp(200.0, 420.0);
+
+    egui::Window::new("Search Table to Add")
+        .title_bar(false)
+        .frame(style::modal_window_frame(ctx))
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size(egui::vec2(win_w, 0.0))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_width(win_w);
+            style::render_modal_header(
+                ui,
+                format!("Add tables to {}", picker.group_title),
+                &mut close,
+            );
+            ui.add_space(6.0);
+
+            let search = style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut picker.query).hint_text("Search tables…"),
+                f32::INFINITY,
+                Some(egui_icons::icons::ICON_SEARCH.codepoint),
+            );
+            if ui.memory(|m| m.focused().is_none()) {
+                search.request_focus();
+            }
+            ui.add_space(6.0);
+
+            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let chosen = picker.selected.len();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{chosen} selected · {} of {total_tables} table(s) shown",
+                            rows.len()
+                        ))
+                        .weak()
+                        .small(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(chosen > 0, egui::Button::new("Clear").small())
+                            .clicked()
+                        {
+                            picker.selected.clear();
+                        }
+                        let all_on = shown_selectable
+                            .iter()
+                            .all(|id| picker.selected.contains(*id));
+                        if ui
+                            .add_enabled(
+                                !shown_selectable.is_empty() && !all_on,
+                                egui::Button::new("Select shown").small(),
+                            )
+                            .clicked()
+                        {
+                            picker
+                                .selected
+                                .extend(shown_selectable.iter().map(|id| id.to_string()));
+                        }
+                    });
+                });
+                ui.separator();
+
+                if rows.is_empty() {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 80.0),
+                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                        |ui| {
+                            let msg = if total_tables == 0 {
+                                "This diagram has no tables yet."
+                            } else {
+                                "No tables match your search."
+                            };
+                            ui.label(egui::RichText::new(msg).italics().weak());
+                        },
+                    );
+                    return;
+                }
+
+                let weak = ui.visuals().weak_text_color();
+                let row_h = ui.spacing().interact_size.y;
+                egui::ScrollArea::vertical()
+                    .max_height(list_h)
+                    .min_scrolled_height(list_h)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, row_h, rows.len(), |ui, range| {
+                        for r in &rows[range] {
+                            ui.horizontal(|ui| {
+                                ui.set_min_height(row_h);
+                                if r.is_member {
+                                    let mut always = true;
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Checkbox::new(&mut always, &r.title),
+                                    )
+                                    .on_disabled_hover_text("Already in this group");
+                                    ui.label(
+                                        egui::RichText::new("in group")
+                                            .small()
+                                            .italics()
+                                            .color(weak),
+                                    );
+                                } else {
+                                    let mut on = picker.selected.contains(&r.id);
+                                    if ui.checkbox(&mut on, &r.title).changed() {
+                                        if on {
+                                            picker.selected.insert(r.id.clone());
+                                        } else {
+                                            picker.selected.remove(&r.id);
+                                        }
+                                    }
+                                }
+                                if !r.other_groups.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "also in {}",
+                                                r.other_groups.join(", ")
+                                            ))
+                                            .small()
+                                            .color(weak),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                        }
+                    });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut arrange, "Arrange added tables in the group")
+                    .on_hover_text(
+                        "Move the added tables next to the group. Tables that already belong \
+                         to another group stay where they are.",
+                    );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let chosen = picker.selected.len();
+                    if ui
+                        .add_enabled(
+                            chosen > 0,
+                            accent_button(ui, format!("Add {chosen} table(s)")),
+                        )
+                        .clicked()
+                    {
+                        add_ids = Some(picker.selected.iter().cloned().collect());
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 28.0)))
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                });
+            });
+
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && add_ids.is_none() {
+                add_ids = if picker.selected.is_empty() {
+                    shown_selectable.first().map(|id| vec![id.to_string()])
+                } else {
+                    Some(picker.selected.iter().cloned().collect())
+                };
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+        });
+
+    ctx.data_mut(|d| d.insert_temp(arrange_pref_id(), arrange));
+
+    let mut result = None;
+    if let Some(ids) = add_ids {
+        let added = add_tables_to_group(state, &gid, &ids, arrange);
+        result = Some(DiagramAction::Info(format!(
+            "Added {added} table(s) to {}",
+            picker.group_title
+        )));
+        close = true;
+    }
+    if !close {
+        state.group_table_picker = Some(picker);
+    }
+    result
+}
+
 /// Format durasi singkat: "42s" atau "3m 05s".
 fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
@@ -1020,10 +1285,7 @@ pub fn add_tables_to_group(
         crate::diagram_view::resolve_all_overlaps(&mut state.nodes, 20.0, Some(gid));
     }
     state.save_requested = true;
-    log::info!(
-        "[DIAGRAM] added {} table(s) to group {gid} from repository suggestions",
-        new_idx.len()
-    );
+    log::info!("[DIAGRAM] added {} table(s) to group {gid}", new_idx.len());
     new_idx.len()
 }
 
@@ -1031,6 +1293,14 @@ pub fn add_tables_to_group(
 mod tests {
     use super::*;
     use crate::models::structs::{DiagramGroup, DiagramNode};
+
+    #[test]
+    fn picker_matches_title_or_id_case_insensitive() {
+        assert!(picker_matches("", "orders", "public.orders"));
+        assert!(picker_matches("  ORD ", "orders", "public.orders"));
+        assert!(picker_matches("public.", "orders", "public.orders"));
+        assert!(!picker_matches("users", "orders", "public.orders"));
+    }
 
     fn node(id: &str, x: f32, y: f32, groups: &[&str]) -> DiagramNode {
         DiagramNode {

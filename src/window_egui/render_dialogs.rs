@@ -345,6 +345,24 @@ impl super::Tabular {
                                                 );
                                             }
 
+                                            if let Some(fix) = &msg.fix {
+                                                ui.horizontal(|ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(fix)
+                                                                .small()
+                                                                .family(
+                                                                    egui::FontFamily::Monospace,
+                                                                ),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                    if ui.small_button("Copy SQL").clicked() {
+                                                        ui.ctx().copy_text(fix.clone());
+                                                    }
+                                                });
+                                            }
+
                                             if let Some(span) = &msg.span {
                                                 ui.label(
                                                     egui::RichText::new(format!(

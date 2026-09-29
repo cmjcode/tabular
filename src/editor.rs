@@ -1625,6 +1625,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
     let mut defer_accept_autocomplete = false;
+    // Popup basi (teks/kursor berubah sejak saran dihitung) tidak boleh
+    // mencegat panah/Enter/Tab.
+    if tabular.show_autocomplete && !editor_autocomplete::is_popup_current(tabular) {
+        tabular.show_autocomplete = false;
+        tabular.autocomplete_suggestions.clear();
+    }
     if tabular.show_autocomplete {
         ui.ctx().input_mut(|ri| {
             // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
@@ -1656,32 +1662,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         pressed: true,
                         ..
                     } => {
-                        // Heuristic: accept on Enter if user navigated OR
-                        //  - there is only one suggestion OR
-                        //  - selected suggestion extends current prefix (case-insensitive)
-                        let mut should_accept = tabular.autocomplete_navigated;
-
-                        if !should_accept {
-                            let sugg_count = tabular.autocomplete_suggestions.len();
-                            if sugg_count == 1 {
-                                should_accept = true;
-                            } else {
-                                let prefix = tabular.autocomplete_prefix.clone();
-                                if let Some(sugg) = tabular
-                                    .autocomplete_suggestions
-                                    .get(tabular.selected_autocomplete_index)
-                                    && !prefix.is_empty()
-                                {
-                                    let p = prefix.to_lowercase();
-                                    let s = sugg.to_lowercase();
-                                    if s.starts_with(&p) {
-                                        should_accept = true;
-                                    }
-                                }
-                            }
-                        }
-
-                        if should_accept {
+                        // Enter menerima saran hanya bila user bernavigasi atau
+                        // kata yang diketik adalah awal saran terpilih.
+                        if editor_autocomplete::should_accept_on_enter(tabular) {
                             enter_pressed_pre = true; // we'll accept suggestion
                             _enter_consumed = true;
                         } else {
@@ -3140,7 +3123,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tab_pressed_pre = true;
         log::debug!("Raw Tab event captured before editor render");
     }
-    let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+    let accept_via_tab_pre = tab_pressed_pre && editor_autocomplete::should_accept_on_tab(tabular);
     // Only accept via Enter if popup shown AND acceptance criteria met
     // Only intercept Enter for autocomplete when popup is visible AND there are suggestions
     let accept_via_enter_pre = enter_pressed_pre
@@ -4519,7 +4502,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.editor.apply_single_replace(start..cur, "");
             tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
             log::debug!("Detected tab character insertion -> triggering autocomplete accept");
-            editor_autocomplete::accept_current_suggestion(tabular);
+            if !editor_autocomplete::accept_current_suggestion(tabular) {
+                // Popup basi: kembalikan indentasi yang tadi dihapus
+                tabular.editor.apply_single_replace(start..start, "\t");
+                tabular.cursor_position = start + 1;
+            }
             // Immediately set caret to new position and refocus
             let id = response.id;
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
@@ -4537,7 +4524,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.editor.apply_single_replace(start..cur, "");
             tabular.cursor_position = tabular.cursor_position.saturating_sub(4);
             log::debug!("Detected 4-space indentation -> triggering autocomplete accept");
-            editor_autocomplete::accept_current_suggestion(tabular);
+            if !editor_autocomplete::accept_current_suggestion(tabular) {
+                // Popup basi: kembalikan indentasi yang tadi dihapus
+                tabular.editor.apply_single_replace(start..start, "    ");
+                tabular.cursor_position = start + 4;
+            }
             // Immediately set caret to new position and refocus
             let id = response.id;
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
@@ -4560,38 +4551,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             editor_autocomplete::navigate(tabular, -1);
         }
         let mut accepted = false;
-        if input.key_pressed(egui::Key::Enter) && !accept_via_enter_pre {
-            // Apply same heuristic as pre-render
-            let mut should_accept = tabular.autocomplete_navigated;
-            if !should_accept {
-                let sugg_count = tabular.autocomplete_suggestions.len();
-                if sugg_count == 1 {
-                    should_accept = true;
-                } else {
-                    let prefix = tabular.autocomplete_prefix.clone();
-                    if let Some(sugg) = tabular
-                        .autocomplete_suggestions
-                        .get(tabular.selected_autocomplete_index)
-                        && !prefix.is_empty()
-                    {
-                        let p = prefix.to_lowercase();
-                        let s = sugg.to_lowercase();
-                        if s.starts_with(&p) {
-                            should_accept = true;
-                        }
-                    }
-                }
-            }
-
-            if should_accept {
-                editor_autocomplete::accept_current_suggestion(tabular);
-                accepted = true;
-            }
+        if input.key_pressed(egui::Key::Enter)
+            && !accept_via_enter_pre
+            && editor_autocomplete::should_accept_on_enter(tabular)
+        {
+            accepted = editor_autocomplete::accept_current_suggestion(tabular);
         }
         // Skip Tab acceptance here if already processed earlier
         if tab_pressed_pre && !accept_via_tab_pre {
-            editor_autocomplete::accept_current_suggestion(tabular);
-            accepted = true;
+            accepted |= editor_autocomplete::accept_current_suggestion(tabular);
         }
         if accepted {
             log::debug!(
@@ -9429,6 +9397,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     tabular.actual_total_rows = None;
 
     tabular.lint_messages = query_tools::lint_sql(&query);
+    // Rekomendasi index/performa (kolom JOIN/WHERE/GROUP BY tanpa index, dsb.)
+    let index_advice = editor_autocomplete::index_advice_for_execution(tabular, &query);
+    tabular.lint_messages.extend(index_advice);
     if tabular.lint_messages.is_empty() {
         tabular.show_lint_panel = false;
     }

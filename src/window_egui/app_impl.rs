@@ -3107,8 +3107,10 @@ impl Tabular {
                             rendered_redis_browser = true;
                         }
                     
+                        let diagram_cloud_status = self.diagram_cloud_status();
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && let Some(diagram_state) = &mut tab.diagram_state {
+                               diagram_state.cloud_status = diagram_cloud_status;
                                if let Some(action) = crate::diagram_view::render_diagram(ui, diagram_state) {
                                    diagram_action = Some((action, tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                                }
@@ -4269,47 +4271,8 @@ impl App for Tabular {
         }
 
         // Drain background autocomplete metadata warming results
-        if let Some(ref rx) = self.autocomplete_warm_receiver {
-            let mut got_any = false;
-            while let Ok(res) = rx.try_recv() {
-                got_any = true;
-                match res {
-                    crate::window_egui::AutocompleteWarmResult::ForeignKeys {
-                        connection_id,
-                        database_name,
-                        keys,
-                    } => {
-                        self.autocomplete_fks_mem
-                            .insert((connection_id, database_name), keys);
-                    }
-                    crate::window_egui::AutocompleteWarmResult::Columns {
-                        connection_id,
-                        table_name,
-                        columns,
-                        types,
-                    } => {
-                        self.autocomplete_cols_mem
-                            .insert((connection_id, table_name.clone()), columns);
-                        for (cn, ct) in types {
-                            self.autocomplete_col_types_mem.insert(
-                                (connection_id, table_name.clone(), cn.to_ascii_lowercase()),
-                                ct,
-                            );
-                        }
-                    }
-                    crate::window_egui::AutocompleteWarmResult::Tables {
-                        connection_id,
-                        database_name,
-                        tables,
-                    } => {
-                        self.autocomplete_tables_mem
-                            .insert((connection_id, database_name), tables);
-                    }
-                }
-            }
-            if got_any {
-                ctx.request_repaint();
-            }
+        if crate::editor_autocomplete::poll_warm_results(self) {
+            ctx.request_repaint();
         }
 
         // Drive sync & collaboration tick
@@ -5423,6 +5386,7 @@ impl App for Tabular {
         dialog::render_error_dialog(self, ctx);
         dialog::render_about_dialog(self, ctx);
         crate::sync::ui_login::render_account_dialog(self, ctx);
+        crate::sync::ui_vault_setup::render_vault_unlock_dialog(self, ctx);
         // Rendered after (and outside) the account dialog so closing that one
         // does not take the deletion confirmation down with it.
         crate::sync::ui_login::render_delete_account_dialog(self, ctx);

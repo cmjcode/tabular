@@ -278,6 +278,14 @@ impl super::Tabular {
             DiagramAction::SyncToServer => {
                 self.sync_diagram_to_server(conn_id, db_name, state);
             }
+            DiagramAction::UnlockVault => {
+                if self.vault.is_some() {
+                    self.sync_diagram_to_server(conn_id, db_name, state);
+                } else {
+                    self.vault_pending_diagram_sync = Some((conn_id, db_name));
+                    crate::sync::ui_vault_setup::open_vault_unlock_dialog(self);
+                }
+            }
             DiagramAction::SuggestGroupTables(group_id) => {
                 self.start_group_table_scan(conn_id, db_name, &group_id);
             }
@@ -496,11 +504,34 @@ impl super::Tabular {
         // 1. Simpan layout ke cache JSON lokal
         self.save_diagram_and_propagate(cid, &db, state);
 
-        // 2. Default: simpan juga ke Obsidian vault jika vault aktif
+        // 2. Sync ke Tabular Cloud bila vault terbuka. Vault terkunci tidak
+        //    memunculkan popup di setiap Cmd+S; toolbar menampilkan tombol Unlock.
+        let cloud = self.diagram_cloud_status();
+        if cloud == models::structs::DiagramCloudStatus::Ready {
+            self.push_diagram_to_cloud(conn_id, Some(db.clone()), state, false);
+        }
+
+        // 3. Default: simpan juga ke Obsidian vault jika vault aktif
         if self.obsidian_root().is_some() {
             self.save_diagram_to_vault(Some(cid), Some(db), state);
         } else {
-            self.toasts.success("Diagram layout saved");
+            self.toasts.success(match cloud {
+                models::structs::DiagramCloudStatus::Ready => "Diagram saved and syncing to cloud",
+                models::structs::DiagramCloudStatus::Locked => {
+                    "Diagram saved locally. Unlock your vault to sync it to the cloud."
+                }
+                models::structs::DiagramCloudStatus::SignedOut => "Diagram layout saved",
+            });
+        }
+    }
+
+    /// Status cloud sync untuk toolbar diagram dan tombol Save.
+    pub fn diagram_cloud_status(&self) -> models::structs::DiagramCloudStatus {
+        use models::structs::DiagramCloudStatus;
+        match (&self.sync_account, &self.vault) {
+            (None, _) => DiagramCloudStatus::SignedOut,
+            (Some(_), None) => DiagramCloudStatus::Locked,
+            (Some(_), Some(_)) => DiagramCloudStatus::Ready,
         }
     }
 
@@ -1781,6 +1812,22 @@ impl super::Tabular {
         };
     }
 
+    /// Jalankan ulang sync diagram yang tertunda karena vault terkunci.
+    /// Dipanggil oleh popup unlock vault begitu vault terbuka.
+    pub fn resume_pending_diagram_sync(&mut self) {
+        let Some((conn_id, db_name)) = self.vault_pending_diagram_sync.take() else {
+            return;
+        };
+        let Some(state) = self
+            .diagram_state_for_mut(conn_id, db_name.as_deref())
+            .cloned()
+        else {
+            log::warn!("[SYNC] Pending diagram sync dropped: diagram tab is no longer open");
+            return;
+        };
+        self.sync_diagram_to_server(conn_id, db_name, &state);
+    }
+
     pub fn sync_diagram_to_server(
         &mut self,
         conn_id: Option<i64>,
@@ -1795,14 +1842,27 @@ impl super::Tabular {
         }
 
         if self.vault.is_none() {
-            self.toasts
-                .warning("Vault is locked. Please unlock your vault to sync.");
-            crate::sync::ui_login::open_account_dialog(self);
+            // Langsung minta passphrase; sync dilanjutkan otomatis setelah unlock.
+            self.vault_pending_diagram_sync = Some((conn_id, db_name));
+            crate::sync::ui_vault_setup::open_vault_unlock_dialog(self);
             return;
         }
 
-        let account = self.sync_account.as_ref().unwrap();
-        let vault = self.vault.as_ref().unwrap();
+        self.push_diagram_to_cloud(conn_id, db_name, state, true);
+    }
+
+    /// Kirim diagram ke Tabular Cloud. Pemanggil memastikan sudah login dan
+    /// vault terbuka; `announce` menampilkan toast "Syncing…".
+    fn push_diagram_to_cloud(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+        announce: bool,
+    ) {
+        let (Some(account), Some(vault)) = (self.sync_account.as_ref(), self.vault.as_ref()) else {
+            return;
+        };
 
         let db = db_name.unwrap_or_else(|| "default".to_string());
         let diag_title = state.diagram_title.clone().unwrap_or_else(|| {
@@ -1836,8 +1896,10 @@ impl super::Tabular {
             tx,
         );
 
-        self.toasts
-            .info(format!("Syncing diagram '{}' to cloud…", diag_title));
+        if announce {
+            self.toasts
+                .info(format!("Syncing diagram '{}' to cloud…", diag_title));
+        }
 
         if let Some(rt) = &self.runtime {
             rt.spawn(async move {

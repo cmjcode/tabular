@@ -78,26 +78,68 @@ fn is_word_cont(b: u8) -> bool {
 /// Pecah `sql` menjadi token. Komentar ikut dikembalikan (kind `Comment`)
 /// supaya pemanggil bisa tahu apakah kursor berada di dalam komentar.
 pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
-    let bytes = sql.as_bytes();
-    let n = bytes.len();
     let mut out = Vec::new();
-    let mut i = 0;
-
-    fn push(
-        out: &mut Vec<Token>,
-        kind: TokKind,
-        start: usize,
-        end: usize,
-        text: String,
-        terminated: bool,
-    ) {
+    scan(sql, dialect, |kind, start, end, terminated| {
         out.push(Token {
             kind,
             start,
             end,
-            text,
+            text: token_text(sql, kind, start, end, terminated),
             terminated,
         });
+        true
+    });
+    out
+}
+
+/// Teks token dari posisinya; identifier ber-quote di-unescape.
+fn token_text(sql: &str, kind: TokKind, start: usize, end: usize, terminated: bool) -> String {
+    match kind {
+        TokKind::Comment => String::new(),
+        TokKind::QuotedIdent => {
+            let open = sql.as_bytes()[start];
+            let q = if open == b'[' { ']' } else { open as char };
+            let body_end = if terminated { end - 1 } else { end };
+            sql[start + 1..body_end].replace(&format!("{q}{q}"), &q.to_string())
+        }
+        _ => sql[start..end].to_string(),
+    }
+}
+
+/// Rentang byte statement (dipisah `;`) yang memuat `cursor`. Tanpa alokasi per
+/// token, jadi murah untuk dokumen besar. Lexer tidak menyimpan state antar
+/// token, sehingga melex ulang rentang ini memberi token yang identik.
+pub fn statement_bounds(sql: &str, cursor: usize, dialect: Dialect) -> (usize, usize) {
+    let mut s0 = 0;
+    let mut s1 = sql.len();
+    scan(sql, dialect, |kind, _start, end, _| {
+        if kind != TokKind::Semicolon {
+            return true;
+        }
+        if end <= cursor {
+            s0 = end;
+            true
+        } else {
+            s1 = end - 1;
+            false
+        }
+    });
+    (s0, s1)
+}
+
+/// Inti lexer: panggil `emit(kind, start, end, terminated)` per token;
+/// berhenti bila `emit` mengembalikan `false`.
+fn scan(sql: &str, dialect: Dialect, mut emit: impl FnMut(TokKind, usize, usize, bool) -> bool) {
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+
+    macro_rules! push {
+        ($kind:expr, $start:expr, $end:expr, $closed:expr) => {
+            if !emit($kind, $start, $end, $closed) {
+                return;
+            }
+        };
     }
 
     while i < n {
@@ -115,7 +157,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             while i < n && bytes[i] != b'\n' {
                 i += 1;
             }
-            push(&mut out, TokKind::Comment, start, i, String::new(), true);
+            push!(TokKind::Comment, start, i, true);
             continue;
         }
         // Komentar blok
@@ -133,7 +175,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             if !closed {
                 i = n;
             }
-            push(&mut out, TokKind::Comment, start, i, String::new(), closed);
+            push!(TokKind::Comment, start, i, closed);
             continue;
         }
 
@@ -159,14 +201,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
                 i += 1;
             }
             let i2 = i.min(n);
-            push(
-                &mut out,
-                TokKind::Str,
-                start,
-                i2,
-                sql[start..i2].to_string(),
-                closed,
-            );
+            push!(TokKind::Str, start, i2, closed);
             i = i2;
             continue;
         }
@@ -182,7 +217,6 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
         };
         if let Some(cq) = close_quote {
             i += 1;
-            let body_start = i;
             let mut closed = false;
             while i < n {
                 if bytes[i] == cq {
@@ -195,13 +229,10 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
                 }
                 i += 1;
             }
-            let body_end = i.min(n);
-            let q = cq as char;
-            let text = sql[body_start..body_end].replace(&format!("{q}{q}"), &q.to_string());
             if closed {
                 i += 1;
             }
-            push(&mut out, TokKind::QuotedIdent, start, i, text, closed);
+            push!(TokKind::QuotedIdent, start, i, closed);
             continue;
         }
 
@@ -221,14 +252,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
                     Some(p) => (body + p + tag.len(), true),
                     None => (n, false),
                 };
-                push(
-                    &mut out,
-                    TokKind::Str,
-                    start,
-                    end,
-                    sql[start..end].to_string(),
-                    closed,
-                );
+                push!(TokKind::Str, start, end, closed);
                 i = end;
                 continue;
             }
@@ -246,19 +270,12 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             while i < n && (is_word_cont(bytes[i]) || bytes[i] == b'@') {
                 i += 1;
             }
-            push(
-                &mut out,
-                TokKind::Param,
-                start,
-                i,
-                sql[start..i].to_string(),
-                true,
-            );
+            push!(TokKind::Param, start, i, true);
             continue;
         }
         if b == b'?' {
             i += 1;
-            push(&mut out, TokKind::Param, start, i, "?".into(), true);
+            push!(TokKind::Param, start, i, true);
             continue;
         }
 
@@ -277,14 +294,7 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
                 }
                 i += 1;
             }
-            push(
-                &mut out,
-                TokKind::Number,
-                start,
-                i,
-                sql[start..i].to_string(),
-                true,
-            );
+            push!(TokKind::Number, start, i, true);
             continue;
         }
 
@@ -298,26 +308,16 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
             while i < n && !sql.is_char_boundary(i) {
                 i += 1;
             }
-            push(
-                &mut out,
-                TokKind::Word,
-                start,
-                i,
-                sql[start..i].to_string(),
-                true,
-            );
+            push!(TokKind::Word, start, i, true);
             continue;
         }
 
-        let single = |kind: TokKind, text: &str, out: &mut Vec<Token>| {
-            push(out, kind, start, start + 1, text.to_string(), true);
-        };
         match b {
-            b',' => single(TokKind::Comma, ",", &mut out),
-            b'.' => single(TokKind::Dot, ".", &mut out),
-            b'(' => single(TokKind::LParen, "(", &mut out),
-            b')' => single(TokKind::RParen, ")", &mut out),
-            b';' => single(TokKind::Semicolon, ";", &mut out),
+            b',' => push!(TokKind::Comma, start, start + 1, true),
+            b'.' => push!(TokKind::Dot, start, start + 1, true),
+            b'(' => push!(TokKind::LParen, start, start + 1, true),
+            b')' => push!(TokKind::RParen, start, start + 1, true),
+            b';' => push!(TokKind::Semicolon, start, start + 1, true),
             _ => {
                 // Operator multi-karakter lebih dulu
                 const MULTI: &[&str] = &[
@@ -330,21 +330,13 @@ pub fn tokenize(sql: &str, dialect: Dialect) -> Vec<Token> {
                     .find(|op| rest.starts_with(**op))
                     .map(|op| op.len())
                     .unwrap_or_else(|| rest.chars().next().map(|c| c.len_utf8()).unwrap_or(1));
-                push(
-                    &mut out,
-                    TokKind::Op,
-                    start,
-                    start + len,
-                    sql[start..start + len].to_string(),
-                    true,
-                );
+                push!(TokKind::Op, start, start + len, true);
                 i = start + len;
                 continue;
             }
         }
         i = start + 1;
     }
-    out
 }
 
 #[cfg(test)]
@@ -405,6 +397,44 @@ mod tests {
             ]
         );
         assert!(!t[3].terminated);
+    }
+
+    #[test]
+    fn statement_bounds_skip_semicolons_in_strings_and_comments() {
+        let sql = "SELECT ';' FROM a; -- x;\nSELECT 1 /* ; */ FROM b; SELECT 2";
+        let cur = sql.find("FROM b").unwrap();
+        let (s0, s1) = statement_bounds(sql, cur, Dialect::Postgres);
+        assert_eq!(&sql[s0..s1], " -- x;\nSELECT 1 /* ; */ FROM b");
+        // kursor di statement terakhir tanpa `;` penutup
+        let (s0, s1) = statement_bounds(sql, sql.len(), Dialect::Postgres);
+        assert_eq!(&sql[s0..s1], " SELECT 2");
+        // dollar-quote Postgres berisi `;`
+        let pg = "DO $$ BEGIN x; END $$; SELECT";
+        let (s0, _) = statement_bounds(pg, pg.len(), Dialect::Postgres);
+        assert_eq!(&pg[s0..], " SELECT");
+    }
+
+    #[test]
+    fn tokenize_slice_matches_full_tokenize() {
+        let sql = "SELECT \"a\"\"b\", [x]; SELECT `q`, 'it''s' FROM t WHERE c = :p; SELECT 1";
+        for d in [Dialect::Postgres, Dialect::MySql, Dialect::MsSql] {
+            let full = tokenize(sql, d);
+            let cur = sql.find("FROM t").unwrap();
+            let (s0, s1) = statement_bounds(sql, cur, d);
+            let part: Vec<Token> = tokenize(&sql[s0..s1], d)
+                .into_iter()
+                .map(|mut t| {
+                    t.start += s0;
+                    t.end += s0;
+                    t
+                })
+                .collect();
+            let expected: Vec<Token> = full
+                .into_iter()
+                .filter(|t| t.start >= s0 && t.end <= s1)
+                .collect();
+            assert_eq!(part, expected, "{d:?}");
+        }
     }
 
     #[test]

@@ -115,6 +115,7 @@ pub(crate) fn save_query_to_history(
         debug!("[save_query_to_history] Skipping empty query string");
         return;
     }
+    crate::editor_autocomplete::learn_executed_query(tabular, connection_id, trimmed);
 
     let connection_name = tabular
         .connections

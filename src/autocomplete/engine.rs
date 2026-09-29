@@ -8,6 +8,7 @@ use super::analyzer::{
     AGGREGATES, Analysis, Clause, ColRef, Expect, ScopeTable, TableKind, is_reserved,
 };
 use super::lexer::Dialect;
+use super::usage::UsageStats;
 use crate::models::enums::KeywordCasing;
 use crate::models::structs::ForeignKey;
 
@@ -31,7 +32,47 @@ pub trait Catalog {
     fn usage(&self, _label: &str) -> u32 {
         0
     }
+    /// Statistik dari riwayat query koneksi aktif (tabel/kolom/join favorit).
+    fn stats(&self) -> Option<&UsageStats> {
+        None
+    }
+    /// Apakah ada index yang diawali kolom ini; `None` bila belum diketahui.
+    fn indexed(&self, _table: &str, _column: &str) -> Option<bool> {
+        None
+    }
 }
+
+/// Boost ranking dari frekuensi pemakaian; tumbuh melambat (akar) supaya
+/// kebiasaan lama tidak mengalahkan konteks.
+fn usage_boost(n: u32) -> i32 {
+    ((n.min(25) as f64).sqrt() * 24.0) as i32
+}
+
+/// Tingkat kecocokan: 2 = prefix, 1 = substring/batas kata (CamelHump),
+/// 0 = subsequence longgar. Tingkat lebih tinggi selalu di atas.
+fn match_tier(pref: &str, cand: &str) -> Option<(u8, i32)> {
+    let fz = fuzzy_match(pref, cand)?;
+    let p: String = pref
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if p.is_empty() {
+        return Some((2, fz));
+    }
+    let lower = cand.to_lowercase();
+    let tier = if lower.starts_with(&p) {
+        2
+    } else if lower.contains(&p) || fz >= 10 * p.chars().count() as i32 {
+        1
+    } else {
+        0
+    };
+    Some((tier, fz))
+}
+
+/// Jarak skor antar tingkat; lebih besar dari total boost mana pun.
+const TIER_STEP: i32 = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
@@ -340,6 +381,8 @@ struct Builder<'a> {
     cat: &'a dyn Catalog,
     o: Options,
     out: Vec<CompletionItem>,
+    /// Tingkat kecocokan per item di `out` (lihat [`match_tier`]).
+    tiers: Vec<u8>,
 }
 
 impl<'a> Builder<'a> {
@@ -379,7 +422,7 @@ impl<'a> Builder<'a> {
         detail: Option<String>,
         boost: i32,
     ) {
-        let Some(fz) = fuzzy_match(&self.a.partial, filter) else {
+        let Some((tier, fz)) = match_tier(&self.a.partial, filter) else {
             return;
         };
         let usage = (self.cat.usage(&label).min(6) as i32) * 15;
@@ -388,8 +431,9 @@ impl<'a> Builder<'a> {
             insert,
             kind,
             detail,
-            score: fz + boost + usage,
+            score: tier as i32 * TIER_STEP + fz + boost + usage,
         });
+        self.tiers.push(tier);
     }
 
     fn keyword(&mut self, s: &str, boost: i32) {
@@ -419,6 +463,19 @@ impl<'a> Builder<'a> {
         for (i, k) in list.iter().enumerate() {
             self.keyword(k, top - (i as i32) * 10);
         }
+    }
+
+    fn table_usage(&self, table: &str) -> i32 {
+        self.cat.stats().map_or(0, |s| usage_boost(s.table(table)))
+    }
+
+    fn column_usage(&self, t: &ScopeTable, col: &str) -> i32 {
+        if t.kind != TableKind::Base {
+            return 0;
+        }
+        self.cat
+            .stats()
+            .map_or(0, |s| usage_boost(s.column(&t.name, col)))
     }
 
     fn fks(&self) -> &'a [ForeignKey] {
@@ -571,10 +628,16 @@ impl<'a> Builder<'a> {
             d.push_str(owner);
         }
         if t.kind == TableKind::Base {
+            let indexed = self.cat.indexed(&t.name, &c.name);
             if let Some(fk) = self.fk_from(&t.name, &c.name) {
-                d.push_str(&format!(" · FK→{}", fk.referenced_table_name));
+                d.push_str(&format!(" · FK to {}", fk.referenced_table_name));
+                if indexed == Some(false) {
+                    d.push_str(" · no index");
+                }
             } else if c.name.eq_ignore_ascii_case("id") || self.is_referenced(&t.name, &c.name) {
                 d.push_str(" · PK");
+            } else if indexed == Some(true) {
+                d.push_str(" · idx");
             }
         }
         d
@@ -636,13 +699,14 @@ impl<'a> Builder<'a> {
         let tables: Vec<String> = self.cat.tables().to_vec();
         for t in tables {
             let insert = self.ident(&t);
+            let b = boost + self.table_usage(&t);
             self.push(
                 t.clone(),
                 insert,
                 &t,
                 ItemKind::Table,
                 Some("table".into()),
-                boost,
+                b,
             );
         }
     }
@@ -702,6 +766,7 @@ impl<'a> Builder<'a> {
             if self.a.used_columns.contains(&c.name.to_ascii_lowercase()) {
                 boost -= 200;
             }
+            boost += self.column_usage(&t, &c.name);
             let detail = self.column_detail(&t, &c);
             let insert = format!("{}{suffix}", self.ident(&c.name));
             self.push(
@@ -781,7 +846,7 @@ impl<'a> Builder<'a> {
                         self.ident(other_col),
                         self.ident(scope_col)
                     );
-                    let detail = format!("FK join → {}", s.name);
+                    let detail = format!("FK join with {}", s.name);
                     self.push(
                         text.clone(),
                         text,
@@ -794,20 +859,62 @@ impl<'a> Builder<'a> {
                         related.push(other.clone());
                     }
                 }
+                // Join yang sering dipakai user walau tanpa FK di skema
+                let learned = self.cat.stats().map(|st| st.joins_of(&s.name));
+                for (other, other_col, scope_col, n) in learned.unwrap_or_default() {
+                    let Some(real) = self
+                        .cat
+                        .tables()
+                        .iter()
+                        .find(|t| t.eq_ignore_ascii_case(&other))
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    let tname = self.ident(&real);
+                    let alias = if use_alias {
+                        self.gen_alias(&real)
+                    } else {
+                        tname.clone()
+                    };
+                    let head = if alias == tname {
+                        tname.clone()
+                    } else {
+                        format!("{tname} {alias}")
+                    };
+                    let text = format!(
+                        "{head} {on} {alias}.{} = {ds}.{}",
+                        self.ident(&other_col),
+                        self.ident(&scope_col)
+                    );
+                    let detail = format!("used {n}× with {}", s.name);
+                    self.push(
+                        text.clone(),
+                        text,
+                        &real,
+                        ItemKind::JoinCondition,
+                        Some(detail),
+                        400 + usage_boost(n),
+                    );
+                    if !related.iter().any(|r| r.eq_ignore_ascii_case(&real)) {
+                        related.push(real);
+                    }
+                }
             }
         }
         let tables: Vec<String> = self.cat.tables().to_vec();
         for t in tables {
             let rel = related.iter().any(|r| r.eq_ignore_ascii_case(&t));
             let insert = self.ident(&t);
-            let detail = if rel { "table · FK related" } else { "table" };
+            let detail = if rel { "table · related" } else { "table" };
+            let b = if rel { 380 } else { 250 } + self.table_usage(&t);
             self.push(
                 t.clone(),
                 insert,
                 &t,
                 ItemKind::Table,
                 Some(detail.into()),
-                if rel { 380 } else { 250 },
+                b,
             );
         }
     }
@@ -859,7 +966,25 @@ impl<'a> Builder<'a> {
                     out.push((cond(&c.name, &c.name), 400, "same name"));
                 }
             }
+            // Pasangan yang pernah dipakai: dinaikkan, dan ditambahkan bila belum ada
+            if let Some(st) = self.cat.stats()
+                && target.kind == TableKind::Base
+                && o.kind == TableKind::Base
+            {
+                for (tc, oc, n) in st.joins_between(&target.name, &o.name) {
+                    let text = cond(&tc, &oc);
+                    let bonus = usage_boost(n);
+                    match out
+                        .iter_mut()
+                        .find(|(c, _, _)| c.eq_ignore_ascii_case(&text))
+                    {
+                        Some(e) => e.1 += bonus,
+                        None => out.push((text, 450 + bonus, "used before")),
+                    }
+                }
+            }
         }
+        out.sort_by_key(|c| std::cmp::Reverse(c.1));
         let mut seen = std::collections::HashSet::new();
         out.retain(|(c, _, _)| seen.insert(c.to_ascii_lowercase()));
         out
@@ -978,8 +1103,22 @@ impl<'a> Builder<'a> {
     }
 
     /// Kolom semua tabel scope. `qualify_always` memaksa `alias.kolom`.
+    /// Di klausa `ON`, tabel yang di-join setelah target join belum terlihat.
+    fn visible_in_clause(&self, t: &ScopeTable) -> bool {
+        if self.a.clause != Clause::JoinOn || t.depth != 0 {
+            return true;
+        }
+        self.a.join_target.as_ref().is_none_or(|jt| t.idx <= jt.idx)
+    }
+
     fn scope_columns(&mut self, base: i32, qualify_always: bool, lhs_type: Option<TypeClass>) {
-        let scope: Vec<ScopeTable> = self.a.scope.clone();
+        let scope: Vec<ScopeTable> = self
+            .a
+            .scope
+            .iter()
+            .filter(|t| self.visible_in_clause(t))
+            .cloned()
+            .collect();
         let multi = scope.iter().filter(|t| t.depth == 0).count() > 1;
         let per_table: Vec<Vec<ColumnMeta>> = scope.iter().map(|t| self.table_columns(t)).collect();
         let mut count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -1041,6 +1180,14 @@ impl<'a> Builder<'a> {
                 if join_target.as_ref().is_some_and(|jt| same_table(jt, t)) {
                     boost += 40;
                 }
+                boost += self.column_usage(t, &c.name);
+                // Filter/join pada kolom ber-index sedikit didahulukan
+                if matches!(self.a.clause, Clause::Where | Clause::JoinOn)
+                    && t.kind == TableKind::Base
+                    && self.cat.indexed(&t.name, &c.name) == Some(true)
+                {
+                    boost += 25;
+                }
                 let label = if qualify {
                     format!("{q}.{}", c.name)
                 } else {
@@ -1069,7 +1216,11 @@ impl<'a> Builder<'a> {
         if self.a.partial.is_empty() {
             return;
         }
-        let scope: Vec<ScopeTable> = self.depth0().cloned().collect();
+        let scope: Vec<ScopeTable> = self
+            .depth0()
+            .filter(|t| self.visible_in_clause(t))
+            .cloned()
+            .collect();
         for t in scope {
             let d = t.display().to_string();
             if d.is_empty() {
@@ -1582,6 +1733,11 @@ impl<'a> Builder<'a> {
             Expect::Generic => self.generic(),
         }
         let mut out = self.out;
+        // Prefix >= 3 karakter: buang subsequence longgar bila ada yang lebih tepat
+        if self.a.partial.chars().count() >= 3 && self.tiers.iter().any(|&t| t >= 1) {
+            let mut tiers = self.tiers.iter();
+            out.retain(|_| tiers.next().is_some_and(|&t| t >= 1));
+        }
         out.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
@@ -1602,6 +1758,7 @@ pub fn complete(a: &Analysis, cat: &dyn Catalog, opts: Options) -> Vec<Completio
         cat,
         o: opts,
         out: Vec::new(),
+        tiers: Vec::new(),
     }
     .run()
 }
@@ -1615,6 +1772,9 @@ mod tests {
         tables: Vec<String>,
         cols: Vec<(String, Vec<ColumnMeta>)>,
         fks: Vec<ForeignKey>,
+        stats: Option<UsageStats>,
+        /// `(tabel, kolom)` yang menjadi kolom pertama sebuah index.
+        indexed: Option<Vec<(&'static str, &'static str)>>,
     }
 
     impl Catalog for Mock {
@@ -1629,6 +1789,16 @@ mod tests {
         }
         fn foreign_keys(&self) -> &[ForeignKey] {
             &self.fks
+        }
+        fn stats(&self) -> Option<&UsageStats> {
+            self.stats.as_ref()
+        }
+        fn indexed(&self, table: &str, column: &str) -> Option<bool> {
+            let list = self.indexed.as_ref()?;
+            Some(
+                list.iter()
+                    .any(|(t, c)| t.eq_ignore_ascii_case(table) && c.eq_ignore_ascii_case(column)),
+            )
         }
     }
 
@@ -1702,7 +1872,136 @@ mod tests {
                 fk("order_items", "order_id", "orders", "id"),
                 fk("order_items", "product_id", "products", "id"),
             ],
+            stats: None,
+            indexed: None,
         }
+    }
+
+    fn run_with(m: &Mock, sql_with_cursor: &str) -> Vec<CompletionItem> {
+        let cursor = sql_with_cursor.find('|').unwrap();
+        let sql = sql_with_cursor.replacen('|', "", 1);
+        let a = analyze(&sql, cursor, Dialect::Postgres);
+        complete(
+            &a,
+            m,
+            Options {
+                dialect: Dialect::Postgres,
+                casing: KeywordCasing::Upper,
+            },
+        )
+    }
+
+    fn with_history(queries: &[&str]) -> Mock {
+        let mut m = mock();
+        m.cols.push((
+            "audit_log".into(),
+            vec![
+                col("id", "int"),
+                col("actor", "varchar"),
+                col("action", "varchar"),
+            ],
+        ));
+        m.stats = Some(UsageStats::from_queries(
+            queries.iter().copied(),
+            Dialect::Postgres,
+        ));
+        m
+    }
+
+    #[test]
+    fn history_ranks_favourite_tables_and_columns() {
+        let m = with_history(&[
+            "SELECT * FROM products WHERE price > 10",
+            "SELECT title FROM products",
+            "SELECT price FROM products",
+            "SELECT * FROM users WHERE email = 'a'",
+            "SELECT * FROM users WHERE email LIKE 'b%'",
+        ]);
+        assert_eq!(labels(&run_with(&m, "SELECT * FROM |"))[0], "products");
+        // tanpa riwayat urutan ordinal: id dulu
+        assert_eq!(top("SELECT * FROM users WHERE |", 1), vec!["id"]);
+        assert_eq!(
+            labels(&run_with(&m, "SELECT * FROM users WHERE |"))[0],
+            "email"
+        );
+        // konteks tetap menang: kolom tabel lain tidak ikut
+        assert!(
+            !labels(&run_with(&m, "SELECT * FROM users WHERE |"))
+                .iter()
+                .any(|l| l == "price")
+        );
+    }
+
+    #[test]
+    fn history_teaches_joins_without_foreign_keys() {
+        let q = "SELECT * FROM users u JOIN audit_log al ON al.actor = u.email";
+        let m = with_history(&[q, q]);
+        let items = run_with(&m, "SELECT * FROM users u JOIN |");
+        let hit = items
+            .iter()
+            .find(|i| i.label == "audit_log al ON al.actor = u.email")
+            .unwrap_or_else(|| panic!("{:?}", labels(&items)));
+        assert_eq!(hit.kind, ItemKind::JoinCondition);
+        assert!(hit.detail.as_deref().unwrap_or("").starts_with("used 2×"));
+        // setelah ON: kondisi yang dipelajari muncul paling atas
+        assert_eq!(
+            labels(&run_with(
+                &m,
+                "SELECT * FROM users u JOIN audit_log al ON |"
+            ))[0],
+            "al.actor = u.email"
+        );
+        // FK tetap berlaku bersama riwayat
+        assert_eq!(
+            labels(&run_with(&m, "SELECT * FROM users u JOIN orders o ON |"))[0],
+            "o.user_id = u.id"
+        );
+    }
+
+    #[test]
+    fn column_notes_show_index_state() {
+        let mut m = mock();
+        m.indexed = Some(vec![("users", "id"), ("users", "email"), ("orders", "id")]);
+        let items = run_with(
+            &m,
+            "SELECT * FROM users u JOIN orders o ON o.user_id = u.id WHERE |",
+        );
+        let detail = |label: &str| {
+            items
+                .iter()
+                .find(|i| i.label == label)
+                .and_then(|i| i.detail.clone())
+                .unwrap_or_default()
+        };
+        assert!(detail("email").ends_with(" · idx"), "{}", detail("email"));
+        assert!(detail("user_id").contains("FK to users · no index"));
+        assert!(!detail("name").contains("idx"));
+        // ber-index sedikit didahulukan di WHERE
+        let l = labels(&items);
+        let pos = |x: &str| l.iter().position(|y| y == x).unwrap();
+        assert!(pos("email") < pos("name"), "{l:?}");
+    }
+
+    #[test]
+    fn match_tiers_prefix_then_boundary_then_subsequence() {
+        assert_eq!(match_tier("ema", "email").map(|t| t.0), Some(2));
+        assert_eq!(match_tier("mail", "email").map(|t| t.0), Some(1));
+        assert_eq!(match_tier("oi", "order_items").map(|t| t.0), Some(1));
+        assert_eq!(match_tier("cat", "created_at").map(|t| t.0), Some(0));
+        assert_eq!(match_tier("xyz", "email"), None);
+        assert_eq!(match_tier("", "email").map(|t| t.0), Some(2));
+    }
+
+    #[test]
+    fn loose_subsequence_dropped_when_better_match_exists() {
+        // `ord` → prefix `orders`/`order_items`; subsequence longgar tidak ikut
+        let items = run("SELECT * FROM ord|");
+        let l = labels(&items);
+        assert!(l.contains(&"orders".to_string()) && l.contains(&"order_items".to_string()));
+        assert!(
+            items.iter().all(|i| i.label.to_lowercase().contains("ord")),
+            "{l:?}"
+        );
     }
 
     fn run(sql_with_cursor: &str) -> Vec<CompletionItem> {
@@ -1801,6 +2100,105 @@ mod tests {
             run("SELECT * FROM users u JOIN orders o ON o.user_id = u.id JOIN order_items oi ON |");
         assert_eq!(items[0].label, "oi.order_id = o.id");
         assert!(!labels(&items).iter().any(|l| l == "o.user_id = u.id"));
+    }
+
+    /// Dokumen besar: banyak statement + katalog 2.000 tabel.
+    fn big_doc() -> (String, Mock) {
+        let mut m = mock();
+        for i in 0..2000 {
+            m.tables.push(format!("table_{i}_archive"));
+        }
+        let stmt = "SELECT u.id, u.name, o.total FROM users u JOIN orders o ON o.user_id = u.id WHERE o.status = 'paid' AND u.active = true ORDER BY o.total DESC;\n";
+        let mut doc = stmt.repeat(5000);
+        doc.push_str("SELECT * FROM users u JOIN orders o ON | ;\n");
+        doc.push_str(&stmt.repeat(100));
+        (doc, m)
+    }
+
+    #[test]
+    fn perf_big_document() {
+        let (doc, m) = big_doc();
+        let cursor = doc.find('|').unwrap();
+        let sql = doc.replacen('|', "", 1);
+        let opts = Options {
+            dialect: Dialect::Postgres,
+            casing: KeywordCasing::Upper,
+        };
+        let t = std::time::Instant::now();
+        let n = 20;
+        for _ in 0..n {
+            let a = analyze(&sql, cursor, Dialect::Postgres);
+            let items = complete(&a, &m, opts);
+            assert_eq!(items[0].label, "o.user_id = u.id");
+        }
+        let per = t.elapsed() / n;
+        eprintln!("[perf] {} bytes, per keystroke: {per:?}", sql.len());
+        // Batas longgar (mesin CI bervariasi); release terukur ~1 ms
+        let limit = if cfg!(debug_assertions) { 150 } else { 20 };
+        assert!(per < std::time::Duration::from_millis(limit), "{per:?}");
+    }
+
+    #[test]
+    fn on_clause_hides_tables_joined_later() {
+        let items = run(
+            "SELECT * FROM users u JOIN orders o ON | JOIN order_items oi ON oi.order_id = o.id",
+        );
+        let cols: Vec<&CompletionItem> = items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Column)
+            .collect();
+        assert!(!cols.is_empty());
+        assert!(
+            cols.iter()
+                .all(|i| i.label.starts_with("u.") || i.label.starts_with("o.")),
+            "{:?}",
+            labels(&items)
+        );
+        // setelah AND di dalam ON aturan yang sama berlaku
+        let l = labels(&run(
+            "SELECT * FROM users u JOIN orders o ON o.user_id = u.id AND | JOIN products p ON true",
+        ));
+        assert!(!l.iter().any(|x| x.starts_with("p.")), "{l:?}");
+    }
+
+    #[test]
+    fn where_with_empty_prefix_lists_only_scope_columns() {
+        let items = run("SELECT * FROM users WHERE |");
+        assert!(!items.is_empty());
+        assert!(
+            items.iter().all(|i| i.kind == ItemKind::Column),
+            "{:?}",
+            labels(&items)
+        );
+        let users = ["id", "name", "email", "active", "created_at"];
+        assert!(items.iter().all(|i| users.contains(&i.label.as_str())));
+
+        let l = labels(&run(
+            "SELECT * FROM users u JOIN orders o ON o.user_id = u.id WHERE |",
+        ));
+        assert!(
+            l.iter().all(|x| x.starts_with("u.")
+                || x.starts_with("o.")
+                || ["name", "email", "active", "user_id", "total", "status"].contains(&x.as_str())),
+            "{l:?}"
+        );
+        assert!(!l.iter().any(|x| x.contains("price") || x.contains("qty")));
+    }
+
+    #[test]
+    fn subquery_prefers_inner_columns_over_outer() {
+        let items = run("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE |)");
+        let first_outer = items
+            .iter()
+            .position(|i| i.label.contains("email") || i.label.contains("active"));
+        let last_inner = items
+            .iter()
+            .rposition(|i| i.label.contains("total") || i.label.contains("status"));
+        assert!(
+            matches!((first_outer, last_inner), (Some(o), Some(n)) if n < o),
+            "{:?}",
+            labels(&items)
+        );
     }
 
     #[test]
@@ -1922,6 +2320,8 @@ mod tests {
             tables: vec!["Order Details".into(), "select".into(), "Users".into()],
             cols: vec![],
             fks: vec![],
+            stats: None,
+            indexed: None,
         };
         let a = analyze("SELECT * FROM ", 14, Dialect::Postgres);
         let items = complete(

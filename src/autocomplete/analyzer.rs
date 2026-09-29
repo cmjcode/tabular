@@ -4,7 +4,7 @@
 //! Semua fungsi di sini murni (tanpa akses `Tabular`/cache) sehingga mudah dites.
 //! Parser sengaja toleran: SQL di posisi kursor hampir selalu belum lengkap.
 
-use super::lexer::{Dialect, TokKind, Token, tokenize};
+use super::lexer::{Dialect, TokKind, Token, statement_bounds, tokenize};
 
 /// Klausa SQL tempat kursor berada.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1253,7 +1253,13 @@ pub fn analyze(sql: &str, cursor: usize, dialect: Dialect) -> Analysis {
     while cursor > 0 && !sql.is_char_boundary(cursor) {
         cursor -= 1;
     }
-    let all = tokenize(sql, dialect);
+    // Hanya statement aktif yang dilex penuh; offset token tetap absolut.
+    let (s_start, s_end) = statement_bounds(sql, cursor, dialect);
+    let mut all = tokenize(&sql[s_start..s_end], dialect);
+    for t in &mut all {
+        t.start += s_start;
+        t.end += s_start;
+    }
 
     // Kursor di dalam string, komentar, angka, parameter, atau quote yang belum ditutup.
     for t in &all {
@@ -1272,24 +1278,10 @@ pub fn analyze(sql: &str, cursor: usize, dialect: Dialect) -> Analysis {
         }
     }
 
-    let toks_all: Vec<Token> = all
+    let toks: Vec<Token> = all
         .into_iter()
         .filter(|t| t.kind != TokKind::Comment)
         .collect();
-    // Batasi ke statement aktif (dipisah `;`)
-    let mut s0 = 0;
-    let mut s1 = toks_all.len();
-    for (i, t) in toks_all.iter().enumerate() {
-        if t.kind == TokKind::Semicolon {
-            if t.end <= cursor {
-                s0 = i + 1;
-            } else {
-                s1 = i;
-                break;
-            }
-        }
-    }
-    let toks: Vec<Token> = toks_all[s0..s1].to_vec();
 
     // Kata yang sedang diketik + rantai qualifier
     let mut anchor = toks

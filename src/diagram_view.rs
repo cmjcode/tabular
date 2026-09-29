@@ -83,6 +83,8 @@ pub enum DiagramAction {
     OpenLinkedDiagram(String),
     /// Sinkronkan diagram ke Tabular Server (Cloud E2EE).
     SyncToServer,
+    /// Buka popup unlock vault; diagram ini di-sync setelah vault terbuka.
+    UnlockVault,
     /// Buka tab baru berisi tabel ini dan tabel yang berelasi saja.
     OpenFocusInNewTab(String),
     /// Pindai repository milik group ini dan sarankan tabel untuk ditambahkan.
@@ -250,6 +252,39 @@ fn toolbar_square_button(
     }
 
     response
+}
+
+/// Tombol panah sempit di samping tombol toolbar, untuk membuka menu opsi tambahan.
+fn toolbar_dropdown_arrow(ui: &mut egui::Ui, id_source: &str) -> egui::Response {
+    let (_, rect) = ui.allocate_space(egui::vec2(16.0, TOOLBAR_BTN_SIZE));
+    let response = ui.interact(
+        rect,
+        ui.id().with(("toolbar_dropdown_arrow", id_source)),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "More options")
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        if response.hovered() || response.has_focus() || response.is_pointer_button_down_on() {
+            ui.painter().rect(
+                rect,
+                4.0,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_icons::icons::ICON_EXPAND_MORE.codepoint,
+            egui::FontId::proportional(TOOLBAR_ICON_SIZE - 2.0),
+            visuals.text_color(),
+        );
+    }
+    response.on_hover_text("More save & sync options")
 }
 
 /// Pusatkan posisi semua node diagram ke tengah area tampilan (viewport).
@@ -825,14 +860,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
             state.save_requested = true;
         }
-        if ui.button("↔ Resolve Overlaps Now").clicked() {
+        if ui.button("⚡ Auto Arrange").clicked() {
             ui.close();
-            compact_and_resolve_overlaps(&mut state.nodes, 20.0);
-            state.save_requested = true;
-        }
-        if ui.button("⚡ Auto Arrange Diagram").clicked() {
-            ui.close();
-            auto_layout_host(state);
+            auto_arrange(state);
             state.save_requested = true;
         }
         if state.focus_table.is_some() || state.focus_group.is_some() {
@@ -1016,6 +1046,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut _group_delete_request: Option<String> = None;
     let mut group_repo_request: Option<String> = None;
     let mut group_suggest_request: Option<String> = None;
+    let mut group_picker_request: Option<String> = None;
     let mut group_open_folder_request: Option<std::path::PathBuf> = None;
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
     let mut group_drag_stopped: Option<String> = None;
@@ -1288,6 +1319,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.close();
                         _group_rename_request = Some((idx, group_id.clone()));
                     }
+                    if ui
+                        .button(format!(
+                            "{} Search Table to Add…",
+                            egui_icons::icons::ICON_SEARCH.codepoint
+                        ))
+                        .on_hover_text("Search the tables in this diagram and add them to this group")
+                        .clicked()
+                    {
+                        ui.close();
+                        group_picker_request = Some(group_id.clone());
+                    }
                     let has_repo = group.has_repository();
                     let folder = group
                         .local_repo_path()
@@ -1496,6 +1538,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some(gid) = group_suggest_request {
         action = Some(DiagramAction::SuggestGroupTables(gid));
     }
+    if let Some(gid) = group_picker_request
+        && let Some(g) = state.groups.iter().find(|g| g.id == gid)
+    {
+        state.group_table_picker = Some(crate::models::structs::GroupTablePicker {
+            group_id: gid,
+            group_title: g.title.clone(),
+            ..Default::default()
+        });
+    }
     // Apply group deletion request
     if let Some(del_gid) = _group_delete_request {
         let anchor = crate::models::structs::NoteAnchor::Group(del_gid.clone());
@@ -1533,6 +1584,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Draw edges (relationships)
     let mut clicked_edge: Option<(String, String)> = None;
     let pointer_down = !is_hand_mode && ui.input(|i| i.pointer.primary_clicked());
+    let pointer_double = !is_hand_mode
+        && ui.input(|i| {
+            i.pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        });
 
     let lod = lod_for_zoom(scale);
     let kind_filter = KindFilter::from_state(state);
@@ -1591,6 +1647,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             &ctx,
                             &to_screen,
                             pointer_down,
+                            pointer_double,
                             &mut rel_stats,
                         );
                     }
@@ -1636,6 +1693,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         VirtualOutcome::Select(idx) => {
             state.selected_virtual = Some(idx);
             state.selected_edge = None;
+            true
+        }
+        VirtualOutcome::Edit(idx) => {
+            crate::diagram_relation_editor::open_relation_editor(state, idx);
             true
         }
     };
@@ -2511,6 +2572,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
     // Delete / Backspace menghapus relasi virtual terpilih (bila tidak sedang mengetik).
     if let Some(idx) = state.selected_virtual
+        && state.relation_editor.is_none()
         && ui.memory(|m| m.focused().is_none())
         && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
     {
@@ -2570,7 +2632,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         );
     }
 
-    // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Sync, Save, Import & Export.
+    // Floating Toolbar: Zoom & Navigasi, Grid, Layout, Relasi, Save (+ cloud sync), Import & Export.
     let toolbar_id = ui.id().with("diagram_floating_toolbar_width");
     let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(720.0);
     let toolbar_width = measured_width.max(TOOLBAR_BTN_SIZE * 4.0);
@@ -2682,14 +2744,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             state.save_requested = true;
                         }
                         ui.separator();
-                        if ui.button("⚡ Auto Arrange All (Smart Layout)").clicked() {
+                        if ui
+                            .button("⚡ Auto Arrange")
+                            .on_hover_text("Arrange all tables, then compact groups and resolve overlaps")
+                            .clicked()
+                        {
                             ui.close();
-                            auto_layout_host(state);
-                            state.save_requested = true;
-                        }
-                        if ui.button("↔ Resolve Overlaps Now").clicked() {
-                            ui.close();
-                            compact_and_resolve_overlaps(&mut state.nodes, 20.0);
+                            auto_arrange(state);
                             state.save_requested = true;
                         }
                     },
@@ -2861,51 +2922,65 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
                 ui.separator();
 
-                // --- 5. Sync Menu ---
-                let sync_btn = toolbar_square_button(
-                    ui,
-                    egui_icons::icons::ICON_SYNC.codepoint,
-                    "Sync",
-                    false,
-                )
-                .on_hover_text("Sync to server or database");
-                egui::Popup::menu(&sync_btn).show(
-                    |ui| {
-                        if ui.button("☁️ Sync to Tabular Server (E2EE)").clicked() {
-                            ui.close();
-                            action = Some(DiagramAction::SyncToServer);
-                        }
-                        ui.separator();
-                        if ui.button("Save to Database (diagram_by_tabular)").clicked() {
-                            ui.close();
-                            action = Some(DiagramAction::SaveToDatabase);
-                        }
-                        if ui.button("Load from Database (diagram_by_tabular)").clicked() {
-                            ui.close();
-                            action = Some(DiagramAction::LoadFromDatabase);
-                        }
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(
-                                "Multi-DB diagrams can sync to Tabular Cloud with Zero-Knowledge E2EE.\nOr save to target database table `diagram_by_tabular`.",
-                            )
-                            .weak()
-                            .small(),
-                        );
-                    },
-                );
-
-                ui.separator();
-
-                // --- 4. File / Persistence (Save, Import, Export) ---
+                // --- 4. Save (lokal + Obsidian + Tabular Cloud) ---
+                // Save sekaligus sync ke cloud bila vault terbuka; opsi yang
+                // jarang dipakai (database target) ada di dropdown.
+                use crate::models::structs::DiagramCloudStatus;
+                let save_hover = match state.cloud_status {
+                    DiagramCloudStatus::Ready => {
+                        "Save diagram (Cmd S) and sync to Tabular Cloud (E2EE)"
+                    }
+                    DiagramCloudStatus::Locked => {
+                        "Save diagram (Cmd S). Cloud sync is paused until you unlock your vault."
+                    }
+                    DiagramCloudStatus::SignedOut => {
+                        "Save diagram layout (Cmd S) - also saves to Obsidian vault if enabled"
+                    }
+                };
                 if toolbar_square_button(ui, egui_icons::icons::ICON_SAVE.codepoint, "Save", false)
-                    .on_hover_text(
-                        "Save diagram layout (Cmd S) - default saves to Obsidian vault if enabled",
-                    )
+                    .on_hover_text(save_hover)
                     .clicked()
                 {
                     state.save_requested = true;
                     action = Some(DiagramAction::Save);
+                }
+
+                let more_btn = toolbar_dropdown_arrow(ui, "save_more");
+                egui::Popup::menu(&more_btn).show(|ui| {
+                    if ui.button("☁️ Sync to Tabular Cloud now").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::SyncToServer);
+                    }
+                    ui.separator();
+                    if ui.button("Save to Database (diagram_by_tabular)").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::SaveToDatabase);
+                    }
+                    if ui.button("Load from Database (diagram_by_tabular)").clicked() {
+                        ui.close();
+                        action = Some(DiagramAction::LoadFromDatabase);
+                    }
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(
+                            "Save also syncs to Tabular Cloud (E2EE) when you are signed in.\nOr store the diagram in the target database table `diagram_by_tabular`.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                });
+
+                if state.cloud_status == DiagramCloudStatus::Locked
+                    && toolbar_square_button(
+                        ui,
+                        egui_icons::icons::ICON_LOCK.codepoint,
+                        "Unlock",
+                        false,
+                    )
+                    .on_hover_text("Vault is locked. Unlock it to sync this diagram to the cloud.")
+                    .clicked()
+                {
+                    action = Some(DiagramAction::UnlockVault);
                 }
 
                 let import_btn = toolbar_square_button(
@@ -3220,10 +3295,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some(a) = crate::diagram_repo::render_group_table_suggestions(ui.ctx(), state) {
         action = Some(a);
     }
+    if let Some(a) = crate::diagram_repo::render_group_table_picker(ui.ctx(), state) {
+        action = Some(a);
+    }
 
     render_relations_panel(ui, state, rect, now);
     crate::diagram_notes_view::render_notes_panel(ui, state, rect, now);
     crate::diagram_notes_view::render_note_editor(ui.ctx(), state);
+    crate::diagram_relation_editor::render_relation_editor(ui.ctx(), state);
 
     if lod == Lod::Detail && !state.nodes.is_empty() {
         draw_key_legend(ui, rect);
@@ -4611,16 +4690,20 @@ enum VirtualOutcome {
     None,
     Select(usize),
     Remove(usize),
+    /// Double-click garis: buka modal edit relasi.
+    Edit(usize),
 }
 
 /// Relasi virtual (putus-putus bila sedikit). Relasi yang di-hover atau
-/// terpilih menampilkan label dan dua tombol hapus.
+/// terpilih menampilkan label dan dua tombol hapus; double-click garis
+/// membuka modal edit.
 fn draw_virtual_relations(
     ui: &mut egui::Ui,
     state: &DiagramState,
     ctx: &RelCtx,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     pointer_down: bool,
+    pointer_double: bool,
     stats: &mut RelStats,
 ) -> VirtualOutcome {
     let scale = state.zoom;
@@ -4642,6 +4725,7 @@ fn draw_virtual_relations(
     )> = Vec::new();
     let mut clicked: Option<usize> = None;
     let mut remove: Option<usize> = None;
+    let mut edit: Option<usize> = None;
     for (idx, rel) in state.virtual_relations.iter().enumerate() {
         stats.total += 1;
         let Some((child, parent)) = ctx.nodes(state, &rel.child, &rel.parent) else {
@@ -4673,6 +4757,10 @@ fn draw_virtual_relations(
 
         if hovered && pointer_down {
             clicked = Some(idx);
+        }
+        // Double-click hanya pada garis, bukan tombol hapus.
+        if is_line_hover && !is_btn_hover && pointer_double {
+            edit = Some(idx);
         }
         let base = match rel.origin {
             RelationOrigin::Imported => egui::Color32::from_rgb(147, 112, 219),
@@ -4711,7 +4799,14 @@ fn draw_virtual_relations(
             overlays.push((
                 idx,
                 bezier.sample(0.5),
-                format!("{} x {} ({origin})", rel.child_column, rel.parent_column),
+                if hovered {
+                    format!(
+                        "{} x {} ({origin}) · double-click to edit",
+                        rel.child_column, rel.parent_column
+                    )
+                } else {
+                    format!("{} x {} ({origin})", rel.child_column, rel.parent_column)
+                },
                 color,
                 child_btn_rect,
                 parent_btn_rect,
@@ -4754,9 +4849,10 @@ fn draw_virtual_relations(
         }
     }
 
-    match (remove, clicked) {
-        (Some(idx), _) => VirtualOutcome::Remove(idx),
-        (None, Some(idx)) => VirtualOutcome::Select(idx),
+    match (remove, edit, clicked) {
+        (Some(idx), _, _) => VirtualOutcome::Remove(idx),
+        (None, Some(idx), _) => VirtualOutcome::Edit(idx),
+        (None, None, Some(idx)) => VirtualOutcome::Select(idx),
         _ => VirtualOutcome::None,
     }
 }
@@ -6321,8 +6417,15 @@ pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
     }
 }
 
-/// Aksi "Resolve Overlaps Now": rapatkan isi group, pisahkan yang tumpang
-/// tindih, lalu rapatkan jarak antar group dan tabel tanpa group.
+/// Aksi menu "Auto Arrange": susun ulang seluruh diagram (smart layout),
+/// lalu rapatkan group dan hilangkan tumpang tindih dalam satu langkah.
+pub fn auto_arrange(state: &mut DiagramState) {
+    auto_layout_host(state);
+    compact_and_resolve_overlaps(&mut state.nodes, 20.0);
+}
+
+/// Rapatkan isi group, pisahkan yang tumpang tindih, lalu rapatkan jarak
+/// antar group dan tabel tanpa group.
 pub fn compact_and_resolve_overlaps(nodes: &mut [DiagramNode], padding: f32) {
     compact_groups(nodes, GROUP_MAX_GAP.max(padding));
     resolve_all_overlaps(nodes, padding, None);

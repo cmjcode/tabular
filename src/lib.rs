@@ -27,6 +27,7 @@ pub mod diagram_mermaid;
 pub mod diagram_notes;
 pub mod diagram_notes_view;
 pub mod diagram_relations;
+pub mod diagram_relation_editor;
 pub mod diagram_repo;
 pub mod diagram_repo_paths;
 pub mod diagram_schema;

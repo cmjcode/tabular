@@ -84,6 +84,7 @@ pub enum AutocompleteWarmResult {
     },
     Columns {
         connection_id: i64,
+        database_name: String,
         table_name: String, // lowercase
         columns: Vec<String>,
         types: Vec<(String, String)>, // (column_name, data_type)
@@ -92,6 +93,24 @@ pub enum AutocompleteWarmResult {
         connection_id: i64,
         database_name: String,
         tables: Vec<String>,
+    },
+    /// Tabel yang mirip secara isi (embedding lokal) untuk prefix popup
+    /// `(prefix, prefix_start)`; fallback Ctrl+Space tanpa kecocokan leksikal.
+    RelatedTables {
+        prefix: String,
+        prefix_start: usize,
+        tables: Vec<(String, f32)>,
+    },
+    /// Index per tabel (key: nama tabel lowercase) dari `index_cache`.
+    Indexes {
+        connection_id: i64,
+        database_name: String,
+        indexes: std::collections::HashMap<String, Vec<crate::autocomplete::IndexDef>>,
+    },
+    /// Statistik pemakaian hasil belajar dari `query_history` koneksi ini.
+    Usage {
+        connection_id: i64,
+        stats: crate::autocomplete::UsageStats,
     },
 }
 
@@ -344,7 +363,10 @@ pub struct Tabular {
     pub autocomplete_payloads: Vec<Option<String>>, // optional payload such as snippet expansion text
     pub selected_autocomplete_index: usize,
     pub autocomplete_prefix: String,
-    pub last_autocomplete_trigger_len: usize,
+    /// Offset byte awal prefix saat popup dihitung; beda posisi = popup basi.
+    pub autocomplete_prefix_start: usize,
+    /// Popup hanya berisi baris "Loading columns…" (tidak bisa dipilih).
+    pub autocomplete_loading: bool,
     pub pending_cursor_set: Option<usize>,
     // Keep editor focused for a few frames after actions like autocomplete accept
     pub editor_focus_boost_frames: u8,
@@ -353,30 +375,44 @@ pub struct Tabular {
     pub autocomplete_protection_frames: u8,
     // Tracks whether user has navigated autocomplete popup (ArrowUp/Down or similar)
     pub autocomplete_navigated: bool,
-    // Autocomplete throttle
-    pub autocomplete_last_update: Option<std::time::Instant>,
-    pub autocomplete_debounce_ms: u64,
     // Connections whose foreign-key cache has been warmed this session (lazy,
     // one-shot) so SQL-editor JOIN-ON autocomplete works without an open ERD.
     pub fk_cache_warmed: std::collections::HashSet<i64>,
-    // (connection_id, table_lowercase) pairs whose columns have been lazily
+    // (connection_id, database, table_lowercase) whose columns have been lazily
     // fetched+cached this session for autocomplete, so we fetch each at most once.
-    pub autocomplete_cols_warmed: std::collections::HashSet<(i64, String)>,
+    pub autocomplete_cols_warmed: std::collections::HashSet<(i64, String, String)>,
+    /// Kolom yang sedang di-warm di background (untuk baris "Loading columns…").
+    pub autocomplete_cols_pending: std::collections::HashSet<(i64, String, String)>,
     // In-memory column list per (connection_id, table_lowercase). Once resolved
     // (from cache or a live warm-fetch) columns are served from here, so they
     // never "disappear" due to a later SQLite cache-read miss or db-scope
     // mismatch, and we avoid repeated blocking lookups on the UI thread.
-    pub autocomplete_cols_mem: std::collections::HashMap<(i64, String), Vec<String>>,
+    // Key menyertakan database: tabel bernama sama di database lain tidak tertukar.
+    pub autocomplete_cols_mem: std::collections::HashMap<(i64, String, String), Vec<String>>,
     // In-memory foreign keys per (connection_id, database_name) for autocomplete.
     // Avoids repeated blocking SQLite queries during query editor rendering.
     pub autocomplete_fks_mem:
         std::collections::HashMap<(i64, String), Vec<models::structs::ForeignKey>>,
     // In-memory table list per (connection_id, database_name) for autocomplete.
     pub autocomplete_tables_mem: std::collections::HashMap<(i64, String), Vec<String>>,
-    // In-memory column types per (connection_id, table_lowercase, column_lowercase).
-    pub autocomplete_col_types_mem: std::collections::HashMap<(i64, String, String), String>,
+    // In-memory column types per (connection_id, database, table_lowercase, column_lowercase).
+    pub autocomplete_col_types_mem:
+        std::collections::HashMap<(i64, String, String, String), String>,
     /// Frekuensi pemilihan saran per label (sesi ini) untuk ranking autocomplete.
     pub autocomplete_usage: std::collections::HashMap<String, u32>,
+    /// Statistik tabel/kolom/join dari riwayat query, per koneksi.
+    pub autocomplete_usage_stats:
+        std::collections::HashMap<i64, std::sync::Arc<crate::autocomplete::UsageStats>>,
+    /// Koneksi yang statistik riwayatnya sudah diminta (sekali per sesi).
+    pub autocomplete_usage_requested: std::collections::HashSet<i64>,
+    /// Index per (connection_id, database) → tabel lowercase → daftar index.
+    pub autocomplete_indexes_mem: std::collections::HashMap<
+        (i64, String),
+        std::sync::Arc<std::collections::HashMap<String, Vec<crate::autocomplete::IndexDef>>>,
+    >,
+    pub autocomplete_indexes_requested: std::collections::HashSet<(i64, String)>,
+    /// Rekomendasi performa untuk statement di kursor, tampil di kaki popup.
+    pub autocomplete_hint: Option<crate::autocomplete::IndexAdvice>,
     // Background receiver and sender for non-blocking autocomplete warm tasks
     pub autocomplete_warm_receiver: Option<Receiver<AutocompleteWarmResult>>,
     pub autocomplete_warm_sender: Sender<AutocompleteWarmResult>,
@@ -850,6 +886,11 @@ pub struct Tabular {
     pub vault_team_keys: std::collections::HashMap<String, crate::sync::vault_crypto::SymKey>,
     /// Current step of the vault setup/unlock UI (Settings → Sync & Account).
     pub vault_stage: crate::sync::ui_vault_setup::VaultStage,
+    /// Popup unlock vault yang dibuka langsung saat sebuah aksi sync butuh vault.
+    pub show_vault_unlock_dialog: bool,
+    /// Sync diagram (conn_id, db_name) yang tertunda karena vault terkunci;
+    /// dijalankan ulang otomatis begitu vault terbuka.
+    pub vault_pending_diagram_sync: Option<(Option<i64>, Option<String>)>,
     /// Wrapped bundle fetched from the server — opaque without the passphrase.
     pub vault_remote_bundle: Option<crate::sync::api_client::RemoteVaultKeys>,
     pub vault_passphrase_input: String,

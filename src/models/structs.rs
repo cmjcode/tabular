@@ -789,6 +789,18 @@ pub struct VirtualRelation {
     pub origin: RelationOrigin,
 }
 
+/// Status cloud sync untuk toolbar diagram (runtime saja, diisi app tiap frame).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiagramCloudStatus {
+    /// Belum login ke Tabular: Save hanya menyimpan lokal.
+    #[default]
+    SignedOut,
+    /// Sudah login tapi vault masih terkunci: sync ditunda sampai unlock.
+    Locked,
+    /// Vault terbuka: Save sekaligus sync ke Tabular Cloud.
+    Ready,
+}
+
 /// Status materialisasi sebuah link database (runtime saja).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LinkStatus {
@@ -842,6 +854,8 @@ pub struct DiagramState {
     pub is_centered: bool,
     #[serde(skip)]
     pub save_requested: bool,
+    #[serde(skip)]
+    pub cloud_status: DiagramCloudStatus,
     #[serde(skip)]
     pub renaming_group: Option<String>,
     #[serde(skip)]
@@ -996,6 +1010,9 @@ pub struct DiagramState {
     /// Jendela saran tabel dari repository (sedang memindai atau hasil).
     #[serde(skip)]
     pub group_table_suggestions: Option<GroupTableSuggestions>,
+    /// Popup "Search Table to Add" untuk memilih tabel diagram ke sebuah group.
+    #[serde(skip)]
+    pub group_table_picker: Option<GroupTablePicker>,
     /// Sticky note Markdown yang ditempel ke tabel atau group. Ikut disimpan
     /// dan disinkron bersama diagram, jadi bisa dibaca semua user yang
     /// membuka diagram database ini.
@@ -1017,6 +1034,27 @@ pub struct DiagramState {
     /// Modal editor note yang sedang terbuka.
     #[serde(skip)]
     pub note_editor: Option<NoteDraft>,
+    /// Modal edit relasi virtual yang sedang terbuka (double-click garis relasi).
+    #[serde(skip)]
+    pub relation_editor: Option<RelationEditDraft>,
+}
+
+/// Draft modal edit relasi virtual: tabel tetap, kolom kedua ujung bisa diganti.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelationEditDraft {
+    /// Indeks di `virtual_relations` saat modal dibuka.
+    pub index: usize,
+    /// Relasi saat modal dibuka; bila isinya sudah berubah, modal ditutup
+    /// supaya tidak menimpa relasi lain.
+    pub original: VirtualRelation,
+    pub child_column: String,
+    pub parent_column: String,
+    pub child_filter: String,
+    pub parent_filter: String,
+    /// Pesan validasi terakhir (mis. relasi duplikat).
+    pub error: Option<String>,
+    /// Kolom terpilih sudah di-scroll ke tampilan (frame pertama).
+    pub scrolled: bool,
 }
 
 /// Tempat sebuah note ditempelkan.
@@ -1102,6 +1140,17 @@ pub struct GroupRepoDraft {
     pub url_auto: bool,
 }
 
+/// Status popup "Search Table to Add" untuk satu group.
+#[derive(Clone, Debug, Default)]
+pub struct GroupTablePicker {
+    pub group_id: String,
+    pub group_title: String,
+    /// Teks pencarian nama tabel.
+    pub query: String,
+    /// Id tabel yang dicentang.
+    pub selected: std::collections::HashSet<String>,
+}
+
 /// Status jendela "Suggested tables" untuk satu group.
 #[derive(Clone, Debug, Default)]
 pub struct GroupTableSuggestions {
@@ -1162,6 +1211,7 @@ impl Default for DiagramState {
             last_mouse_pos: None,
             is_centered: false,
             save_requested: false,
+            cloud_status: DiagramCloudStatus::SignedOut,
             renaming_group: None,
             selected_edge: None,
             selected_column: None,
@@ -1213,12 +1263,14 @@ impl Default for DiagramState {
             scoped_to: None,
             group_repo_editor: None,
             group_table_suggestions: None,
+            group_table_picker: None,
             notes: Vec::new(),
             show_notes: true,
             open_notes: std::collections::HashSet::new(),
             notes_panel: None,
             notes_panel_query: String::new(),
             note_editor: None,
+            relation_editor: None,
         }
     }
 }

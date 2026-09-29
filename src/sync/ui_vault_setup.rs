@@ -380,3 +380,60 @@ fn render_recovery_unlock_form(tabular: &mut Tabular, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.small("Recovering only restores access to your own data — Team-shared items stay locked until you rejoin/re-share.");
 }
+
+/// Buka popup unlock vault. Dipakai oleh aksi sync yang butuh vault terbuka,
+/// supaya user tidak perlu mencari form passphrase di Preferences.
+pub fn open_vault_unlock_dialog(tabular: &mut Tabular) {
+    tabular.vault_error = None;
+    tabular.vault_passphrase_input.clear();
+    tabular.show_vault_unlock_dialog = true;
+}
+
+/// Popup "Unlock Vault". Isinya sama dengan panel vault di Preferences
+/// (unlock, buat vault baru, atau recovery), lalu menutup sendiri dan
+/// melanjutkan sync yang tertunda begitu vault terbuka.
+pub fn render_vault_unlock_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
+    if !tabular.show_vault_unlock_dialog {
+        return;
+    }
+    if tabular.sync_account.is_none() {
+        // Logout dari tempat lain saat popup masih terbuka.
+        tabular.show_vault_unlock_dialog = false;
+        tabular.vault_pending_diagram_sync = None;
+        return;
+    }
+
+    let mut close = false;
+    style::render_modal_backdrop(ctx, "vault_unlock_backdrop", true);
+
+    egui::Window::new("Unlock Vault")
+        .title_bar(false)
+        .frame(style::modal_window_frame(ctx))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(420.0)
+        .show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            style::render_modal_header(ui, "Unlock Vault to Sync", &mut close);
+            ui.add_space(8.0);
+            render_vault_panel(tabular, ui);
+        });
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close = true;
+    }
+
+    // Tahap ShowRecoveryCode juga sudah punya vault, tapi kode recovery harus
+    // dikonfirmasi dulu; tunggu sampai stage benar-benar Unlocked.
+    let unlocked = tabular.vault.is_some() && tabular.vault_stage == VaultStage::Unlocked;
+    if unlocked {
+        tabular.show_vault_unlock_dialog = false;
+        tabular.toasts.success("Vault unlocked");
+        tabular.resume_pending_diagram_sync();
+    } else if close {
+        tabular.show_vault_unlock_dialog = false;
+        tabular.vault_pending_diagram_sync = None;
+        tabular.vault_passphrase_input.clear();
+    }
+}
