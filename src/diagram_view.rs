@@ -1043,6 +1043,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 .and_then(|n| n.column_info(sel_col))
                 .is_some_and(|c| c.is_pk)
         });
+    let relation_cols = selected_relation_columns(state);
     let shift_down = ui.input(|i| i.modifiers.shift);
     let ctrl_down = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd);
     let mut link_request: Option<VirtualRelation> = None;
@@ -1596,6 +1597,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 && state.search_columns
                 && !state.search_query.is_empty()
                 && col.to_lowercase().contains(&search_lower);
+            let is_relation_col = relation_cols.contains(&(node.id.clone(), col.clone()));
 
             if is_selected_col {
                 // Highlight jelas kolom sumber terpilih (emas dengan border)
@@ -1621,6 +1623,24 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     col_rect,
                     0.0,
                     egui::Stroke::new(1.5 * scale, egui::Color32::from_rgb(0, 200, 220)),
+                    egui::StrokeKind::Inside,
+                );
+            } else if is_relation_col {
+                // Kolom ujung relasi terpilih: glow emas senada dengan glow tabel.
+                ui.painter().rect_filled(
+                    col_rect.expand2(egui::vec2(0.0, 1.5 * scale)),
+                    2.0 * scale,
+                    egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.18),
+                );
+                ui.painter().rect_filled(
+                    col_rect,
+                    0.0,
+                    egui::Color32::from_rgb(255, 215, 0).linear_multiply(0.30),
+                );
+                ui.painter().rect_stroke(
+                    col_rect,
+                    0.0,
+                    egui::Stroke::new(1.5 * scale, egui::Color32::from_rgb(255, 215, 0)),
                     egui::StrokeKind::Inside,
                 );
             } else if is_col_search_match {
@@ -2792,6 +2812,45 @@ fn render_relations_panel(ui: &mut egui::Ui, state: &mut DiagramState, rect: egu
         state.selected_edge = Some((child, parent));
         ui.ctx().request_repaint();
     }
+}
+
+/// Kolom (tabel, kolom) di kedua ujung relasi yang sedang dipilih, baik dari
+/// garis FK / garis ringkas (`selected_edge`) maupun relasi virtual
+/// (`selected_virtual`). Dipakai untuk memberi glow pada kolom terkait.
+fn selected_relation_columns(state: &DiagramState) -> HashSet<(String, String)> {
+    let mut cols = HashSet::new();
+    let add_virtual = |cols: &mut HashSet<(String, String)>, r: &VirtualRelation| {
+        cols.insert((r.child.clone(), r.child_column.clone()));
+        cols.insert((r.parent.clone(), r.parent_column.clone()));
+    };
+    if let Some((a, b)) = &state.selected_edge {
+        // Garis ringkas tidak berarah, jadi periksa FK kedua arah.
+        for node in state.nodes.iter().filter(|n| n.id == *a || n.id == *b) {
+            let other = if node.id == *a { b } else { a };
+            for fk in node
+                .foreign_keys
+                .iter()
+                .filter(|fk| fk.referenced_table_name == *other)
+            {
+                cols.insert((node.id.clone(), fk.column_name.clone()));
+                cols.insert((other.clone(), fk.referenced_column_name.clone()));
+            }
+        }
+        for r in state
+            .virtual_relations
+            .iter()
+            .filter(|r| (r.child == *a && r.parent == *b) || (r.child == *b && r.parent == *a))
+        {
+            add_virtual(&mut cols, r);
+        }
+    }
+    if let Some(r) = state
+        .selected_virtual
+        .and_then(|idx| state.virtual_relations.get(idx))
+    {
+        add_virtual(&mut cols, r);
+    }
+    cols
 }
 
 /// Mode fokus: tabel yang tidak terkait ditutup lapisan warna latar

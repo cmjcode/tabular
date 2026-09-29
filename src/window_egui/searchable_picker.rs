@@ -261,7 +261,8 @@ fn popup_contents(
 
     // Field pencarian
     let prev_query = state.query.clone();
-    let search = style::render_search_field(ui, &mut state.query, cfg.search_hint, f32::INFINITY);
+    let search =
+        style::render_search_field_live(ui, &mut state.query, cfg.search_hint, f32::INFINITY);
     if just_opened {
         search.request_focus();
     }

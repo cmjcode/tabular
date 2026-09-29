@@ -453,7 +453,58 @@ pub fn render_text_field(
 }
 
 /// Field pencarian/filter standar: `render_text_field` + ikon search.
+///
+/// Pencarian baru diterapkan saat Enter ditekan: ketikan disimpan di draft (memory egui)
+/// dan `text` hanya diperbarui saat Enter, atau saat field dikosongkan. `changed()` pada
+/// response hanya bernilai true ketika `text` benar-benar berubah, sehingga pemanggil
+/// tidak memicu pencarian berat per huruf.
 pub fn render_search_field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+) -> egui::Response {
+    let muted = nav_text_muted(ui.ctx());
+    let edit_id = ui.next_auto_id().with("search_field");
+    let draft_key = edit_id.with("draft");
+
+    // (draft, nilai `text` yang terakhir kita lihat)
+    let (mut draft, last_seen) = ui
+        .data(|d| d.get_temp::<(String, String)>(draft_key))
+        .unwrap_or_else(|| (text.clone(), text.clone()));
+    // `text` diubah dari luar (mis. tombol clear) → draft ikut disinkronkan.
+    if *text != last_seen {
+        draft = text.clone();
+    }
+
+    let mut response = render_text_field(
+        ui,
+        egui::TextEdit::singleline(&mut draft)
+            .id(edit_id)
+            .hint_text(egui::RichText::new(hint).color(muted)),
+        width,
+        Some(egui_icons::icons::ICON_SEARCH.codepoint),
+    );
+
+    let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let cleared = response.changed() && draft.is_empty();
+    response.flags.remove(egui::response::Flags::CHANGED);
+    if (enter_pressed || cleared) && draft != *text {
+        *text = draft.clone();
+        response.mark_changed();
+    }
+    if enter_pressed {
+        // Biarkan kursor tetap di field agar query bisa langsung diperhalus.
+        response.request_focus();
+    }
+
+    ui.data_mut(|d| d.insert_temp(draft_key, (draft, text.clone())));
+    response
+}
+
+/// Varian `render_search_field` yang menerapkan filter di setiap ketikan. Hanya untuk
+/// daftar kecil di memori yang memakai Enter untuk aksi lain (mis. searchable picker).
+pub fn render_search_field_live(
     ui: &mut egui::Ui,
     text: &mut String,
     hint: &str,

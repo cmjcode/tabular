@@ -1144,7 +1144,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 crate::window_egui::style::render_search_field(
                     ui,
                     &mut tabular.add_member_identifier,
-                    "Type at least 5 characters to search…",
+                    "Type at least 5 characters, then press Enter…",
                     f32::INFINITY,
                 );
 
