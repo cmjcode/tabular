@@ -732,9 +732,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 if let Some(moving) = tabular.grid_ext.dragging_column {
                     let (pointer, down) =
                         hdr_ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
+                    // Hanya kolom yang terlihat di area header yang bisa jadi target.
                     let target = pointer.and_then(|p| {
                         header_rects
                             .iter()
+                            .filter(|(_, r)| r.intersects(header_alloc_rect))
                             .find(|(_, r)| p.x >= r.min.x && p.x < r.max.x)
                             .map(|(c, r)| (*c, *r, p.x > r.center().x))
                     });
@@ -755,6 +757,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     } else {
                         if let Some((target_col, _, after)) = target
                             && target_col != moving
+                            && pointer.is_some_and(|p| header_alloc_rect.contains(p))
                             && let (Some(m), Some(t)) =
                                 (headers.get(moving), headers.get(target_col))
                         {
@@ -1506,7 +1509,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     if ui.button("📋 Copy Cell Value").clicked() {
-                                                        ui.ctx().copy_text(cell.clone());
+                                                        ui.ctx().copy_text(shown.clone());
                                                         ui.close();
                                                     }
                                                     if table_sel_anchor.is_some()
@@ -1563,6 +1566,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         {
                                                             let csv_row = row_data
                                                                 .iter()
+                                                                .map(|cell| super::grid_model::display_value(cell))
                                                                 .map(|cell| {
                                                                     if cell.contains(',')
                                                                         || cell.contains('"')
@@ -1575,7 +1579,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                             )
                                                                         )
                                                                     } else {
-                                                                        cell.clone()
+                                                                        cell.into_owned()
                                                                     }
                                                                 })
                                                                 .collect::<Vec<_>>()

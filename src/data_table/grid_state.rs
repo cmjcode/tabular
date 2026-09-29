@@ -479,10 +479,18 @@ impl Tabular {
 
     pub(crate) fn grid_set_cell_raw(&mut self, row: usize, col: usize, value: &str) {
         let abs = self.grid_all_index(row);
-        if let Some(cell) = self.current_table_data.get_mut(row).and_then(|r| r.get_mut(col)) {
+        if let Some(cell) = self
+            .current_table_data
+            .get_mut(row)
+            .and_then(|r| r.get_mut(col))
+        {
             *cell = value.to_string();
         }
-        if let Some(cell) = self.all_table_data.get_mut(abs).and_then(|r| r.get_mut(col)) {
+        if let Some(cell) = self
+            .all_table_data
+            .get_mut(abs)
+            .and_then(|r| r.get_mut(col))
+        {
             *cell = value.to_string();
         }
     }
@@ -607,6 +615,20 @@ impl Tabular {
         if gm::pending_deleted_rows(&self.spreadsheet_state.pending_operations).contains(&row) {
             self.toasts
                 .warning("Row is marked for deletion; restore it before editing.");
+            return;
+        }
+        // SQLite tidak menerima `SET kolom = DEFAULT` pada baris yang sudah ada.
+        let is_new_row =
+            gm::pending_inserted_rows(&self.spreadsheet_state.pending_operations).contains(&row);
+        if gm::is_raw_default(&value)
+            && !is_new_row
+            && self
+                .current_connection_id
+                .and_then(|cid| connection_db_type(self, cid))
+                .is_some_and(|db| !gm::default_allowed_in_update(&db))
+        {
+            self.toasts
+                .warning("SQLite cannot set an existing row's column to DEFAULT");
             return;
         }
         self.spreadsheet_start_cell_edit(row, col);
@@ -1768,6 +1790,57 @@ mod tests {
         assert_eq!(t.grid_ext.find.matches, vec![(1, 1)]);
         find_step(&mut t, 1);
         assert_eq!(t.selected_cell, Some((1, 1)));
+    }
+
+    fn sqlite_tabular() -> Tabular {
+        let mut t = tabular_with_rows();
+        t.connections
+            .push(crate::models::structs::ConnectionConfig {
+                id: Some(1),
+                connection_type: DatabaseType::SQLite,
+                ..Default::default()
+            });
+        t.current_connection_id = Some(1);
+        t.current_table_name = "Table: t".into();
+        t.spreadsheet_state.primary_key_columns = vec!["id".into()];
+        t
+    }
+
+    #[test]
+    fn rewind_memakai_nilai_asli_setelah_edit_berulang() {
+        let mut t = sqlite_tabular();
+        t.grid_set_cell_value(0, 1, "x".into());
+        t.grid_set_cell_value(0, 1, gm::QuickValue::Now.cell_value());
+        t.grid_set_cell_value(0, 1, "y".into());
+        t.spreadsheet_add_row();
+        t.spreadsheet_finish_cell_edit(false);
+        let rewind = t.spreadsheet_generate_rewind();
+        let sql = rewind.sql.expect("ada SQL pembalik");
+        assert_eq!(sql, "UPDATE \"t\" SET \"name\" = 'a' WHERE \"id\" = '1'");
+        assert!(
+            rewind.notes.iter().any(|n| n.contains("New row 4")),
+            "insert dengan kunci DEFAULT tidak bisa dibalik: {:?}",
+            rewind.notes
+        );
+    }
+
+    #[test]
+    fn edit_di_halaman_kedua_mengenai_baris_yang_benar() {
+        let mut t = tabular_with_rows();
+        t.all_table_data.push(vec!["4".into(), "d".into()]);
+        t.page_size = 2;
+        t.current_page = 1;
+        t.use_server_pagination = false;
+        t.current_table_data = t.all_table_data[2..4].to_vec();
+        t.grid_set_cell_value(0, 1, "C".into());
+        assert_eq!(t.all_table_data[2][1], "C");
+        assert_eq!(t.all_table_data[0][1], "a");
+        match &t.spreadsheet_state.pending_operations[0] {
+            CellEditOperation::Update { old_value, .. } => assert_eq!(old_value, "c"),
+            other => panic!("operasi tak terduga: {:?}", other),
+        }
+        t.grid_undo();
+        assert_eq!(t.all_table_data[2][1], "c");
     }
 
     #[test]

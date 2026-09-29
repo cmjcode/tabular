@@ -175,10 +175,11 @@ pub(crate) fn copy_selected_block_as_csv(
             let mut cols: Vec<String> = Vec::new();
             for c in cmin..=cmax {
                 if let Some(val) = row.get(c) {
+                    let val = super::grid_model::display_value(val);
                     if val.contains(',') || val.contains('"') || val.contains('\n') {
                         cols.push(format!("\"{}\"", val.replace('"', "\"\"")));
                     } else {
-                        cols.push(val.clone());
+                        cols.push(val.into_owned());
                     }
                 } else {
                     cols.push(String::new());
@@ -204,7 +205,24 @@ pub(crate) struct GridSummary {
     pub max: f64,
 }
 
+/// Header dan baris terpilih untuk copy/export. Nilai mentah grid
+/// (DEFAULT/NOW yang belum disimpan) diganti teks tampilannya.
 pub(crate) fn get_selected_subtable(
+    tabular: &window_egui::Tabular,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let (headers, rows) = get_selected_subtable_raw(tabular)?;
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .map(|v| super::grid_model::display_value(v).into_owned())
+                .collect()
+        })
+        .collect();
+    Some((headers, rows))
+}
+
+fn get_selected_subtable_raw(
     tabular: &window_egui::Tabular,
 ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     if tabular.current_table_data.is_empty() || tabular.current_table_headers.is_empty() {

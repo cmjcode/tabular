@@ -30,34 +30,37 @@ pencarian kode `src/` (bukan uji runtime).
 
 ## B. Data grid & hasil query
 
-- [ ] **B1. Change tracking + review SQL sebelum simpan** · P1 · M · Belum
-  Edit sel/baris diantrekan, tampil coret/garis bawah, tombol Save menampilkan SQL parameterized,
-  Discard membatalkan. Perlu koordinasi dengan mode manual commit (ADR 0001).
-  File: `src/data_table/mod.rs`, `src/data_table/render_data.rs`.
-- [ ] **B2. Undo/redo di grid** · P2 · S · Belum
-  Bergantung B1 (undo stack di atas antrean edit).
-- [ ] **B3. Data Rewind / Restore Previous Values setelah commit** · P3 · M · Belum
-  Simpan nilai lama per commit, tawarkan rollback dengan UPDATE balik.
-- [ ] **B4. Find in results + Search All Rows (server-side)** · P1 · S · Sebagian
-  Pencarian teks di grid; opsi kirim sebagai `WHERE col LIKE` ke server lewat `filter_sort.rs`.
-- [ ] **B5. Filter by cell (context menu)** · P2 · S · Belum
-  Klik kanan sel -> "Filter by this value" menambah kondisi ke filter builder.
-- [ ] **B6. Saved filters per tabel** · P3 · S · Belum
-  Persist filter builder ke `connections.db`, dipulihkan saat tabel dibuka.
-- [ ] **B7. Highlight rules (warna baris/sel berdasar nilai)** · P2 · M · Belum
-  Aturan: kolom, operator, nilai, warna. Simpan per tabel.
-- [ ] **B8. Invisible characters indicator** · P4 · S · Belum
-  Tampilkan tab, CR, NBSP, zero-width sebagai simbol, warning di header.
-- [ ] **B9. Hide column + Jump to Column (fuzzy)** · P3 · S · Sebagian
-  Freeze sudah ada. Tambah hide/unhide, dan pencari kolom dengan tipe + posisi.
-- [ ] **B10. Row as JSON dengan FK drilling (5 level)** · P3 · M · Sebagian
-  Inspector sudah punya JSON tree; tambah tab "Row" yang mengikuti FK ke baris induk.
-- [ ] **B11. FK value picker saat mengedit kolom FK** · P3 · M · Sebagian
-  Popup pencarian baris tabel referensi dengan label multi-kolom.
-- [ ] **B12. Default value menu saat insert** · P4 · S · Belum
-  Pilihan DEFAULT, NULL, NOW(), UUID sesuai engine.
-- [ ] **B13. Column reorder (drag)** · P4 · M · Belum
-  Native di ClickHouse/Oracle; engine lain lewat rebuild tabel dengan konfirmasi.
+Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs` + kait di
+`render_data.rs`, `spreadsheet.rs`. Belum diuji manual terhadap database sungguhan.
+
+- [x] **B1. Change tracking + review SQL sebelum simpan** · P1 · M · Selesai
+  Sel diubah ditandai kuning (tooltip nilai asli), baris baru hijau, baris hapus merah + coret.
+  ⌘S / "Review & Save" membuka dialog SQL; Discard/Esc membatalkan. SQL yang ditampilkan adalah
+  SQL yang dieksekusi (nilai di-escape inline, bukan bind parameter). Mode manual commit: dialog
+  memberi peringatan bahwa simpan grid berjalan di koneksi terpisah (ADR 0001).
+- [x] **B2. Undo/redo di grid** · P2 · S · Selesai
+  ⌘Z / ⌘⇧Z saat grid fokus, tombol di action bar. Commit sukses mengosongkan riwayat.
+- [x] **B3. Data Rewind / Restore Previous Values setelah commit** · P3 · M · Selesai (sesi)
+  Riwayat commit per sesi (maks 50) + SQL pembalik yang direview sebelum dijalankan. Insert dengan
+  kunci auto-generated tidak bisa dibalik (dicatat di catatan entri).
+- [x] **B4. Find in results + Search All Rows (server-side)** · P1 · S · Selesai
+- [x] **B5. Filter by cell (context menu)** · P2 · S · Selesai
+- [x] **B6. Saved filters per tabel** · P3 · S · Selesai
+  Tabel `grid_table_prefs` di `connections.db`; filter bertanda default diterapkan saat tabel dibuka.
+- [x] **B7. Highlight rules (warna baris/sel berdasar nilai)** · P2 · M · Selesai
+- [x] **B8. Invisible characters indicator** · P4 · S · Selesai
+- [x] **B9. Hide column + Jump to Column (fuzzy)** · P3 · S · Selesai
+  Hide per tab (sesi); Jump ⌘J dengan tipe + posisi.
+- [x] **B10. Row as JSON dengan FK drilling (5 level)** · P3 · M · Selesai
+  Butuh FK di cache (`foreign_key_cache`).
+- [x] **B11. FK value picker saat mengedit kolom FK** · P3 · M · Selesai
+  Lewat klik kanan sel FK -> "Pick from ...".
+- [x] **B12. Default value menu saat insert** · P4 · S · Selesai
+  NULL, '', DEFAULT, NOW(), UUID v4 (dibuat klien). Baris baru default ke DEFAULT.
+- [ ] **B13. Column reorder (drag)** · P4 · M · Sebagian
+  Drag header mengubah urutan tampilan (per tab, sesi). Urutan fisik: MySQL/MariaDB lewat
+  `MODIFY COLUMN ... AFTER` dengan review. PostgreSQL/SQLite/SQL Server (rebuild tabel) tidak
+  dikerjakan karena risiko kehilangan constraint/trigger/FK.
 
 ## C. Chart & visualisasi
 
