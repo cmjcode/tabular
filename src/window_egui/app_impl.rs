@@ -3114,8 +3114,11 @@ impl Tabular {
                                }
                                rendered_diagram = true;
                            
-                               if diagram_state.save_requested {
-                                   diagram_state.save_requested = false;
+                               // Tab subset (`scoped_to`) tidak pernah disimpan:
+                               // isinya akan menimpa layout diagram database.
+                               if std::mem::take(&mut diagram_state.save_requested)
+                                   && diagram_state.scoped_to.is_none()
+                               {
                                    diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                                }
                             }
@@ -4786,6 +4789,21 @@ impl App for Tabular {
             }
         }
 
+        // Enter pertama pada Quick Open / command palette menjalankan pencarian yang masih
+        // di draft; baru Enter berikutnya memilih item. Dihitung di luar `ctx.input`.
+        let quick_open_search_pending = self.quick_open_state.is_open
+            && style::search_draft_pending(
+                ctx,
+                crate::quick_open::search_field_id(),
+                &self.quick_open_state.query,
+            );
+        let command_palette_search_pending = self.show_command_palette
+            && style::search_draft_pending(
+                ctx,
+                editor::command_palette_search_id(),
+                &self.command_palette_input,
+            );
+
         // Handle keyboard shortcuts
         ctx.input(|i| {
             // Handle table cell navigation with arrow keys
@@ -4962,7 +4980,7 @@ impl App for Tabular {
                     crate::quick_open::navigate_quick_open(self, -8);
                 } else if i.key_pressed(egui::Key::Tab) {
                     crate::quick_open::cycle_filter_category(self);
-                } else if i.key_pressed(egui::Key::Enter) {
+                } else if i.key_pressed(egui::Key::Enter) && !quick_open_search_pending {
                     crate::quick_open::execute_selected_quick_open(self);
                 }
             }
@@ -4976,7 +4994,10 @@ impl App for Tabular {
                     editor::navigate_command_palette(self, -1);
                 }
                 // Enter to execute selected command (only when command palette is visible)
-                else if i.key_pressed(egui::Key::Enter) && self.show_command_palette {
+                else if i.key_pressed(egui::Key::Enter)
+                    && self.show_command_palette
+                    && !command_palette_search_pending
+                {
                     log::debug!("🔥 GLOBAL DEBUG: Command palette Enter consumed");
                     editor::execute_selected_command(self);
                 }

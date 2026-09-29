@@ -227,7 +227,28 @@ impl super::Tabular {
         state: &models::structs::DiagramState,
     ) {
         use crate::diagram_view::DiagramAction;
+        // Tab subset hanya tampilan: aksi yang menyimpan, memuat, atau
+        // me-link akan menimpa diagram database dengan isi subset.
+        let modifies_source = matches!(
+            action,
+            DiagramAction::Save
+                | DiagramAction::SaveToVault
+                | DiagramAction::SaveToDatabase
+                | DiagramAction::LoadFromDatabase
+                | DiagramAction::OpenLinkDatabaseModal
+                | DiagramAction::RelinkDatabase(_)
+                | DiagramAction::SyncToServer
+        );
+        if modifies_source && state.scoped_to.is_some() {
+            self.toasts.info(
+                "This tab shows only related tables and is not saved. Use the full diagram tab instead.",
+            );
+            return;
+        }
         match action {
+            DiagramAction::OpenFocusInNewTab(table) => {
+                self.open_focus_subset_tab(conn_id, db_name, state, &table)
+            }
             DiagramAction::Save => self.save_diagram_with_defaults(conn_id, db_name, state),
             DiagramAction::Info(msg) => self.toasts.success(msg),
             DiagramAction::Error(msg) => self.toasts.error(msg),
@@ -612,6 +633,47 @@ impl super::Tabular {
         );
     }
 
+    /// Buka tab baru berisi `table` dan tabel yang berelasi dengannya saja,
+    /// sudah ditata otomatis. Bila dipanggil dari tab subset, sumbernya
+    /// diambil dari tab diagram penuh agar relasi di luar subset ikut.
+    fn open_focus_subset_tab(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+        table: &str,
+    ) {
+        let host = match (state.scoped_to.is_some(), conn_id, db_name.as_deref()) {
+            (true, Some(cid), Some(db)) => self
+                .query_tabs
+                .iter()
+                .find(|t| Self::is_diagram_host_tab(t, cid, db))
+                .and_then(|t| t.diagram_state.as_ref()),
+            _ => None,
+        };
+        let subset = crate::diagram_view::focus_subset_state(host.unwrap_or(state), table);
+        let title = subset
+            .nodes
+            .iter()
+            .find(|n| n.id == table)
+            .map_or(table, |n| n.title.as_str())
+            .to_string();
+        let count = subset.nodes.len();
+
+        crate::editor::create_new_tab_with_connection_and_database(
+            self,
+            format!("Diagram: {title} + related"),
+            String::new(),
+            conn_id,
+            db_name,
+        );
+        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            tab.diagram_state = Some(subset);
+        }
+        self.table_bottom_view = models::structs::TableBottomView::Query;
+        log::info!("[DIAGRAM] opened '{title}' with {count} related table(s) in a new tab");
+    }
+
     /// Terima hasil pengambilan skema yang sudah selesai. Dipanggil tiap frame.
     pub fn poll_diagram_schema_jobs(&mut self, ctx: &egui::Context) {
         if self.diagram_schema_jobs.is_empty() {
@@ -645,8 +707,12 @@ impl super::Tabular {
         }
     }
 
+    /// Tab diagram penuh milik (conn, db). Tab subset (`scoped_to`) tidak
+    /// termasuk: tidak menerima sinkron skema dan bukan sumber link.
     fn is_diagram_host_tab(tab: &models::structs::QueryTab, conn_id: i64, db_name: &str) -> bool {
-        tab.diagram_state.is_some()
+        tab.diagram_state
+            .as_ref()
+            .is_some_and(|s| s.scoped_to.is_none())
             && tab.connection_id == Some(conn_id)
             && tab.database_name.as_deref() == Some(db_name)
     }
@@ -1016,11 +1082,10 @@ impl super::Tabular {
             ));
             return;
         };
-        let existing = self.query_tabs.iter().position(|t| {
-            t.diagram_state.is_some()
-                && t.connection_id == Some(cid)
-                && t.database_name.as_deref() == Some(link.database_name.as_str())
-        });
+        let existing = self
+            .query_tabs
+            .iter()
+            .position(|t| Self::is_diagram_host_tab(t, cid, &link.database_name));
         match existing {
             Some(idx) => crate::editor::switch_to_tab(self, idx),
             None => self.open_database_diagram(cid, link.database_name),

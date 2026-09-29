@@ -83,6 +83,8 @@ pub enum DiagramAction {
     OpenLinkedDiagram(String),
     /// Sinkronkan diagram ke Tabular Server (Cloud E2EE).
     SyncToServer,
+    /// Buka tab baru berisi tabel ini dan tabel yang berelasi saja.
+    OpenFocusInNewTab(String),
     Info(String),
     Error(String),
 }
@@ -385,6 +387,164 @@ pub fn related_tables(state: &DiagramState, table_id: &str) -> std::collections:
     set
 }
 
+/// Salinan diagram yang hanya berisi `table_id` dan tabel yang berelasi
+/// langsung dengannya (lihat [`related_tables`]), sudah ditata rapi.
+///
+/// Dipakai tombol "Open in new tab" pada chip mode fokus. Group dan link
+/// database tidak ikut: bingkai group mengikuti posisi anggotanya sehingga
+/// akan melebar tak beraturan setelah tata letak baru. Hasilnya ditandai
+/// `scoped_to` supaya tab-nya tidak pernah disimpan sebagai diagram database.
+pub fn focus_subset_state(source: &DiagramState, table_id: &str) -> DiagramState {
+    let keep = related_tables(source, table_id);
+    let inside = |a: &str, b: &str| keep.contains(a) && keep.contains(b);
+
+    let nodes = source
+        .nodes
+        .iter()
+        .filter(|n| keep.contains(&n.id))
+        .map(|n| {
+            let mut n = n.clone();
+            n.group_id = None;
+            n.group_ids.clear();
+            n
+        })
+        .collect();
+    let mut out = DiagramState {
+        nodes,
+        edges: source
+            .edges
+            .iter()
+            .filter(|e| inside(&e.source, &e.target))
+            .cloned()
+            .collect(),
+        virtual_relations: source
+            .virtual_relations
+            .iter()
+            .filter(|r| inside(&r.child, &r.parent))
+            .cloned()
+            .collect(),
+        linked_relations: source
+            .linked_relations
+            .iter()
+            .filter(|r| inside(&r.child, &r.parent))
+            .cloned()
+            .collect(),
+        show_grid: source.show_grid,
+        prevent_overlap: source.prevent_overlap,
+        show_relations: source.show_relations,
+        show_fk_relations: source.show_fk_relations,
+        show_virtual_relations: source.show_virtual_relations,
+        show_linked_relations: source.show_linked_relations,
+        zoom: DEFAULT_ZOOM,
+        scoped_to: Some(table_id.to_string()),
+        ..Default::default()
+    };
+    layout_focus_subset(&mut out, table_id);
+    out
+}
+
+/// Tata letak bintang untuk diagram subset: tabel fokus di tengah, tabel
+/// yang dirujuknya (parent) di kiri, tabel yang merujuknya (child) di kanan.
+/// Tiap sisi disusun per kolom, urut nama, dan dipusatkan vertikal terhadap
+/// tabel fokus. Kolom baru dibuka bila tinggi kolom melewati batas, jadi
+/// tabel dengan puluhan relasi tetap membentuk blok yang ringkas.
+fn layout_focus_subset(state: &mut DiagramState, focus: &str) {
+    const GAP_X: f32 = 180.0;
+    const GAP_Y: f32 = 40.0;
+    const MIN_SIZE: egui::Vec2 = egui::vec2(160.0, 60.0);
+    const MAX_COLUMN_HEIGHT: f32 = 1400.0;
+
+    let Some(focus_idx) = state.nodes.iter().position(|n| n.id == focus) else {
+        return;
+    };
+    // Tabel yang dirujuk tabel fokus (FK / relasi virtual dari fokus).
+    let mut parents: HashSet<&str> = HashSet::new();
+    for e in &state.edges {
+        if e.source == focus && e.target != focus {
+            parents.insert(e.target.as_str());
+        }
+    }
+    for r in state
+        .virtual_relations
+        .iter()
+        .chain(&state.linked_relations)
+    {
+        if r.child == focus && r.parent != focus {
+            parents.insert(r.parent.as_str());
+        }
+    }
+
+    let size_of = |n: &DiagramNode| n.size.max(MIN_SIZE);
+    let mut left: Vec<usize> = Vec::new();
+    let mut right: Vec<usize> = Vec::new();
+    for (i, n) in state.nodes.iter().enumerate() {
+        if i == focus_idx {
+            continue;
+        }
+        if parents.contains(n.id.as_str()) {
+            left.push(i);
+        } else {
+            right.push(i);
+        }
+    }
+    let by_name = |a: &usize, b: &usize| state.nodes[*a].id.cmp(&state.nodes[*b].id);
+    left.sort_by(by_name);
+    right.sort_by(by_name);
+
+    let focus_size = size_of(&state.nodes[focus_idx]);
+    let limit = MAX_COLUMN_HEIGHT.max(focus_size.y);
+    let center_y = focus_size.y / 2.0;
+
+    // Pecah satu sisi menjadi kolom: (indeks node, lebar kolom, tinggi kolom).
+    let columns = |side: &[usize]| -> Vec<(Vec<usize>, f32, f32)> {
+        let mut cols: Vec<(Vec<usize>, f32, f32)> = Vec::new();
+        for &i in side {
+            let sz = size_of(&state.nodes[i]);
+            match cols.last_mut() {
+                Some((items, w, h)) if *h + GAP_Y + sz.y <= limit => {
+                    items.push(i);
+                    *w = w.max(sz.x);
+                    *h += GAP_Y + sz.y;
+                }
+                _ => cols.push((vec![i], sz.x, sz.y)),
+            }
+        }
+        cols
+    };
+    let left_cols = columns(&left);
+    let right_cols = columns(&right);
+
+    let mut placed: Vec<(usize, egui::Pos2)> = vec![(focus_idx, egui::Pos2::ZERO)];
+    let mut place_column = |items: &[usize], x: f32, width: f32, height: f32, align_right: bool| {
+        let mut y = center_y - height / 2.0;
+        for &i in items {
+            let sz = size_of(&state.nodes[i]);
+            // Kolom kiri rata kanan agar ujung relasi ke tabel fokus sejajar.
+            let nx = if align_right { x + width - sz.x } else { x };
+            placed.push((i, egui::pos2(nx, y)));
+            y += sz.y + GAP_Y;
+        }
+    };
+    let mut x = 0.0;
+    for (items, w, h) in &left_cols {
+        x -= GAP_X + w;
+        place_column(items, x, *w, *h, true);
+    }
+    let mut x = focus_size.x + GAP_X;
+    for (items, w, h) in &right_cols {
+        place_column(items, x, *w, *h, false);
+        x += w + GAP_X;
+    }
+
+    let min = placed
+        .iter()
+        .fold(egui::pos2(f32::MAX, f32::MAX), |m, (_, p)| m.min(*p));
+    let offset = egui::vec2(50.0, 50.0) - min.to_vec2();
+    for (i, pos) in placed {
+        state.nodes[i].pos = pos + offset;
+    }
+}
+
 /// Redupkan warna sesuai faktor opacity mode fokus.
 fn fade(color: egui::Color32, dim: f32) -> egui::Color32 {
     if dim >= 1.0 {
@@ -589,7 +749,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Handle Initial Centering
     if !state.is_centered && !state.nodes.is_empty() {
-        center_diagram(state, rect.size());
+        // Diagram subset baru saja ditata: tampilkan seluruhnya sekaligus.
+        if state.scoped_to.is_some() {
+            fit_diagram(state, rect.size());
+        } else {
+            center_diagram(state, rect.size());
+        }
         state.is_centered = true;
     }
 
@@ -1845,7 +2010,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let measured_width: f32 = ui.data(|d| d.get_temp(toolbar_id)).unwrap_or(720.0);
     let toolbar_width = measured_width.max(TOOLBAR_BTN_SIZE * 4.0);
     let toolbar_height = TOOLBAR_BTN_SIZE + TOOLBAR_PADDING * 2.0;
-    let focus_chip_rect = render_focus_chip(ui, state, rect);
+    let focus_chip_rect = render_focus_chip(ui, state, rect, &mut action);
 
     let toolbar_rect = egui::Rect::from_min_size(
         rect.right_bottom() + egui::vec2(-toolbar_width - 16.0, -toolbar_height - 16.0),
@@ -2261,15 +2426,25 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
                     // Baris 1: Field pencarian + tombol tutup
                     ui.horizontal(|ui| {
-                        let response = crate::window_egui::style::render_search_field(
+                        let search_id = ui.id().with("diagram_search_field");
+                        let response = crate::window_egui::style::render_search_field_with_id(
                             ui,
+                            search_id,
                             &mut state.search_query,
                             "Search diagram…",
                             240.0,
                         );
 
-                        // Auto-focus if empty (just opened or cleared)
-                        if state.search_query.is_empty() && !response.has_focus() {
+                        // Auto-focus bila kosong (baru dibuka / dibersihkan), tapi jangan
+                        // merebut fokus kembali saat masih ada ketikan yang belum di-Enter.
+                        if state.search_query.is_empty()
+                            && !response.has_focus()
+                            && !crate::window_egui::style::search_draft_pending(
+                                ui.ctx(),
+                                search_id,
+                                &state.search_query,
+                            )
+                        {
                             response.request_focus();
                         }
 
@@ -2542,125 +2717,188 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     action
 }
 
-/// Chip melayang di tengah atas kanvas selama mode fokus aktif, dengan
-/// tombol bulat terpusat untuk keluar.
+/// Toolbar kecil melayang di tengah atas kanvas selama mode fokus aktif:
+/// `[ikon] Focusing  nama_tabel │ [⧉ Open in tab] [×]`. Satu baris, tombol
+/// setinggi 26px agar mudah diklik, aksi utama diberi label teks.
 fn render_focus_chip(
     ui: &mut egui::Ui,
     state: &mut DiagramState,
     rect: egui::Rect,
+    action: &mut Option<DiagramAction>,
 ) -> Option<egui::Rect> {
-    let fid = state.focus_table.as_deref()?;
+    let fid = state.focus_table.clone()?;
+    let fid = fid.as_str();
     let title = state
         .nodes
         .iter()
         .find(|n| n.id == fid)
         .map_or(fid, |n| n.title.as_str());
-    let text = format!(
-        "{}  Focusing: {}",
-        egui_icons::icons::ICON_FILTER_CENTER_FOCUS.codepoint,
-        title
-    );
+
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    let strong = ui.visuals().strong_text_color();
+    let weak = ui.visuals().weak_text_color();
     let font = egui::FontId::proportional(12.5);
-    let text_w = ui
-        .painter()
-        .layout_no_wrap(text.clone(), font.clone(), egui::Color32::WHITE)
+    let icon_font = egui::FontId::proportional(14.0);
+
+    let painter = ui.painter().clone();
+    let icon_g = painter.layout_no_wrap(
+        egui_icons::icons::ICON_FILTER_CENTER_FOCUS
+            .codepoint
+            .to_string(),
+        icon_font.clone(),
+        accent,
+    );
+    let label_g = painter.layout_no_wrap("Focusing".to_owned(), font.clone(), weak);
+    let title_g = painter.layout_no_wrap(title.to_owned(), font.clone(), strong);
+    let open_label = "Open in tab";
+    let open_text_w = painter
+        .layout_no_wrap(open_label.to_owned(), font.clone(), strong)
         .size()
         .x;
-    // Lebar chip: padding kiri (14.0) + teks + jarak (10.0) + tombol (18.0) + padding kanan (6.0)
-    let size = egui::vec2(text_w + 48.0, 30.0);
+
+    // Metrik tata letak
+    const H: f32 = 36.0;
+    const BTN_H: f32 = 26.0;
+    const PAD_L: f32 = 12.0;
+    const PAD_R: f32 = 5.0;
+    const OPEN_ICON_W: f32 = 14.0;
+    let open_btn_w = 10.0 + OPEN_ICON_W + 6.0 + open_text_w + 12.0;
+    let info_w = icon_g.size().x + 8.0 + label_g.size().x + 6.0 + title_g.size().x;
+    let width = PAD_L + info_w + 12.0 + 1.0 + 6.0 + open_btn_w + 2.0 + BTN_H + PAD_R;
+
     let chip = egui::Rect::from_center_size(
-        egui::pos2(rect.center().x, rect.top() + 16.0 + size.y / 2.0),
-        size,
+        egui::pos2(rect.center().x, rect.top() + 14.0 + H / 2.0),
+        egui::vec2(width, H),
     );
-    let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    let cy = chip.center().y;
+    let radius = H / 2.0;
 
     // Tangkap klik pada badan chip agar tidak tembus ke background canvas
     let _ = ui.interact(chip, ui.id().with("focus_chip_pill"), egui::Sense::click());
 
-    // Background kapsul dan stroke aksen
-    ui.painter()
-        .rect_filled(chip, 15.0, ui.visuals().window_fill);
-    ui.painter().rect_stroke(
+    // Bayangan halus + latar kapsul + garis tepi netral
+    painter.add(
+        egui::Shadow {
+            offset: [0, 4],
+            blur: 14,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(if ui.visuals().dark_mode { 110 } else { 40 }),
+        }
+        .as_shape(chip, radius),
+    );
+    painter.rect_filled(chip, radius, ui.visuals().window_fill);
+    painter.rect_stroke(
         chip,
-        15.0,
-        egui::Stroke::new(1.5, accent),
-        egui::StrokeKind::Middle,
+        radius,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
     );
 
-    // Teks keterangan fokus (vertikal persis di tengah kapsul)
-    ui.painter().text(
-        egui::pos2(chip.left() + 14.0, chip.center().y),
+    // Bagian info: ikon aksen, label redup, nama tabel tegas
+    let mut x = chip.left() + PAD_L;
+    let icon_w = icon_g.size().x;
+    painter.galley(egui::pos2(x, cy - icon_g.size().y / 2.0), icon_g, accent);
+    x += icon_w + 8.0;
+    let label_w = label_g.size().x;
+    painter.galley(egui::pos2(x, cy - label_g.size().y / 2.0), label_g, weak);
+    x += label_w + 6.0;
+    let title_w = title_g.size().x;
+    painter.galley(egui::pos2(x, cy - title_g.size().y / 2.0), title_g, strong);
+    x += title_w + 12.0;
+
+    // Pemisah vertikal antara info dan aksi
+    painter.line_segment(
+        [egui::pos2(x, cy - 9.0), egui::pos2(x, cy + 9.0)],
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+    );
+    x += 1.0 + 6.0;
+
+    // Tombol berlabel "Open in tab"
+    let open_rect = egui::Rect::from_min_size(
+        egui::pos2(x, cy - BTN_H / 2.0),
+        egui::vec2(open_btn_w, BTN_H),
+    );
+    let open_resp = chip_button(
+        ui,
+        open_rect,
+        "focus_chip_open_tab",
+        "Open this table and its related tables in a new diagram tab",
+    );
+    let open_color = chip_icon_color(ui, &open_resp);
+    painter.text(
+        egui::pos2(open_rect.left() + 10.0 + OPEN_ICON_W / 2.0, cy),
+        egui::Align2::CENTER_CENTER,
+        egui_icons::icons::ICON_OPEN_IN_NEW.codepoint,
+        egui::FontId::proportional(13.0),
+        open_color,
+    );
+    painter.text(
+        egui::pos2(open_rect.left() + 10.0 + OPEN_ICON_W + 6.0, cy),
         egui::Align2::LEFT_CENTER,
-        text,
+        open_label,
         font,
-        ui.visuals().strong_text_color(),
+        open_color,
     );
+    if open_resp.clicked() {
+        *action = Some(DiagramAction::OpenFocusInNewTab(fid.to_string()));
+    }
 
-    // Tombol close melingkar konsentris dengan lengkungan kanan kapsul
-    let btn_center = egui::pos2(chip.right() - 15.0, chip.center().y);
-    let hit_rect = egui::Rect::from_center_size(btn_center, egui::vec2(22.0, 22.0));
-    let resp = ui
-        .interact(
-            hit_rect,
-            ui.id().with("focus_chip_close"),
-            egui::Sense::click(),
-        )
-        .on_hover_text("Clear focus (Esc)")
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    let is_hovered = resp.hovered();
-    let is_down = resp.is_pointer_button_down_on();
-
-    // Lingkaran latar belakang tombol
-    let bg_color = if is_down {
-        if ui.visuals().dark_mode {
-            egui::Color32::from_white_alpha(55)
-        } else {
-            egui::Color32::from_black_alpha(40)
-        }
-    } else if is_hovered {
-        if ui.visuals().dark_mode {
-            egui::Color32::from_white_alpha(35)
-        } else {
-            egui::Color32::from_black_alpha(25)
-        }
-    } else {
-        if ui.visuals().dark_mode {
-            egui::Color32::from_white_alpha(15)
-        } else {
-            egui::Color32::from_black_alpha(12)
-        }
-    };
-    ui.painter().circle_filled(btn_center, 9.0, bg_color);
-
-    // Ikon silang presisi (vektor) sejajar dengan teks
-    let cross_color = if is_hovered || is_down {
-        ui.visuals().strong_text_color()
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    let cross_half = 3.5;
-    let stroke = egui::Stroke::new(1.4, cross_color);
-    ui.painter().line_segment(
-        [
-            btn_center + egui::vec2(-cross_half, -cross_half),
-            btn_center + egui::vec2(cross_half, cross_half),
-        ],
+    // Tombol close bulat, konsentris dengan lengkungan kanan kapsul
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(chip.right() - PAD_R - BTN_H / 2.0, cy),
+        egui::vec2(BTN_H, BTN_H),
+    );
+    let resp = chip_button(ui, close_rect, "focus_chip_close", "Exit focus (Esc)");
+    let c = close_rect.center();
+    let half = 4.0;
+    let stroke = egui::Stroke::new(1.5, chip_icon_color(ui, &resp));
+    painter.line_segment(
+        [c + egui::vec2(-half, -half), c + egui::vec2(half, half)],
         stroke,
     );
-    ui.painter().line_segment(
-        [
-            btn_center + egui::vec2(-cross_half, cross_half),
-            btn_center + egui::vec2(cross_half, -cross_half),
-        ],
+    painter.line_segment(
+        [c + egui::vec2(-half, half), c + egui::vec2(half, -half)],
         stroke,
     );
-
     if resp.clicked() {
         state.focus_table = None;
     }
 
     Some(chip)
+}
+
+/// Tombol di dalam chip fokus: area klik, kursor, tooltip, dan latar kapsul
+/// yang hanya muncul saat hover/tekan (gaya tombol toolbar "ghost").
+fn chip_button(ui: &mut egui::Ui, rect: egui::Rect, id: &str, tooltip: &str) -> egui::Response {
+    let resp = ui
+        .interact(rect, ui.id().with(id), egui::Sense::click())
+        .on_hover_text(tooltip)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let alpha = if resp.is_pointer_button_down_on() {
+        Some((45, 35))
+    } else if resp.hovered() {
+        Some((25, 18))
+    } else {
+        None
+    };
+    if let Some((dark, light)) = alpha {
+        let bg = if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(dark)
+        } else {
+            egui::Color32::from_black_alpha(light)
+        };
+        ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
+    }
+    resp
+}
+
+/// Warna ikon/label tombol chip: tegas saat di-hover/ditekan, redup selainnya.
+fn chip_icon_color(ui: &egui::Ui, resp: &egui::Response) -> egui::Color32 {
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    }
 }
 
 /// Panel daftar relasi sebuah tabel: semua FK, relasi virtual, dan relasi
@@ -4052,11 +4290,6 @@ fn render_relation_suggestions(
             crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui_icons::icons::ICON_SEARCH
-                            .rich_text()
-                            .color(ui.visuals().weak_text_color()),
-                    );
                     let clear_search_w = if state.relation_column_search_query.is_empty() {
                         0.0
                     } else {
@@ -4075,10 +4308,11 @@ fn render_relation_suggestions(
 
                     let search_w =
                         (ui.available_width() - db_filter_w - clear_search_w - 8.0).max(100.0);
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut state.relation_column_search_query)
-                            .hint_text("Search by column name (e.g. user_id, imei)")
-                            .desired_width(search_w),
+                    let edit = crate::window_egui::style::render_search_field(
+                        ui,
+                        &mut state.relation_column_search_query,
+                        "Search by column name (e.g. user_id, imei)",
+                        search_w,
                     );
                     if edit.changed() {
                         search_triggered = true;
@@ -5609,6 +5843,154 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         assert!(!json.contains("focus_table"));
         assert!(!json.contains("flow_anim"));
+        assert!(!json.contains("scoped_to"));
+    }
+
+    fn ids(state: &DiagramState) -> Vec<&str> {
+        let mut v: Vec<&str> = state.nodes.iter().map(|n| n.id.as_str()).collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn node_rect(state: &DiagramState, id: &str) -> egui::Rect {
+        let n = state.nodes.iter().find(|n| n.id == id).expect("node");
+        egui::Rect::from_min_size(n.pos, n.size.max(egui::vec2(160.0, 60.0)))
+    }
+
+    #[test]
+    fn test_focus_subset_keeps_only_related_tables() {
+        let sub = focus_subset_state(&focus_fixture(), "orders");
+        assert_eq!(ids(&sub), ["items", "orders", "users"]);
+        assert_eq!(sub.scoped_to.as_deref(), Some("orders"));
+        assert_eq!(sub.edges.len(), 1);
+        assert_eq!(sub.virtual_relations.len(), 1);
+        assert!(sub.focus_table.is_none());
+        assert!(!sub.is_centered);
+    }
+
+    #[test]
+    fn test_focus_subset_drops_relations_leaving_the_subset() {
+        // items -> orders berada di luar subset "users" (items tidak berelasi langsung).
+        let sub = focus_subset_state(&focus_fixture(), "users");
+        assert_eq!(ids(&sub), ["orders", "users"]);
+        assert_eq!(sub.edges.len(), 1);
+        assert!(sub.virtual_relations.is_empty());
+    }
+
+    #[test]
+    fn test_focus_subset_of_isolated_table() {
+        let sub = focus_subset_state(&focus_fixture(), "audit");
+        assert_eq!(ids(&sub), ["audit"]);
+        assert!(sub.edges.is_empty());
+    }
+
+    #[test]
+    fn test_focus_subset_drops_groups() {
+        let mut source = focus_fixture();
+        source.groups.push(crate::models::structs::DiagramGroup {
+            id: "g".into(),
+            title: "G".into(),
+            color: egui::Color32::RED,
+            manual_pos: None,
+        });
+        for n in &mut source.nodes {
+            n.group_id = Some("g".into());
+            n.group_ids = vec!["g".into()];
+        }
+        let sub = focus_subset_state(&source, "orders");
+        assert!(sub.groups.is_empty());
+        assert!(
+            sub.nodes
+                .iter()
+                .all(|n| n.group_id.is_none() && n.group_ids.is_empty())
+        );
+    }
+
+    /// Parent di kiri tabel fokus, child di kanan, tanpa tumpang tindih.
+    #[test]
+    fn test_focus_subset_layout_parents_left_children_right() {
+        let sub = focus_subset_state(&focus_fixture(), "orders");
+        let (focus, parent, child) = (
+            node_rect(&sub, "orders"),
+            node_rect(&sub, "users"),
+            node_rect(&sub, "items"),
+        );
+        assert!(parent.right() < focus.left());
+        assert!(child.left() > focus.right());
+        assert!(!parent.intersects(focus) && !child.intersects(focus));
+        assert!(sub.nodes.iter().all(|n| n.pos.x >= 0.0 && n.pos.y >= 0.0));
+    }
+
+    /// Banyak tabel di satu sisi dipecah menjadi beberapa kolom yang tidak
+    /// saling menimpa.
+    #[test]
+    fn test_focus_subset_layout_wraps_many_children_into_columns() {
+        let mut source = DiagramState {
+            nodes: vec![node("hub", &["id"])],
+            ..Default::default()
+        };
+        for i in 0..40 {
+            let id = format!("child_{i:02}");
+            let mut n = node(&id, &["id", "hub_id"]);
+            n.size = egui::vec2(200.0, 120.0);
+            source.nodes.push(n);
+            source.edges.push(crate::models::structs::DiagramEdge {
+                source: id,
+                target: "hub".into(),
+                label: String::new(),
+            });
+        }
+        let sub = focus_subset_state(&source, "hub");
+        assert_eq!(sub.nodes.len(), 41);
+        let rects: Vec<egui::Rect> = sub.nodes.iter().map(|n| node_rect(&sub, &n.id)).collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(*b), "{a:?} overlaps {b:?}");
+            }
+        }
+        let columns: HashSet<i64> = sub
+            .nodes
+            .iter()
+            .filter(|n| n.id != "hub")
+            .map(|n| n.pos.x.round() as i64)
+            .collect();
+        assert!(
+            columns.len() > 1,
+            "40 children must wrap into several columns"
+        );
+        let hub = node_rect(&sub, "hub");
+        assert!(rects.iter().all(|r| *r == hub || r.left() > hub.right()));
+    }
+
+    /// Frame pertama tab subset memuat seluruh tabel di viewport.
+    #[test]
+    fn test_focus_subset_first_frame_fits_viewport() {
+        let ctx = egui::Context::default();
+        let mut sub = focus_subset_state(&focus_fixture(), "orders");
+        render_frame(&ctx, &mut sub, None);
+        assert!(sub.is_centered);
+        let view = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        for n in &sub.nodes {
+            let min = egui::Pos2::ZERO + sub.pan + n.pos.to_vec2() * sub.zoom;
+            let max = min + n.size * sub.zoom;
+            assert!(
+                view.contains(min) && view.contains(max),
+                "{} outside view",
+                n.id
+            );
+        }
+    }
+
+    /// Chip fokus dengan tombol barunya tetap bisa dirender.
+    #[test]
+    fn test_focus_chip_renders_with_open_tab_button() {
+        let ctx = egui::Context::default();
+        let mut state = focus_fixture();
+        state.is_centered = true;
+        state.focus_table = Some("orders".into());
+        render_frame(&ctx, &mut state, None);
+        render_frame(&ctx, &mut state, None);
+        assert_eq!(state.focus_table.as_deref(), Some("orders"));
     }
 
     /// Jalankan satu frame `render_diagram` tanpa jendela (1600x1000) dan

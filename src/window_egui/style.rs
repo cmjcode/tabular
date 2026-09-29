@@ -452,45 +452,53 @@ pub fn render_text_field(
     response
 }
 
-/// Field pencarian/filter standar: `render_text_field` + ikon search.
-///
-/// Pencarian baru diterapkan saat Enter ditekan: ketikan disimpan di draft (memory egui)
-/// dan `text` hanya diperbarui saat Enter, atau saat field dikosongkan. `changed()` pada
-/// response hanya bernilai true ketika `text` benar-benar berubah, sehingga pemanggil
-/// tidak memicu pencarian berat per huruf.
-pub fn render_search_field(
-    ui: &mut egui::Ui,
-    text: &mut String,
-    hint: &str,
-    width: f32,
-) -> egui::Response {
-    let muted = nav_text_muted(ui.ctx());
-    let edit_id = ui.next_auto_id().with("search_field");
-    let draft_key = edit_id.with("draft");
+/// Draft search bar yang belum di-commit, disimpan di memory egui per field.
+#[derive(Clone, Default)]
+struct SearchDraft {
+    draft: String,
+    /// Nilai `text` terakhir yang dilihat; beda berarti `text` diubah dari luar.
+    last_seen: String,
+    /// Pass tempat commit terakhir terjadi (lihat `search_draft_pending`).
+    committed_pass: u64,
+}
 
-    // (draft, nilai `text` yang terakhir kita lihat)
-    let (mut draft, last_seen) = ui
-        .data(|d| d.get_temp::<(String, String)>(draft_key))
-        .unwrap_or_else(|| (text.clone(), text.clone()));
+fn search_draft_key(id: egui::Id) -> egui::Id {
+    id.with("search_draft")
+}
+
+/// Membungkus sebuah TextEdit search agar pencarian hanya diterapkan saat Enter.
+///
+/// Ketikan disimpan di draft dan `text` baru diperbarui saat Enter ditekan, atau saat
+/// field dikosongkan. `changed()` pada response hanya true ketika `text` benar-benar
+/// berubah, sehingga pemanggil tidak memicu pencarian berat per huruf. `add` menerima
+/// buffer draft dan wajib memasang `.id(id)` pada TextEdit-nya.
+pub fn commit_search_on_enter(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    text: &mut String,
+    add: impl FnOnce(&mut egui::Ui, &mut String) -> egui::Response,
+) -> egui::Response {
+    let key = search_draft_key(id);
+    let mut state = ui
+        .data(|d| d.get_temp::<SearchDraft>(key))
+        .unwrap_or_else(|| SearchDraft {
+            draft: text.clone(),
+            last_seen: text.clone(),
+            committed_pass: 0,
+        });
     // `text` diubah dari luar (mis. tombol clear) → draft ikut disinkronkan.
-    if *text != last_seen {
-        draft = text.clone();
+    if *text != state.last_seen {
+        state.draft = text.clone();
     }
 
-    let mut response = render_text_field(
-        ui,
-        egui::TextEdit::singleline(&mut draft)
-            .id(edit_id)
-            .hint_text(egui::RichText::new(hint).color(muted)),
-        width,
-        Some(egui_icons::icons::ICON_SEARCH.codepoint),
-    );
+    let mut response = add(ui, &mut state.draft);
 
     let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    let cleared = response.changed() && draft.is_empty();
+    let cleared = response.changed() && state.draft.is_empty();
     response.flags.remove(egui::response::Flags::CHANGED);
-    if (enter_pressed || cleared) && draft != *text {
-        *text = draft.clone();
+    if (enter_pressed || cleared) && state.draft != *text {
+        *text = state.draft.clone();
+        state.committed_pass = ui.ctx().cumulative_pass_nr();
         response.mark_changed();
     }
     if enter_pressed {
@@ -498,25 +506,55 @@ pub fn render_search_field(
         response.request_focus();
     }
 
-    ui.data_mut(|d| d.insert_temp(draft_key, (draft, text.clone())));
+    state.last_seen = text.clone();
+    ui.data_mut(|d| d.insert_temp(key, state));
     response
 }
 
-/// Varian `render_search_field` yang menerapkan filter di setiap ketikan. Hanya untuk
-/// daftar kecil di memori yang memakai Enter untuk aksi lain (mis. searchable picker).
-pub fn render_search_field_live(
+/// True bila field search `id` masih punya ketikan yang belum dicari, atau baru saja
+/// di-commit pada pass ini. Dipakai daftar yang memakai Enter untuk memilih item
+/// (Quick Open, command palette, picker): Enter pertama menjalankan pencarian, Enter
+/// berikutnya baru memilih. Aman dipanggil sebelum maupun sesudah field digambar.
+pub fn search_draft_pending(ctx: &egui::Context, id: egui::Id, committed: &str) -> bool {
+    ctx.data(|d| d.get_temp::<SearchDraft>(search_draft_key(id)))
+        .is_some_and(|s| {
+            s.committed_pass == ctx.cumulative_pass_nr()
+                || (s.last_seen == committed && s.draft != committed)
+        })
+}
+
+/// Field pencarian/filter standar: `render_text_field` + ikon search. Pencarian hanya
+/// diterapkan saat Enter (lihat `commit_search_on_enter`).
+pub fn render_search_field(
     ui: &mut egui::Ui,
     text: &mut String,
     hint: &str,
     width: f32,
 ) -> egui::Response {
+    let id = ui.next_auto_id().with("search_field");
+    render_search_field_with_id(ui, id, text, hint, width)
+}
+
+/// Seperti `render_search_field` dengan id eksplisit, untuk pemanggil yang perlu
+/// `search_draft_pending` atau `request_focus` pada field yang sama.
+pub fn render_search_field_with_id(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    text: &mut String,
+    hint: &str,
+    width: f32,
+) -> egui::Response {
     let muted = nav_text_muted(ui.ctx());
-    render_text_field(
-        ui,
-        egui::TextEdit::singleline(text).hint_text(egui::RichText::new(hint).color(muted)),
-        width,
-        Some(egui_icons::icons::ICON_SEARCH.codepoint),
-    )
+    commit_search_on_enter(ui, id, text, |ui, draft| {
+        render_text_field(
+            ui,
+            egui::TextEdit::singleline(draft)
+                .id(id)
+                .hint_text(egui::RichText::new(hint).color(muted)),
+            width,
+            Some(egui_icons::icons::ICON_SEARCH.codepoint),
+        )
+    })
 }
 
 /// Satu item segmented control: (key, ikon, label).

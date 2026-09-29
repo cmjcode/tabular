@@ -310,6 +310,11 @@ impl QuickOpenState {
 
 /// Similarity terbaik item terhadap query (judul, nama tabel, atau isi SQL),
 /// hanya bila melewati ambang [`crate::search_match::MIN_SIMILARITY`].
+/// Id field pencarian Quick Open (dipakai juga oleh handler Enter global).
+pub fn search_field_id() -> egui::Id {
+    egui::Id::new("quick_open_search_field")
+}
+
 fn item_similarity(query: &crate::search_match::SearchQuery, item: &QuickOpenItem) -> Option<f32> {
     [
         Some(item.title.as_str()),
@@ -1377,12 +1382,20 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                     );
                                     ui.add_space(6.0);
 
-                                    let text_edit = egui::TextEdit::singleline(&mut tabular.quick_open_state.query)
-                                        .hint_text("Search tables, views, procedures, queries, history, connections... (⌘P / ⌘K)")
-                                        .frame(egui::Frame::NONE)
-                                        .font(egui::FontId::proportional(16.0));
-
-                                    let resp = ui.add_sized([modal_width - 130.0, 28.0], text_edit);
+                                    let search_id = search_field_id();
+                                    let resp = crate::window_egui::style::commit_search_on_enter(
+                                        ui,
+                                        search_id,
+                                        &mut tabular.quick_open_state.query,
+                                        |ui, draft| {
+                                            let text_edit = egui::TextEdit::singleline(draft)
+                                                .id(search_id)
+                                                .hint_text("Search tables, views, procedures, queries, history, connections... (⌘P / ⌘K)")
+                                                .frame(egui::Frame::NONE)
+                                                .font(egui::FontId::proportional(16.0));
+                                            ui.add_sized([modal_width - 130.0, 28.0], text_edit)
+                                        },
+                                    );
 
                                     if tabular.quick_open_state.request_focus {
                                         resp.request_focus();

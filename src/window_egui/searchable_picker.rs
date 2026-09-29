@@ -227,12 +227,17 @@ fn popup_contents(
         state.scroll_to_highlight = true;
     }
 
+    // Enter pertama menjalankan pencarian yang masih di draft (Enter dibiarkan sampai ke
+    // TextEdit); Enter berikutnya baru memilih item.
+    let search_id = ui.id().with("searchable_picker_search");
+    let search_pending = style::search_draft_pending(&ctx, search_id, &state.query);
+
     // Tangkap tombol navigasi sebelum TextEdit memprosesnya.
     let (down, up, enter) = ui.input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
             i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+            !search_pending && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
         )
     });
     if !filtered.is_empty() {
@@ -261,8 +266,13 @@ fn popup_contents(
 
     // Field pencarian
     let prev_query = state.query.clone();
-    let search =
-        style::render_search_field_live(ui, &mut state.query, cfg.search_hint, f32::INFINITY);
+    let search = style::render_search_field_with_id(
+        ui,
+        search_id,
+        &mut state.query,
+        cfg.search_hint,
+        f32::INFINITY,
+    );
     if just_opened {
         search.request_focus();
     }

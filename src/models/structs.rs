@@ -935,6 +935,12 @@ pub struct DiagramState {
     /// Teks pencarian di panel relasi.
     #[serde(skip)]
     pub relations_panel_query: String,
+    /// Bila `Some(tabel)`, diagram ini adalah subset hasil "Open in new tab"
+    /// dari mode fokus: hanya tabel tersebut dan tabel yang berelasi. Tab
+    /// seperti ini bukan host database-nya, jadi tidak pernah disimpan,
+    /// disinkronkan skema, atau dipakai sebagai sumber link.
+    #[serde(skip)]
+    pub scoped_to: Option<String>,
 }
 
 /// Tween viewport diagram dari (pan, zoom) awal ke tujuan.
@@ -1011,6 +1017,7 @@ impl Default for DiagramState {
             flow_anim: None,
             relations_panel: None,
             relations_panel_query: String::new(),
+            scoped_to: None,
         }
     }
 }

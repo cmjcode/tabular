@@ -8068,13 +8068,19 @@ pub(crate) fn render_find_replace_floating_panel(
 
                         // Find Input Field
                         let find_input_id = ui.make_persistent_id("editor_find_input");
-                        let find_edit =
-                            egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text)
-                                .id(find_input_id)
-                                .hint_text("Find")
-                                .desired_width(150.0);
-
-                        let find_resp = ui.add(find_edit);
+                        let find_resp = window_egui::style::commit_search_on_enter(
+                            ui,
+                            find_input_id,
+                            &mut tabular.advanced_editor.find_text,
+                            |ui, draft| {
+                                ui.add(
+                                    egui::TextEdit::singleline(draft)
+                                        .id(find_input_id)
+                                        .hint_text("Find")
+                                        .desired_width(150.0),
+                                )
+                            },
+                        );
 
                         if tabular.advanced_editor.focus_find_input {
                             find_resp.request_focus();
@@ -8413,6 +8419,11 @@ pub(crate) fn select_current_theme(tabular: &mut window_egui::Tabular) {
     tabular.show_theme_selector = false;
 }
 
+/// Id field pencarian command palette (dipakai juga oleh handler Enter global).
+pub(crate) fn command_palette_search_id() -> egui::Id {
+    egui::Id::new("command_palette_search_field")
+}
+
 pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     let progress = window_egui::style::render_modal_backdrop(
         ctx,
@@ -8471,12 +8482,20 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
                                     );
                                     ui.add_space(4.0);
 
-                                    let text_edit = egui::TextEdit::singleline(&mut tabular.command_palette_input)
-                                        .hint_text("Type a command or search tables... (⌘P / ⌘K)")
-                                        .frame(egui::Frame::NONE)
-                                        .font(egui::FontId::proportional(15.0));
-
-                                    let response = ui.add_sized([modal_width - 80.0, 26.0], text_edit);
+                                    let search_id = command_palette_search_id();
+                                    let response = window_egui::style::commit_search_on_enter(
+                                        ui,
+                                        search_id,
+                                        &mut tabular.command_palette_input,
+                                        |ui, draft| {
+                                            let text_edit = egui::TextEdit::singleline(draft)
+                                                .id(search_id)
+                                                .hint_text("Type a command or search tables... (⌘P / ⌘K)")
+                                                .frame(egui::Frame::NONE)
+                                                .font(egui::FontId::proportional(15.0));
+                                            ui.add_sized([modal_width - 80.0, 26.0], text_edit)
+                                        },
+                                    );
 
                                     if response.changed() {
                                         tabular.command_palette_selected_index = 0;
