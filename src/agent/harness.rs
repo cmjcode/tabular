@@ -131,6 +131,10 @@ pub struct AgentRequest {
     pub cwd: PathBuf,
     /// File JSON konfigurasi MCP (dipakai Claude Code lewat `--mcp-config`).
     pub mcp_config: Option<PathBuf>,
+    /// Tool bawaan CLI tambahan yang diizinkan tanpa prompt (Claude Code
+    /// `--allowedTools`), mis. `Read`, `Grep`, `Glob` untuk memindai repository.
+    /// Kosong untuk chat biasa: hanya tool MCP Tabular yang diizinkan.
+    pub allowed_tools: Vec<String>,
 }
 
 /// Pisahkan string argumen ala shell: spasi memisahkan, kutip tunggal/ganda
@@ -256,14 +260,25 @@ pub fn build_args(cfg: &CliAgentConfig, req: &AgentRequest) -> Vec<String> {
                 args.push("--resume".into());
                 args.push(id.into());
             }
+            // Hanya tool MCP Tabular (plus `allowed_tools` yang eksplisit) yang
+            // diizinkan tanpa prompt; tool lain (Bash, Edit, …) ditolak
+            // otomatis di print mode.
+            let mut allowed: Vec<String> = Vec::new();
             if let Some(path) = &req.mcp_config {
                 args.push("--mcp-config".into());
                 args.push(path.to_string_lossy().to_string());
                 args.push("--strict-mcp-config".into());
-                // Hanya tool MCP Tabular yang diizinkan tanpa prompt; tool lain
-                // (Bash, Edit, …) ditolak otomatis di print mode.
+                allowed.push(format!("mcp__{MCP_SERVER_NAME}"));
+            }
+            allowed.extend(
+                req.allowed_tools
+                    .iter()
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty()),
+            );
+            if !allowed.is_empty() {
                 args.push("--allowedTools".into());
-                args.push(format!("mcp__{MCP_SERVER_NAME}"));
+                args.push(allowed.join(","));
             }
             args.extend(split_args(&cfg.extra_args));
         }
@@ -325,6 +340,29 @@ pub struct StreamParser {
     finished: bool,
     /// Baris non-JSON dari CLI JSON (fallback bila tidak ada event sama sekali).
     raw_lines: String,
+    /// Nomor urut pemanggilan tool (dipakai sebagai `step_index` Claude/Gemini).
+    tool_seq: u64,
+    /// Pemanggilan tool yang belum mendapat hasil, per id tool.
+    open_tools: std::collections::HashMap<String, OpenTool>,
+    /// Blok tool_use Claude yang input-nya masih di-stream (`input_json_delta`).
+    streaming_tool: Option<StreamingTool>,
+}
+
+/// Tool yang sedang berjalan; dipakai untuk menandai Done/Error saat hasilnya tiba.
+#[derive(Debug, Clone)]
+struct OpenTool {
+    step_index: u64,
+    name: String,
+    description: String,
+    detail: Option<String>,
+}
+
+/// Blok tool_use yang parameternya belum lengkap.
+#[derive(Debug, Clone)]
+struct StreamingTool {
+    block_index: Option<u64>,
+    id: Option<String>,
+    json: String,
 }
 
 impl StreamParser {
@@ -337,7 +375,76 @@ impl StreamParser {
             saw_json: false,
             finished: false,
             raw_lines: String::new(),
+            tool_seq: 0,
+            open_tools: std::collections::HashMap::new(),
+            streaming_tool: None,
         }
+    }
+
+    /// Catat pemanggilan tool baru dan buat event kemajuannya (status Active).
+    fn start_tool(
+        &mut self,
+        id: Option<&str>,
+        name: &str,
+        params: &serde_json::Value,
+    ) -> Vec<AgentEvent> {
+        self.tool_seq += 1;
+        let (description, detail) = format_tool_step(name, params);
+        if let Some(id) = id {
+            self.open_tools.insert(
+                id.to_string(),
+                OpenTool {
+                    step_index: self.tool_seq,
+                    name: name.to_string(),
+                    description: description.clone(),
+                    detail: detail.clone(),
+                },
+            );
+        }
+        vec![
+            AgentEvent::ToolUse(name.to_string()),
+            AgentEvent::Progress(ProgressStep {
+                step_index: Some(self.tool_seq),
+                description,
+                detail,
+                status: ProgressStatus::Active,
+                tool_name: Some(name.to_string()),
+            }),
+        ]
+    }
+
+    /// Parameter tool lengkap setelah streaming: perbarui deskripsi langkah.
+    fn refine_tool(&mut self, id: &str, params: &serde_json::Value) -> Option<AgentEvent> {
+        let tool = self.open_tools.get_mut(id)?;
+        let (description, detail) = format_tool_step(&tool.name, params);
+        if description == tool.description && detail == tool.detail {
+            return None;
+        }
+        tool.description = description.clone();
+        tool.detail = detail.clone();
+        Some(AgentEvent::Progress(ProgressStep {
+            step_index: Some(tool.step_index),
+            description,
+            detail,
+            status: ProgressStatus::Active,
+            tool_name: Some(tool.name.clone()),
+        }))
+    }
+
+    /// Hasil tool tiba: tandai langkahnya Done, atau Error beserta pesannya.
+    fn finish_tool(&mut self, id: &str, error: Option<String>) -> Option<AgentEvent> {
+        let tool = self.open_tools.remove(id)?;
+        let (status, detail) = match error {
+            Some(msg) => (ProgressStatus::Error, Some(msg)),
+            None => (ProgressStatus::Done, tool.detail),
+        };
+        Some(AgentEvent::Progress(ProgressStep {
+            step_index: Some(tool.step_index),
+            description: tool.description,
+            detail,
+            status,
+            tool_name: Some(tool.name),
+        }))
     }
 
     pub fn is_finished(&self) -> bool {
@@ -420,10 +527,10 @@ impl StreamParser {
         }
         if v.get("type").is_some() {
             let ty = v["type"].as_str().unwrap_or("");
-            if ty == "stream_event" || ty == "assistant" || ty == "system" {
+            if ty == "stream_event" || ty == "assistant" || ty == "system" || ty == "user" {
                 return self.feed_claude(v);
             }
-            if ty == "tool_use" || ty == "tool_call" || ty == "message" {
+            if ty == "tool_use" || ty == "tool_call" || ty == "tool_result" || ty == "message" {
                 return self.feed_gemini(v);
             }
         }
@@ -551,37 +658,89 @@ impl StreamParser {
                 self.saw_stream_event = true;
                 let ev = &v["event"];
                 match ev["type"].as_str().unwrap_or("") {
-                    "content_block_delta" => {
-                        if ev["delta"]["type"].as_str() == Some("text_delta")
-                            && let Some(t) = ev["delta"]["text"].as_str()
-                            && !t.is_empty()
+                    "content_block_delta" => match ev["delta"]["type"].as_str() {
+                        Some("text_delta") => {
+                            if let Some(t) = ev["delta"]["text"].as_str()
+                                && !t.is_empty()
+                            {
+                                out.push(self.delta(t));
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            if let (Some(st), Some(part)) = (
+                                self.streaming_tool.as_mut(),
+                                ev["delta"]["partial_json"].as_str(),
+                            ) {
+                                st.json.push_str(part);
+                            }
+                        }
+                        _ => {}
+                    },
+                    "content_block_start" => {
+                        let block = &ev["content_block"];
+                        if block["type"].as_str() == Some("tool_use")
+                            && let Some(name) = block["name"].as_str()
                         {
-                            out.push(self.delta(t));
+                            let id = block["id"].as_str();
+                            out.extend(self.start_tool(id, name, &block["input"]));
+                            self.streaming_tool = Some(StreamingTool {
+                                block_index: ev["index"].as_u64(),
+                                id: id.map(str::to_string),
+                                json: String::new(),
+                            });
                         }
                     }
-                    "content_block_start" => {
-                        if ev["content_block"]["type"].as_str() == Some("tool_use")
-                            && let Some(name) = ev["content_block"]["name"].as_str()
+                    "content_block_stop" => {
+                        let same_block = self
+                            .streaming_tool
+                            .as_ref()
+                            .is_some_and(|st| st.block_index == ev["index"].as_u64());
+                        if same_block
+                            && let Some(st) = self.streaming_tool.take()
+                            && let Some(id) = st.id
+                            && let Ok(params) = serde_json::from_str::<serde_json::Value>(&st.json)
+                            && let Some(e) = self.refine_tool(&id, &params)
                         {
-                            out.push(AgentEvent::ToolUse(name.to_string()));
-                            let (desc, detail) =
-                                format_tool_step(name, &ev["content_block"]["input"]);
-                            out.push(AgentEvent::Progress(ProgressStep {
-                                step_index: None,
-                                description: desc,
-                                detail,
-                                status: ProgressStatus::Active,
-                                tool_name: Some(name.to_string()),
-                            }));
+                            out.push(e);
                         }
                     }
                     _ => {}
+                }
+            }
+            "user" => {
+                // Hasil tool (tool_result) menutup langkah yang sedang berjalan.
+                if let Some(blocks) = v["message"]["content"].as_array() {
+                    for b in blocks {
+                        if b["type"].as_str() != Some("tool_result") {
+                            continue;
+                        }
+                        let Some(id) = b["tool_use_id"].as_str() else {
+                            continue;
+                        };
+                        let error = (b["is_error"].as_bool() == Some(true))
+                            .then(|| tool_result_error_text(&b["content"]));
+                        if let Some(e) = self.finish_tool(id, error) {
+                            out.push(e);
+                        }
+                    }
                 }
             }
             "assistant" => {
                 // Tanpa --include-partial-messages hanya event ini yang membawa
                 // teks; dengan flag itu, delta sudah dikirim lewat stream_event.
                 if self.saw_stream_event {
+                    // Parameter tool lengkap juga ada di sini; pakai bila delta
+                    // input tidak sempat diurai.
+                    if let Some(blocks) = v["message"]["content"].as_array() {
+                        for b in blocks {
+                            if b["type"].as_str() == Some("tool_use")
+                                && let Some(id) = b["id"].as_str()
+                                && let Some(e) = self.refine_tool(id, &b["input"])
+                            {
+                                out.push(e);
+                            }
+                        }
+                    }
                     return out;
                 }
                 if let Some(blocks) = v["message"]["content"].as_array() {
@@ -596,15 +755,8 @@ impl StreamParser {
                             }
                             "tool_use" => {
                                 if let Some(name) = b["name"].as_str() {
-                                    out.push(AgentEvent::ToolUse(name.to_string()));
-                                    let (desc, detail) = format_tool_step(name, &b["input"]);
-                                    out.push(AgentEvent::Progress(ProgressStep {
-                                        step_index: None,
-                                        description: desc,
-                                        detail,
-                                        status: ProgressStatus::Active,
-                                        tool_name: Some(name.to_string()),
-                                    }));
+                                    let id = b["id"].as_str();
+                                    out.extend(self.start_tool(id, name, &b["input"]));
                                 }
                             }
                             _ => {}
@@ -670,7 +822,6 @@ impl StreamParser {
                     .as_str()
                     .or_else(|| v["name"].as_str())
                     .unwrap_or("tool");
-                out.push(AgentEvent::ToolUse(name.to_string()));
                 let params = if v["parameters"].is_object() {
                     &v["parameters"]
                 } else if v["args"].is_object() {
@@ -678,14 +829,27 @@ impl StreamParser {
                 } else {
                     &v["tool_info"]["parameters"]
                 };
-                let (desc, detail) = format_tool_step(name, params);
-                out.push(AgentEvent::Progress(ProgressStep {
-                    step_index: None,
-                    description: desc,
-                    detail,
-                    status: ProgressStatus::Active,
-                    tool_name: Some(name.to_string()),
-                }));
+                let id = v["tool_id"].as_str().or_else(|| v["id"].as_str());
+                out.extend(self.start_tool(id, name, params));
+            }
+            "tool_result" => {
+                let id = v["tool_id"].as_str().or_else(|| v["id"].as_str());
+                let failed = v["status"]
+                    .as_str()
+                    .is_some_and(|s| !s.eq_ignore_ascii_case("success"));
+                let error = failed.then(|| {
+                    v["error"]["message"]
+                        .as_str()
+                        .or_else(|| v["error"].as_str())
+                        .or_else(|| v["output"].as_str())
+                        .map(|m| ellipsize(first_line(m), 160))
+                        .unwrap_or_else(|| "tool failed".to_string())
+                });
+                if let Some(id) = id
+                    && let Some(e) = self.finish_tool(id, error)
+                {
+                    out.push(e);
+                }
             }
             "result" => {
                 let status = v["status"].as_str().unwrap_or("success");
@@ -833,6 +997,160 @@ fn format_tabular_mcp_tool(
     }
 }
 
+/// Baris pertama teks yang tidak kosong.
+fn first_line(s: &str) -> &str {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+}
+
+/// Potong teks ke `max` karakter (aman untuk UTF-8) dengan elipsis.
+fn ellipsize(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", cut.trim_end())
+    }
+}
+
+/// Nama file dari sebuah path (atau path utuh bila tidak ada).
+fn file_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Pesan error dari blok `tool_result` Claude (string atau array blok teks).
+fn tool_result_error_text(content: &serde_json::Value) -> String {
+    let text = match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    // Claude membungkus pesan dengan <tool_use_error>…</tool_use_error>.
+    let text = text
+        .replace("<tool_use_error>", "")
+        .replace("</tool_use_error>", "");
+    let line = first_line(&text);
+    if line.is_empty() {
+        "Tool failed".to_string()
+    } else {
+        ellipsize(line, 160)
+    }
+}
+
+/// Tool bawaan Claude Code (`Read`, `Grep`, `Bash`, …) dan Gemini CLI
+/// (`read_file`, `run_shell_command`, …) menjadi deskripsi yang bisa dibaca.
+fn format_cli_builtin_tool(
+    name: &str,
+    params: &serde_json::Value,
+) -> Option<(String, Option<String>)> {
+    let arg = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| params.get(*k).and_then(clean_arg_str))
+    };
+    let arg_nonempty = |keys: &[&str]| arg(keys).filter(|s| !s.is_empty());
+    let step = match name {
+        "Read" | "read_file" => {
+            let path = arg_nonempty(&["file_path", "absolute_path", "path"]);
+            match &path {
+                Some(p) => (format!("Read {}", file_label(p)), path.clone()),
+                None => ("Reading a file…".to_string(), None),
+            }
+        }
+        "read_many_files" => ("Reading several files…".to_string(), None),
+        "Grep" | "search_file_content" => {
+            let pattern = arg_nonempty(&["pattern", "query"]);
+            let scope = [
+                arg_nonempty(&["path", "dir_path"]),
+                arg_nonempty(&["glob", "include", "type"]),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            let detail = (!scope.is_empty()).then(|| format!("in {}", scope.join(" · ")));
+            match pattern {
+                Some(p) => (format!("Search code for \"{}\"", ellipsize(&p, 60)), detail),
+                None => ("Searching the code…".to_string(), detail),
+            }
+        }
+        "Glob" | "glob" => {
+            let pattern = arg_nonempty(&["pattern"]);
+            let detail = arg_nonempty(&["path", "dir_path"]).map(|p| format!("in {p}"));
+            match pattern {
+                Some(p) => (format!("Find files {}", ellipsize(&p, 60)), detail),
+                None => ("Finding files…".to_string(), detail),
+            }
+        }
+        "LS" | "list_directory" => {
+            let path = arg_nonempty(&["path", "dir_path"]);
+            match &path {
+                Some(p) => (format!("List folder {}", file_label(p)), path.clone()),
+                None => ("Listing a folder…".to_string(), None),
+            }
+        }
+        "Bash" | "run_shell_command" => {
+            let cmd = arg_nonempty(&["command"]);
+            // Claude/Gemini mengisi `description` yang ringkas; pakai bila ada.
+            let desc = arg_nonempty(&["description"]);
+            let one_line = cmd
+                .as_deref()
+                .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "));
+            match (desc, one_line) {
+                (Some(d), cmd) => (ellipsize(&d, 70), cmd),
+                (None, Some(c)) => (format!("Run: {}", ellipsize(&c, 50)), Some(c)),
+                (None, None) => ("Running a shell command…".to_string(), None),
+            }
+        }
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" | "write_file" | "replace" => {
+            let path = arg_nonempty(&["file_path", "notebook_path", "path"]);
+            let verb = if matches!(name, "Write" | "write_file") {
+                "Write"
+            } else {
+                "Edit"
+            };
+            match &path {
+                Some(p) => (format!("{verb} {}", file_label(p)), path.clone()),
+                None => (format!("{verb} a file…"), None),
+            }
+        }
+        "WebFetch" | "web_fetch" => {
+            let url = arg_nonempty(&["url", "prompt"]);
+            ("Fetch a web page".to_string(), url)
+        }
+        "WebSearch" | "google_web_search" => {
+            let q = arg_nonempty(&["query"]);
+            match q {
+                Some(q) => (
+                    format!("Search the web for \"{}\"", ellipsize(&q, 60)),
+                    None,
+                ),
+                None => ("Searching the web…".to_string(), None),
+            }
+        }
+        "Task" | "Agent" => {
+            let d = arg_nonempty(&["description"]);
+            match d {
+                Some(d) => (format!("Sub-agent: {}", ellipsize(&d, 60)), None),
+                None => ("Starting a sub-agent…".to_string(), None),
+            }
+        }
+        "TodoWrite" | "write_todos" => ("Update the plan".to_string(), None),
+        _ => return None,
+    };
+    Some(step)
+}
+
 /// Format nama dan parameter tool menjadi deskripsi manusiawi dan detailnya.
 /// Mengadopsi konvensi pelacak aktivitas dari AGENT-CODE.
 pub fn format_tool_step(tool_name: &str, params: &serde_json::Value) -> (String, Option<String>) {
@@ -883,6 +1201,10 @@ pub fn format_tool_step(tool_name: &str, params: &serde_json::Value) -> (String,
         return format_tabular_mcp_tool(raw_name, params, explicit_action);
     }
 
+    if let Some(step) = format_cli_builtin_tool(raw_name, params) {
+        return step;
+    }
+
     match raw_name {
         "run_command" | "bash" => {
             let cmd = params
@@ -893,8 +1215,8 @@ pub fn format_tool_step(tool_name: &str, params: &serde_json::Value) -> (String,
             let detail = cmd.clone();
             let desc = if let Some(c) = cmd {
                 let single_line = c.split_whitespace().collect::<Vec<_>>().join(" ");
-                if single_line.len() > 45 {
-                    format!("Run: {}…", &single_line[..42])
+                if single_line.chars().count() > 45 {
+                    format!("Run: {}", ellipsize(&single_line, 43))
                 } else if !single_line.is_empty() {
                     format!("Run: {single_line}")
                 } else {
@@ -1042,7 +1364,7 @@ pub fn format_tool_step(tool_name: &str, params: &serde_json::Value) -> (String,
             } else if let Some(sum) = explicit_summary {
                 (sum, None)
             } else if !raw_name.is_empty() {
-                (format!("Running {raw_name}…"), None)
+                (format!("Using tool {raw_name}…"), None)
             } else {
                 ("Working…".to_string(), None)
             }
@@ -1535,6 +1857,7 @@ pub fn test_connection(cfg: &CliAgentConfig) -> Result<String, String> {
         session_id: None,
         cwd: agent_workspace_dir(),
         mcp_config: None,
+        allowed_tools: Vec::new(),
     };
     let (rx, handle) = spawn_stream(cfg, req)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -1583,6 +1906,7 @@ mod tests {
             session_id: Some("abc".into()),
             cwd: PathBuf::from("/tmp"),
             mcp_config: Some(PathBuf::from("/tmp/mcp.json")),
+            allowed_tools: Vec::new(),
         }
     }
 
@@ -1691,6 +2015,40 @@ mod tests {
     }
 
     #[test]
+    fn claude_args_merge_extra_allowed_tools() {
+        let cfg = CliAgentConfig {
+            kind: CliAgentKind::ClaudeCode,
+            ..Default::default()
+        };
+        let mut r = req();
+        r.allowed_tools = vec!["Read".into(), " Grep ".into(), String::new()];
+        let args = build_args(&cfg, &r);
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--allowedTools", "mcp__tabular,Read,Grep"])
+        );
+
+        // Tanpa MCP: hanya tool eksplisit, flag tetap muncul sekali.
+        r.mcp_config = None;
+        let args = build_args(&cfg, &r);
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--allowedTools", "Read,Grep"])
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.as_str() == "--allowedTools")
+                .count(),
+            1
+        );
+
+        // Tanpa MCP dan tanpa tool eksplisit: tidak ada flag sama sekali.
+        r.allowed_tools.clear();
+        let args = build_args(&cfg, &r);
+        assert!(!args.contains(&"--allowedTools".to_string()));
+    }
+
+    #[test]
     fn custom_template_substitutes_placeholders() {
         let cfg = CliAgentConfig {
             kind: CliAgentKind::Custom,
@@ -1772,7 +2130,7 @@ mod tests {
             vec![
                 AgentEvent::ToolUse("mcp__tabular__run_query".into()),
                 AgentEvent::Progress(ProgressStep {
-                    step_index: None,
+                    step_index: Some(1),
                     description: "Tabular: run_query".into(),
                     detail: None,
                     status: ProgressStatus::Active,
@@ -1814,8 +2172,8 @@ mod tests {
                 AgentEvent::TextDelta("Hi".into()),
                 AgentEvent::ToolUse("Read".into()),
                 AgentEvent::Progress(ProgressStep {
-                    step_index: None,
-                    description: "Running Read…".into(),
+                    step_index: Some(1),
+                    description: "Reading a file…".into(),
                     detail: None,
                     status: ProgressStatus::Active,
                     tool_name: Some("Read".into()),
@@ -1824,6 +2182,89 @@ mod tests {
         );
         let err = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}"#;
         assert_eq!(p.feed_line(err), vec![AgentEvent::Error("boom".into())]);
+    }
+
+    #[test]
+    fn claude_stream_tool_gets_description_and_result_status() {
+        let mut p = StreamParser::new(CliAgentKind::ClaudeCode);
+        let start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Grep","input":{}}}}"#;
+        let evs = p.feed_line(start);
+        assert!(matches!(
+            &evs[1],
+            AgentEvent::Progress(ProgressStep {
+                step_index: Some(1),
+                status: ProgressStatus::Active,
+                ..
+            })
+        ));
+        let d1 = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pattern\": \"user_"}}}"#;
+        assert!(p.feed_line(d1).is_empty());
+        let d2 = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"id\", \"path\": \"src\"}"}}}"#;
+        p.feed_line(d2);
+        let stop = r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#;
+        assert_eq!(
+            p.feed_line(stop),
+            vec![AgentEvent::Progress(ProgressStep {
+                step_index: Some(1),
+                description: "Search code for \"user_id\"".into(),
+                detail: Some("in src".into()),
+                status: ProgressStatus::Active,
+                tool_name: Some("Grep".into()),
+            })]
+        );
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"<tool_use_error>Path does not exist</tool_use_error>"}]}}"#;
+        assert_eq!(
+            p.feed_line(result),
+            vec![AgentEvent::Progress(ProgressStep {
+                step_index: Some(1),
+                description: "Search code for \"user_id\"".into(),
+                detail: Some("Path does not exist".into()),
+                status: ProgressStatus::Error,
+                tool_name: Some("Grep".into()),
+            })]
+        );
+    }
+
+    #[test]
+    fn claude_tool_result_marks_step_done() {
+        let mut p = StreamParser::new(CliAgentKind::ClaudeCode);
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls -la src","description":"List source files"}}]}}"#;
+        let evs = p.feed_line(asst);
+        assert!(matches!(
+            &evs[1],
+            AgentEvent::Progress(ProgressStep { description, detail: Some(d), .. })
+                if description == "List source files" && d == "ls -la src"
+        ));
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"a\nb"}]}}"#;
+        assert!(matches!(
+            &p.feed_line(result)[0],
+            AgentEvent::Progress(ProgressStep {
+                status: ProgressStatus::Done,
+                step_index: Some(1),
+                ..
+            })
+        ));
+        // Hasil untuk id yang tidak dikenal diabaikan.
+        assert!(p.feed_line(result).is_empty());
+    }
+
+    #[test]
+    fn builtin_tool_descriptions_are_readable() {
+        let (d, detail) = format_tool_step(
+            "Read",
+            &serde_json::json!({"file_path": "/repo/src/models.rs"}),
+        );
+        assert_eq!(d, "Read models.rs");
+        assert_eq!(detail.as_deref(), Some("/repo/src/models.rs"));
+        let (d, _) = format_tool_step("Glob", &serde_json::json!({"pattern": "**/*.go"}));
+        assert_eq!(d, "Find files **/*.go");
+        let (d, _) = format_tool_step(
+            "bash",
+            &serde_json::json!({"command": "grep -rn 'ééééééééééééééééééééééééééééééééééééééééééééééé' ."}),
+        );
+        assert!(d.starts_with("Run: grep") && d.ends_with('…'));
+        let (d, _) = format_tool_step("SomethingNew", &serde_json::json!({}));
+        assert_eq!(d, "Using tool SomethingNew…");
     }
 
     #[test]
@@ -1839,7 +2280,7 @@ mod tests {
             vec![
                 AgentEvent::ToolUse("run_query".into()),
                 AgentEvent::Progress(ProgressStep {
-                    step_index: None,
+                    step_index: Some(1),
                     description: "Execute SQL query".into(),
                     detail: None,
                     status: ProgressStatus::Active,

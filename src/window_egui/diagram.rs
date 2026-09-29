@@ -9,6 +9,14 @@ pub struct DiagramSchemaJob {
     rx: std::sync::mpsc::Receiver<Result<crate::diagram_schema::SchemaSnapshot, String>>,
 }
 
+/// Pemindaian repository untuk saran tabel sebuah group diagram.
+pub struct DiagramRepoScanJob {
+    conn_id: Option<i64>,
+    db_name: Option<String>,
+    group_id: String,
+    handle: crate::repo_scan::ScanHandle,
+}
+
 /// Nomor urut simpan diagram (global, naik terus).
 static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Nomor urut simpan terbaru per file. Tulisan yang lebih tua dari ini
@@ -238,16 +246,20 @@ impl super::Tabular {
                 | DiagramAction::OpenLinkDatabaseModal
                 | DiagramAction::RelinkDatabase(_)
                 | DiagramAction::SyncToServer
+                | DiagramAction::SuggestGroupTables(_)
         );
         if modifies_source && state.scoped_to.is_some() {
             self.toasts.info(
-                "This tab shows only related tables and is not saved. Use the full diagram tab instead.",
+                "This tab shows only a subset of tables and is not saved. Use the full diagram tab instead.",
             );
             return;
         }
         match action {
             DiagramAction::OpenFocusInNewTab(table) => {
                 self.open_focus_subset_tab(conn_id, db_name, state, &table)
+            }
+            DiagramAction::OpenGroupInNewTab(group_id) => {
+                self.open_group_subset_tab(conn_id, db_name, state, &group_id)
             }
             DiagramAction::Save => self.save_diagram_with_defaults(conn_id, db_name, state),
             DiagramAction::Info(msg) => self.toasts.success(msg),
@@ -269,6 +281,205 @@ impl super::Tabular {
             DiagramAction::SyncToServer => {
                 self.sync_diagram_to_server(conn_id, db_name, state);
             }
+            DiagramAction::SuggestGroupTables(group_id) => {
+                self.start_group_table_scan(conn_id, db_name, &group_id);
+            }
+        }
+    }
+
+    /// State diagram penuh milik (conn, db) yang sedang terbuka.
+    fn diagram_state_for_mut(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<&str>,
+    ) -> Option<&mut models::structs::DiagramState> {
+        self.query_tabs
+            .iter_mut()
+            .filter(|t| t.connection_id == conn_id && t.database_name.as_deref() == db_name)
+            .filter_map(|t| t.diagram_state.as_mut())
+            .find(|s| s.scoped_to.is_none())
+    }
+
+    /// Mulai pemindaian repository group `group_id` dan buka jendela saran.
+    fn start_group_table_scan(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        group_id: &str,
+    ) {
+        // Satu pemindaian per group; permintaan baru menggantikan yang lama.
+        self.diagram_repo_scan_jobs.retain(|job| {
+            let same = job.group_id == group_id && job.conn_id == conn_id && job.db_name == db_name;
+            if same {
+                job.handle.cancel();
+            }
+            !same
+        });
+
+        let target = self.effective_chat_target();
+        let (backend, backend_label, backend_note) =
+            match crate::ai_assistant::backend_ready_for(self, target) {
+                Ok(()) => (
+                    Some(crate::ai_assistant::chat_backend_for(self, target)),
+                    crate::ai_assistant::backend_label_for(self, target),
+                    None,
+                ),
+                Err(e) => (None, String::new(), Some(e)),
+            };
+
+        let Some(state) = self.diagram_state_for_mut(conn_id, db_name.as_deref()) else {
+            self.toasts.error("Diagram tab is no longer open");
+            return;
+        };
+        let Some(group) = state.groups.iter().find(|g| g.id == group_id) else {
+            self.toasts.error("Group not found");
+            return;
+        };
+        if !group.has_repository() {
+            state.group_repo_editor = Some(models::structs::GroupRepoDraft {
+                group_id: group_id.to_string(),
+                ..Default::default()
+            });
+            return;
+        }
+        let repo_path = group.local_repo_path();
+        let repo_url = group.repo_url.clone();
+        let group_title = group.title.clone();
+
+        // Tabel milik database yang di-link mengikuti diagram sumbernya.
+        let candidates: Vec<crate::repo_scan::Candidate> = state
+            .nodes
+            .iter()
+            .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+            .map(|n| crate::repo_scan::Candidate {
+                id: n.id.clone(),
+                title: n.title.clone(),
+            })
+            .collect();
+        if candidates.is_empty() {
+            self.toasts.info("This diagram has no tables to suggest");
+            return;
+        }
+        let members: Vec<String> = state
+            .nodes
+            .iter()
+            .filter(|n| n.is_in_group(group_id))
+            .map(|n| n.title.clone())
+            .collect();
+
+        state.group_table_suggestions = Some(models::structs::GroupTableSuggestions {
+            group_id: group_id.to_string(),
+            group_title: group_title.clone(),
+            running: true,
+            note: backend_note,
+            started_at: Some(std::time::Instant::now()),
+            ..Default::default()
+        });
+
+        log::info!(
+            "[DIAGRAM] scanning repository for group '{group_title}' ({} candidate table(s), AI: {})",
+            candidates.len(),
+            if backend.is_some() {
+                backend_label.as_str()
+            } else {
+                "off"
+            }
+        );
+        let handle = crate::repo_scan::spawn_scan(crate::repo_scan::ScanInput {
+            repo_path,
+            repo_url,
+            group_title,
+            members,
+            candidates,
+            backend,
+            backend_label,
+            cache_root: crate::repo_scan::default_cache_root(),
+        });
+        self.diagram_repo_scan_jobs.push(DiagramRepoScanJob {
+            conn_id,
+            db_name,
+            group_id: group_id.to_string(),
+            handle,
+        });
+    }
+
+    /// Terima kemajuan dan hasil pemindaian repository. Dipanggil tiap frame.
+    pub fn poll_diagram_repo_scan_jobs(&mut self, ctx: &egui::Context) {
+        if self.diagram_repo_scan_jobs.is_empty() {
+            return;
+        }
+        let jobs = std::mem::take(&mut self.diagram_repo_scan_jobs);
+        let mut keep = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let Some(state) = self.diagram_state_for_mut(job.conn_id, job.db_name.as_deref())
+            else {
+                job.handle.cancel(); // tab ditutup
+                continue;
+            };
+            // Jendela ditutup atau sudah berganti group: hentikan job.
+            let Some(sugg) = state
+                .group_table_suggestions
+                .as_mut()
+                .filter(|s| s.group_id == job.group_id)
+            else {
+                job.handle.cancel();
+                continue;
+            };
+            if sugg.cancel_requested {
+                job.handle.cancel();
+            }
+            let mut finished = false;
+            loop {
+                match job.handle.rx.try_recv() {
+                    Ok(crate::repo_scan::ScanEvent::Progress(step)) => {
+                        sugg.last_activity_at = Some(std::time::Instant::now());
+                        upsert_progress(&mut sugg.progress, step);
+                    }
+                    Ok(crate::repo_scan::ScanEvent::Activity) => {
+                        sugg.last_activity_at = Some(std::time::Instant::now());
+                    }
+                    Ok(crate::repo_scan::ScanEvent::Finished(result)) => {
+                        sugg.running = false;
+                        sugg.elapsed = sugg.started_at.map(|t| t.elapsed());
+                        match result {
+                            Ok(outcome) => {
+                                // Tool agent yang tidak melaporkan hasil dianggap selesai.
+                                for s in &mut sugg.progress {
+                                    if s.status == crate::agent::harness::ProgressStatus::Active {
+                                        s.status = crate::agent::harness::ProgressStatus::Done;
+                                    }
+                                }
+                                sugg.items = outcome.items;
+                                sugg.unknown = outcome.unknown;
+                                sugg.note = match (sugg.note.take(), outcome.note) {
+                                    (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                                    (a, b) => b.or(a),
+                                };
+                            }
+                            Err(e) => sugg.error = Some(e),
+                        }
+                        finished = true;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        sugg.running = false;
+                        sugg.elapsed = sugg.started_at.map(|t| t.elapsed());
+                        sugg.error = Some("Repository scan stopped unexpectedly".to_string());
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+            if !finished {
+                keep.push(job);
+            }
+        }
+        // Job yang dimulai selama polling (tidak mungkin sekarang) tetap dipertahankan.
+        keep.append(&mut self.diagram_repo_scan_jobs);
+        self.diagram_repo_scan_jobs = keep;
+        if !self.diagram_repo_scan_jobs.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
@@ -633,6 +844,46 @@ impl super::Tabular {
         );
     }
 
+    /// Sumber untuk tab subset: bila `state` sendiri sudah subset, pakai tab
+    /// diagram penuh milik (conn, db) agar tabel/relasi di luar subset ikut.
+    fn subset_source<'a>(
+        &'a self,
+        conn_id: Option<i64>,
+        db_name: Option<&str>,
+        state: &'a models::structs::DiagramState,
+    ) -> &'a models::structs::DiagramState {
+        let host = match (state.scoped_to.is_some(), conn_id, db_name) {
+            (true, Some(cid), Some(db)) => self
+                .query_tabs
+                .iter()
+                .find(|t| Self::is_diagram_host_tab(t, cid, db))
+                .and_then(|t| t.diagram_state.as_ref()),
+            _ => None,
+        };
+        host.unwrap_or(state)
+    }
+
+    /// Buka tab diagram baru berisi `subset` (sudah ditandai `scoped_to`).
+    fn open_subset_tab(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        title: String,
+        subset: models::structs::DiagramState,
+    ) {
+        crate::editor::create_new_tab_with_connection_and_database(
+            self,
+            title,
+            String::new(),
+            conn_id,
+            db_name,
+        );
+        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+            tab.diagram_state = Some(subset);
+        }
+        self.table_bottom_view = models::structs::TableBottomView::Query;
+    }
+
     /// Buka tab baru berisi `table` dan tabel yang berelasi dengannya saja,
     /// sudah ditata otomatis. Bila dipanggil dari tab subset, sumbernya
     /// diambil dari tab diagram penuh agar relasi di luar subset ikut.
@@ -643,15 +894,8 @@ impl super::Tabular {
         state: &models::structs::DiagramState,
         table: &str,
     ) {
-        let host = match (state.scoped_to.is_some(), conn_id, db_name.as_deref()) {
-            (true, Some(cid), Some(db)) => self
-                .query_tabs
-                .iter()
-                .find(|t| Self::is_diagram_host_tab(t, cid, db))
-                .and_then(|t| t.diagram_state.as_ref()),
-            _ => None,
-        };
-        let subset = crate::diagram_view::focus_subset_state(host.unwrap_or(state), table);
+        let source = self.subset_source(conn_id, db_name.as_deref(), state);
+        let subset = crate::diagram_view::focus_subset_state(source, table);
         let title = subset
             .nodes
             .iter()
@@ -659,19 +903,41 @@ impl super::Tabular {
             .map_or(table, |n| n.title.as_str())
             .to_string();
         let count = subset.nodes.len();
-
-        crate::editor::create_new_tab_with_connection_and_database(
-            self,
-            format!("Diagram: {title} + related"),
-            String::new(),
+        self.open_subset_tab(
             conn_id,
             db_name,
+            format!("Diagram: {title} + related"),
+            subset,
         );
-        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-            tab.diagram_state = Some(subset);
-        }
-        self.table_bottom_view = models::structs::TableBottomView::Query;
         log::info!("[DIAGRAM] opened '{title}' with {count} related table(s) in a new tab");
+    }
+
+    /// Buka tab baru berisi seluruh tabel anggota group `group_id`, dengan
+    /// posisi seperti di diagram sumber.
+    fn open_group_subset_tab(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+        group_id: &str,
+    ) {
+        let source = self.subset_source(conn_id, db_name.as_deref(), state);
+        // Tab subset hanya membawa group-nya sendiri; bila group tidak ada
+        // di tab penuh (mis. sudah dihapus), pakai state tab ini.
+        let subset = crate::diagram_view::group_subset_state(source, group_id)
+            .or_else(|| crate::diagram_view::group_subset_state(state, group_id));
+        let Some(subset) = subset else {
+            self.toasts.info("This group has no tables to open");
+            return;
+        };
+        let title = subset
+            .groups
+            .first()
+            .map_or(group_id, |g| g.title.as_str())
+            .to_string();
+        let count = subset.nodes.len();
+        self.open_subset_tab(conn_id, db_name, format!("Diagram: {title}"), subset);
+        log::info!("[DIAGRAM] opened group '{title}' with {count} table(s) in a new tab");
     }
 
     /// Terima hasil pengambilan skema yang sudah selesai. Dipanggil tiap frame.
@@ -1592,6 +1858,24 @@ impl super::Tabular {
             });
         }
     }
+}
+
+/// Perbarui langkah dengan nomor yang sama (Active → Done/Error) atau tambahkan
+/// langkah baru di akhir.
+fn upsert_progress(
+    steps: &mut Vec<crate::agent::harness::ProgressStep>,
+    step: crate::agent::harness::ProgressStep,
+) {
+    if let Some(idx) = step.step_index
+        && let Some(existing) = steps
+            .iter_mut()
+            .rev()
+            .find(|s| s.step_index == Some(idx) && s.tool_name == step.tool_name)
+    {
+        *existing = step;
+        return;
+    }
+    steps.push(step);
 }
 
 #[cfg(test)]

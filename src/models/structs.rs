@@ -619,7 +619,34 @@ pub struct DiagramGroup {
     #[serde(default)]
     #[serde(with = "serde_option_pos2")]
     pub manual_pos: Option<eframe::egui::Pos2>, // For empty groups or manual overriding
-                                                // nodes are linked by group_id in DiagramNode
+    // nodes are linked by group_id in DiagramNode
+    /// URL repository git berisi kode yang memakai tabel-tabel group ini.
+    /// Ikut disimpan dan disinkron bersama diagram, jadi berlaku untuk semua
+    /// user yang punya akses database dan git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    // Folder project lokal sengaja TIDAK disimpan di sini: sifatnya personal
+    // per komputer, lihat `crate::diagram_repo_paths`.
+}
+
+impl DiagramGroup {
+    /// URL git bersama (ikut diagram) yang tidak kosong.
+    pub fn shared_repo_url(&self) -> Option<&str> {
+        self.repo_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Folder project personal group ini di komputer ini.
+    pub fn local_repo_path(&self) -> Option<String> {
+        crate::diagram_repo_paths::local_repo_path(&self.id)
+    }
+
+    /// Group punya URL bersama atau folder project personal.
+    pub fn has_repository(&self) -> bool {
+        self.shared_repo_url().is_some() || self.local_repo_path().is_some()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -870,6 +897,9 @@ pub struct DiagramState {
     /// Filter database pada jendela saran relasi (None = semua database).
     #[serde(skip)]
     pub relation_database_filter: Option<String>,
+    /// Ambang minimum skor kecocokan (persen, 0 = tampilkan semua) pada jendela saran relasi.
+    #[serde(skip)]
+    pub relation_min_match: u8,
     /// Mode navigasi Hand Tool (geser kanvas bebas tanpa memindahkan tabel).
     #[serde(skip)]
     pub hand_tool: bool,
@@ -922,6 +952,11 @@ pub struct DiagramState {
     /// normal, sisanya diredupkan.
     #[serde(skip)]
     pub focus_table: Option<String>,
+    /// Mode fokus group: anggota group ini dan tabel yang berelasi dengan
+    /// anggotanya tampil normal, sisanya diredupkan. Tidak pernah aktif
+    /// bersamaan dengan `focus_table`.
+    #[serde(skip)]
+    pub focus_group: Option<String>,
     /// Animasi pan/zoom viewport yang sedang berjalan (mis. setelah
     /// double-click judul tabel).
     #[serde(skip)]
@@ -941,6 +976,52 @@ pub struct DiagramState {
     /// disinkronkan skema, atau dipakai sebagai sumber link.
     #[serde(skip)]
     pub scoped_to: Option<String>,
+    /// Modal pengaturan repository group yang sedang terbuka.
+    #[serde(skip)]
+    pub group_repo_editor: Option<GroupRepoDraft>,
+    /// Jendela saran tabel dari repository (sedang memindai atau hasil).
+    #[serde(skip)]
+    pub group_table_suggestions: Option<GroupTableSuggestions>,
+}
+
+/// Isi modal "Group Repository" yang sedang diedit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupRepoDraft {
+    pub group_id: String,
+    /// Folder project lokal.
+    pub path: String,
+    /// URL git.
+    pub url: String,
+    /// `url` diisi otomatis dari `.git/config` folder (belum diubah user),
+    /// jadi boleh diganti lagi saat folder berubah.
+    pub url_auto: bool,
+}
+
+/// Status jendela "Suggested tables" untuk satu group.
+#[derive(Clone, Debug, Default)]
+pub struct GroupTableSuggestions {
+    pub group_id: String,
+    pub group_title: String,
+    /// Tahapan kemajuan selama pemindaian berjalan.
+    pub progress: Vec<crate::agent::harness::ProgressStep>,
+    /// `true` selama job background belum selesai.
+    pub running: bool,
+    /// Pesan gagal (pemindaian atau AI); hasil grep tetap bisa tampil.
+    pub error: Option<String>,
+    /// Catatan tambahan, mis. AI gagal dan hasil memakai pencarian teks saja.
+    pub note: Option<String>,
+    /// Saran tabel beserta status centang.
+    pub items: Vec<(crate::repo_scan::TableSuggestion, bool)>,
+    /// Nama tabel yang disebut kode tetapi tidak ada di diagram.
+    pub unknown: Vec<String>,
+    /// Permintaan batal dari user; dibaca oleh poller job.
+    pub cancel_requested: bool,
+    /// Waktu pemindaian dimulai (untuk menampilkan durasi).
+    pub started_at: Option<std::time::Instant>,
+    /// Waktu event kemajuan terakhir diterima (untuk mendeteksi macet).
+    pub last_activity_at: Option<std::time::Instant>,
+    /// Durasi total setelah selesai.
+    pub elapsed: Option<std::time::Duration>,
 }
 
 /// Tween viewport diagram dari (pan, zoom) awal ke tujuan.
@@ -998,6 +1079,7 @@ impl Default for DiagramState {
             relation_suggestions_title: None,
             relation_column_search_query: String::new(),
             relation_database_filter: None,
+            relation_min_match: 0,
             hand_tool: false,
             linked_databases: Vec::new(),
             linked_relations: Vec::new(),
@@ -1013,11 +1095,14 @@ impl Default for DiagramState {
             schema_syncing: false,
             layout_baseline: None,
             focus_table: None,
+            focus_group: None,
             view_anim: None,
             flow_anim: None,
             relations_panel: None,
             relations_panel_query: String::new(),
             scoped_to: None,
+            group_repo_editor: None,
+            group_table_suggestions: None,
         }
     }
 }

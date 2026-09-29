@@ -5160,6 +5160,7 @@ impl App for Tabular {
 
         // Show cache miss dialog (topmost)
         self.poll_diagram_schema_jobs(ctx);
+        self.poll_diagram_repo_scan_jobs(ctx);
         self.render_cache_miss_dialog(ctx);
         self.render_link_database_dialog(ctx);
 

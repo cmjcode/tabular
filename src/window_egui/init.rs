@@ -648,6 +648,7 @@ impl super::Tabular {
             schema_diff_state: None,
             schema_diff_receiver: None,
             diagram_schema_jobs: Vec::new(),
+            diagram_repo_scan_jobs: Vec::new(),
             show_backup_dialog: false,
             show_restore_dialog: false,
             backup_state: None,

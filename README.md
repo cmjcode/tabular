@@ -369,6 +369,7 @@ Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested w
 - **End-to-End Encrypted Cloud Sync**: Zero-Knowledge Vault with Argon2id + AES-256-GCM (v0.12)
 - **AI Assistant**: Multi-provider schema-aware SQL generation (v0.6)
 - **Redis Visual Key Browser**: Full cluster & standalone key viewer (v0.7)
+- **Diagram Group Repositories**: Link a diagram group to a project folder or git URL and let the AI suggest the tables the code uses ([docs](docs/DIAGRAM_GROUP_REPOSITORY.md))
 
 ### Upcoming
 - Automated Database Diagram / ERD interactive editor

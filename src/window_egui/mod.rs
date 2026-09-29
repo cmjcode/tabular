@@ -685,6 +685,8 @@ pub struct Tabular {
     pub schema_diff_receiver: Option<std::sync::mpsc::Receiver<models::structs::SchemaDiffResult>>,
     /// Pengambilan skema diagram ERD yang sedang berjalan di background.
     pub diagram_schema_jobs: Vec<diagram::DiagramSchemaJob>,
+    /// Pemindaian repository group diagram (saran tabel) yang sedang berjalan.
+    pub diagram_repo_scan_jobs: Vec<diagram::DiagramRepoScanJob>,
     // Backup & Restore dialogs
     pub show_backup_dialog: bool,
     pub show_restore_dialog: bool,

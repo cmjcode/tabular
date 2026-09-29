@@ -234,6 +234,7 @@ pub fn merge_schema(
                 title,
                 color: colors[color_idx % colors.len()],
                 manual_pos: None,
+                repo_url: None,
             });
             color_idx += 1;
         }

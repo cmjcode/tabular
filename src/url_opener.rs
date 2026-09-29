@@ -18,6 +18,49 @@ pub fn open_url(url: &str) -> Result<(), String> {
     open_url_impl(url)
 }
 
+/// Buka folder di file manager OS (Finder, Windows Explorer, atau file
+/// manager bawaan desktop Linux).
+pub fn open_folder(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err(format!("Folder not found: {}", path.display()));
+    }
+    debug!("Opening folder: {}", path.display());
+    open_folder_impl(path)
+}
+
+#[cfg(target_os = "macos")]
+fn open_folder_impl(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn open_folder_impl(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_folder_impl(path: &std::path::Path) -> Result<(), String> {
+    // Explorer mengembalikan exit code 1 walau berhasil, jadi cukup cek spawn.
+    std::process::Command::new("explorer")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn open_folder_impl(_path: &std::path::Path) -> Result<(), String> {
+    Err("Opening folders is not supported on this platform".to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn open_url_impl(url: &str) -> Result<(), String> {
     std::process::Command::new("open")

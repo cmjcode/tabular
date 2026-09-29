@@ -870,6 +870,7 @@ fn ensure_group(state: &mut DiagramState, title: &str) -> String {
         title: title.to_string(),
         color,
         manual_pos: None,
+        repo_url: None,
     });
     id
 }

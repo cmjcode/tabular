@@ -408,6 +408,7 @@ mod tests {
             title: "Authentication".to_string(),
             color: eframe::egui::Color32::from_rgb(100, 150, 200),
             manual_pos: None,
+            repo_url: None,
         });
         state.virtual_relations.push(VirtualRelation {
             child: "audit_logs".to_string(),

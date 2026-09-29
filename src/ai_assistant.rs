@@ -450,6 +450,36 @@ pub fn start_chat(
     user_prompt: String,
     session_id: Option<String>,
 ) -> Result<(mpsc::Receiver<AgentEvent>, Option<CancelHandle>), String> {
+    start_chat_in(
+        cfg,
+        system_prompt,
+        user_prompt,
+        session_id,
+        ChatWorkspace::default(),
+    )
+}
+
+/// Lingkungan kerja proses CLI untuk satu giliran.
+#[derive(Debug, Clone, Default)]
+pub struct ChatWorkspace {
+    /// Direktori kerja; `None` = workspace agent yang kosong.
+    pub cwd: Option<std::path::PathBuf>,
+    /// Tool bawaan CLI tambahan yang diizinkan (lihat `AgentRequest::allowed_tools`).
+    pub allowed_tools: Vec<String>,
+    /// Sertakan konfigurasi MCP Tabular (Claude Code). Chat biasa selalu `true`.
+    pub without_mcp: bool,
+}
+
+/// Seperti [`start_chat`], tetapi dengan direktori kerja dan izin tool
+/// tertentu. Dipakai pemindai repository: agent membaca kode di `cwd`.
+/// Untuk backend API, `workspace` diabaikan.
+pub fn start_chat_in(
+    cfg: &ChatBackend,
+    system_prompt: String,
+    user_prompt: String,
+    session_id: Option<String>,
+    workspace: ChatWorkspace,
+) -> Result<(mpsc::Receiver<AgentEvent>, Option<CancelHandle>), String> {
     match cfg.backend {
         AiBackend::Api => {
             let provider_label = cfg.provider.display_name().to_string();
@@ -504,7 +534,7 @@ pub fn start_chat(
             Ok((out_rx, None))
         }
         AiBackend::Cli => {
-            let mcp_config = if cfg.cli.kind == CliAgentKind::ClaudeCode {
+            let mcp_config = if cfg.cli.kind == CliAgentKind::ClaudeCode && !workspace.without_mcp {
                 Some(harness::write_mcp_config_file()?)
             } else {
                 None
@@ -517,8 +547,9 @@ pub fn start_chat(
                 } else {
                     None
                 },
-                cwd: harness::agent_workspace_dir(),
+                cwd: workspace.cwd.unwrap_or_else(harness::agent_workspace_dir),
                 mcp_config,
+                allowed_tools: workspace.allowed_tools,
             };
             let (rx, handle) = harness::spawn_stream(&cfg.cli, req)?;
             Ok((rx, Some(handle)))

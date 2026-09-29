@@ -141,6 +141,7 @@ pub fn apply_link(host: &mut DiagramState, link_id: &str, source: &DiagramState)
             title: g.title.clone(),
             color: g.color,
             manual_pos: g.manual_pos.map(place),
+            repo_url: g.repo_url.clone(),
         });
     }
 
@@ -494,6 +495,7 @@ mod tests {
                 title: "Auth".into(),
                 color: egui::Color32::BLUE,
                 manual_pos: None,
+                repo_url: None,
             }],
             virtual_relations: vec![rel("sessions", "users")],
             ..Default::default()
@@ -711,6 +713,7 @@ mod tests {
                 title: "DB: auth".into(),
                 color: egui::Color32::BLUE,
                 manual_pos: None,
+                repo_url: None,
             }],
             edges: vec![DiagramEdge {
                 source: "users".into(),

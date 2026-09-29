@@ -5163,6 +5163,7 @@ fn ai_handle_agent_event(
 
                 if let Some(idx) = existing_idx {
                     msg.progress_steps[idx].status = step.status;
+                    msg.progress_steps[idx].description = step.description;
                     if step.detail.is_some() {
                         msg.progress_steps[idx].detail = step.detail;
                     }

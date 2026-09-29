@@ -39,6 +39,7 @@ fn request(cwd: PathBuf) -> AgentRequest {
         session_id: None,
         cwd,
         mcp_config: None,
+        allowed_tools: Vec::new(),
     }
 }
 

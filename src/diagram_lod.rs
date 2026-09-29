@@ -443,6 +443,8 @@ pub fn relations_of(state: &DiagramState, table: &str, filter: KindFilter) -> Ve
 #[derive(Clone, Copy, Debug)]
 pub struct Emphasis<'a> {
     pub focus: Option<&'a str>,
+    /// Mode fokus group: relasi yang menyentuh salah satu anggota group.
+    pub focus_group: Option<&'a std::collections::HashSet<String>>,
     pub hovered: Option<&'a str>,
     /// Jumlah relasi terlihat pada frame sebelumnya.
     pub visible: usize,
@@ -464,6 +466,14 @@ impl Emphasis<'_> {
     pub fn of(&self, a: &str, b: &str) -> Emph {
         if let Some(f) = self.focus {
             let on = a == f || b == f;
+            return Emph {
+                alpha: if on { 1.0 } else { self.dim_opacity },
+                highlight: false,
+                interactive: on,
+            };
+        }
+        if let Some(members) = self.focus_group {
+            let on = members.contains(a) || members.contains(b);
             return Emph {
                 alpha: if on { 1.0 } else { self.dim_opacity },
                 highlight: false,
@@ -546,6 +556,7 @@ pub fn synthetic_state(tables: usize, groups: usize, fks: usize, virtuals: usize
             title: format!("Group {g}"),
             color: crate::diagram_view::GROUP_COLORS[g % crate::diagram_view::GROUP_COLORS.len()],
             manual_pos: None,
+            repo_url: None,
         });
     }
     for t in 0..tables {
@@ -863,6 +874,7 @@ mod tests {
     fn emphasis_rules() {
         let base = Emphasis {
             focus: None,
+            focus_group: None,
             hovered: None,
             visible: 10,
             dim_opacity: 0.15,
@@ -884,6 +896,14 @@ mod tests {
         let off = focus.of("c", "b");
         assert_eq!(off.alpha, 0.15);
         assert!(!off.interactive);
+
+        let members: std::collections::HashSet<String> = ["a".to_string()].into();
+        let group = Emphasis {
+            focus_group: Some(&members),
+            ..dense
+        };
+        assert_eq!(group.of("b", "a").alpha, 1.0);
+        assert!(!group.of("b", "c").interactive);
 
         let hover_small = Emphasis {
             hovered: Some("a"),
