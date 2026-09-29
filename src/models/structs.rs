@@ -1500,6 +1500,10 @@ pub struct QueryTab {
     pub last_executed_sql: String,
     pub last_statement_type: StatementType,
     pub last_affected_rows: Option<usize>,
+    /// Filter WHERE milik tab ini; di-swap dengan state global saat pindah tab
+    /// agar filter tabel lain tidak ikut terbawa.
+    pub sql_filter_text: String,
+    pub visual_filter: VisualFilterState,
 }
 
 // ─── AI Assistant chat ──────────────────────────────────────────────────────
@@ -2720,6 +2724,8 @@ mod tests {
             last_executed_sql: String::new(),
             last_statement_type: StatementType::Select,
             last_affected_rows: None,
+            sql_filter_text: String::new(),
+            visual_filter: VisualFilterState::default(),
         };
 
         assert!(!tab.is_pinned);

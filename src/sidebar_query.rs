@@ -568,8 +568,12 @@ pub(crate) fn open_query_file(
         last_executed_sql: String::new(),
         last_statement_type: models::structs::StatementType::Select,
         last_affected_rows: None,
+        sql_filter_text: String::new(),
+        visual_filter: models::structs::VisualFilterState::default(),
     };
 
+    // Filter tab sebelumnya dititipkan ke tab itu sendiri; tab baru mulai tanpa filter.
+    crate::editor::stash_active_tab_filter(tabular);
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;

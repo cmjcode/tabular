@@ -14,6 +14,28 @@ use crate::{
 use std::borrow::Cow;
 use std::time::Instant;
 
+/// Pindahkan filter global (WHERE + visual filter) ke tab aktif dan kosongkan
+/// state global. Dipakai sebelum tab lain menjadi aktif.
+pub(crate) fn stash_active_tab_filter(tabular: &mut window_egui::Tabular) {
+    let sql_filter = std::mem::take(&mut tabular.sql_filter_text);
+    let visual_filter = std::mem::take(&mut tabular.visual_filter);
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.sql_filter_text = sql_filter;
+        tab.visual_filter = visual_filter;
+    }
+}
+
+/// Muat filter milik tab aktif ke state global.
+fn restore_active_tab_filter(tabular: &mut window_egui::Tabular) {
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tabular.sql_filter_text = std::mem::take(&mut tab.sql_filter_text);
+        tabular.visual_filter = std::mem::take(&mut tab.visual_filter);
+    } else {
+        tabular.sql_filter_text.clear();
+        tabular.visual_filter = Default::default();
+    }
+}
+
 // Tab management methods
 pub(crate) fn create_new_tab(
     tabular: &mut window_egui::Tabular,
@@ -65,8 +87,12 @@ pub(crate) fn create_new_tab(
         last_executed_sql: String::new(),
         last_statement_type: models::structs::StatementType::Select,
         last_affected_rows: None,
+        sql_filter_text: String::new(),
+        visual_filter: models::structs::VisualFilterState::default(),
     };
 
+    // Filter tab sebelumnya dititipkan ke tab itu sendiri; tab baru mulai tanpa filter.
+    stash_active_tab_filter(tabular);
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
@@ -263,10 +289,13 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         tabular.current_base_query.clear();
         tabular.current_connection_id = None;
         tabular.current_object_ddl = None;
+        tabular.sql_filter_text.clear();
+        tabular.visual_filter = Default::default();
         return;
     }
 
     if tab_index < tabular.query_tabs.len() {
+        let closing_active = tab_index == tabular.active_tab_index;
         // End the tab's manual-commit session (implicit rollback), if any.
         if let Some(session) = tabular.query_tabs[tab_index].session.take() {
             session.close();
@@ -278,6 +307,11 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.active_tab_index = tabular.query_tabs.len() - 1;
         } else if tabular.active_tab_index > tab_index {
             tabular.active_tab_index -= 1;
+        }
+
+        // Filter tab yang ditutup tidak boleh nyangkut ke tab yang kini aktif.
+        if closing_active {
+            restore_active_tab_filter(tabular);
         }
 
         // Update editor with active tab content
@@ -640,6 +674,7 @@ pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<u
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {
+        stash_active_tab_filter(tabular);
         // Save current tab content
         if let Some(current_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             if current_tab.content != tabular.editor.text {
@@ -685,6 +720,7 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
 
         // Switch to new tab
         tabular.active_tab_index = tab_index;
+        restore_active_tab_filter(tabular);
         if let Some(new_tab) = tabular.query_tabs.get_mut(tab_index) {
             tabular.editor.set_text(new_tab.content.clone());
             tabular.highlight_cache.clear();
@@ -10776,6 +10812,36 @@ mod tests {
         assert_eq!(tabular.query_tabs.len(), 2);
         assert_eq!(tabular.query_tabs[0].title, "P1");
         assert_eq!(tabular.query_tabs[1].title, "P2");
+    }
+
+    #[test]
+    fn test_filter_is_per_tab_and_cleared_on_close() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Table: a".to_string(), "".to_string());
+        tabular.sql_filter_text = "`address` = 'x'".to_string();
+        tabular
+            .visual_filter
+            .conditions
+            .push(models::structs::FilterCondition::default());
+        tabular.visual_filter.is_open = true;
+
+        // Tab baru mulai tanpa filter.
+        create_new_tab(&mut tabular, "Table: b".to_string(), "".to_string());
+        assert!(tabular.sql_filter_text.is_empty());
+        assert!(tabular.visual_filter.conditions.is_empty());
+
+        // Kembali ke tab a: filternya dipulihkan.
+        switch_to_tab(&mut tabular, 0);
+        assert_eq!(tabular.sql_filter_text, "`address` = 'x'");
+        assert_eq!(tabular.visual_filter.conditions.len(), 1);
+
+        // Tutup tab a yang aktif: filter tidak nyangkut ke tab b.
+        close_tab(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs[0].title, "Table: b");
+        assert!(tabular.sql_filter_text.is_empty());
+        assert!(tabular.visual_filter.conditions.is_empty());
+        assert!(!tabular.visual_filter.is_open);
     }
 
     #[test]

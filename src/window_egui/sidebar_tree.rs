@@ -1379,6 +1379,10 @@ impl super::Tabular {
                                 active_tab.result_table_name = self.current_table_name.clone();
                             }
 
+                            // Tabel baru dibuka: filter tabel sebelumnya tidak berlaku lagi.
+                            self.sql_filter_text.clear();
+                            self.visual_filter = Default::default();
+
                             // Try show cached 100 rows immediately (cache-first UX)
                             let mut had_cache = false;
                             if let Some(dbn) = &database_name
