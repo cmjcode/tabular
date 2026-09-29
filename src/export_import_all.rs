@@ -710,7 +710,7 @@ pub fn import_all_data(
                                             .bind(conn_clone.username)
                                             .bind(&conn_clone.password)
                                             .bind(conn_clone.database)
-                                            .bind(format!("{:?}", conn_clone.connection_type))
+                                            .bind(conn_clone.connection_type.as_db_str().into_owned())
                                             .bind(conn_clone.folder)
                                             .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
                                             .bind(conn_clone.ssh_host)
@@ -781,7 +781,7 @@ pub fn import_all_data(
                                             .bind(conn_clone.username)
                                             .bind(&conn_clone.password)
                                             .bind(conn_clone.database)
-                                            .bind(format!("{:?}", conn_clone.connection_type))
+                                            .bind(conn_clone.connection_type.as_db_str().into_owned())
                                             .bind(conn_clone.folder)
                                             .bind(if conn_clone.ssh_enabled { 1 } else { 0 })
                                             .bind(conn_clone.ssh_host)
@@ -1352,6 +1352,7 @@ mod tests {
             // Connections
             let conns = vec![ConnectionConfig {
                 id: Some(1),
+                plugin_options: Default::default(),
                 name: "Test MySQL".to_string(),
                 host: "localhost".to_string(),
                 port: "3306".to_string(),
@@ -1556,6 +1557,7 @@ mod tests {
         // Add dummy connection
         let conn = ConnectionConfig {
             id: Some(1),
+            plugin_options: Default::default(),
             name: "Demo Database".to_string(),
             host: "127.0.0.1".to_string(),
             port: "5432".to_string(),
@@ -1838,6 +1840,7 @@ mod tests {
 
             let conns = vec![ConnectionConfig {
                 id: Some(1),
+                plugin_options: Default::default(),
                 name: "Isolated DB".to_string(),
                 host: "localhost".to_string(),
                 port: "3306".to_string(),

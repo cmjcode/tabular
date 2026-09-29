@@ -4558,6 +4558,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -7013,6 +7014,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.23.1",
+ "block2 0.6.2",
  "bson 3.1.0",
  "chacha20poly1305",
  "chrono",
@@ -7041,7 +7043,9 @@ dependencies = [
  "mssql-client",
  "mssql-driver-pool",
  "objc2 0.5.2",
+ "objc2 0.6.4",
  "objc2-foundation 0.2.2",
+ "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.2.2",
  "once_cell",
  "openssl",
@@ -7070,6 +7074,7 @@ dependencies = [
  "tree-sitter-json",
  "tree-sitter-sequel",
  "unicode-segmentation",
+ "url",
  "walkers",
  "wasmi",
  "yrs",

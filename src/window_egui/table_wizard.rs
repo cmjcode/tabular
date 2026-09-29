@@ -188,7 +188,10 @@ impl super::Tabular {
                 }
                 self.quote_identifier(state.table_name.trim(), &state.db_type)
             }
-            DatabaseType::Redis | DatabaseType::MongoDB | DatabaseType::ApiHttp => {
+            DatabaseType::Redis
+            | DatabaseType::MongoDB
+            | DatabaseType::ApiHttp
+            | DatabaseType::Plugin(_) => {
                 return Err("Create table is not available for this database type.".to_string());
             }
         };

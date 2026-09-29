@@ -207,6 +207,9 @@ impl super::Tabular {
                     crate::driver_mongodb::load_mongodb_structure(connection_id, &connection, node);
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    crate::window_egui::plugin_tree::load_structure(connection_id, &connection, node);
+                }
             }
             node.is_loaded = true;
         }
@@ -239,9 +242,10 @@ impl super::Tabular {
                     // Add each database from cache
                     for db_name in databases {
                         // Skip system databases for cleaner view
-                        if !["information_schema", "performance_schema", "mysql", "sys"]
-                            .contains(&db_name.as_str())
-                        {
+                        if !crate::schema_objects::hide_database(
+                            &models::enums::DatabaseType::MySQL,
+                            db_name,
+                        ) {
                             let mut db_node = models::structs::TreeNode::new(
                                 db_name.clone(),
                                 models::enums::NodeType::Database,
@@ -382,7 +386,10 @@ impl super::Tabular {
                     databases_folder.connection_id = Some(connection_id);
 
                     for db_name in databases {
-                        if !["template0", "template1", "postgres"].contains(&db_name.as_str()) {
+                        if !crate::schema_objects::hide_database(
+                            &models::enums::DatabaseType::PostgreSQL,
+                            db_name,
+                        ) {
                             let mut db_node = models::structs::TreeNode::new(
                                 db_name.clone(),
                                 models::enums::NodeType::Database,
@@ -618,6 +625,13 @@ impl super::Tabular {
                     main_children.push(dba_folder);
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    main_children = crate::window_egui::plugin_tree::structure_from_databases(
+                        connection_id,
+                        connection,
+                        databases,
+                    );
+                }
             }
 
             node.children = main_children;
@@ -818,7 +832,9 @@ impl super::Tabular {
                 models::enums::DatabaseType::MongoDB => {
                     vec!["admin".to_string(), "local".to_string()]
                 }
-                models::enums::DatabaseType::ApiHttp => vec![],
+                models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                    vec![]
+                }
             };
 
             // Clear loading message
@@ -1234,6 +1250,16 @@ impl super::Tabular {
                     }
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    crate::window_egui::plugin_tree::load_folder_content(
+                        self,
+                        connection_id,
+                        &connection,
+                        node,
+                        &folder_type,
+                        force_live_fetch,
+                    );
+                }
             }
 
             node.is_loaded = true;
@@ -1403,9 +1429,19 @@ impl super::Tabular {
     ) {
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
 
-        let table_type = match folder_type {
-            models::enums::NodeType::TablesFolder => "table",
-            models::enums::NodeType::ViewsFolder => "view",
+        use crate::schema_objects::catalog::PgObjectKind;
+        let object_kind = match folder_type {
+            models::enums::NodeType::MaterializedViewsFolder => Some(PgObjectKind::MaterializedView),
+            models::enums::NodeType::TypesFolder => Some(PgObjectKind::UserType),
+            models::enums::NodeType::UserFunctionsFolder => Some(PgObjectKind::Function),
+            models::enums::NodeType::StoredProceduresFolder => Some(PgObjectKind::Procedure),
+            models::enums::NodeType::TriggersFolder => Some(PgObjectKind::Trigger),
+            _ => None,
+        };
+        let table_type = match (&folder_type, object_kind) {
+            (models::enums::NodeType::TablesFolder, _) => "table",
+            (models::enums::NodeType::ViewsFolder, _) => "view",
+            (_, Some(kind)) => kind.cache_key(),
             _ => {
                 node.children = vec![models::structs::TreeNode::new(
                     "Not supported for PostgreSQL".to_string(),
@@ -1413,6 +1449,19 @@ impl super::Tabular {
                 )];
                 return;
             }
+        };
+        let child_type = match folder_type {
+            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
+            models::enums::NodeType::MaterializedViewsFolder => {
+                models::enums::NodeType::MaterializedView
+            }
+            models::enums::NodeType::TypesFolder => models::enums::NodeType::UserType,
+            models::enums::NodeType::UserFunctionsFolder => models::enums::NodeType::UserFunction,
+            models::enums::NodeType::StoredProceduresFolder => {
+                models::enums::NodeType::StoredProcedure
+            }
+            models::enums::NodeType::TriggersFolder => models::enums::NodeType::Trigger,
+            _ => models::enums::NodeType::View,
         };
 
         // Try cache first (skipped when force_live_fetch is true)
@@ -1431,13 +1480,7 @@ impl super::Tabular {
             node.children = cached
                 .into_iter()
                 .map(|name| {
-                    let mut child = models::structs::TreeNode::new(
-                        name,
-                        match folder_type {
-                            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
-                            _ => models::enums::NodeType::View,
-                        },
-                    );
+                    let mut child = models::structs::TreeNode::new(name, child_type.clone());
                     child.connection_id = Some(connection_id);
                     child.database_name = Some(database_name.clone());
                     child.is_loaded = false;
@@ -1449,12 +1492,27 @@ impl super::Tabular {
         }
 
         // Fallback to live fetch
-        if let Some(real_items) = crate::driver_postgres::fetch_tables_from_postgres_connection(
-            self,
-            connection_id,
-            database_name,
-            table_type,
-        ) {
+        let live_items = match object_kind {
+            Some(kind) => {
+                let database = database_name.clone();
+                self.run_schema_sql_blocking(
+                    connection_id,
+                    Some(&database),
+                    &crate::schema_objects::catalog::pg_list_objects_sql(kind),
+                    15,
+                )
+                .map_err(|e| log::warn!("[TREE-LOADER] PG {} list failed: {}", table_type, e))
+                .ok()
+                .map(|sets| sets.first().map(|s| s.first_column()).unwrap_or_default())
+            }
+            None => crate::driver_postgres::fetch_tables_from_postgres_connection(
+                self,
+                connection_id,
+                database_name,
+                table_type,
+            ),
+        };
+        if let Some(real_items) = live_items {
             debug!(
                 "[TREE-LOADER] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={}",
                 connection_id,
@@ -1470,13 +1528,7 @@ impl super::Tabular {
             node.children = real_items
                 .into_iter()
                 .map(|name| {
-                    let mut child = models::structs::TreeNode::new(
-                        name,
-                        match folder_type {
-                            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
-                            _ => models::enums::NodeType::View,
-                        },
-                    );
+                    let mut child = models::structs::TreeNode::new(name, child_type.clone());
                     child.connection_id = Some(connection_id);
                     child.database_name = Some(database_name.clone());
                     child.is_loaded = false;
@@ -1982,7 +2034,9 @@ impl super::Tabular {
             partitions_folder.connection_id = Some(connection_id);
             partitions_folder.database_name = Some(database_name.clone());
             partitions_folder.table_name = Some(table_name.to_string());
-            partitions_folder.is_loaded = true;
+            // Belum "loaded": saat dibuka, batas partisi dan jumlah baris diambil
+            // langsung dari server (lihat `load_partitions_folder`).
+            partitions_folder.is_loaded = false;
             partitions_folder.children = partitions_list
                 .into_iter()
                 .map(|part| {
@@ -1994,7 +2048,7 @@ impl super::Tabular {
                     };
                     let mut n = models::structs::TreeNode::new(
                         display_name,
-                        models::enums::NodeType::Index,
+                        models::enums::NodeType::Column,
                     );
                     n.connection_id = Some(connection_id);
                     n.database_name = Some(database_name.clone());
@@ -2325,7 +2379,9 @@ impl super::Tabular {
                     }
                 })
             }
-            models::enums::DatabaseType::ApiHttp => Vec::new(),
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -2456,7 +2512,7 @@ impl super::Tabular {
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
-            models::enums::DatabaseType::ApiHttp => vec![],
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => vec![],
         }
     }
 
@@ -2477,6 +2533,8 @@ impl super::Tabular {
                     | models::enums::NodeType::UserFunctionsFolder
                     | models::enums::NodeType::TriggersFolder
                     | models::enums::NodeType::EventsFolder
+                    | models::enums::NodeType::MaterializedViewsFolder
+                    | models::enums::NodeType::TypesFolder
             );
 
             if reloadable

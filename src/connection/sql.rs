@@ -658,6 +658,106 @@ pub fn is_comment_only_statement(sql: &str) -> bool {
         .is_empty()
 }
 
+/// Batas pengulangan `GO n` agar salah ketik tidak menjalankan batch ribuan kali.
+const MAX_GO_REPEAT: usize = 1000;
+
+/// Pecah script T-SQL di baris `GO` (separator batch milik klien seperti SSMS,
+/// bukan statement SQL). `GO n` mengulang batch `n` kali. `GO` di dalam string,
+/// identifier `[...]`, atau komentar blok diabaikan. Mengembalikan `None` bila
+/// script tidak berisi `GO` sama sekali.
+pub fn split_mssql_go_batches(sql: &str) -> Option<Vec<String>> {
+    let mut batches: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut comment_depth = 0usize;
+    let mut open_quote: Option<char> = None;
+    let mut found = false;
+
+    for line in sql.split_inclusive('\n') {
+        if comment_depth == 0
+            && open_quote.is_none()
+            && let Some(repeat) = parse_go_line(line)
+        {
+            found = true;
+            if !current.trim().is_empty() {
+                for _ in 0..repeat {
+                    batches.push(current.trim().to_string());
+                }
+            }
+            current.clear();
+            continue;
+        }
+        scan_tsql_line(line, &mut comment_depth, &mut open_quote);
+        current.push_str(line);
+    }
+
+    if !found {
+        return None;
+    }
+    if !current.trim().is_empty() {
+        batches.push(current.trim().to_string());
+    }
+    Some(batches)
+}
+
+/// `Some(n)` jika baris hanya berisi `GO` (opsional jumlah ulang dan komentar `--`).
+fn parse_go_line(line: &str) -> Option<usize> {
+    let code = match line.find("--") {
+        Some(pos) => &line[..pos],
+        None => line,
+    };
+    let mut words = code.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("GO") {
+        return None;
+    }
+    let repeat = match words.next() {
+        None => 1,
+        Some(n) => n.parse::<usize>().ok()?.clamp(1, MAX_GO_REPEAT),
+    };
+    if words.next().is_some() {
+        return None;
+    }
+    Some(repeat)
+}
+
+/// Perbarui state komentar blok (bisa bersarang di T-SQL) dan quote terbuka
+/// setelah membaca satu baris.
+fn scan_tsql_line(line: &str, comment_depth: &mut usize, open_quote: &mut Option<char>) {
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(close) = *open_quote {
+            if c == close {
+                if chars.peek() == Some(&close) {
+                    chars.next();
+                } else {
+                    *open_quote = None;
+                }
+            }
+            continue;
+        }
+        if *comment_depth > 0 {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                *comment_depth -= 1;
+            } else if c == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                *comment_depth += 1;
+            }
+            continue;
+        }
+        match c {
+            '-' if chars.peek() == Some(&'-') => return,
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                *comment_depth += 1;
+            }
+            '\'' => *open_quote = Some('\''),
+            '"' => *open_quote = Some('"'),
+            '[' => *open_quote = Some(']'),
+            _ => {}
+        }
+    }
+}
+
 /// Menentukan apakah statement diharapkan menghasilkan result set.
 ///
 /// Perubahan data/skema tanpa `RETURNING`/`OUTPUT` dijalankan lewat `execute()`
@@ -728,6 +828,34 @@ pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn go_batches_split_on_separator_lines_only() {
+        assert_eq!(split_mssql_go_batches("SELECT 1; SELECT 2;"), None);
+        let sql = "CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\nEND\nGO\nEXEC p;\ngo 3 -- repeat\nSELECT 'GO'\n";
+        let batches = split_mssql_go_batches(sql).unwrap();
+        assert_eq!(
+            batches,
+            vec![
+                "CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\nEND".to_string(),
+                "EXEC p;".to_string(),
+                "EXEC p;".to_string(),
+                "EXEC p;".to_string(),
+                "SELECT 'GO'".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn go_inside_strings_and_comments_is_ignored() {
+        let sql = "SELECT 'a\nGO\nb'\nGO\n/* x\nGO\n/* nested */\nGO\n*/ SELECT [col\nGO]\nGO";
+        let batches = split_mssql_go_batches(sql).unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0], "SELECT 'a\nGO\nb'");
+        assert!(batches[1].ends_with("SELECT [col\nGO]"));
+        // Bukan separator: ada teks lain di baris yang sama.
+        assert_eq!(split_mssql_go_batches("SELECT 1\nGO SELECT 2"), None);
+    }
 
     #[test]
     fn parses_mysql_error_line() {

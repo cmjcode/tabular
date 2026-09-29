@@ -10,6 +10,7 @@
 		300000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* Assets.xcassets */; };
 		300000000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* Assets.xcassets */; };
 		300000000000000000000003 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* LaunchScreen.storyboard */; };
+		300000000000000000000004 /* Tabular.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* Tabular.sdef */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +22,7 @@
 		200000000000000000000006 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		200000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		200000000000000000000008 /* Tabular.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tabular.entitlements; sourceTree = "<group>"; };
+		20000000000000000000000C /* Tabular.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Tabular.sdef; sourceTree = "<group>"; };
 		200000000000000000000009 /* build_cargo.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = build_cargo.sh; sourceTree = "<group>"; };
 		20000000000000000000000A /* generate_assets.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = generate_assets.sh; sourceTree = "<group>"; };
 		20000000000000000000000B /* publish_xcode.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = publish_xcode.sh; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 			children = (
 				200000000000000000000007 /* Info.plist */,
 				200000000000000000000008 /* Tabular.entitlements */,
+				20000000000000000000000C /* Tabular.sdef */,
 			);
 			path = macos;
 			sourceTree = "<group>";
@@ -201,6 +204,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				300000000000000000000002 /* Assets.xcassets in Resources */,
+				300000000000000000000004 /* Tabular.sdef in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

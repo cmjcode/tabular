@@ -362,6 +362,23 @@ pub(crate) fn fetch_and_cache_connection_data(
         return;
     };
 
+    // Engine plugin: metadata diambil lewat driver API dalam satu langkah.
+    if connection.connection_type.plugin_id().is_some() {
+        let pool = tabular.connection_pools.get(&connection_id).cloned();
+        if let (Some(models::enums::DatabasePool::Plugin(pool)), Some(cache_pool)) =
+            (pool, tabular.db_pool.clone())
+        {
+            let rt = tabular.get_runtime();
+            rt.block_on(crate::driver_api::cache::fetch_plugin_data(
+                connection_id,
+                &pool,
+                &connection.database,
+                cache_pool.as_ref(),
+            ));
+        }
+        return;
+    }
+
     // Fetch databases from server
     #[allow(deprecated)]
     #[allow(deprecated)]
@@ -386,7 +403,9 @@ pub(crate) fn fetch_and_cache_connection_data(
                     vec!["table", "view", "procedure", "function", "trigger"]
                 }
                 models::enums::DatabaseType::MongoDB => vec!["collection"],
-                models::enums::DatabaseType::ApiHttp => vec![],
+                models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                    vec![]
+                }
             };
 
             let mut all_tables = Vec::new();
@@ -454,7 +473,8 @@ pub(crate) fn fetch_and_cache_connection_data(
                             None
                         }
                     }
-                    models::enums::DatabaseType::ApiHttp => None,
+                    models::enums::DatabaseType::ApiHttp
+                    | models::enums::DatabaseType::Plugin(_) => None,
                 };
 
                 if let Some(tables) = tables_result {

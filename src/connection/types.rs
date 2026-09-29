@@ -49,6 +49,9 @@ pub struct QueryExecutionOptions {
     pub base_query: Option<String>,
     pub dba_special_mode: Option<models::enums::DBASpecialMode>,
     pub save_to_history: bool,
+    /// Kirim satu hasil per result set (MsSQL multi-SELECT). Dimatikan untuk
+    /// job ber-callback dan agent yang mengharapkan tepat satu hasil.
+    pub split_result_sets: bool,
     pub ast_enabled: bool,
     pub job_id: u64,
     /// Batalkan statement setelah durasi ini (None = tanpa batas).

@@ -103,6 +103,14 @@ pub(crate) async fn cancel_backend_query(pool: models::enums::DatabasePool, pid:
                 log::warn!("[CANCEL] KILL QUERY {} failed: {}", pid, e);
             }
         }
+        models::enums::DatabasePool::Plugin(plugin) => {
+            // Untuk engine plugin, "pid" adalah job id (lihat execute_plugin_query_job).
+            let result =
+                crate::driver_api::run_blocking(move || plugin.session.cancel(pid as u64)).await;
+            if let Err(e) = result {
+                log::warn!("[CANCEL] plugin cancel for job {} failed: {}", pid, e);
+            }
+        }
         _ => {}
     }
 }
@@ -164,6 +172,7 @@ pub(crate) fn prepare_query_job(
         base_query,
         dba_special_mode,
         save_to_history: true,
+        split_result_sets: true,
         ast_enabled: cfg!(feature = "query_ast"),
         job_id,
         query_timeout: (tabular.query_timeout_secs > 0)
@@ -197,8 +206,9 @@ pub(crate) fn spawn_query_job(
         .ok_or(QueryPreparationError::RuntimeUnavailable)?;
 
     let handle = runtime.spawn(async move {
-        let result = execute_query_job(job).await;
-        let _ = sender.send(result);
+        for result in execute_query_job_all(job).await {
+            let _ = sender.send(result);
+        }
     });
 
     Ok(handle)
@@ -229,9 +239,10 @@ pub(crate) fn spawn_query_job_batch(
             // Reset the clock so each statement reports its own duration,
             // not the time spent waiting behind earlier statements.
             job.started_at = Instant::now();
-            let result = execute_query_job(job).await;
-            previous_failed = !result.success;
-            let _ = sender.send(result);
+            for result in execute_query_job_all(job).await {
+                previous_failed |= !result.success;
+                let _ = sender.send(result);
+            }
         }
     });
 
@@ -257,6 +268,78 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
         column_metadata: None,
         truncated: false,
         error_location: None,
+    }
+}
+
+/// Seperti [`execute_query_job`], tetapi batch MsSQL yang menghasilkan beberapa
+/// result set dikembalikan sebagai satu pesan per result set, sehingga tiap
+/// `SELECT` di satu batch mendapat tab hasil sendiri.
+pub(crate) async fn execute_query_job_all(job: QueryJob) -> Vec<QueryResultMessage> {
+    let is_mssql = job.options.connection.connection_type == models::enums::DatabaseType::MsSQL;
+    if !(is_mssql && job.options.split_result_sets) {
+        return vec![execute_query_job(job).await];
+    }
+    let models::enums::DatabasePool::MsSQL(pool) = job.connection_pool.clone() else {
+        return vec![execute_query_job(job).await];
+    };
+
+    let mut query = job.options.query.trim().to_string();
+    if query.contains("TOP") && query.contains("ROWS FETCH NEXT") {
+        query = query.replace("TOP 10000", "");
+    }
+    let outcome = run_with_timeout(
+        job.options.query_timeout,
+        driver_mssql::execute_query_multi(pool, &query),
+    )
+    .await;
+    let message_for = |headers: Vec<String>, rows: Vec<Vec<String>>| QueryResultMessage {
+        job_id: job.job_id,
+        tab_id: job.tab_id,
+        connection_id: job.options.connection_id,
+        success: true,
+        headers,
+        rows,
+        error: None,
+        duration: job.started_at.elapsed(),
+        query: job.options.query.clone(),
+        dba_special_mode: job.options.dba_special_mode.clone(),
+        ast_debug_sql: None,
+        ast_headers: None,
+        affected_rows: None,
+        column_metadata: None,
+        truncated: false,
+        error_location: None,
+    };
+    match outcome {
+        Ok(Ok(sets)) if !sets.is_empty() => {
+            let max_rows = job.options.max_rows.max(1);
+            sets.into_iter()
+                .map(|(headers, mut rows)| {
+                    let truncated = rows.len() > max_rows;
+                    rows.truncate(max_rows);
+                    let mut message = message_for(headers, rows);
+                    message.truncated = truncated;
+                    message
+                })
+                .collect()
+        }
+        Ok(Ok(_)) => vec![message_for(Vec::new(), Vec::new())],
+        Ok(Err(e)) => {
+            let (message, error_location) =
+                describe_execution_error(QueryExecutionError::Message(format!("Query error: {}", e)));
+            let mut msg = message_for(vec!["Error".to_string()], vec![vec![message.clone()]]);
+            msg.success = false;
+            msg.error = Some(message);
+            msg.error_location = error_location;
+            vec![msg]
+        }
+        Err(()) => {
+            let message = timeout_message(&job.options);
+            let mut msg = message_for(vec!["Error".to_string()], vec![vec![message.clone()]]);
+            msg.success = false;
+            msg.error = Some(message);
+            vec![msg]
+        }
     }
 }
 
@@ -291,6 +374,9 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
         models::enums::DatabaseType::ApiHttp => Err(QueryExecutionError::Message(
             "API-HTTP connections do not support SQL queries".to_string(),
         )),
+        models::enums::DatabaseType::Plugin(_) => {
+            execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
+        }
     };
 
     match outcome {
@@ -1315,6 +1401,76 @@ async fn execute_postgres_query_job(
     })
 }
 
+/// Jalankan job di engine plugin. Engine SQL dipecah per statement seperti
+/// driver builtin; engine non-SQL menerima seluruh teks sebagai satu perintah.
+/// Hasil statement terakhir yang ditampilkan.
+async fn execute_plugin_query_job(
+    options: &QueryExecutionOptions,
+    pool: models::enums::DatabasePool,
+) -> Result<QueryJobOutput, QueryExecutionError> {
+    let models::enums::DatabasePool::Plugin(plugin_pool) = pool else {
+        return Err(QueryExecutionError::Message(
+            "Invalid pool type for plugin engine".to_string(),
+        ));
+    };
+    let statements = if plugin_pool.capabilities.query_language
+        == crate::driver_api::QueryLanguage::Sql
+    {
+        job_statements(options)
+    } else {
+        vec![options.query.trim().to_string()]
+    };
+    // Job id dicatat sebagai "pid" supaya tombol cancel diteruskan ke plugin.
+    let _pid_guard = plugin_pool.capabilities.cancel.then(|| {
+        BackendPidGuard::register(&options.backend_pids, options.job_id, options.job_id as i64)
+    });
+
+    let mut output = QueryJobOutput {
+        headers: Vec::new(),
+        rows: Vec::new(),
+        ast_debug_sql: None,
+        ast_headers: None,
+        column_metadata: None,
+        affected_rows: None,
+        truncated: false,
+    };
+    for statement in statements {
+        let request = crate::driver_api::ExecuteRequest {
+            query: statement,
+            database: options.selected_database.clone(),
+            schema: options.schema_name.clone(),
+            max_rows: options.max_rows,
+            job_id: options.job_id,
+        };
+        let session = plugin_pool.session.clone();
+        let outcome = run_with_timeout(
+            options.query_timeout,
+            crate::driver_api::run_blocking(move || session.execute(&request)),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(result)) => {
+                let affected = result.affected_rows;
+                let (headers, rows, truncated) = result.into_table_rows(options.max_rows);
+                output.headers = headers;
+                output.rows = rows;
+                output.affected_rows = affected;
+                output.truncated = truncated;
+            }
+            Ok(Err(e)) => return Err(QueryExecutionError::Message(e.to_string())),
+            Err(()) => {
+                if plugin_pool.capabilities.cancel {
+                    let session = plugin_pool.session.clone();
+                    let job_id = options.job_id;
+                    let _ = crate::driver_api::run_blocking(move || session.cancel(job_id)).await;
+                }
+                return Err(QueryExecutionError::Message(timeout_message(options)));
+            }
+        }
+    }
+    Ok(output)
+}
+
 async fn execute_sqlite_query_job(
     options: &QueryExecutionOptions,
     pool: models::enums::DatabasePool,
@@ -1874,6 +2030,7 @@ mod tests {
                 base_query: None,
                 dba_special_mode: None,
                 save_to_history: false,
+                split_result_sets: false,
                 ast_enabled: false,
                 job_id: 7,
                 query_timeout: None,
@@ -1884,6 +2041,91 @@ mod tests {
             started_at: Instant::now(),
         };
         execute_query_job(job).await
+    }
+
+    /// Job yang sama tetapi lewat `DatabasePool::Plugin` (adapter SQLite di
+    /// balik trait driver), untuk memastikan jalur generik plugin.
+    async fn plugin_job(query: &str, max_rows: usize) -> QueryResultMessage {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        for stmt in [
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+            "INSERT INTO t (name) VALUES ('a'), (NULL), ('d')",
+        ] {
+            sqlx::query(stmt).execute(&pool).await.expect("seed");
+        }
+        let session = crate::driver_api::sqlite_adapter::SqliteSession::from_pool(
+            pool,
+            tokio::runtime::Handle::current(),
+        );
+        let plugin_pool = crate::driver_api::PluginPool {
+            engine_id: "sqlite-adapter".into(),
+            capabilities: Default::default(),
+            session: Arc::new(session),
+        };
+        let connection = models::structs::ConnectionConfig {
+            connection_type: models::enums::DatabaseType::Plugin("sqlite-adapter".into()),
+            ..Default::default()
+        };
+        let job = QueryJob {
+            job_id: 8,
+            tab_id: Some(4),
+            options: QueryExecutionOptions {
+                connection_id: 2,
+                connection,
+                query: query.to_string(),
+                selected_database: None,
+                schema_name: None,
+                use_server_pagination: false,
+                current_page: 0,
+                page_size: 100,
+                base_query: None,
+                dba_special_mode: None,
+                save_to_history: false,
+                ast_enabled: false,
+                job_id: 8,
+                query_timeout: None,
+                max_rows,
+                backend_pids: Default::default(),
+                split_result_sets: false,
+            },
+            connection_pool: models::enums::DatabasePool::Plugin(Arc::new(plugin_pool)),
+            started_at: Instant::now(),
+        };
+        execute_query_job(job).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plugin_engine_runs_statements_and_maps_nulls() {
+        let msg = plugin_job(
+            "UPDATE t SET name = 'z' WHERE id = 3; SELECT id, name FROM t ORDER BY id",
+            2,
+        )
+        .await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.headers, vec!["id", "name"]);
+        assert_eq!(
+            msg.rows,
+            vec![
+                vec!["1".to_string(), "a".to_string()],
+                vec!["2".to_string(), "NULL".to_string()]
+            ]
+        );
+        assert!(msg.truncated);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plugin_engine_reports_errors_and_affected_rows() {
+        let msg = plugin_job("UPDATE t SET name = 'q' WHERE id > 1", 10).await;
+        assert!(msg.success, "{:?}", msg.error);
+        assert_eq!(msg.affected_rows, Some(2));
+
+        let msg = plugin_job("SELECT * FROM missing_table", 10).await;
+        assert!(!msg.success);
+        assert!(msg.error.unwrap_or_default().contains("missing_table"));
     }
 
     #[tokio::test]

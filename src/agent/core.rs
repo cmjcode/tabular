@@ -359,6 +359,7 @@ fn kind_label(t: &DatabaseType) -> &'static str {
         DatabaseType::MsSQL => "MsSQL",
         DatabaseType::MongoDB => "MongoDB",
         DatabaseType::ApiHttp => "ApiHttp",
+        DatabaseType::Plugin(_) => "Plugin",
     }
 }
 
@@ -875,6 +876,7 @@ impl HeadlessSession {
             base_query: None,
             dba_special_mode: None,
             save_to_history: false,
+            split_result_sets: false,
             ast_enabled: false,
             job_id,
             query_timeout: Some(self.limits.query_timeout),

@@ -52,6 +52,7 @@ pub enum PluginModalTab {
     StarterTemplates,
     CustomWasmRunner,
     ExecutionOutput,
+    DatabaseDrivers,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,10 @@ pub struct PluginModalState {
     pub execution_exports: Vec<PluginExportPayload>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
+    /// Daftar driver engine terpasang; `None` = perlu dipindai ulang.
+    pub installed_drivers: Option<Vec<crate::driver_api::manifest::InstalledDriver>>,
+    /// Sidecar yang sedang menunggu konfirmasi persetujuan pengguna.
+    pub pending_sidecar_approval: Option<String>,
 }
 
 impl Default for PluginModalState {
@@ -91,6 +96,8 @@ impl Default for PluginModalState {
             execution_exports: Vec::new(),
             error_message: None,
             status_message: None,
+            installed_drivers: None,
+            pending_sidecar_approval: None,
         }
     }
 }

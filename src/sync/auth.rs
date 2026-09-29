@@ -97,6 +97,11 @@ pub fn start_oauth_flow(
     provider: OAuthProvider,
 ) -> mpsc::Receiver<Result<TokenResponse, String>> {
     let (tx, rx) = mpsc::channel();
+    // M12: jangan buka browser atau polling bila Cloud Sync dimatikan.
+    if let Err(e) = crate::privacy::check(crate::privacy::NetCategory::CloudSync, server_url) {
+        let _ = tx.send(Err(e));
+        return rx;
+    }
 
     // 1. Generate random session ticket (32 hex characters)
     let mut ticket_bytes = [0u8; 16];

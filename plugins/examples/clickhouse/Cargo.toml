@@ -1,0 +1,19 @@
+[package]
+name = "tabular-driver-clickhouse"
+version = "0.1.0"
+edition = "2021"
+description = "ClickHouse driver plugin for Tabular (HTTP interface)"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tabular-driver-sdk = { path = "../../sdk" }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

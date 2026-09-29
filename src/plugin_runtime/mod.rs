@@ -1,3 +1,4 @@
+pub mod drivers_ui;
 pub mod engine;
 pub mod host_api;
 pub mod manager;

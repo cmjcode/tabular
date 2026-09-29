@@ -402,6 +402,15 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::ApiHttp => None,
+            models::enums::DatabaseType::Plugin(ref engine_id) => {
+                crate::driver_api::cache::fetch_columns(
+                    &connection_clone,
+                    engine_id,
+                    &database_name,
+                    &table_name,
+                )
+                .await
+            }
         }
     })
 }

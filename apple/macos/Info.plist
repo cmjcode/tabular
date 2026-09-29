@@ -34,5 +34,22 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>id.tabular.database</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>tabular</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>id.tabular.database.query</string>
+	</array>
+	<key>OSAScriptingDefinition</key>
+	<string>Tabular.sdef</string>
 </dict>
 </plist>

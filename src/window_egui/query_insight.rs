@@ -74,6 +74,7 @@ fn db_label(db: &DatabaseType) -> &'static str {
         DatabaseType::Redis => "Redis",
         DatabaseType::MongoDB => "MongoDB",
         DatabaseType::ApiHttp => "HTTP",
+        DatabaseType::Plugin(_) => "Plugin",
     }
 }
 

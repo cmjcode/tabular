@@ -61,6 +61,19 @@ pub(crate) async fn fetch_and_cache_all_data(
             }
         }
         models::enums::DatabaseType::ApiHttp => false,
+        models::enums::DatabaseType::Plugin(_) => {
+            if let models::enums::DatabasePool::Plugin(plugin_pool) = pool {
+                crate::driver_api::cache::fetch_plugin_data(
+                    connection_id,
+                    plugin_pool,
+                    &connection.database,
+                    cache_pool,
+                )
+                .await
+            } else {
+                false
+            }
+        }
     }
 }
 

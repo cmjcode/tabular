@@ -140,18 +140,48 @@ Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs`
 
 ## G. Skema & objek database
 
-- [ ] **G1. Structure editor lengkap: FK, trigger, check constraint, generated column, DDL** · P2 · L · Sebagian
-  Kolom + index sudah ada di `src/data_table/render_structure.rs`.
-- [ ] **G2. Rename tabel/database/schema dari sidebar** · P2 · S · Belum
-- [ ] **G3. Edit comment tabel/kolom** · P3 · S · Belum
-- [ ] **G4. User-defined types (enum, composite, domain, range) di sidebar + inline edit** · P3 · M · Belum
-- [ ] **G5. Materialized view: sidebar, DDL, refresh (concurrently)** · P3 · S · Belum
-- [ ] **G6. Partition bounds + row count di sidebar** · P4 · S · Sebagian
-- [ ] **G7. Toggle system databases/schemas** · P4 · S · Belum
-- [ ] **G8. Table operations: maintenance (VACUUM/ANALYZE/OPTIMIZE), view management** · P3 · S · Sebagian
-- [ ] **G9. PostgreSQL schema create/edit dengan ownership & privileges** · P4 · S · Belum
-- [ ] **G10. Routine source viewer + export untuk semua engine** · P4 · S · Sebagian
-- [ ] **G11. SQL Server: GO batch separator, PRINT output, per-result tabs** · P3 · M · Belum
+Fondasi bersama: `src/schema_objects/` (builder SQL murni `sql.rs`, query katalog `catalog.rs`,
+eksekutor headless `exec.rs` yang menjalankan SQL di database tertentu; PostgreSQL memakai pool
+sementara lewat konfigurasi koneksi sehingga SSH/TLS tetap berlaku). GUI: antrean aksi +
+dialog pratinjau SQL di `src/window_egui/schema_actions.rs`, item menu di `schema_menus.rs`.
+Semua perubahan menampilkan SQL dulu (Execute / Open in Editor).
+
+- [x] **G1. Structure editor lengkap: FK, trigger, check constraint, generated column, DDL** · P2 · L · Selesai
+  Tab Foreign Keys, Checks, Triggers, Generated, DDL di Structure (`src/data_table/structure_objects.rs`):
+  daftar + drop, form tambah FK (ON DELETE/UPDATE), check, kolom generated; trigger lewat template
+  per engine. SQLite: FK/check tidak bisa ditambah ke tabel yang ada (pesan jelas, lihat DDL).
+- [x] **G2. Rename tabel/database/schema dari sidebar** · P2 · S · Selesai
+  Tabel, view, materialized view, database (PG `ALTER DATABASE`, MsSQL `MODIFY NAME`, MySQL skrip
+  pindah tabel ke database baru), schema PG (Manage Schemas). SQLite: tabel saja.
+- [x] **G3. Edit comment tabel/kolom** · P3 · S · Selesai
+  Comment tabel/view dari sidebar (MySQL, PG, MsSQL `MS_Description`), prefill comment saat ini.
+  Comment kolom sudah ada di Edit Column (Structure).
+- [x] **G4. User-defined types (enum, composite, domain, range) di sidebar + inline edit** · P3 · M · Selesai
+  Folder "Types" per database PG (tanpa tipe milik extension); klik = DDL; "Edit Type…": tambah/rename
+  nilai enum, atribut composite, default/NOT NULL/check domain, rename, drop.
+- [x] **G5. Materialized view: sidebar, DDL, refresh (concurrently)** · P3 · S · Selesai
+  Folder "Materialized Views" PG: View Data, definisi + index, Refresh (CONCURRENTLY / WITH NO DATA),
+  rename, drop.
+- [x] **G6. Partition bounds + row count di sidebar** · P4 · S · Selesai
+  Folder Partitions diambil live saat dibuka: PG `pg_inherits` + `relpartbound` + `reltuples`,
+  MySQL `information_schema.PARTITIONS`, MsSQL `sys.partitions` + range values.
+- [x] **G7. Toggle system databases/schemas** · P4 · S · Selesai
+  Preferences → Session & Diagnostics, atau klik kanan folder Databases. Default: disembunyikan
+  (termasuk master/model/msdb/tempdb MsSQL yang dulu selalu tampil di akhir daftar).
+- [x] **G8. Table operations: maintenance (VACUUM/ANALYZE/OPTIMIZE), view management** · P3 · S · Selesai
+  Maintenance per tabel dan per database (PG VACUUM/ANALYZE/REINDEX, MySQL OPTIMIZE/ANALYZE/CHECK/
+  REPAIR, SQLite VACUUM/ANALYZE/REINDEX/integrity_check, MsSQL statistics/index rebuild/DBCC);
+  output server ditampilkan di dialog. View: definisi, export, rename, comment, drop.
+- [x] **G9. PostgreSQL schema create/edit dengan ownership & privileges** · P4 · S · Selesai
+  Create Schema (owner + grant USAGE/CREATE) dan Manage Schemas (owner, rename, grant, revoke, drop
+  CASCADE) dari menu database.
+- [x] **G10. Routine source viewer + export untuk semua engine** · P4 · S · Selesai
+  Procedure/function/trigger/event/view/matview/type: klik membuka source di tab, menu "Export
+  Source to File…". PG kini punya folder Functions, Procedures, Triggers. SQLite: trigger & view.
+- [x] **G11. SQL Server: GO batch separator, PRINT output, per-result tabs** · P3 · M · Sebagian
+  `GO` / `GO n` (di luar string/komentar) memecah script per batch; setiap result set dalam satu
+  batch mendapat tab hasil sendiri. Belum: output PRINT, karena `mssql-client` 0.20 membuang token
+  Info (hanya `tracing::debug!`); perlu patch/fork crate.
 
 ## H. Import, export, transfer
 
@@ -220,15 +250,23 @@ Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs`
 
 ## L. Engine database baru
 
-Catatan: `libsqlite3-sys` dipin 0.37 (bundled); crate yang membawa SQLite sendiri bentrok.
-Gunakan feature flag per driver seperti `collab`.
+Keputusan 2026-09-29 (`docs/adr/0002-engine-driver-plugins.md`): engine yang sudah ada
+(PostgreSQL, MySQL, SQLite, SQL Server, MongoDB, Redis) tetap builtin. Engine baru dibuat
+sebagai plugin lewat trait `EngineDriver`: Wasm untuk engine HTTP, sidecar (proses terpisah)
+untuk protokol biner/native. L2/L3 cukup preset di atas driver builtin. DuckDB lewat sidecar
+sehingga tidak bentrok dengan `libsqlite3-sys` 0.37.
 
-- [ ] **L1. ClickHouse (HTTP interface)** · P2 · M · Belum
-- [ ] **L2. MariaDB/TiDB/OceanBase/Databend sebagai tipe koneksi di atas driver MySQL** · P3 · S · Sebagian
+- [x] **L1. ClickHouse (HTTP interface)** · P2 · M · Selesai (plugin Wasm)
+  `plugins/examples/clickhouse`; hasil di-parse host (JSONCompact), cancel lewat `KILL QUERY`.
+  Diuji melawan server HTTP tiruan, belum melawan ClickHouse sungguhan.
+- [x] **L2. MariaDB/TiDB/OceanBase/Databend sebagai tipe koneksi di atas driver MySQL** · P3 · S · Selesai (preset)
+  Preset di form koneksi (`src/driver_api/presets.rs`): mengisi tipe builtin + port.
 - [ ] **L3. Redshift/CockroachDB/PGlite/Turso sebagai tipe di atas driver PostgreSQL/SQLite** · P3 · S · Sebagian
+  Preset Redshift, CockroachDB, YugabyteDB, TimescaleDB ada. PGlite/Turso belum (Turso = L14, plugin).
 - [ ] **L4. Cassandra / ScyllaDB (CQL)** · P3 · L · Belum
 - [ ] **L5. Elasticsearch (REST, Query DSL console)** · P3 · M · Belum
-- [ ] **L6. DuckDB (embedded)** · P3 · L · Belum · risiko konflik SQLite
+- [x] **L6. DuckDB (embedded)** · P3 · L · Selesai (plugin sidecar)
+  `plugins/examples/duckdb-sidecar`: proses terpisah, jadi tidak bentrok dengan `libsqlite3-sys`.
 - [ ] **L7. Oracle Database** · P4 · XL · Belum · butuh Instant Client / native protocol
 - [ ] **L8. Snowflake** · P4 · L · Belum
 - [ ] **L9. Google BigQuery** · P4 · L · Belum
@@ -240,26 +278,56 @@ Gunakan feature flag per driver seperti `collab`.
 - [ ] **L15. Cloudflare D1 / R2 SQL** · P5 · M · Belum
 - [ ] **L16. Trino** · P5 · M · Belum
 - [ ] **L17. Teradata, SAP HANA, Dameng DM8, Spanner, Typesense, Weaviate, Beancount** · P5 · XL · Belum
-- [ ] **L18. Driver plugin API di Wasm runtime + plugin registry** · P3 · XL · Belum
+- [ ] **L18. Driver plugin API di Wasm runtime + plugin registry** · P3 · XL · Sebagian
+  API `tabular-driver-v1` (Wasm + sidecar), SDK `plugins/sdk`, install dari folder, enable/disable,
+  persetujuan sidecar per SHA-256 (`src/driver_api/`). Registry publik bertanda tangan belum.
   Memungkinkan komunitas menambah engine tanpa rebuild.
 - [ ] **L19. MongoDB: mongosh JS shell, Extended JSON editor, nested filters, field rename di Structure** · P3 · L · Sebagian
 
 ## M. Platform, integrasi OS, lain-lain
 
-- [ ] **M1. URL scheme `tabular://` (open connection, run query, import)** · P3 · M · Belum
-- [ ] **M2. CLI opener `tabular open <url>` + integrasi ddev** · P3 · S · Belum
-- [ ] **M3. Raycast extension** · P5 · M · Belum
-- [ ] **M4. AppleScript dictionary** · P5 · L · Belum · macOS only
-- [ ] **M5. iOS Shortcuts + Handoff** · P5 · L · Belum · Apple only
-- [ ] **M6. Localization (KO, TR, VI, ZH, ID)** · P3 · L · Belum
-  Perlu sistem string (mis. `fluent`) di seluruh UI.
-- [ ] **M7. Touch ID / biometrik untuk membuka vault** · P4 · S · Belum
-- [ ] **M8. Background update download + deferred install** · P4 · S · Sebagian
-  Self-update sudah ada (`src/self_update.rs`).
-- [ ] **M9. Managed updates via configuration profile** · P5 · S · Belum
-- [ ] **M10. Connection colors di tab/toolbar per environment** · P3 · S · Belum
+Status 2026-09-29: dokumentasi pengguna/admin di `docs/PLATFORM_INTEGRATION.md`. Diverifikasi
+dengan unit test + `cargo check`/clippy; alur OS (Apple Event, Handoff, Touch ID, registry
+Windows, xdg, iPad Split View) belum diuji manual di perangkat/bundle yang ditandatangani.
+
+- [x] **M1. URL scheme `tabular://` (open connection, run query, import)** · P3 · M · Selesai
+  `src/deeplink.rs` (parser + DSN), `src/single_instance.rs` (teruskan ke instance berjalan,
+  loopback + token), Apple Event di `src/platform_macos.rs`, GUI di
+  `src/window_egui/platform_ui.rs`. `run=1` selalu lewat dialog konfirmasi. Registrasi:
+  Info.plist (Xcode + cargo-bundle), `tabular.desktop`/Flatpak, WiX.
+- [x] **M2. CLI opener `tabular open <url>` + integrasi ddev** · P3 · S · Selesai
+  `tabular open`, `tabular connections [--json]` (`src/agent/cli.rs`), host command ddev di
+  `integrations/ddev/`.
+- [x] **M3. Raycast extension** · P5 · M · Selesai (belum dipublikasi)
+  `integrations/raycast/` (type-check + lint lulus; belum dicoba di Raycast; `author` masih
+  placeholder).
+- [x] **M4. AppleScript dictionary** · P5 · L · Selesai · macOS only
+  `apple/macos/Tabular.sdef` (open deep link / open connection / new query / connection names),
+  ditangani via NSAppleEventManager.
+- [ ] **M5. iOS Shortcuts + Handoff** · P5 · L · Sebagian · Apple only
+  Handoff kirim (macOS) + terima (macOS & iOS) dan skema URL iOS untuk aksi Shortcuts "Open URLs".
+  Belum: App Intents native (butuh target Swift di proyek iOS).
+- [ ] **M6. Localization (KO, TR, VI, ZH, ID)** · P3 · L · Sebagian
+  Infrastruktur `src/i18n/` (tr/trf, pemilih bahasa, fallback font CJK sistem, tes placeholder).
+  Diterjemahkan: navigasi Preferences, Updates, Privacy, bahasa, sidebar, notifikasi update,
+  deep link, environment, Touch ID. Sisa UI masih English; adopsi bertahap per layar.
+- [x] **M7. Touch ID / biometrik untuk membuka vault** · P4 · S · Selesai · macOS only
+  LocalAuthentication; passphrase di Keychain (tanpa ACL biometrik, lihat catatan keamanan di
+  docs). Windows Hello belum.
+- [x] **M8. Background update download + deferred install** · P4 · S · Selesai
+  Toggle unduh otomatis, "Install when quitting", "Skip This Version".
+- [x] **M9. Managed updates via configuration profile** · P5 · S · Selesai
+  `src/managed_policy.rs`: plist MDM (`id.tabular.database`), JSON sistem, `TABULAR_POLICY_FILE`.
+  Juga mengunci bahasa & kategori jaringan; fondasi untuk A3.
+- [x] **M10. Connection colors di tab/toolbar per environment** · P3 · S · Selesai
+  `src/connection_env.rs`; menu konteks koneksi > Environment, strip di tab, badge di toolbar,
+  tebakan dari nama. Disimpan lokal (tidak ikut sync).
 - [ ] **M11. iPad layout side-by-side stabil** · P3 · L · Sebagian
-- [ ] **M12. Privacy page: daftar semua outbound request + toggle** · P4 · S · Belum
+  Layout sempit < 700pt: sidebar & panel AI otomatis disembunyikan/dipulihkan, lebar sidebar dan
+  dialog Preferences di-clamp. Belum diuji di iPad sungguhan.
+- [x] **M12. Privacy page: daftar semua outbound request + toggle** · P4 · S · Selesai
+  `src/privacy.rs` + Preferences > Privacy; gate di update check/download, sync, AI, tile peta,
+  Handoff; log sesi (host+path saja).
 
 ---
 

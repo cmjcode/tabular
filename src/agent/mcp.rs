@@ -524,6 +524,8 @@ impl ServerHandler for TabularMcp {
 
 /// Layani MCP lewat stdin/stdout sampai client menutup koneksi.
 pub async fn serve_stdio(session: Arc<HeadlessSession>) -> Result<(), String> {
+    // Driver plugin dimuat supaya koneksi engine plugin juga bisa dipakai agent.
+    crate::driver_api::manifest::load_installed();
     let server = TabularMcp::new(session)
         .serve(rmcp::transport::stdio())
         .await

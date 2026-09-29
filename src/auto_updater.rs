@@ -64,6 +64,7 @@ impl AutoUpdater {
             .as_ref()
             .ok_or("No download URL available for this release")?;
 
+        crate::privacy::check(crate::privacy::NetCategory::UpdateDownload, download_url)?;
         info!("🚀 Starting auto update download from: {}", download_url);
         progress_cb(UpdateStage::Downloading {
             progress: 0.0,
@@ -195,6 +196,27 @@ impl AutoUpdater {
     }
 }
 
+impl AutoUpdater {
+    /// Pasang update yang sudah di-stage saat aplikasi ditutup (M8), tanpa
+    /// membuka ulang. Linux/Windows sudah mengganti binary saat staging, jadi
+    /// hanya macOS yang perlu menjalankan helper script di sini.
+    pub fn install_on_quit(staged_script: Option<&PathBuf>) {
+        #[cfg(target_os = "macos")]
+        if let Some(script) = staged_script {
+            info!("🍏 Installing staged update on quit: {:?}", script);
+            if let Err(e) = std::process::Command::new("bash")
+                .arg(script)
+                .arg("--no-relaunch")
+                .spawn()
+            {
+                warn!("Failed to launch update helper on quit: {}", e);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = staged_script;
+    }
+}
+
 // ─── Platform Specific: macOS ────────────────────────────────────────────────
 // TIDAK DIUBAH — identik dengan implementasi sebelumnya
 #[cfg(target_os = "macos")]
@@ -305,8 +327,8 @@ impl AutoUpdater {
                         xattr -cr \"{install}\" 2>/dev/null || true\n\
                         # Remove this helper script\n\
                         rm -f \"{script}\"\n\
-                        # Relaunch the app\n\
-                        open \"{install}\"\n",
+                        # Relaunch the app (dilewati untuk install-saat-keluar)\n\
+                        if [ \"$1\" != \"--no-relaunch\" ]; then open \"{install}\"; fi\n",
                         install = install_target,
                         staged = staged_app.to_string_lossy(),
                         script = helper_script_path.to_string_lossy(),

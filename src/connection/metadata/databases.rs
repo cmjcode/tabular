@@ -33,8 +33,10 @@ pub(crate) fn fetch_databases_from_connection_blocking(
                             .into_iter()
                             .map(|(db_name,)| db_name)
                             .filter(|db| {
-                                !["information_schema", "performance_schema", "mysql", "sys"]
-                                    .contains(&db.as_str())
+                                !crate::schema_objects::hide_database(
+                                    &models::enums::DatabaseType::MySQL,
+                                    db,
+                                )
                             })
                             .collect();
                         Some(databases)
@@ -46,9 +48,7 @@ pub(crate) fn fetch_databases_from_connection_blocking(
                 }
             }
             models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-                let result = sqlx::query_as::<_, (String,)>(
-                    "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
-                )
+                let result = sqlx::query_as::<_, (String,)>(crate::schema_objects::pg_database_list_sql())
                 .fetch_all(pg_pool.as_ref())
                 .await;
 
@@ -163,7 +163,11 @@ pub(crate) fn fetch_databases_from_connection_blocking(
                                 .into_iter()
                                 .filter(|d| system.contains(&d.as_str()))
                                 .collect();
-                            user_dbs.append(&mut sys_dbs);
+                            // Database sistem hanya tampil bila diminta (atau bila tidak ada
+                            // database user sama sekali, agar koneksi tetap bisa dipakai).
+                            if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
+                                user_dbs.append(&mut sys_dbs);
+                            }
                             Some(user_dbs)
                         }
                     }
@@ -177,6 +181,9 @@ pub(crate) fn fetch_databases_from_connection_blocking(
                         ])
                     }
                 }
+            }
+            models::enums::DatabasePool::Plugin(plugin_pool) => {
+                crate::driver_api::cache::list_databases(&plugin_pool, &_connection.database).await
             }
             models::enums::DatabasePool::MongoDB(client) => {
                 match client.list_database_names().await {
@@ -228,8 +235,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
                         .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
-                            !["information_schema", "performance_schema", "mysql", "sys"]
-                                .contains(&db.as_str())
+                            !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                         })
                         .collect();
                     debug!(
@@ -252,13 +258,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
                                     .into_iter()
                                     .map(|(db,)| db)
                                     .filter(|db| {
-                                        ![
-                                            "information_schema",
-                                            "performance_schema",
-                                            "mysql",
-                                            "sys",
-                                        ]
-                                        .contains(&db.as_str())
+                                        !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                                     })
                                     .collect();
                                 debug!(
@@ -295,8 +295,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
                                 .into_iter()
                                 .map(|(db,)| db)
                                 .filter(|db| {
-                                    !["information_schema", "performance_schema", "mysql", "sys"]
-                                        .contains(&db.as_str())
+                                    !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                                 })
                                 .collect();
                             debug!(
@@ -324,7 +323,7 @@ pub(crate) async fn fetch_databases_from_connection_async(
                 connection_id
             );
             let result = sqlx::query_as::<_, (String,)>(
-                "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
+                crate::schema_objects::pg_database_list_sql()
             )
             .fetch_all(pg_pool.as_ref())
             .await;
@@ -433,7 +432,11 @@ pub(crate) async fn fetch_databases_from_connection_async(
                             .into_iter()
                             .filter(|d| system.contains(&d.as_str()))
                             .collect();
-                        user_dbs.append(&mut sys_dbs);
+                        // Database sistem hanya tampil bila diminta (atau bila tidak ada
+                            // database user sama sekali, agar koneksi tetap bisa dipakai).
+                            if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
+                                user_dbs.append(&mut sys_dbs);
+                            }
                         Some(user_dbs)
                     }
                 }
@@ -447,6 +450,9 @@ pub(crate) async fn fetch_databases_from_connection_async(
                     ])
                 }
             }
+        }
+        models::enums::DatabasePool::Plugin(plugin_pool) => {
+            crate::driver_api::cache::list_databases(&plugin_pool, &_connection.database).await
         }
         models::enums::DatabasePool::MongoDB(client) => match client.list_database_names().await {
             Ok(dbs) => Some(dbs),
@@ -542,19 +548,23 @@ pub async fn fetch_databases_background_task(
 
             models::structs::ConnectionConfig {
                 id: Some(id),
+                plugin_options: Default::default(),
                 name,
                 host,
                 port,
                 username,
                 password,
                 database: database_name,
-                connection_type: match connection_type.as_str() {
-                    "MySQL" => models::enums::DatabaseType::MySQL,
-                    "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                    "Redis" => models::enums::DatabaseType::Redis,
-                    "MsSQL" => models::enums::DatabaseType::MsSQL,
-                    "MongoDB" => models::enums::DatabaseType::MongoDB,
-                    _ => models::enums::DatabaseType::SQLite,
+                connection_type: match models::enums::DatabaseType::from_db_str(&connection_type) {
+                    Some(ty) => ty,
+                    None => {
+                        log::warn!(
+                            "[CONNECTIONS] Connection {} has unknown type '{}'",
+                            id,
+                            connection_type
+                        );
+                        return None;
+                    }
                 },
                 folder,
                 ssh_enabled: ssh_enabled != 0,
@@ -581,6 +591,12 @@ pub async fn fetch_databases_background_task(
             return None;
         }
     };
+
+    let mut connection = connection;
+    if connection.connection_type.plugin_id().is_some() {
+        connection.plugin_options =
+            crate::driver_api::connect::load_plugin_options(cache_pool, connection_id).await;
+    }
 
     // 2. Get or create pool (check shared first)
     let pool = {
@@ -637,8 +653,7 @@ pub async fn fetch_databases_background_task(
                         .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
-                            !["information_schema", "performance_schema", "mysql", "sys"]
-                                .contains(&db.as_str())
+                            !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                         })
                         .collect();
                     debug!(
@@ -662,13 +677,7 @@ pub async fn fetch_databases_background_task(
                                     .into_iter()
                                     .map(|(db,)| db)
                                     .filter(|db| {
-                                        ![
-                                            "information_schema",
-                                            "performance_schema",
-                                            "mysql",
-                                            "sys",
-                                        ]
-                                        .contains(&db.as_str())
+                                        !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                                     })
                                     .collect();
                                 debug!(
@@ -705,8 +714,7 @@ pub async fn fetch_databases_background_task(
                                 .into_iter()
                                 .map(|(db,)| db)
                                 .filter(|db| {
-                                    !["information_schema", "performance_schema", "mysql", "sys"]
-                                        .contains(&db.as_str())
+                                    !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
                                 })
                                 .collect();
                             debug!(
@@ -730,7 +738,7 @@ pub async fn fetch_databases_background_task(
         }
         models::enums::DatabasePool::PostgreSQL(pg_pool) => {
             let result = sqlx::query_as::<_, (String,)>(
-                "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')"
+                crate::schema_objects::pg_database_list_sql()
             )
             .fetch_all(pg_pool.as_ref())
             .await;
@@ -807,7 +815,11 @@ pub async fn fetch_databases_background_task(
                             .into_iter()
                             .filter(|d| system.contains(&d.as_str()))
                             .collect();
-                        user_dbs.append(&mut sys_dbs);
+                        // Database sistem hanya tampil bila diminta (atau bila tidak ada
+                            // database user sama sekali, agar koneksi tetap bisa dipakai).
+                            if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
+                                user_dbs.append(&mut sys_dbs);
+                            }
                         Some(user_dbs)
                     }
                 }
@@ -821,6 +833,9 @@ pub async fn fetch_databases_background_task(
                     ])
                 }
             }
+        }
+        models::enums::DatabasePool::Plugin(plugin_pool) => {
+            crate::driver_api::cache::list_databases(&plugin_pool, &connection.database).await
         }
         models::enums::DatabasePool::MongoDB(client) => match client.list_database_names().await {
             Ok(dbs) => Some(dbs),

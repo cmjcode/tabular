@@ -652,9 +652,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                 diagram_dbs.push((conn_id, db_name.clone()));
             }
             let kind = match tbl_type.to_lowercase().as_str() {
-                "view" => QuickOpenKind::View,
+                "view" | "matview" => QuickOpenKind::View,
                 "procedure" => QuickOpenKind::Procedure,
                 "function" => QuickOpenKind::Function,
+                // Trigger, event, dan tipe bukan relasi yang bisa dibuka sebagai tabel.
+                "trigger" | "event" | "type" => continue,
                 _ => QuickOpenKind::Table,
             };
 
@@ -1230,6 +1232,14 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                     }
                     models::enums::DatabaseType::SQLite | models::enums::DatabaseType::ApiHttp => {
                         format!("SELECT * FROM `{}` LIMIT 100;", table_name)
+                    }
+                    models::enums::DatabaseType::Plugin(ref id) => {
+                        crate::driver_api::query::preview_query(
+                            &crate::driver_api::query::capabilities(id),
+                            &db_name,
+                            &table_name,
+                            100,
+                        )
                     }
                 };
 

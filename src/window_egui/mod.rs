@@ -16,10 +16,15 @@ pub mod diagram;
 pub mod init;
 pub mod notifications;
 pub mod pagination;
+pub mod platform_ui;
+pub(crate) mod plugin_connection_form;
+pub(crate) mod plugin_tree;
 pub(crate) mod preferences;
 pub mod query_insight;
 pub mod query_jobs;
 pub mod render_dialogs;
+pub mod schema_actions;
+pub mod schema_menus;
 pub mod search;
 pub mod searchable_picker;
 pub mod settings;
@@ -459,6 +464,8 @@ pub struct Tabular {
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
     // Pending drop table confirmation
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
+    /// Dialog dan fetch latar belakang untuk aksi objek skema (lihat `schema_actions`).
+    pub schema_ui: schema_actions::SchemaUiState,
     // Pending drop database confirmation
     pub pending_drop_database: Option<models::structs::PendingDropDatabase>,
     // Pending delete connection confirmation
@@ -536,6 +543,8 @@ pub struct Tabular {
     pub max_result_rows: u32,
     /// Buka kembali tab dari sesi sebelumnya saat startup.
     pub restore_session: bool,
+    /// Tampilkan database/schema sistem di sidebar (lihat `schema_objects::show_system_objects`).
+    pub show_system_objects: bool,
     /// Aksi tutup tab yang menunggu konfirmasi (ada perubahan belum disimpan).
     pub pending_tab_close: Option<crate::session_restore::PendingTabClose>,
     /// Dialog konfirmasi keluar aplikasi sedang tampil.
@@ -709,6 +718,8 @@ pub struct Tabular {
     )>,
     // Centralized, non-blocking toast/notification surface (see notifications.rs)
     pub toasts: notifications::ToastManager,
+    /// State integrasi platform: deep link, Handoff, environment koneksi, Touch ID.
+    pub platform_ui: platform_ui::PlatformUiState,
     // Visual data filter state for table browsing
     pub visual_filter: models::structs::VisualFilterState,
     // Dedicated Cell Value Inspector (JSON, Hex, Image, Raw Virtual Text)
@@ -973,6 +984,7 @@ pub enum PrefTab {
     Update,
     AiAssistant,
     Sync,
+    Privacy,
     Plugins,
 }
 

@@ -1,0 +1,20 @@
+[package]
+name = "tabular-duckdb-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "DuckDB sidecar driver for Tabular (JSON-RPC over stdio)"
+license = "MIT"
+publish = false
+
+# Proyek terpisah dari crate Tabular: DuckDB membawa engine-nya sendiri dan
+# berjalan di proses lain, jadi tidak bentrok dengan libsqlite3-sys milik app.
+[workspace]
+
+[dependencies]
+duckdb = { version = "1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+strip = true

@@ -337,7 +337,8 @@ pub(crate) fn fetch_view_definition(
             }
             models::enums::DatabaseType::Redis
             | models::enums::DatabaseType::MongoDB
-            | models::enums::DatabaseType::ApiHttp => None,
+            | models::enums::DatabaseType::ApiHttp
+            | models::enums::DatabaseType::Plugin(_) => None,
         }
     })
 }

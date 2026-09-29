@@ -16,6 +16,7 @@ fn database_type_order(db_type: &models::enums::DatabaseType) -> u8 {
         models::enums::DatabaseType::MsSQL => 4,
         models::enums::DatabaseType::MongoDB => 5,
         models::enums::DatabaseType::ApiHttp => 6,
+        models::enums::DatabaseType::Plugin(_) => 7,
     }
 }
 
@@ -156,6 +157,10 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::SQLite => String::new(),
             models::enums::DatabaseType::MongoDB => "27017".into(),
             models::enums::DatabaseType::ApiHttp => String::new(),
+            models::enums::DatabaseType::Plugin(ref id) => crate::driver_api::registry::descriptor(id)
+                .and_then(|d| d.default_port)
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
         };
     }
 
@@ -238,14 +243,13 @@ pub(crate) fn render_connection_dialog(
                         .show(ui, |ui| {
                             ui.label("Connection Type:");
                         egui::ComboBox::from_label("")
-                            .selected_text(match connection_data.connection_type {
-                                models::enums::DatabaseType::MySQL => "MySQL",
-                                models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
-                                models::enums::DatabaseType::SQLite => "SQLite",
-                                models::enums::DatabaseType::Redis => "Redis",
-                                models::enums::DatabaseType::MsSQL => "MsSQL",
-                                models::enums::DatabaseType::MongoDB => "MongoDB",
-                                models::enums::DatabaseType::ApiHttp => "API - HTTP",
+                            .selected_text(match &connection_data.connection_type {
+                                models::enums::DatabaseType::ApiHttp => "API - HTTP".to_string(),
+                                models::enums::DatabaseType::Plugin(_) => format!(
+                                    "🧩 {}",
+                                    connection_data.connection_type.display_name()
+                                ),
+                                other => other.display_name(),
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -283,6 +287,10 @@ pub(crate) fn render_connection_dialog(
                                     models::enums::DatabaseType::ApiHttp,
                                     "🌐 API - HTTP",
                                 );
+                                crate::window_egui::plugin_connection_form::render_engine_choices(
+                                    ui,
+                                    &mut connection_data,
+                                );
                             });
                         ui.end_row();
 
@@ -314,6 +322,14 @@ pub(crate) fn render_connection_dialog(
                             }
                             models::enums::DatabaseType::ApiHttp => {
                                 // API-HTTP: only Connection Name + Folder needed
+                            }
+                            models::enums::DatabaseType::Plugin(ref engine_id) => {
+                                let engine_id = engine_id.clone();
+                                crate::window_egui::plugin_connection_form::render_plugin_fields(
+                                    ui,
+                                    &mut connection_data,
+                                    &engine_id,
+                                );
                             }
                             _ => {
                                 ui.label("Host:");
@@ -356,8 +372,11 @@ pub(crate) fn render_connection_dialog(
                         };
                         ui.end_row();
 
-                        // Build and edit Connection URL inline (not shown for API-HTTP)
-                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
+                        // Build and edit Connection URL inline (not shown for API-HTTP
+                        // and plugin engines, whose URL format is engine-specific)
+                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp
+                            && connection_data.connection_type.plugin_id().is_none()
+                        {
                         let full_url = {
                             let host = connection_data.host.trim();
                             let port = connection_data.port.trim();
@@ -455,7 +474,8 @@ pub(crate) fn render_connection_dialog(
                                     };
                                     format!("mssql://{}{}:{}{}", auth, host, port, path)
                                 }
-                                models::enums::DatabaseType::ApiHttp => String::new(),
+                                models::enums::DatabaseType::ApiHttp
+                                | models::enums::DatabaseType::Plugin(_) => String::new(),
                             }
                         };
 
@@ -475,10 +495,15 @@ pub(crate) fn render_connection_dialog(
                         ui.end_row();
                         } // end if != ApiHttp (Connection URL section)
 
+                        let plugin_caps = connection_data
+                            .connection_type
+                            .plugin_id()
+                            .map(crate::driver_api::query::capabilities);
                         let ssh_supported = connection_data.connection_type
                             != models::enums::DatabaseType::SQLite
                             && connection_data.connection_type
-                                != models::enums::DatabaseType::ApiHttp;
+                                != models::enums::DatabaseType::ApiHttp
+                            && plugin_caps.as_ref().is_none_or(|c| c.ssh_tunnel);
 
                         // SSH Tunnel section: not applicable for API-HTTP connections
                         if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
@@ -579,7 +604,7 @@ pub(crate) fn render_connection_dialog(
                         let ssl_supported = matches!(
                             connection_data.connection_type,
                             models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL
-                        );
+                        ) || plugin_caps.as_ref().is_some_and(|c| c.tls);
                         if ssl_supported {
                             ui.label("SSL / TLS:");
                             ui.checkbox(&mut connection_data.ssl_enabled, "Enable SSL / TLS & mTLS");
@@ -923,20 +948,25 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
 
                     Some(models::structs::ConnectionConfig {
                         id: Some(id),
+                        plugin_options: Default::default(),
                         name,
                         host,
                         port,
                         username,
                         password,
                         database: database_name,
-                        connection_type: match connection_type.as_str() {
-                            "MySQL" => models::enums::DatabaseType::MySQL,
-                            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                            "Redis" => models::enums::DatabaseType::Redis,
-                            "MsSQL" => models::enums::DatabaseType::MsSQL,
-                            "MongoDB" => models::enums::DatabaseType::MongoDB,
-                            "ApiHttp" => models::enums::DatabaseType::ApiHttp,
-                            _ => models::enums::DatabaseType::SQLite,
+                        connection_type: match models::enums::DatabaseType::from_db_str(
+                            &connection_type,
+                        ) {
+                            Some(ty) => ty,
+                            None => {
+                                log::warn!(
+                                    "[CONNECTIONS] Skipping connection {} with unknown type '{}'",
+                                    id,
+                                    connection_type
+                                );
+                                return None;
+                            }
                         },
                         folder,
                         ssh_enabled: ssh_enabled != 0,
@@ -961,6 +991,10 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     })
                 })
                 .collect();
+            rt.block_on(crate::driver_api::connect::fill_plugin_options(
+                rewrite_pool.as_ref(),
+                &mut tabular.connections,
+            ));
             crate::log_startup_step(&format!(
                 "load_connections: resolved secrets for {} connections",
                 tabular.connections.len()
@@ -1247,6 +1281,7 @@ pub(crate) fn save_connection_to_database(
         let secret_password = connection.password.clone();
         let secret_ssh_key = connection.ssh_private_key.clone();
         let secret_ssh_password = connection.ssh_password.clone();
+        let with_options = connection.clone();
         let connection = connection.clone();
         let rt = tabular.get_runtime();
 
@@ -1260,7 +1295,7 @@ pub(crate) fn save_connection_to_database(
           .bind(connection.username)
           .bind(connection.password)
           .bind(connection.database)
-          .bind(format!("{:?}", connection.connection_type))
+          .bind(connection.connection_type.as_db_str().into_owned())
           .bind(connection.folder)
           .bind(if connection.ssh_enabled { 1 } else { 0 })
           .bind(connection.ssh_host)
@@ -1295,6 +1330,13 @@ pub(crate) fn save_connection_to_database(
                     &secret_ssh_key,
                     &secret_ssh_password,
                 );
+                if let Err(e) = rt.block_on(crate::driver_api::connect::save_plugin_options(
+                    pool_clone.as_ref(),
+                    &with_options,
+                    res.last_insert_rowid(),
+                )) {
+                    log::warn!("[DRIVER-PLUGIN] Failed to save plugin options: {e}");
+                }
                 true
             }
             Err(_) => false,
@@ -1339,6 +1381,7 @@ async fn exec_update_connection(
     ssh_key_stored: String,
     ssh_password_stored: String,
 ) -> Result<(), sqlx::Error> {
+    let with_options = connection.clone();
     sqlx::query(
           "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
       )
@@ -1348,7 +1391,7 @@ async fn exec_update_connection(
       .bind(connection.username)
       .bind(password_stored)
       .bind(connection.database)
-      .bind(format!("{:?}", connection.connection_type))
+      .bind(connection.connection_type.as_db_str().into_owned())
       .bind(connection.folder)
       .bind(if connection.ssh_enabled { 1 } else { 0 })
       .bind(connection.ssh_host)
@@ -1369,8 +1412,11 @@ async fn exec_update_connection(
       .bind(if connection.ssl_verify_server { 1 } else { 0 })
       .bind(connection.id)
       .execute(pool)
-      .await
-      .map(|_| ())
+      .await?;
+    if let Some(id) = with_options.id {
+        crate::driver_api::connect::save_plugin_options(pool, &with_options, id).await?;
+    }
+    Ok(())
 }
 
 pub(crate) fn update_connection_in_database(
@@ -1634,7 +1680,8 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                 ssl_key_passphrase TEXT NOT NULL DEFAULT '',
                 ssl_verify_server INTEGER NOT NULL DEFAULT 1,
                 custom_views TEXT NOT NULL DEFAULT '[]',
-                replication_master_id INTEGER DEFAULT NULL
+                replication_master_id INTEGER DEFAULT NULL,
+                plugin_options TEXT NOT NULL DEFAULT '{}'
             );
             CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS database_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name));
@@ -1669,6 +1716,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             "ALTER TABLE connections ADD COLUMN ssl_client_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE connections ADD COLUMN ssl_key_passphrase TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE connections ADD COLUMN plugin_options TEXT NOT NULL DEFAULT '{}'",
         ] {
             let _ = sqlx::query(migration).execute(&pool).await;
         }
@@ -1763,20 +1811,19 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
 
                 Some(models::structs::ConnectionConfig {
                     id: Some(id),
+                    plugin_options: Default::default(),
                     name,
                     host,
                     port,
                     username,
                     password,
                     database: database_name,
-                    connection_type: match connection_type.as_str() {
-                        "MySQL" => models::enums::DatabaseType::MySQL,
-                        "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                        "Redis" => models::enums::DatabaseType::Redis,
-                        "MsSQL" => models::enums::DatabaseType::MsSQL,
-                        "MongoDB" => models::enums::DatabaseType::MongoDB,
-                        "ApiHttp" => models::enums::DatabaseType::ApiHttp,
-                        _ => models::enums::DatabaseType::SQLite,
+                    connection_type: match models::enums::DatabaseType::from_db_str(&connection_type) {
+                        Some(ty) => ty,
+                        None => {
+                            log::warn!("[CONNECTIONS] Skipping connection {} with unknown type '{}'", id, connection_type);
+                            return None;
+                        }
                     },
                     folder,
                     ssh_enabled: ssh_enabled != 0,
@@ -1814,6 +1861,11 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             .await
         });
     }
+    let mut connections = connections;
+    rt.block_on(crate::driver_api::connect::fill_plugin_options(
+        &pool,
+        &mut connections,
+    ));
 
     // Load connection folders
     let connection_folders: Vec<String> = rt.block_on(async {
@@ -2101,6 +2153,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN plugin_options TEXT NOT NULL DEFAULT '{}'"
                     )
                     .execute(&pool)
                     .await;
@@ -3237,7 +3295,7 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(&conn.username)
                 .bind(&conn.password)
                 .bind(&conn.database)
-                .bind(format!("{:?}", conn.connection_type))
+                .bind(conn.connection_type.as_db_str().into_owned())
                 .bind(&conn.folder)
                 .bind(if conn.ssh_enabled { 1 } else { 0 })
                 .bind(&conn.ssh_host)
@@ -3251,6 +3309,10 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(conn.replication_master_id)
                 .execute(pool.as_ref())
                 .await;
+                if let Some(id) = conn.id {
+                    let _ = crate::driver_api::connect::save_plugin_options(pool.as_ref(), conn, id)
+                        .await;
+                }
             }
 
             // Restore query history

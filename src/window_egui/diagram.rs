@@ -1661,7 +1661,7 @@ impl super::Tabular {
                     (
                         id,
                         c.name.clone(),
-                        format!("{:?}", c.connection_type),
+                        c.connection_type.display_name(),
                         host_label,
                     )
                 })

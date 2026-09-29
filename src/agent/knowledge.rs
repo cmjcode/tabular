@@ -813,7 +813,7 @@ impl HeadlessSession {
                 if !query_diagram::supports_database(&conn.connection_type) {
                     return Err(AgentError::Unsupported(
                         id,
-                        format!("{:?}", conn.connection_type),
+                        conn.connection_type.display_name(),
                     ));
                 }
                 let db = self.resolve_database(&conn, database).await.ok();

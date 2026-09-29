@@ -578,7 +578,9 @@ impl super::Tabular {
                 | models::enums::NodeType::StoredProceduresFolder
                 | models::enums::NodeType::UserFunctionsFolder
                 | models::enums::NodeType::TriggersFolder
-                | models::enums::NodeType::EventsFolder => {
+                | models::enums::NodeType::EventsFolder
+                | models::enums::NodeType::MaterializedViewsFolder
+                | models::enums::NodeType::TypesFolder => {
                     // Mark as not loaded so it will trigger loading from cache on next render
                     node.is_loaded = false;
                     debug!(

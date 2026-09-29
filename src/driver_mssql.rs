@@ -376,6 +376,50 @@ pub(crate) async fn run_query(
     Ok((headers, data))
 }
 
+/// Seperti [`run_query`], tetapi setiap result set yang punya kolom dikembalikan
+/// terpisah (bukan digabung di bawah header terakhir). Batch tanpa result set
+/// (DDL, `EXEC` tanpa `SELECT`) mengembalikan vektor kosong.
+pub(crate) async fn run_query_multi(
+    client: &mut Client<Ready>,
+    query: &str,
+) -> Result<Vec<(Vec<String>, Vec<Vec<String>>)>, String> {
+    let mut sets: Vec<(Vec<String>, Vec<Vec<String>>)> = Vec::new();
+    let mut stream = client
+        .query_multiple(query, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    loop {
+        let headers: Option<Vec<String>> = stream
+            .columns()
+            .filter(|cols| !cols.is_empty())
+            .map(|cols| cols.iter().map(|c| c.name.clone()).collect());
+        let mut rows = Vec::new();
+        while let Some(row) = stream.next_row().await.map_err(|e| e.to_string())? {
+            rows.push(row_values_to_strings(&row));
+        }
+        if let Some(headers) = headers {
+            sets.push((headers, rows));
+        }
+        if !stream.next_result().await.map_err(|e| e.to_string())? {
+            break;
+        }
+    }
+    Ok(sets)
+}
+
+/// Jalankan batch lewat pool dan kembalikan semua result set secara terpisah.
+pub(crate) async fn execute_query_multi(
+    pool: std::sync::Arc<mssql_driver_pool::Pool>,
+    query: &str,
+) -> Result<Vec<(Vec<String>, Vec<Vec<String>>)>, String> {
+    let mut conn = pool.get().await.map_err(|e| e.to_string())?;
+    let client = conn
+        .client_mut()
+        .ok_or_else(|| "MsSQL pooled connection unavailable".to_string())?;
+    run_query_multi(client, query).await
+}
+
 // Helper: Remove TOP clauses from MsSQL SELECT for pagination compatibility
 pub(crate) fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
     let mut result = select_part.to_string();

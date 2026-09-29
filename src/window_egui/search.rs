@@ -113,7 +113,8 @@ impl super::Tabular {
                 }
                 models::enums::DatabaseType::MySQL
                 | models::enums::DatabaseType::PostgreSQL
-                | models::enums::DatabaseType::SQLite => {
+                | models::enums::DatabaseType::SQLite
+                | models::enums::DatabaseType::Plugin(_) => {
                     self.search_sql_tables(connection_id, search_text, &conn_type);
                 }
                 models::enums::DatabaseType::MsSQL => {

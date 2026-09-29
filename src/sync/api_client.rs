@@ -35,8 +35,16 @@ impl ApiClient {
         }
     }
 
+    /// Semua request sync lewat sini, jadi toggle privasi Cloud Sync cukup
+    /// dicek di satu tempat. Saat diblokir, URL diganti skema yang ditolak
+    /// reqwest sebelum ada koneksi jaringan (bahkan DNS), sehingga request
+    /// gagal dengan pesan jelas.
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.server_url, path)
+        let url = format!("{}{}", self.server_url, path);
+        match crate::privacy::check(crate::privacy::NetCategory::CloudSync, &url) {
+            Ok(()) => url,
+            Err(_) => format!("blocked-by-privacy-settings:{path}"),
+        }
     }
 
     /// Refresh the access token using the stored refresh token.

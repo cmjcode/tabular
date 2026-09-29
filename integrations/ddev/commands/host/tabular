@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+## Description: Open the project database in Tabular
+## Usage: tabular
+## Example: "ddev tabular"
+## OSTypes: darwin,linux,windows
+## HostBinaryExists: /Applications/Tabular.app,/opt/homebrew/bin/tabular,/usr/local/bin/tabular,/usr/bin/tabular
+
+set -euo pipefail
+
+die() {
+  echo "ddev tabular: $*" >&2
+  exit 1
+}
+
+# Urutan: TABULAR_BIN -> Tabular.app (macOS) -> `tabular` di PATH.
+resolve_tabular() {
+  if [[ -n "${TABULAR_BIN:-}" ]]; then
+    if [[ -x "$TABULAR_BIN" ]] || command -v "$TABULAR_BIN" >/dev/null 2>&1; then
+      printf '%s\n' "$TABULAR_BIN"
+      return
+    fi
+    die "TABULAR_BIN is set but not executable: $TABULAR_BIN"
+  fi
+  local mac_app="/Applications/Tabular.app/Contents/MacOS/tabular"
+  if [[ -x "$mac_app" ]]; then
+    printf '%s\n' "$mac_app"
+    return
+  fi
+  if command -v tabular >/dev/null 2>&1; then
+    command -v tabular
+    return
+  fi
+  die "Tabular not found. Install Tabular or set TABULAR_BIN=/path/to/tabular."
+}
+
+# Percent-encode untuk userinfo/nama database di dalam DSN.
+urlencode() {
+  local s="$1" out="" c i
+  local LC_ALL=C
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9.~_-]) out+="$c" ;;
+      *) out+=$(printf '%%%02X' "'$c") ;;
+    esac
+  done
+  printf '%s\n' "$out"
+}
+
+cd "${DDEV_APPROOT:-.}"
+
+db_type=""
+db_port=""
+db_user="db"
+db_pass="db"
+db_name="db"
+db_host="${TABULAR_DB_HOST:-127.0.0.1}"
+
+# Sumber utama: `ddev describe -j` (field .raw.dbinfo), bila jq tersedia.
+if command -v jq >/dev/null 2>&1; then
+  if desc="$(ddev describe -j 2>/dev/null)"; then
+    dbinfo="$(jq -c '.raw.dbinfo // empty' <<<"$desc" 2>/dev/null || true)"
+    if [[ -n "$dbinfo" ]]; then
+      db_type="$(jq -r '.database_type // empty' <<<"$dbinfo")"
+      db_port="$(jq -r '.published_port // empty' <<<"$dbinfo")"
+      db_user="$(jq -r '.username // "db"' <<<"$dbinfo")"
+      db_pass="$(jq -r '.password // "db"' <<<"$dbinfo")"
+      db_name="$(jq -r '.dbname // "db"' <<<"$dbinfo")"
+    fi
+  fi
+fi
+
+# Fallback: variabel lingkungan yang disediakan ddev untuk host command.
+if [[ -z "$db_type" ]]; then
+  db_type="${DDEV_DATABASE_FAMILY:-}"
+  [[ -z "$db_type" && -n "${DDEV_DATABASE:-}" ]] && db_type="${DDEV_DATABASE%%:*}"
+fi
+[[ -z "$db_port" ]] && db_port="${DDEV_HOST_DB_PORT:-}"
+
+[[ -n "$db_type" ]] || die "could not determine the database type. Is this a ddev project?"
+[[ -n "$db_port" && "$db_port" != "0" ]] || die "no published database port. Is the project running? Try 'ddev start'."
+
+case "$db_type" in
+  mysql | mariadb) scheme="mysql" ;;
+  postgres | postgresql) scheme="postgres" ;;
+  *) die "unsupported database type '$db_type' (expected mysql, mariadb or postgres)." ;;
+esac
+
+dsn="${scheme}://$(urlencode "$db_user"):$(urlencode "$db_pass")@${db_host}:${db_port}/$(urlencode "$db_name")"
+tabular_bin="$(resolve_tabular)"
+
+echo "Opening ${DDEV_PROJECT:-project} database (${db_type} on ${db_host}:${db_port}) in Tabular..."
+exec "$tabular_bin" open "$dsn"

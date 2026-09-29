@@ -66,6 +66,8 @@ impl super::Tabular {
         self.query_timeout_secs = prefs.query_timeout_secs;
         self.max_result_rows = prefs.max_result_rows.max(1);
         self.restore_session = prefs.restore_session;
+        self.show_system_objects = prefs.show_system_objects;
+        crate::schema_objects::set_show_system_objects(prefs.show_system_objects);
         self.redis_browser_auto_refresh_default_seconds =
             prefs.redis_browser_auto_refresh_seconds.max(1);
         // Mirror AI settings
@@ -345,6 +347,7 @@ impl super::Tabular {
             ui_mode: fast_prefs.ui_mode,
             link_editor_theme: fast_prefs.link_editor_theme,
             show_settings_window: false,
+            platform_ui: Default::default(),
             // Database search functionality
             database_search_text: String::new(),
             filtered_items_tree: Vec::new(),
@@ -385,7 +388,11 @@ impl super::Tabular {
             show_account_dialog: false,
             account_dialog_tab: crate::window_egui::AccountDialogTab::Profile,
             // Plugin Extensibility
-            plugin_manager: crate::plugin_runtime::PluginManager::new(),
+            plugin_manager: {
+                // Driver engine plugin harus terdaftar sebelum koneksi dimuat.
+                crate::driver_api::manifest::load_installed();
+                crate::plugin_runtime::PluginManager::new()
+            },
             plugin_modal_state: crate::plugin_runtime::PluginModalState::default(),
             avatar_texture: None,
             avatar_texture_url: None,
@@ -446,6 +453,7 @@ impl super::Tabular {
             pending_drop_column_stmt: None,
             pending_drop_collection: None,
             pending_drop_table: None,
+            schema_ui: Default::default(),
             pending_drop_database: None,
             pending_delete_connection: None,
             pending_delete_http_request: None,
@@ -519,6 +527,7 @@ impl super::Tabular {
             query_timeout_secs: 0,
             max_result_rows: crate::config::DEFAULT_MAX_RESULT_ROWS,
             restore_session: true,
+            show_system_objects: false,
             pending_tab_close: None,
             show_quit_confirm: false,
             quit_confirmed: false,

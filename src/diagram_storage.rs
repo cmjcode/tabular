@@ -85,7 +85,7 @@ pub async fn check_diagram_table_exists(
                 .unwrap_or(0);
             Ok(count > 0)
         }
-        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) => {
+        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => {
             // NoSQL engines don't use relational diagram tables
             Ok(false)
         }
@@ -173,7 +173,7 @@ pub async fn ensure_diagram_table(pool: &DatabasePool, db_name: &str) -> Result<
             info!("[DIAGRAM_DB] MsSQL diagram_by_tabular ready");
             Ok(())
         }
-        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) => {
+        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => {
             Err("Database type does not support relational diagram table storage".to_string())
         }
     }
@@ -296,7 +296,7 @@ pub async fn save_diagram_to_database(
             debug!("[DIAGRAM_DB] Diagram saved to MsSQL diagram_by_tabular (id='{id}')");
             Ok(())
         }
-        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) => {
+        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => {
             Err("Database type does not support relational diagram table storage".to_string())
         }
     }
@@ -363,7 +363,7 @@ pub async fn load_diagram_from_database(
                 .filter(|s| !s.is_empty())
                 .cloned()
         }
-        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) => None,
+        DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => None,
     };
 
     let Some(raw_json) = json_data_opt else {

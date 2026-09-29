@@ -15,6 +15,10 @@ icon = ["assets/AppIcon.icns"]
 category = "Developer Tool"
 copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
 info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
+# Deep link tabular:// (M1), kamus AppleScript (M4), tipe Handoff (M5).
+osx_url_schemes = ["tabular"]
+resources = ["apple/macos/Tabular.sdef"]
+osx_info_plist_exts = ["apple/macos/Info-bundle-extra.plist"]
 
 [dependencies]
 eframe = "0.36"
@@ -95,6 +99,8 @@ tree-sitter-javascript = "0.25.0"
 anyhow = { version = "1", optional = true }
 once_cell = "1"
 thiserror = "2"
+# Parsing deep link `tabular://` dan DSN (M1/M2); sudah ada di tree lewat reqwest.
+url = "2.5"
 async-trait = "0.1.92"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);
 # the primary OS-keychain backends are declared per-target below.
@@ -135,6 +141,21 @@ zeroize = { version = "1", features = [
 # uses the encrypted-file store.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = "4"
+# Integrasi macOS (src/platform_macos.rs): Apple Event `tabular://` + AppleScript,
+# Handoff (NSUserActivity), Touch ID (LocalAuthentication lewat runtime ObjC).
+# Versi mengikuti objc2 0.6 yang sudah ditarik eframe/rfd, jadi tidak ada tree kedua.
+objc2 = "0.6"
+block2 = "0.6"
+# Apple Event dipanggil lewat msg_send! mentah: API bertipenya butuh crate
+# objc2-core-services tambahan.
+objc2-foundation = { version = "0.3", features = [
+       "NSArray",
+       "NSDictionary",
+       "NSLocale",
+       "NSObject",
+       "NSString",
+       "NSUserActivity",
+] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 rfd = "0.17"

@@ -14,6 +14,12 @@ impl super::Tabular {
         if self.update_check_in_progress {
             return; // Already checking
         }
+        // M9: admin bisa mematikan pengecekan update lewat kebijakan terkelola.
+        if crate::platform_prefs::update_check_disabled_by_policy() {
+            self.update_check_error =
+                Some(crate::i18n::tr("Managed by your organization").to_string());
+            return;
+        }
 
         self.update_check_in_progress = true;
         self.update_check_error = None;

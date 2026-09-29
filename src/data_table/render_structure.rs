@@ -223,8 +223,11 @@ pub(crate) fn trigger_drop_index(tabular: &mut window_egui::Tabular, idx_name: &
 
 pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     let table_name = infer_current_table_name(tabular);
-    let is_cols = tabular.structure_sub_view == models::structs::StructureSubView::Columns;
-    let is_idx = tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
+    let objects_view = tabular.schema_ui.structure.view;
+    let is_cols = objects_view.is_none()
+        && tabular.structure_sub_view == models::structs::StructureSubView::Columns;
+    let is_idx = objects_view.is_none()
+        && tabular.structure_sub_view == models::structs::StructureSubView::Indexes;
     let metrics =
         crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
     let tab_h = if metrics.is_touch { 38.0 } else { 28.0 };
@@ -261,6 +264,7 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             .clicked()
         {
             tabular.structure_sub_view = models::structs::StructureSubView::Columns;
+            tabular.schema_ui.structure.view = None;
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
@@ -271,12 +275,28 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
             .clicked()
         {
             tabular.structure_sub_view = models::structs::StructureSubView::Indexes;
+            tabular.schema_ui.structure.view = None;
             if tabular.structure_indexes.is_empty() {
                 load_structure_info_for_current_table(tabular);
             }
             tabular.structure_sel_anchor = None;
             tabular.structure_selected_cell = None;
             tabular.structure_selected_row = None;
+        }
+
+        // Tab objek tambahan: FK, check, trigger, kolom generated, DDL.
+        let wide_tab = egui::vec2(tab_size.x + 30.0, tab_size.y);
+        for view in super::structure_objects::ObjectsView::ALL {
+            if crate::window_egui::style::render_custom_tab(
+                ui,
+                &view.tab_label(),
+                objects_view == Some(view),
+                wide_tab,
+            )
+            .clicked()
+            {
+                tabular.schema_ui.structure.view = Some(view);
+            }
         }
 
         ui.add_space(4.0);
@@ -403,6 +423,10 @@ pub(crate) fn render_structure_view(tabular: &mut window_egui::Tabular, ui: &mut
 
     ui.separator();
     ui.add_space(2.0);
+    if let Some(view) = objects_view {
+        super::structure_objects::render_structure_objects(tabular, ui, view);
+        return;
+    }
     match tabular.structure_sub_view {
         models::structs::StructureSubView::Columns => {
             render_structure_columns_editor(tabular, ui);

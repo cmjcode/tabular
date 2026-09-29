@@ -10,6 +10,7 @@ mod render_structure;
 mod result_views;
 mod selection;
 mod structure;
+pub(crate) mod structure_objects;
 mod utils;
 
 pub mod export_clipboard;

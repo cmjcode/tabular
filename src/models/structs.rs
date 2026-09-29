@@ -1739,6 +1739,10 @@ pub struct ConnectionConfig {
     pub custom_views: Vec<CustomView>,
     #[serde(default)]
     pub replication_master_id: Option<i64>,
+    /// Opsi khusus engine plugin (`EngineDescriptor::options`). Nilai bertipe
+    /// secret disimpan di secret store, bukan di sini saat persist.
+    #[serde(default)]
+    pub plugin_options: std::collections::BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -1774,6 +1778,7 @@ impl Default for ConnectionConfig {
             ssl_verify_server: true,
             custom_views: Vec::new(),
             replication_master_id: None,
+            plugin_options: std::collections::BTreeMap::new(),
         }
     }
 }

@@ -49,11 +49,13 @@ def main():
     ref_build_cargo_sh = "200000000000000000000009"
     ref_generate_assets_sh = "20000000000000000000000A"
     ref_publish_xcode_sh = "20000000000000000000000B"
+    ref_macos_sdef = "20000000000000000000000C"
 
     # Build Files (for Resources / Frameworks)
     bf_ios_xcassets = "300000000000000000000001"
     bf_macos_xcassets = "300000000000000000000002"
     bf_ios_launch = "300000000000000000000003"
+    bf_macos_sdef = "300000000000000000000004"
 
     # Native Targets
     target_ios_uuid = "400000000000000000000001"
@@ -93,6 +95,7 @@ def main():
 		{bf_ios_xcassets} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_xcassets} /* Assets.xcassets */; }};
 		{bf_macos_xcassets} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_xcassets} /* Assets.xcassets */; }};
 		{bf_ios_launch} /* LaunchScreen.storyboard in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_launch_storyboard} /* LaunchScreen.storyboard */; }};
+		{bf_macos_sdef} /* Tabular.sdef in Resources */ = {{isa = PBXBuildFile; fileRef = {ref_macos_sdef} /* Tabular.sdef */; }};
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -104,6 +107,7 @@ def main():
 		{ref_launch_storyboard} /* LaunchScreen.storyboard */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; }};
 		{ref_macos_plist} /* Info.plist */ = {{isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; }};
 		{ref_macos_entitlements} /* Tabular.entitlements */ = {{isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tabular.entitlements; sourceTree = "<group>"; }};
+		{ref_macos_sdef} /* Tabular.sdef */ = {{isa = PBXFileReference; lastKnownFileType = text.xml; path = Tabular.sdef; sourceTree = "<group>"; }};
 		{ref_build_cargo_sh} /* build_cargo.sh */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = build_cargo.sh; sourceTree = "<group>"; }};
 		{ref_generate_assets_sh} /* generate_assets.sh */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = generate_assets.sh; sourceTree = "<group>"; }};
 		{ref_publish_xcode_sh} /* publish_xcode.sh */ = {{isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = publish_xcode.sh; sourceTree = "<group>"; }};
@@ -178,6 +182,7 @@ def main():
 			children = (
 				{ref_macos_plist} /* Info.plist */,
 				{ref_macos_entitlements} /* Tabular.entitlements */,
+				{ref_macos_sdef} /* Tabular.sdef */,
 			);
 			path = macos;
 			sourceTree = "<group>";
@@ -284,6 +289,7 @@ def main():
 			buildActionMask = 2147483647;
 			files = (
 				{bf_macos_xcassets} /* Assets.xcassets in Resources */,
+				{bf_macos_sdef} /* Tabular.sdef in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		}};

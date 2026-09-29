@@ -462,6 +462,7 @@ impl super::Tabular {
         let result = connection::prepare_query_job(self, connection_id, sql.clone(), job_id)
             .and_then(|mut job| {
                 job.options.save_to_history = false;
+                job.options.split_result_sets = false;
                 connection::spawn_query_job(self, job, self.query_result_sender.clone())
             });
         match result {

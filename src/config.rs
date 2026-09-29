@@ -515,6 +515,9 @@ pub struct AppPreferences {
     /// Buka kembali tab query dari sesi sebelumnya (termasuk draft yang belum disimpan).
     #[serde(default = "default_true")]
     pub restore_session: bool,
+    /// Tampilkan database/schema sistem (information_schema, pg_catalog, master, …) di sidebar.
+    #[serde(default)]
+    pub show_system_objects: bool,
     /// Lebar panel AI Assistant di sebelah kanan (pixel).
     #[serde(default = "default_ai_panel_width")]
     pub ai_panel_width: f32,
@@ -568,6 +571,7 @@ impl Default for AppPreferences {
             query_timeout_secs: 0,
             max_result_rows: DEFAULT_MAX_RESULT_ROWS,
             restore_session: true,
+            show_system_objects: false,
             ai_panel_width: default_ai_panel_width(),
         }
     }
@@ -668,6 +672,7 @@ pub(crate) fn apply_kv_pair(
         "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
         "max_result_rows" => prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS),
         "restore_session" => prefs.restore_session = v == "1",
+        "show_system_objects" => prefs.show_system_objects = v == "1",
         "ai_panel_width" => {
             prefs.ai_panel_width = v
                 .parse()
@@ -826,6 +831,7 @@ impl ConfigStore {
                 query_timeout_secs: 0,
                 max_result_rows: DEFAULT_MAX_RESULT_ROWS,
                 restore_session: true,
+                show_system_objects: false,
                 ai_panel_width: default_ai_panel_width(),
             };
 
@@ -941,7 +947,7 @@ impl ConfigStore {
                 }
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
-            let entries: [(&str, &str); 27] = [
+            let entries: [(&str, &str); 28] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1015,6 +1021,10 @@ impl ConfigStore {
                 (
                     "restore_session",
                     if prefs.restore_session { "1" } else { "0" },
+                ),
+                (
+                    "show_system_objects",
+                    if prefs.show_system_objects { "1" } else { "0" },
                 ),
                 ("ai_panel_width", &ai_panel_width_str),
             ];

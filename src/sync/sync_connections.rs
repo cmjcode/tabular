@@ -42,7 +42,7 @@ pub fn push_connection_to_server(
 
         let req = CreateConnectionReq {
             name: conn.name.clone(),
-            db_type: format!("{:?}", conn.connection_type),
+            db_type: conn.connection_type.as_db_str().into_owned(),
             encrypted_config: encrypted,
             color_tag: None,
             folder_path: Some(folder_path),
@@ -126,7 +126,7 @@ pub fn reencrypt_folder_to_server(
                 None => {
                     let req = CreateConnectionReq {
                         name: conn.name.clone(),
-                        db_type: format!("{:?}", conn.connection_type),
+                        db_type: conn.connection_type.as_db_str().into_owned(),
                         encrypted_config: encrypted,
                         color_tag: None,
                         folder_path: Some(folder_path.clone()),

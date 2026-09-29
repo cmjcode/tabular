@@ -975,7 +975,7 @@ impl super::Tabular {
                 };
                 let req = crate::sync::api_client::CreateConnectionReq {
                     name: conn.name.clone(),
-                    db_type: format!("{:?}", conn.connection_type),
+                    db_type: conn.connection_type.as_db_str().into_owned(),
                     encrypted_config: encrypted,
                     color_tag: None,
                     folder_path: Some(folder_path),

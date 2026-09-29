@@ -417,7 +417,8 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                             );
                             working.method = None;
                         }
-                        crate::models::enums::DatabaseType::ApiHttp => {
+                        crate::models::enums::DatabaseType::ApiHttp
+                        | crate::models::enums::DatabaseType::Plugin(_) => {
                             ui.label(egui::RichText::new("N/A").italics().color(egui::Color32::GRAY));
                             working.method = None;
                         }
@@ -544,6 +545,9 @@ pub(crate) fn render_index_dialog(tabular: &mut window_egui::Tabular, ctx: &egui
                         }
                         (crate::models::structs::IndexDialogMode::Edit, DatabaseType::Redis) => {
                             "-- Not applicable for Redis".to_string()
+                        }
+                        (_, DatabaseType::Plugin(_)) => {
+                            "-- Index management is not available for this engine".to_string()
                         }
                         (crate::models::structs::IndexDialogMode::Create, DatabaseType::MongoDB) => {
                             let db = working
@@ -850,7 +854,8 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
                                         }
                                         models::enums::DatabaseType::Redis
                                         | models::enums::DatabaseType::MongoDB
-                                        | models::enums::DatabaseType::ApiHttp => "Database",
+                                        | models::enums::DatabaseType::ApiHttp
+                                        | models::enums::DatabaseType::Plugin(_) => "Database",
                                     };
                                     ui.label(target_label);
                                     match state.db_type {

@@ -876,9 +876,17 @@ impl Tabular {
                             self.update_check_error = None;
                             if was_manual {
                                 self.show_update_dialog = true;
-                            } else if update_available {
+                            } else if update_available
+                                && crate::platform_prefs::current()
+                                    .update_skipped_version
+                                    .as_deref()
+                                    != Some(info.latest_version.as_str())
+                            {
                                 self.show_update_notification = true;
-                                if !self.update_download_started
+                                // M8: unduh di latar belakang hanya bila diizinkan
+                                // preferensi/kebijakan; selain itu cukup notifikasi.
+                                if crate::platform_prefs::effective_auto_download()
+                                    && !self.update_download_started
                                     && !self.update_download_in_progress
                                 {
                                     self.update_download_started = true;
@@ -1012,11 +1020,16 @@ impl Tabular {
     fn render_left_sidebar(&mut self, root_ui: &mut egui::Ui) {
         let ctx = &root_ui.ctx().clone();
         if self.sidebar_visible {
+            // Batas mengikuti lebar jendela supaya panel tengah tidak terjepit
+            // di iPad Split View / Slide Over (M11).
+            let width = ctx.content_rect().width();
+            let max_sidebar = (width * 0.85).clamp(200.0, 600.0);
+            let min_sidebar = 260.0_f32.min(max_sidebar);
             egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_size(340.0)
-                .min_size(260.0)
-                .max_size(600.0)
+                .default_size(340.0_f32.min(max_sidebar))
+                .min_size(min_sidebar)
+                .max_size(max_sidebar)
                 // Reduce default inner padding so tree rows (connection/database/table) start closer to the left edge
                 .frame(
                     egui::Frame::default()
@@ -1082,9 +1095,9 @@ impl Tabular {
                                     // under "Database" (like VS Code's view-container
                                     // sub-views) so each gets full space + a contextual "+".
                                     let segments = [
-                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: "Connections" },
-                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: "Queries" },
-                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: "History" },
+                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: crate::i18n::tr("Connections") },
+                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: crate::i18n::tr("Queries") },
+                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: crate::i18n::tr("History") },
                                     ];
                                     let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
                                     if let Some(key) = style::render_segmented_nav(
@@ -1744,6 +1757,13 @@ impl Tabular {
                                                 egui::Stroke::new(1.0, border_color),
                                                 egui::StrokeKind::Outside,
                                             );
+                                            // M10: strip warna environment koneksi di tepi atas tab.
+                                            if let Some(env) = tab
+                                                .connection_id
+                                                .and_then(|cid| self.connection_environment_by_id(cid))
+                                            {
+                                                super::platform_ui::paint_environment_strip(ui, tab_rect, env);
+                                            }
                                             if active {
                                                 let line_height = 3.0;
                                                 let accent_rect = egui::Rect::from_min_size(
@@ -2765,6 +2785,12 @@ impl Tabular {
                                 self.current_table_headers.clear();
                                 self.current_table_data.clear();
                             }
+                            // M10: badge environment di kiri picker koneksi.
+                            if let Some(env) = tab_conn_id
+                                .and_then(|cid| self.connection_environment_by_id(cid))
+                            {
+                                super::platform_ui::environment_badge(ui, env);
+                            }
                         },
                     );
 
@@ -3600,6 +3626,8 @@ impl Tabular {
                     // Delete Connection confirmation dialog
                     self.render_delete_connection_confirmation(ui.ctx());
                     self.render_drop_database_confirmation(ui.ctx());
+                    // Dialog aksi objek skema (rename, comment, maintenance, …)
+                    self.render_schema_ui(ui.ctx());
                     self.render_clear_history_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());
@@ -4135,6 +4163,7 @@ impl Tabular {
                     query_timeout_secs: self.query_timeout_secs,
                     max_result_rows: self.max_result_rows.max(1),
                     restore_session: self.restore_session,
+                    show_system_objects: self.show_system_objects,
                     ai_panel_width: self.ai_panel_width,
                 };
                 rt.block_on(store.save(&prefs));
@@ -5135,6 +5164,7 @@ impl App for Tabular {
 
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);
+        self.render_platform_dialogs(ctx);
 
         // Centered loading overlay when waiting for connection pool
         self.render_connecting_overlay(ctx);
@@ -5144,6 +5174,9 @@ impl App for Tabular {
 
         // Check for background task results
         self.process_background_results(ctx);
+
+        // Deep link, Handoff, font bahasa (M1/M5/M6)
+        self.platform_tick(ctx);
 
         // Kick off deferred auto download if flagged (done outside borrow loops)
         if self.update_download_started && !self.update_download_in_progress {
@@ -5237,26 +5270,40 @@ impl App for Tabular {
                                     egui::RichText::new("✅ Update installed successfully!")
                                         .strong(),
                                 );
-                                ui.label(
-                                    egui::RichText::new("Restart Tabular to apply the update.")
-                                        .size(12.0),
-                                );
+                                // M8: bila "Install when quitting" aktif, cukup beri tahu.
+                                let hint = if crate::platform_prefs::effective_install_on_quit() {
+                                    crate::i18n::tr("Update ready. It will be installed when you quit.")
+                                } else {
+                                    crate::i18n::tr("Restart Tabular to apply the update.")
+                                };
+                                ui.label(egui::RichText::new(hint).size(12.0));
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("🚀 Restart Now").clicked() {
+                                    if ui.button(crate::i18n::tr("Restart Now")).clicked() {
                                         let staged = self.staged_update_script.as_ref();
                                         let _ =
                                             crate::auto_updater::AutoUpdater::restart_app(staged);
                                     }
-                                    if ui.button("Dismiss").clicked() {
+                                    if ui.button(crate::i18n::tr("Dismiss")).clicked() {
                                         self.show_update_notification = false;
                                     }
                                 });
                             });
                         } else if info.update_available {
                             ui.horizontal(|ui| {
-                                ui.label(format!("Update {} available", info.latest_version));
-                                if ui.button("Details").clicked() {
+                                ui.label(crate::i18n::trf(
+                                    "Update {} available",
+                                    &[&info.latest_version],
+                                ));
+                                if ui.button(crate::i18n::tr("Skip This Version")).clicked() {
+                                    let version = info.latest_version.clone();
+                                    crate::platform_prefs::update(|p| {
+                                        p.update_skipped_version = Some(version)
+                                    });
+                                    crate::platform_prefs::persist();
+                                    keep_open = false;
+                                }
+                                if ui.button(crate::i18n::tr("Details")).clicked() {
                                     ui.ctx().data_mut(|d| {
                                         d.insert_temp(
                                             egui::Id::new("trigger_update_details"),
@@ -5264,7 +5311,9 @@ impl App for Tabular {
                                         );
                                     });
                                 }
-                                if !download_started && ui.button("Download").clicked() {
+                                if !download_started
+                                    && ui.button(crate::i18n::tr("Download")).clicked()
+                                {
                                     ui.ctx().data_mut(|d| {
                                         d.insert_temp(
                                             egui::Id::new("trigger_manual_download"),
@@ -5416,6 +5465,8 @@ impl App for Tabular {
         // Final attempt (in case any change slipped through)
         self.try_save_prefs();
 
+        // M11: Split View / Slide Over iPad — sembunyikan panel samping saat sempit.
+        self.apply_adaptive_layout(root_ui.ctx());
         self.render_left_sidebar(root_ui);
 
         // ─── AI Assistant Right Panel ───────────────────────────────────────────────
@@ -5459,6 +5510,7 @@ impl App for Tabular {
         // Unwind connects that are still mid-handshake so their SSH child
         // processes are killed rather than orphaned when the app goes away.
         crate::connection::cancel_all_connection_attempts(self);
+        self.platform_on_exit();
     }
 } // end impl App for Tabular
 

@@ -18,6 +18,7 @@ pub(crate) fn update_connection_in_database(
         if let Some(id) = connection.id {
             let pool_clone = pool.clone();
             let connection = connection.clone();
+            let with_options = connection.clone();
             let rt = tokio::runtime::Runtime::new().unwrap();
 
             // Restart any existing SSH tunnel with updated settings
@@ -48,7 +49,7 @@ pub(crate) fn update_connection_in_database(
                 .bind(connection.username)
                 .bind(password_stored)
                 .bind(connection.database)
-                .bind(format!("{:?}", connection.connection_type))
+                .bind(connection.connection_type.as_db_str().into_owned())
                 .bind(connection.folder)
                 .bind(if connection.ssh_enabled { 1 } else { 0 })
                 .bind(connection.ssh_host)
@@ -76,6 +77,13 @@ pub(crate) fn update_connection_in_database(
                         "Update successful: {} rows affected",
                         query_result.rows_affected()
                     );
+                    if let Err(e) = rt.block_on(crate::driver_api::connect::save_plugin_options(
+                        pool_clone.as_ref(),
+                        &with_options,
+                        id,
+                    )) {
+                        warn!("[DRIVER-PLUGIN] Failed to save plugin options: {e}");
+                    }
                 }
                 Err(e) => {
                     debug!("Update failed: {}", e);
@@ -141,6 +149,13 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
     }
 
     crate::secrets::delete_connection_secrets(connection_id);
+    if let Some(conn) = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+    {
+        crate::driver_api::connect::delete_secret_options(connection_id, &conn.plugin_options);
+    }
 
     tabular.connections.retain(|c| c.id != Some(connection_id));
     tabular.connection_pools.remove(&connection_id);
@@ -358,6 +373,14 @@ pub(crate) fn test_database_connection(
                     false,
                     "API-HTTP connections do not support database testing".to_string(),
                 ),
+                models::enums::DatabaseType::Plugin(ref engine_id) => {
+                    match crate::driver_api::connect::create_plugin_pool(connection, engine_id)
+                        .await
+                    {
+                        Ok(_) => (true, "Connection successful!".to_string()),
+                        Err(e) => (false, e),
+                    }
+                }
             }
         };
 
@@ -611,21 +634,25 @@ pub(crate) async fn refresh_connection_background_async(
                 &ssh_password,
             );
 
-            let connection = models::structs::ConnectionConfig {
+            let mut connection = models::structs::ConnectionConfig {
                 id: Some(id),
+                plugin_options: Default::default(),
                 name,
                 host,
                 port,
                 username,
                 password,
                 database: database_name,
-                connection_type: match connection_type.as_str() {
-                    "MySQL" => models::enums::DatabaseType::MySQL,
-                    "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                    "Redis" => models::enums::DatabaseType::Redis,
-                    "MsSQL" => models::enums::DatabaseType::MsSQL,
-                    "MongoDB" => models::enums::DatabaseType::MongoDB,
-                    _ => models::enums::DatabaseType::SQLite,
+                connection_type: match models::enums::DatabaseType::from_db_str(&connection_type) {
+                    Some(ty) => ty,
+                    None => {
+                        log::warn!(
+                            "[refresh_connection] connection {} has unknown type '{}' — keeping existing cache intact",
+                            id,
+                            connection_type
+                        );
+                        return (false, vec![]);
+                    }
                 },
                 folder,
                 ssh_enabled: ssh_enabled != 0,
@@ -646,6 +673,10 @@ pub(crate) async fn refresh_connection_background_async(
                 custom_views: Vec::new(),
                 replication_master_id: None,
             };
+            if connection.connection_type.plugin_id().is_some() {
+                connection.plugin_options =
+                    crate::driver_api::connect::load_plugin_options(cache_pool_arc.as_ref(), id).await;
+            }
 
             let existing_pool = if let Ok(shared) = shared_pools.lock() {
                 shared.get(&connection_id).cloned()

@@ -855,6 +855,16 @@ fn dialect_for(app: &Tabular, cid: Option<i64>) -> Option<Dialect> {
         DatabaseType::SQLite => Some(Dialect::Sqlite),
         DatabaseType::MsSQL => Some(Dialect::MsSql),
         DatabaseType::Redis | DatabaseType::MongoDB | DatabaseType::ApiHttp => None,
+        DatabaseType::Plugin(ref id) => {
+            use crate::driver_api::query::{DialectFamily, capabilities, dialect_family};
+            dialect_family(&capabilities(id)).map(|family| match family {
+                DialectFamily::MySql => Dialect::MySql,
+                DialectFamily::Postgres => Dialect::Postgres,
+                DialectFamily::Sqlite => Dialect::Sqlite,
+                DialectFamily::MsSql => Dialect::MsSql,
+                DialectFamily::Generic => Dialect::Generic,
+            })
+        }
     }
 }
 

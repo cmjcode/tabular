@@ -435,6 +435,13 @@ pub fn classify_query(db_type: &DatabaseType, text: &str) -> Vec<(String, Statem
         DatabaseType::MongoDB | DatabaseType::ApiHttp => {
             vec![(text.trim().to_string(), StatementKind::Unknown)]
         }
+        // Engine plugin non-SQL tidak bisa diklasifikasi: fail closed.
+        DatabaseType::Plugin(id)
+            if crate::driver_api::query::capabilities(id).query_language
+                != crate::driver_api::QueryLanguage::Sql =>
+        {
+            vec![(text.trim().to_string(), StatementKind::Unknown)]
+        }
         _ => crate::query_tools::statement_parser::split_statements(text)
             .into_iter()
             .map(|span| {
@@ -451,6 +458,19 @@ pub fn classify_query(db_type: &DatabaseType, text: &str) -> Vec<(String, Statem
 pub fn is_read_only(db_type: &DatabaseType, text: &str) -> bool {
     let parts = classify_query(db_type, text);
     !parts.is_empty() && parts.iter().all(|(_, k)| k.is_read_only())
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    #[test]
+    fn plugin_sql_engine_is_classified_as_sql() {
+        // Driver belum terpasang: capability default adalah SQL.
+        let ty = DatabaseType::Plugin("clickhouse".into());
+        assert!(is_read_only(&ty, "SELECT 1"));
+        assert!(!is_read_only(&ty, "INSERT INTO t VALUES (1)"));
+    }
 }
 
 #[cfg(test)]

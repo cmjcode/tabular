@@ -80,6 +80,8 @@ pub async fn check_for_updates() -> Result<UpdateInfo, UpdateError> {
         "https://api.github.com/repos/{}/releases/latest",
         GITHUB_REPO
     );
+    crate::privacy::check(crate::privacy::NetCategory::UpdateCheck, &url)
+        .map_err(UpdateError::NetworkError)?;
 
     let client = reqwest::Client::builder()
         .user_agent(format!("Tabular/{}", CURRENT_VERSION))

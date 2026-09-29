@@ -41,6 +41,9 @@ impl super::Tabular {
         nodes: &mut [models::structs::TreeNode],
         is_search_mode: bool,
     ) -> Vec<(String, String, String, Option<i64>)> {
+        // Database PostgreSQL mendapat folder objek lengkap (matview, fungsi, tipe, …).
+        super::schema_menus::ensure_pg_object_folders(nodes, &self.cached_connection_types);
+
         // Process pending auto-load requests FIRST, before rendering
         // This ensures expanded nodes are loaded from cache before first render
         let pending_loads: Vec<i64> = self.pending_auto_load.drain().collect();
@@ -613,10 +616,22 @@ impl super::Tabular {
                 .find(|c| c.id == Some(conn_id))
                 .cloned()
             {
-                let script =
+                let Some(script) =
                     connection::fetch_procedure_definition(&conn, db_name.as_deref(), &proc_name)
-                        // If we can't fetch, just show the procedure name (no template as requested)
-                        .unwrap_or_else(|| proc_name.clone());
+                else {
+                    // Engine tanpa jalur sinkron (mis. PostgreSQL): ambil source secara async.
+                    super::schema_actions::queue_action(
+                        ui.ctx(),
+                        super::schema_actions::SchemaAction::ViewSource {
+                            conn_id,
+                            database: db_name.clone(),
+                            kind: crate::schema_objects::catalog::RoutineKind::Procedure,
+                            name: proc_name.clone(),
+                            export: false,
+                        },
+                    );
+                    continue;
+                };
 
                 let title = format!("Procedure: {}", proc_name);
                 editor::create_new_tab_with_connection_and_database(
@@ -919,7 +934,9 @@ impl super::Tabular {
                 | models::enums::NodeType::StoredProceduresFolder
                 | models::enums::NodeType::UserFunctionsFolder
                 | models::enums::NodeType::TriggersFolder
-                | models::enums::NodeType::EventsFolder => {
+                | models::enums::NodeType::EventsFolder
+                | models::enums::NodeType::MaterializedViewsFolder
+                | models::enums::NodeType::TypesFolder => {
                     // Find the specific folder node and load if not already loaded
 
                     // We need to find the exact folder node in the tree
@@ -983,6 +1000,19 @@ impl super::Tabular {
                             "Could not find folder node with type {:?} and database {:?} in any of the nodes",
                             folder_type, database_name
                         );
+                    }
+                }
+                models::enums::NodeType::PartitionsFolder => {
+                    for node in nodes.iter_mut() {
+                        if let Some(folder) = Self::find_specific_folder_node(
+                            node,
+                            expansion_req.connection_id,
+                            &models::enums::NodeType::PartitionsFolder,
+                            &expansion_req.database_name,
+                        ) {
+                            self.load_partitions_folder(expansion_req.connection_id, folder);
+                            break;
+                        }
                     }
                 }
                 _ => {
@@ -1245,6 +1275,14 @@ impl super::Tabular {
                         // SQL databases - use regular SELECT query with proper database context
                         let query_content = if let Some(db_name) = &database_name {
                             match conn.connection_type {
+                                models::enums::DatabaseType::Plugin(ref id) => {
+                                    crate::driver_api::query::preview_query(
+                                        &crate::driver_api::query::capabilities(id),
+                                        db_name,
+                                        &table_name,
+                                        100,
+                                    )
+                                }
                                 models::enums::DatabaseType::MySQL => {
                                     format!(
                                         "USE `{}`;\nSELECT * FROM `{}` LIMIT 100;",
@@ -1388,6 +1426,24 @@ impl super::Tabular {
                                 // but don't execute it if we already have cache.
                                 let base_query = if let Some(db_name) = &database_name {
                                     match conn.connection_type {
+                                        models::enums::DatabaseType::Plugin(ref id) => {
+                                            let caps = crate::driver_api::query::capabilities(id);
+                                            let sql = caps.query_language
+                                                == crate::driver_api::QueryLanguage::Sql;
+                                            if sql {
+                                                format!(
+                                                    "SELECT * FROM {}",
+                                                    crate::driver_api::query::quote_ident(
+                                                        caps.sql_dialect.as_deref(),
+                                                        &table_name
+                                                    )
+                                                )
+                                            } else {
+                                                crate::driver_api::query::preview_query(
+                                                    &caps, db_name, &table_name, 100,
+                                                )
+                                            }
+                                        }
                                         models::enums::DatabaseType::MySQL => {
                                             format!(
                                                 "USE `{}`;\nSELECT * FROM `{}`",
@@ -1923,6 +1979,25 @@ impl super::Tabular {
             self.show_create_subfolder_dialog = true;
         }
 
+        // M10: pilihan environment dari menu konteks koneksi.
+        let env_request: Option<(i64, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new(ENV_REQUEST_ID)));
+        if let Some((conn_id, key)) = env_request {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(i64, String)>(egui::Id::new(ENV_REQUEST_ID));
+            });
+            self.set_connection_environment(conn_id, crate::connection_env::Environment::parse(&key));
+        }
+        let env_snapshot: std::collections::HashMap<i64, &'static str> = self
+            .platform_ui
+            .connection_envs
+            .iter()
+            .map(|(id, e)| (*id, e.key()))
+            .collect();
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(ENV_SNAPSHOT_ID), env_snapshot));
+
         // Handle "Add Connection Here" context menu request
         let add_to_folder: Option<String> = ui
             .ctx()
@@ -2069,6 +2144,8 @@ impl super::Tabular {
        node.node_type == models::enums::NodeType::ViewsFolder || node.node_type == models::enums::NodeType::StoredProceduresFolder ||
        node.node_type == models::enums::NodeType::UserFunctionsFolder || node.node_type == models::enums::NodeType::TriggersFolder ||
     node.node_type == models::enums::NodeType::EventsFolder || node.node_type == models::enums::NodeType::DBAViewsFolder ||
+       node.node_type == models::enums::NodeType::MaterializedViewsFolder || node.node_type == models::enums::NodeType::TypesFolder ||
+       node.node_type == models::enums::NodeType::PartitionsFolder ||
        // Do NOT show expand toggles for DBA leaf items; they act as actions when clicked
     node.node_type == models::enums::NodeType::Database || node.node_type == models::enums::NodeType::QueryFolder
        // Always use the main (expandable) path for CustomFolder so DnD drop target code runs
@@ -2139,6 +2216,8 @@ impl super::Tabular {
                         || node.node_type == models::enums::NodeType::UserFunctionsFolder
                         || node.node_type == models::enums::NodeType::TriggersFolder
                         || node.node_type == models::enums::NodeType::EventsFolder
+                        || node.node_type == models::enums::NodeType::MaterializedViewsFolder
+                        || node.node_type == models::enums::NodeType::TypesFolder
                         || node.node_type == models::enums::NodeType::ColumnsFolder
                         || node.node_type == models::enums::NodeType::IndexesFolder
                         || node.node_type == models::enums::NodeType::PrimaryKeysFolder
@@ -2204,6 +2283,10 @@ impl super::Tabular {
                     models::enums::NodeType::UserFunction => egui_icons::icons::MDI_FUNCTION.codepoint,
                     models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                     models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
+                    models::enums::NodeType::MaterializedViewsFolder
+                    | models::enums::NodeType::MaterializedView => egui_icons::icons::ICON_VISIBILITY.codepoint,
+                    models::enums::NodeType::TypesFolder
+                    | models::enums::NodeType::UserType => egui_icons::icons::ICON_TAG.codepoint,
                     models::enums::NodeType::MySQLFolder
                     | models::enums::NodeType::PostgreSQLFolder
                     | models::enums::NodeType::SQLiteFolder
@@ -2395,14 +2478,15 @@ impl super::Tabular {
                     if !tip.is_empty() {
                         if let Some(conn_id) = node.connection_id
                             && let Some(db_type) = params.connection_types.get(&conn_id) {
-                                let db_name = match db_type {
-                                    models::enums::DatabaseType::MySQL => "MySQL",
-                                    models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
-                                    models::enums::DatabaseType::SQLite => "SQLite",
-                                    models::enums::DatabaseType::Redis => "Redis",
-                                    models::enums::DatabaseType::MsSQL => "Microsoft SQL Server",
-                                    models::enums::DatabaseType::MongoDB => "MongoDB",
-                                    models::enums::DatabaseType::ApiHttp => "HTTP API",
+                                let db_name: std::borrow::Cow<str> = match db_type {
+                                    models::enums::DatabaseType::MySQL => "MySQL".into(),
+                                    models::enums::DatabaseType::PostgreSQL => "PostgreSQL".into(),
+                                    models::enums::DatabaseType::SQLite => "SQLite".into(),
+                                    models::enums::DatabaseType::Redis => "Redis".into(),
+                                    models::enums::DatabaseType::MsSQL => "Microsoft SQL Server".into(),
+                                    models::enums::DatabaseType::MongoDB => "MongoDB".into(),
+                                    models::enums::DatabaseType::ApiHttp => "HTTP API".into(),
+                                    models::enums::DatabaseType::Plugin(_) => db_type.display_name().into(),
                                 };
                                 tip = format!("{} · {}", db_name, tip);
                             }
@@ -2540,6 +2624,8 @@ impl super::Tabular {
                                     | models::enums::NodeType::UserFunctionsFolder
                                     | models::enums::NodeType::TriggersFolder
                                     | models::enums::NodeType::EventsFolder
+                                    | models::enums::NodeType::MaterializedViewsFolder
+                                    | models::enums::NodeType::TypesFolder
                                     | models::enums::NodeType::DBAViewsFolder
                                     | models::enums::NodeType::UsersFolder
                                     | models::enums::NodeType::PrivilegesFolder
@@ -2552,6 +2638,7 @@ impl super::Tabular {
                                     | models::enums::NodeType::ColumnsFolder
                                     | models::enums::NodeType::IndexesFolder
                                     | models::enums::NodeType::PrimaryKeysFolder
+                                    | models::enums::NodeType::PartitionsFolder
                                     | models::enums::NodeType::QueryFolder
                                     | models::enums::NodeType::CustomFolder
                             ))
@@ -2584,9 +2671,12 @@ impl super::Tabular {
                             || node.node_type == models::enums::NodeType::UserFunctionsFolder
                             || node.node_type == models::enums::NodeType::TriggersFolder
                             || node.node_type == models::enums::NodeType::EventsFolder
+                            || node.node_type == models::enums::NodeType::MaterializedViewsFolder
+                            || node.node_type == models::enums::NodeType::TypesFolder
                             || node.node_type == models::enums::NodeType::ColumnsFolder
                             || node.node_type == models::enums::NodeType::IndexesFolder
-                            || node.node_type == models::enums::NodeType::PrimaryKeysFolder)
+                            || node.node_type == models::enums::NodeType::PrimaryKeysFolder
+                            || node.node_type == models::enums::NodeType::PartitionsFolder)
                             && !node.is_loaded
                             && node.is_expanded
                             && let Some(conn_id) = node.connection_id
@@ -2653,13 +2743,17 @@ impl super::Tabular {
                             }
                             ui.close();
                         }
-                        if ui.button("⚡ Live DBA Process Monitor...").clicked() {
+                        let is_plugin = node
+                            .connection_id
+                            .and_then(|id| params.connection_types.get(&id))
+                            .is_some_and(|t| t.plugin_id().is_some());
+                        if !is_plugin && ui.button("⚡ Live DBA Process Monitor...").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
                             }
                             ui.close();
                         }
-                        if ui.button("👥 Manage Users & Privileges...").clicked() {
+                        if !is_plugin && ui.button("👥 Manage Users & Privileges...").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
                             }
@@ -2700,6 +2794,10 @@ impl super::Tabular {
                                 context_menu_request = Some(conn_id);
                             }
                             ui.close();
+                        }
+                        // M10: tandai environment koneksi (warna tab/toolbar).
+                        if let Some(conn_id) = node.connection_id {
+                            render_environment_menu(ui, conn_id);
                         }
                         // Add Replication option for MySQL
                         if let Some(conn_id) = node.connection_id
@@ -2959,6 +3057,7 @@ impl super::Tabular {
                                     copy_database_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
+                                super::schema_menus::database_menu_items(ui, node, db_type);
                             }
 
                             let can_drop = matches!(
@@ -3033,6 +3132,8 @@ impl super::Tabular {
                     models::enums::NodeType::UserFunctionsFolder => Some(("🔄 Refresh Functions", models::enums::NodeType::UserFunctionsFolder)),
                     models::enums::NodeType::TriggersFolder => Some(("🔄 Refresh Triggers", models::enums::NodeType::TriggersFolder)),
                     models::enums::NodeType::EventsFolder => Some(("🔄 Refresh Events", models::enums::NodeType::EventsFolder)),
+                    models::enums::NodeType::MaterializedViewsFolder => Some(("🔄 Refresh Materialized Views", models::enums::NodeType::MaterializedViewsFolder)),
+                    models::enums::NodeType::TypesFolder => Some(("🔄 Refresh Types", models::enums::NodeType::TypesFolder)),
                     _ => None,
                 };
                 if let Some((label, folder_node_type)) = folder_refresh_info
@@ -3063,6 +3164,20 @@ impl super::Tabular {
                                 table_click_request = Some((conn_id, actual_table_name, models::enums::NodeType::Table, node.database_name.clone()));
                             }
                             ui.close();
+                        }
+                        // Engine plugin hanya punya aksi generik; DDL/index/drop
+                        // khusus engine builtin tidak ditawarkan.
+                        let is_plugin = node
+                            .connection_id
+                            .and_then(|id| params.connection_types.get(&id))
+                            .is_some_and(|t| t.plugin_id().is_some());
+                        if is_plugin {
+                            if ui.button("📋 Copy Table Name").clicked() {
+                                let name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                                ui.ctx().copy_text(name);
+                                ui.close();
+                            }
+                            return;
                         }
                         // Detect DB type for MongoDB-specific options using available pools; fallback to connection_types
                         let mut is_mongodb = false;
@@ -3102,6 +3217,11 @@ impl super::Tabular {
                                 }
                                 ui.close();
                             }
+                            super::schema_menus::table_menu_items(
+                                ui,
+                                node,
+                                node.connection_id.and_then(|id| params.connection_types.get(&id)),
+                            );
                         } else {
                             // MongoDB specific quick actions
                             if ui.button("🔍 Count Documents (Current Tab)").clicked() {
@@ -3214,6 +3334,17 @@ impl super::Tabular {
                             }
                             ui.close();
                         }
+                        super::schema_menus::view_menu_items(
+                            ui,
+                            node,
+                            node.connection_id.and_then(|id| params.connection_types.get(&id)),
+                        );
+                    });
+                }
+
+                if node.node_type == models::enums::NodeType::DatabasesFolder {
+                    response.context_menu(|ui| {
+                        super::schema_menus::databases_folder_menu_items(ui);
                     });
                 }
 
@@ -3862,6 +3993,10 @@ impl super::Tabular {
                         }
                         models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                         models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
+                    models::enums::NodeType::MaterializedViewsFolder
+                    | models::enums::NodeType::MaterializedView => egui_icons::icons::ICON_VISIBILITY.codepoint,
+                    models::enums::NodeType::TypesFolder
+                    | models::enums::NodeType::UserType => egui_icons::icons::ICON_TAG.codepoint,
                         models::enums::NodeType::MySQLFolder
                         | models::enums::NodeType::PostgreSQLFolder
                         | models::enums::NodeType::SQLiteFolder
@@ -4096,8 +4231,49 @@ impl super::Tabular {
                                 Some((conn_id, node.database_name.clone(), node.name.clone()));
                         }
                     }
+                    // Klik routine/objek lain membuka source-nya di tab baru.
+                    models::enums::NodeType::UserFunction
+                    | models::enums::NodeType::Trigger
+                    | models::enums::NodeType::Event
+                    | models::enums::NodeType::MaterializedView
+                    | models::enums::NodeType::UserType => {
+                        super::schema_menus::queue_view_source(ui.ctx(), node);
+                    }
                     _ => {}
                 }
+            }
+
+            // Context menu untuk routine, trigger, event, materialized view, dan tipe.
+            if matches!(
+                node.node_type,
+                models::enums::NodeType::StoredProcedure
+                    | models::enums::NodeType::UserFunction
+                    | models::enums::NodeType::Trigger
+                    | models::enums::NodeType::Event
+                    | models::enums::NodeType::MaterializedView
+                    | models::enums::NodeType::UserType
+            ) {
+                response.context_menu(|ui| {
+                    if node.node_type == models::enums::NodeType::MaterializedView
+                        && ui.button("📊 View Data").clicked()
+                    {
+                        if let Some(conn_id) = node.connection_id {
+                            let name = node.table_name.as_ref().unwrap_or(&node.name).clone();
+                            table_click_request = Some((
+                                conn_id,
+                                name,
+                                models::enums::NodeType::View,
+                                node.database_name.clone(),
+                            ));
+                        }
+                        ui.close();
+                    }
+                    super::schema_menus::object_node_menu_items(
+                        ui,
+                        node,
+                        node.connection_id.and_then(|id| params.connection_types.get(&id)),
+                    );
+                });
             }
 
             // Add context menu for query nodes
@@ -4390,4 +4566,39 @@ impl super::Tabular {
             }
         }
     }
+}
+
+const ENV_REQUEST_ID: &str = "conn_set_environment";
+const ENV_SNAPSHOT_ID: &str = "conn_environment_snapshot";
+
+/// Submenu "Environment" di menu konteks koneksi. Pilihan dikirim lewat data
+/// temp egui karena renderer pohon tidak memegang `&mut Tabular`.
+fn render_environment_menu(ui: &mut egui::Ui, conn_id: i64) {
+    use crate::connection_env::Environment;
+    use crate::i18n::tr;
+    use egui_icons::icons::{ICON_CIRCLE, ICON_PALETTE};
+
+    let current: Option<&'static str> = ui.ctx().data(|d| {
+        d.get_temp::<std::collections::HashMap<i64, &'static str>>(egui::Id::new(ENV_SNAPSHOT_ID))
+            .and_then(|m| m.get(&conn_id).copied())
+    });
+    let title = format!("{} {}", ICON_PALETTE.codepoint, tr("Environment"));
+    ui.menu_button(title, |ui| {
+        let mut choice: Option<String> = None;
+        if ui.radio(current.is_none(), tr("None")).clicked() {
+            choice = Some(String::new());
+        }
+        for env in Environment::ALL {
+            let label = egui::RichText::new(format!("{} {}", ICON_CIRCLE.codepoint, env.label()))
+                .color(env.color());
+            if ui.radio(current == Some(env.key()), label).clicked() {
+                choice = Some(env.key().to_string());
+            }
+        }
+        if let Some(key) = choice {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(ENV_REQUEST_ID), (conn_id, key)));
+            ui.close();
+        }
+    });
 }

@@ -28,12 +28,17 @@ impl PrefTab {
         if crate::self_update::SELF_UPDATE_SUPPORTED {
             tabs.push(PrefTab::Update);
         }
-        tabs.extend([PrefTab::AiAssistant, PrefTab::Sync, PrefTab::Plugins]);
+        tabs.extend([
+            PrefTab::AiAssistant,
+            PrefTab::Sync,
+            PrefTab::Privacy,
+            PrefTab::Plugins,
+        ]);
         tabs
     }
 
     pub fn label(self) -> &'static str {
-        match self {
+        crate::i18n::tr(match self {
             PrefTab::ApplicationTheme => "Appearance",
             PrefTab::EditorTheme => "Editor",
             PrefTab::Performance => "Performance",
@@ -41,8 +46,9 @@ impl PrefTab {
             PrefTab::Update => "Updates",
             PrefTab::AiAssistant => "AI Assistant",
             PrefTab::Sync => "Cloud Sync",
+            PrefTab::Privacy => "Privacy",
             PrefTab::Plugins => "Plugins",
-        }
+        })
     }
 
     pub fn icon(self) -> &'static str {
@@ -55,6 +61,7 @@ impl PrefTab {
             PrefTab::Update => i::ICON_SYSTEM_UPDATE.codepoint,
             PrefTab::AiAssistant => i::ICON_AUTO_AWESOME.codepoint,
             PrefTab::Sync => i::ICON_CLOUD_SYNC.codepoint,
+            PrefTab::Privacy => i::ICON_PRIVACY_TIP.codepoint,
             PrefTab::Plugins => i::MDI_PUZZLE.codepoint,
         }
     }
@@ -577,7 +584,10 @@ impl Tabular {
         }
 
         let screen = ctx.content_rect();
-        let dialog_w = 1000.0_f32.min(screen.width() - 40.0).max(560.0);
+        // Jangan melebihi layar (iPad Split View / Slide Over, M11).
+        let dialog_w = 1000.0_f32
+            .min(screen.width() - 40.0)
+            .max(560.0_f32.min(screen.width() - 8.0));
         let dialog_h = 640.0_f32.min(screen.height() - 60.0).max(380.0);
         let body_h = dialog_h - FOOTER_HEIGHT - 38.0;
 
@@ -602,7 +612,7 @@ impl Tabular {
             .show(ctx, |ui| {
                 crate::window_egui::style::render_modal_header(
                     ui,
-                    "Preferences",
+                    crate::i18n::tr("Preferences"),
                     &mut close_requested,
                 );
 
@@ -684,6 +694,7 @@ impl Tabular {
             PrefTab::Update => self.render_pref_updates(ui),
             PrefTab::AiAssistant => self.render_pref_ai(ui),
             PrefTab::Sync => crate::sync::ui_login::render_sync_panel(self, ui),
+            PrefTab::Privacy => self.render_pref_privacy(ui),
             PrefTab::Plugins => {}
         }
     }
@@ -706,17 +717,21 @@ impl Tabular {
                     ui.ctx()
                         .request_repaint_after(std::time::Duration::from_millis(500));
                 }
-                _ => hint(ui, "Changes are saved automatically."),
+                _ => hint(ui, crate::i18n::tr("Changes are saved automatically.")),
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(style::btn_primary_ctx(ui.ctx(), "Save").min_size(egui::vec2(80.0, 28.0)))
+                    .add(
+                        style::btn_primary_ctx(ui.ctx(), crate::i18n::tr("Save"))
+                            .min_size(egui::vec2(80.0, 28.0)),
+                    )
                     .clicked()
                 {
                     self.prefs_dirty = true;
                     self.try_save_prefs();
-                    self.set_pref_feedback("Preferences saved");
+                    crate::platform_prefs::persist();
+                    self.set_pref_feedback(crate::i18n::tr("Preferences saved"));
                 }
             });
         });
@@ -819,6 +834,54 @@ impl Tabular {
                     ctx.request_repaint();
                 }
             });
+        });
+
+        self.render_pref_language(ui);
+    }
+
+    /// Bahasa UI (M6). Bisa dikunci oleh kebijakan terkelola.
+    fn render_pref_language(&mut self, ui: &mut egui::Ui) {
+        use crate::i18n::{LANGUAGES, tr};
+        let managed = crate::managed_policy::current().policy.language.is_some();
+        let mut code = crate::platform_prefs::current().language;
+        section(ui, tr("Language"), |ui| {
+            row(
+                ui,
+                tr("Interface language"),
+                Some(tr(
+                    "Applies immediately. Screens that are not translated yet stay in English.",
+                )),
+                |ui| {
+                    let selected_text = LANGUAGES
+                        .iter()
+                        .find(|(c, _)| *c == code)
+                        .map(|(_, n)| n.to_string())
+                        .unwrap_or_else(|| tr("System default").to_string());
+                    ui.add_enabled_ui(!managed, |ui| {
+                        egui::ComboBox::from_id_salt("pref_language")
+                            .selected_text(selected_text)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                let mut changed =
+                                    ui.selectable_value(&mut code, String::new(), tr("System default"))
+                                        .changed();
+                                for (c, name) in LANGUAGES {
+                                    changed |= ui
+                                        .selectable_value(&mut code, c.to_string(), *name)
+                                        .changed();
+                                }
+                                if changed {
+                                    crate::platform_prefs::update(|p| p.language = code.clone());
+                                    crate::platform_prefs::persist();
+                                    ui.ctx().request_repaint();
+                                }
+                            });
+                    });
+                    if managed {
+                        hint(ui, tr("Managed by your organization"));
+                    }
+                },
+            );
         });
     }
 
@@ -1025,6 +1088,16 @@ impl Tabular {
                 self.save_prefs_now();
             }
             divider(ui);
+            let mut show_system = self.show_system_objects;
+            if toggle_row(
+                ui,
+                &mut show_system,
+                "Show system databases and schemas",
+                Some("List information_schema, mysql, sys, postgres, master, msdb and similar in the sidebar."),
+            ) {
+                self.apply_show_system_objects(show_system);
+            }
+            divider(ui);
             let log_hint = format!(
                 "Verbose logs (may include SQL text) are written to {}. Leave off for normal use.",
                 crate::app_logging::log_file_path().display()
@@ -1189,14 +1262,35 @@ impl Tabular {
     // ─────────────────────────────────────────────────────────────────────
 
     fn render_pref_updates(&mut self, ui: &mut egui::Ui) {
+        use crate::i18n::{tr, trf};
+        let policy = crate::managed_policy::current();
         page_header(
             ui,
-            "Updates",
-            "Keep Tabular up to date with the latest GitHub release.",
+            tr("Updates"),
+            tr("Keep Tabular up to date with the latest GitHub release."),
         );
+        if let Some(src) = &policy.source {
+            callout(ui, Tone::Info, |ui| {
+                ui.label(trf(
+                    "Some settings are managed by your organization ({}).",
+                    &[&src.display().to_string()],
+                ));
+            });
+            ui.add_space(8.0);
+        }
+        if policy.below_minimum_version() {
+            callout(ui, Tone::Warning, |ui| {
+                ui.label(format!(
+                    "Your organization requires Tabular {} or newer.",
+                    policy.policy.minimum_version.as_deref().unwrap_or_default()
+                ));
+            });
+            ui.add_space(8.0);
+        }
+        let checks_disabled = crate::platform_prefs::update_check_disabled_by_policy();
 
-        section(ui, "Software Update", |ui| {
-            row(ui, "Installed version", None, |ui| {
+        section(ui, tr("Software Update"), |ui| {
+            row(ui, tr("Installed version"), None, |ui| {
                 ui.label(
                     egui::RichText::new(env!("CARGO_PKG_VERSION"))
                         .monospace()
@@ -1204,32 +1298,97 @@ impl Tabular {
                 );
             });
             divider(ui);
-            if toggle_row(
-                ui,
-                &mut self.auto_check_updates,
-                "Check automatically",
-                Some("Look for a new version on startup (at most once a day)."),
-            ) {
-                self.save_prefs_now();
-            }
+            ui.add_enabled_ui(!checks_disabled, |ui| {
+                if toggle_row(
+                    ui,
+                    &mut self.auto_check_updates,
+                    tr("Check automatically"),
+                    Some(tr("Look for a new version on startup (at most once a day).")),
+                ) {
+                    self.save_prefs_now();
+                }
+            });
             divider(ui);
-            row(ui, "Check now", None, |ui| {
+            row(ui, tr("Check now"), None, |ui| {
                 let checking = self.update_check_in_progress;
                 if ui
-                    .add_enabled(!checking, style::btn_secondary("Check for Updates"))
+                    .add_enabled(
+                        !checking && !checks_disabled,
+                        style::btn_secondary(tr("Check for Updates")),
+                    )
                     .clicked()
                 {
                     self.check_for_updates(true);
                 }
                 if checking {
                     ui.spinner();
-                    hint(ui, "Checking…");
+                    hint(ui, tr("Checking…"));
+                }
+                if checks_disabled {
+                    hint(ui, tr("Managed by your organization"));
                 }
             });
             if let Some(err) = &self.update_check_error {
                 status(ui, Tone::Danger, format!("Last check failed: {err}"));
             }
         });
+
+        // M8: unduh di latar belakang + pasang saat keluar.
+        let mut prefs = crate::platform_prefs::current();
+        let auto_locked = policy.policy.automatic_download.is_some();
+        let quit_locked = policy.policy.install_on_quit.is_some();
+        let mut auto_download = crate::platform_prefs::effective_auto_download();
+        let mut install_on_quit = crate::platform_prefs::effective_install_on_quit();
+        let mut changed = false;
+        section(ui, tr("Download"), |ui| {
+            ui.add_enabled_ui(!auto_locked, |ui| {
+                if toggle_row(
+                    ui,
+                    &mut auto_download,
+                    tr("Download updates in the background"),
+                    Some(tr(
+                        "When a new version is found, download it without asking. You still choose when to install.",
+                    )),
+                ) {
+                    prefs.update_auto_download = auto_download;
+                    changed = true;
+                }
+            });
+            divider(ui);
+            ui.add_enabled_ui(!quit_locked, |ui| {
+                if toggle_row(
+                    ui,
+                    &mut install_on_quit,
+                    tr("Install when quitting"),
+                    Some(tr(
+                        "Apply a downloaded update the next time you quit Tabular, without relaunching.",
+                    )),
+                ) {
+                    prefs.update_install_on_quit = install_on_quit;
+                    changed = true;
+                }
+            });
+            if let Some(skipped) = prefs.update_skipped_version.clone() {
+                divider(ui);
+                row(ui, tr("Skip This Version"), Some(&skipped), |ui| {
+                    if ui.add(style::btn_secondary(tr("Clear"))).clicked() {
+                        prefs.update_skipped_version = None;
+                        changed = true;
+                    }
+                });
+            }
+            if self.update_installed && install_on_quit {
+                status(
+                    ui,
+                    Tone::Success,
+                    tr("Update ready. It will be installed when you quit."),
+                );
+            }
+        });
+        if changed {
+            crate::platform_prefs::set(prefs);
+            crate::platform_prefs::persist();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1426,6 +1585,111 @@ impl Tabular {
     // ─────────────────────────────────────────────────────────────────────
     // Halaman: Plugins
     // ─────────────────────────────────────────────────────────────────────
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Halaman: Privacy (M12)
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn render_pref_privacy(&mut self, ui: &mut egui::Ui) {
+        use crate::i18n::{tr, trf};
+        use crate::privacy::{self, NetCategory};
+        page_header(
+            ui,
+            tr("Privacy"),
+            tr("See every connection Tabular makes outside your databases and turn off the ones you do not want."),
+        );
+        if let Some(src) = &crate::managed_policy::current().source {
+            callout(ui, Tone::Info, |ui| {
+                ui.label(trf(
+                    "Some settings are managed by your organization ({}).",
+                    &[&src.display().to_string()],
+                ));
+            });
+            ui.add_space(8.0);
+        }
+
+        let mut prefs = crate::platform_prefs::current();
+        let mut changed = false;
+        section(ui, tr("Outbound connections"), |ui| {
+            let cats: Vec<NetCategory> = NetCategory::ALL
+                .into_iter()
+                .filter(|c| c.available())
+                .collect();
+            for (i, cat) in cats.iter().enumerate() {
+                if i > 0 {
+                    divider(ui);
+                }
+                let locked = privacy::blocked_by_policy(*cat);
+                let mut on = privacy::allowed(*cat);
+                let hint_text = format!(
+                    "{}\n{}: {}",
+                    cat.description(),
+                    tr("Endpoints"),
+                    cat.endpoints().join(", ")
+                );
+                ui.add_enabled_ui(!locked, |ui| {
+                    if toggle_row(ui, &mut on, cat.label(), Some(&hint_text)) {
+                        prefs.network.insert(cat.key().to_string(), on);
+                        if *cat == NetCategory::Handoff {
+                            prefs.handoff_enabled = on;
+                        }
+                        changed = true;
+                    }
+                });
+                if locked {
+                    hint(ui, tr("Disabled by your organization"));
+                }
+            }
+        });
+
+        section(ui, tr("Always initiated by you"), |ui| {
+            for (i, (label, text)) in privacy::USER_INITIATED.iter().enumerate() {
+                if i > 0 {
+                    divider(ui);
+                }
+                row(ui, label, Some(text), |_ui| {});
+            }
+        });
+
+        section(ui, tr("Recent activity (this session)"), |ui| {
+            let entries = privacy::recent();
+            if entries.is_empty() {
+                hint(ui, tr("No outbound requests in this session yet."));
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_salt("privacy_log")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("privacy_log_grid")
+                            .num_columns(4)
+                            .spacing(egui::vec2(12.0, 4.0))
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for e in entries.iter().take(100) {
+                                    ui.label(egui::RichText::new(&e.time).monospace().size(11.0));
+                                    ui.label(egui::RichText::new(e.category.label()).size(11.5));
+                                    ui.label(egui::RichText::new(&e.target).monospace().size(11.0));
+                                    let (tone, text) = if e.allowed {
+                                        (Tone::Success, tr("Allowed"))
+                                    } else {
+                                        (Tone::Danger, tr("Blocked"))
+                                    };
+                                    status(ui, tone, text);
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                if ui.add(style::btn_secondary(tr("Clear"))).clicked() {
+                    privacy::clear_log();
+                }
+            }
+        });
+
+        if changed {
+            crate::platform_prefs::set(prefs);
+            crate::platform_prefs::persist();
+        }
+    }
 
     fn render_pref_plugins(&mut self, ui: &mut egui::Ui) {
         page_header(

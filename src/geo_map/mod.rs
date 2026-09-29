@@ -365,7 +365,22 @@ fn render_geographic(
         state.fitted_sig = Some(sig);
         state.fit_requested = false;
     }
+    // M12: basemap mengunduh tile dari OpenStreetMap; hormati toggle privasi.
+    if state.basemap && !crate::privacy::allowed(crate::privacy::NetCategory::MapTiles) {
+        crate::privacy::record(
+            crate::privacy::NetCategory::MapTiles,
+            "https://tile.openstreetmap.org/",
+            false,
+        );
+        state.basemap = false;
+        state.tiles = None;
+    }
     if state.basemap && state.tiles.is_none() {
+        crate::privacy::record(
+            crate::privacy::NetCategory::MapTiles,
+            "https://tile.openstreetmap.org/",
+            true,
+        );
         state.tiles = Some(tiles_for(ui.ctx()));
     }
 

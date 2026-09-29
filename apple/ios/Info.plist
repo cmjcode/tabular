@@ -49,5 +49,20 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>id.tabular.database</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>tabular</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>id.tabular.database.query</string>
+	</array>
 </dict>
 </plist>

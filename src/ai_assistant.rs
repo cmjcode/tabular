@@ -213,6 +213,7 @@ fn call_openai_compatible(
         "max_tokens": 1024
     });
 
+    crate::privacy::check(crate::privacy::NetCategory::Ai, &url)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -262,6 +263,7 @@ fn call_anthropic(
         "max_tokens": 1024
     });
 
+    crate::privacy::check(crate::privacy::NetCategory::Ai, &url)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()

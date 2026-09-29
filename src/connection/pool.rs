@@ -807,6 +807,9 @@ async fn create_connection_pool_for_config_inner(
             // API-HTTP connections do not use a database pool
             Err("API-HTTP connections do not use a database pool".to_string())
         }
+        models::enums::DatabaseType::Plugin(ref engine_id) => {
+            crate::driver_api::connect::create_plugin_pool(connection, engine_id).await
+        }
     }
 }
 
@@ -937,21 +940,25 @@ pub(crate) async fn load_connection_by_id(
         ssl_key_passphrase
     };
 
-    Some(models::structs::ConnectionConfig {
+    let mut connection = models::structs::ConnectionConfig {
         id,
+        plugin_options: Default::default(),
         name,
         host,
         port,
         username,
         password,
         database,
-        connection_type: match conn_type_str.as_str() {
-            "MySQL" => models::enums::DatabaseType::MySQL,
-            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-            "Redis" => models::enums::DatabaseType::Redis,
-            "MsSQL" => models::enums::DatabaseType::MsSQL,
-            "MongoDB" => models::enums::DatabaseType::MongoDB,
-            _ => models::enums::DatabaseType::SQLite,
+        connection_type: match models::enums::DatabaseType::from_db_str(&conn_type_str) {
+            Some(ty) => ty,
+            None => {
+                log::warn!(
+                    "[CONNECTIONS] Connection {} has unknown type '{}'",
+                    connection_id,
+                    conn_type_str
+                );
+                return None;
+            }
         },
         folder,
         ssh_enabled: ssh_enabled != 0,
@@ -974,7 +981,14 @@ pub(crate) async fn load_connection_by_id(
         ssl_verify_server: ssl_verify_server != 0,
         custom_views: Vec::new(),
         replication_master_id: None,
-    })
+    };
+    if let Some(cid) = id
+        && connection.connection_type.plugin_id().is_some()
+    {
+        connection.plugin_options =
+            crate::driver_api::connect::load_plugin_options(cache_pool, cid).await;
+    }
+    Some(connection)
 }
 
 pub(crate) async fn create_connection_pool_by_id(
@@ -1076,21 +1090,23 @@ pub(crate) async fn create_connection_pool_by_id(
         &ssh_password,
     );
 
-    let connection = models::structs::ConnectionConfig {
+    let mut connection = models::structs::ConnectionConfig {
         id: Some(id),
+        plugin_options: Default::default(),
         name,
         host,
         port,
         username,
         password,
         database: database_name,
-        connection_type: match connection_type.as_str() {
-            "MySQL" => models::enums::DatabaseType::MySQL,
-            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-            "Redis" => models::enums::DatabaseType::Redis,
-            "MsSQL" => models::enums::DatabaseType::MsSQL,
-            "MongoDB" => models::enums::DatabaseType::MongoDB,
-            _ => models::enums::DatabaseType::SQLite,
+        connection_type: match models::enums::DatabaseType::from_db_str(&connection_type) {
+            Some(ty) => ty,
+            None => {
+                return Err(format!(
+                    "Unknown connection type '{}' for connection {}",
+                    connection_type, id
+                ));
+            }
         },
         folder,
         ssh_enabled: ssh_enabled != 0,
@@ -1111,6 +1127,10 @@ pub(crate) async fn create_connection_pool_by_id(
         custom_views: Vec::new(),
         replication_master_id: None,
     };
+    if connection.connection_type.plugin_id().is_some() {
+        connection.plugin_options =
+            crate::driver_api::connect::load_plugin_options(cache_pool, id).await;
+    }
 
     match create_connection_pool_for_config(&connection).await {
         Ok(pool) => Ok(pool),

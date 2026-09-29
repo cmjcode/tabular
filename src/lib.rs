@@ -18,7 +18,9 @@ pub mod backup_restore;
 pub mod cache_data;
 pub mod config;
 pub mod connection;
+pub mod connection_env;
 pub mod curl_import;
+pub mod deeplink;
 pub mod data_table;
 pub mod dba_monitor;
 pub mod diagram_links;
@@ -39,6 +41,7 @@ pub mod dialog_backup_restore;
 pub mod dialog_copy_database;
 pub mod dialog_export_import_all;
 pub mod directory;
+pub mod driver_api;
 pub mod driver_mongodb;
 pub mod driver_mssql;
 pub mod driver_mysql;
@@ -60,11 +63,19 @@ pub mod http_client;
 pub mod http_client_widgets;
 pub mod http_code_export;
 pub mod http_collection;
+pub mod i18n;
 pub mod keymap;
+pub mod managed_policy;
 pub mod models;
 pub mod modules;
 pub mod obsidian;
+#[cfg(target_os = "ios")]
+pub mod platform_ios;
+#[cfg(target_os = "macos")]
+pub mod platform_macos;
+pub mod platform_prefs;
 pub mod plugin_runtime;
+pub mod privacy;
 pub mod query_diagram;
 pub mod query_profiler;
 pub mod query_tools;
@@ -73,6 +84,7 @@ pub mod repo_scan;
 pub mod result_chart;
 pub mod redis_browser;
 pub mod safety_guard;
+pub mod schema_objects;
 pub mod sample_data;
 pub mod search_match;
 pub mod secrets;
@@ -82,6 +94,8 @@ pub mod sidebar_collection;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
+#[cfg(not(target_os = "ios"))]
+pub mod single_instance;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
@@ -203,6 +217,7 @@ pub fn run() -> Result<(), eframe::Error> {
     log_startup_step("dotenv loaded");
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
+    platform_prefs::load_from_disk();
 
     // Log ke file + crash report; setelah init_data_dir agar folder log benar.
     app_logging::init();
@@ -212,6 +227,14 @@ pub fn run() -> Result<(), eframe::Error> {
         "Application starting with data directory: {}",
         config::get_data_dir().display()
     );
+
+    // Deep link (M1): Apple Event harus terdaftar sebelum event loop agar URL
+    // yang meluncurkan aplikasi tidak hilang; listener single-instance
+    // menerima URL dari proses `tabular open` / klik link berikutnya.
+    #[cfg(target_os = "macos")]
+    platform_macos::install_apple_event_handlers();
+    #[cfg(not(target_os = "ios"))]
+    single_instance::start_global();
 
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
@@ -253,6 +276,12 @@ pub fn run() -> Result<(), eframe::Error> {
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
             initialize_icon_fonts(&cc.egui_ctx);
+            // Delegate winit sudah ada di sini; di iOS closure ini berjalan di
+            // dalam didFinishLaunching sehingga URL cold-start tidak hilang.
+            #[cfg(target_os = "ios")]
+            platform_ios::install_url_receivers();
+            #[cfg(target_os = "macos")]
+            platform_macos::install_handoff_receiver();
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();

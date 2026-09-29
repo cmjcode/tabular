@@ -1081,6 +1081,7 @@ pub(crate) async fn load_redis_connection_config(
 
     Some(models::structs::ConnectionConfig {
         id: Some(id),
+        plugin_options: Default::default(),
         name: row.try_get::<String, _>("name").unwrap_or_default(),
         host: row.try_get::<String, _>("host").unwrap_or_default(),
         port: row

@@ -9540,7 +9540,23 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
             .find(|c| c.id == Some(connection_id))
             .map(|c| matches!(c.connection_type, crate::models::enums::DatabaseType::MySQL))
             .unwrap_or(false);
-        let mut statements = connection::split_sql_statements(&query, hash_is_comment);
+        let is_mssql = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+            .map(|c| matches!(c.connection_type, crate::models::enums::DatabaseType::MsSQL))
+            .unwrap_or(false);
+        // MsSQL: script dengan separator `GO` dijalankan per batch utuh (body
+        // procedure/IF tidak dipecah di `;`), seperti SSMS/sqlcmd.
+        let go_batches = if is_mssql {
+            connection::sql::split_mssql_go_batches(&query)
+        } else {
+            None
+        };
+        let mut statements = match go_batches {
+            Some(batches) => batches,
+            None => connection::split_sql_statements(&query, hash_is_comment),
+        };
 
         if statements.is_empty() {
             // Should not happen as we checked query.is_empty() above

@@ -38,6 +38,11 @@ pub enum NodeType {
     UserFunction,
     Trigger,
     Event,
+    // Objek skema PostgreSQL: materialized view dan tipe buatan user.
+    MaterializedViewsFolder,
+    MaterializedView,
+    TypesFolder,
+    UserType,
     MySQLFolder,      // Folder untuk koneksi MySQL
     MsSQLFolder,      // Folder untuk koneksi MsSQL
     MongoDBFolder,    // Folder untuk koneksi MongoDB
@@ -70,6 +75,8 @@ impl NodeType {
                 | NodeType::UserFunctionsFolder
                 | NodeType::TriggersFolder
                 | NodeType::EventsFolder
+                | NodeType::MaterializedViewsFolder
+                | NodeType::TypesFolder
                 | NodeType::DBAViewsFolder
                 | NodeType::UsersFolder
                 | NodeType::PrivilegesFolder
@@ -238,6 +245,8 @@ pub enum DatabaseType {
     MsSQL,
     MongoDB,
     ApiHttp,
+    /// Engine dari plugin driver (ADR 0002), dengan id engine plugin.
+    Plugin(String),
 }
 
 impl DatabaseType {
@@ -251,6 +260,81 @@ impl DatabaseType {
             DatabaseType::MsSQL => "🛢️",
             DatabaseType::MongoDB => "🍃",
             DatabaseType::ApiHttp => "🌐",
+            DatabaseType::Plugin(_) => "🧩",
+        }
+    }
+
+    /// Nilai yang disimpan di kolom `connections.connection_type`. Untuk varian
+    /// builtin sama persis dengan output `Debug` supaya baris lama tetap
+    /// terbaca; engine plugin disimpan sebagai `plugin:<id>`.
+    pub fn as_db_str(&self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
+        match self {
+            DatabaseType::MySQL => Cow::Borrowed("MySQL"),
+            DatabaseType::PostgreSQL => Cow::Borrowed("PostgreSQL"),
+            DatabaseType::SQLite => Cow::Borrowed("SQLite"),
+            DatabaseType::Redis => Cow::Borrowed("Redis"),
+            DatabaseType::MsSQL => Cow::Borrowed("MsSQL"),
+            DatabaseType::MongoDB => Cow::Borrowed("MongoDB"),
+            DatabaseType::ApiHttp => Cow::Borrowed("ApiHttp"),
+            DatabaseType::Plugin(id) => Cow::Owned(format!("plugin:{id}")),
+        }
+    }
+
+    /// Id yang dicadangkan untuk engine builtin; plugin tidak boleh memakainya.
+    pub fn is_builtin_id(id: &str) -> bool {
+        matches!(
+            id.to_ascii_lowercase().as_str(),
+            "mysql"
+                | "mariadb"
+                | "postgresql"
+                | "postgres"
+                | "sqlite"
+                | "redis"
+                | "mssql"
+                | "sqlserver"
+                | "mongodb"
+                | "mongo"
+                | "apihttp"
+                | "http"
+        )
+    }
+
+    /// Id engine plugin, atau `None` untuk engine builtin.
+    pub fn plugin_id(&self) -> Option<&str> {
+        match self {
+            DatabaseType::Plugin(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Nama engine untuk UI. Engine plugin memakai nama dari registry, atau
+    /// id-nya bila driver belum terpasang.
+    pub fn display_name(&self) -> String {
+        match self {
+            DatabaseType::Plugin(id) => crate::driver_api::registry::descriptor(id)
+                .map(|d| d.name)
+                .unwrap_or_else(|| id.clone()),
+            other => other.badge_label().to_string(),
+        }
+    }
+
+    /// Kebalikan dari [`Self::as_db_str`]. Nilai yang tidak dikenal (misalnya
+    /// engine plugin yang belum terpasang, atau data dari versi lebih baru)
+    /// menghasilkan `None`, bukan diam-diam dianggap SQLite.
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "MySQL" => Some(DatabaseType::MySQL),
+            "PostgreSQL" => Some(DatabaseType::PostgreSQL),
+            "SQLite" => Some(DatabaseType::SQLite),
+            "Redis" => Some(DatabaseType::Redis),
+            "MsSQL" => Some(DatabaseType::MsSQL),
+            "MongoDB" => Some(DatabaseType::MongoDB),
+            "ApiHttp" => Some(DatabaseType::ApiHttp),
+            other => other
+                .strip_prefix("plugin:")
+                .filter(|id| crate::driver_api::EngineDescriptor::is_valid_id(id))
+                .map(|id| DatabaseType::Plugin(id.to_string())),
         }
     }
 
@@ -264,6 +348,7 @@ impl DatabaseType {
             DatabaseType::MsSQL => "MsSQL",
             DatabaseType::MongoDB => "MongoDB",
             DatabaseType::ApiHttp => "API",
+            DatabaseType::Plugin(_) => "Plugin",
         }
     }
 
@@ -282,6 +367,7 @@ impl DatabaseType {
             DatabaseType::MsSQL => (0, 164, 239),       // MS Azure blue
             DatabaseType::MongoDB => (0, 168, 80),      // MongoDB green
             DatabaseType::ApiHttp => (139, 79, 191),    // HTTP purple
+            DatabaseType::Plugin(_) => (120, 120, 130), // plugin neutral gray
         }
     }
     /// Returns a filesystem-safe key for loading PNG icons, e.g. "mysql" → assets/db_icons/mysql.png
@@ -294,6 +380,7 @@ impl DatabaseType {
             DatabaseType::MsSQL => "mssql",
             DatabaseType::MongoDB => "mongodb",
             DatabaseType::ApiHttp => "apihttp",
+            DatabaseType::Plugin(_) => "plugin",
         }
     }
 }
@@ -353,6 +440,7 @@ pub enum DatabasePool {
     Redis(Arc<ConnectionManager>),
     MsSQL(Arc<mssql_driver_pool::Pool>),
     MongoDB(Arc<MongoClient>),
+    Plugin(Arc<crate::driver_api::PluginPool>),
 }
 
 impl DatabasePool {
@@ -364,6 +452,62 @@ impl DatabasePool {
             DatabasePool::Redis(_) => DatabaseType::Redis,
             DatabasePool::MsSQL(_) => DatabaseType::MsSQL,
             DatabasePool::MongoDB(_) => DatabaseType::MongoDB,
+            DatabasePool::Plugin(p) => DatabaseType::Plugin(p.engine_id.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DatabaseType;
+
+    const ALL_TYPES: [DatabaseType; 7] = [
+        DatabaseType::MySQL,
+        DatabaseType::PostgreSQL,
+        DatabaseType::SQLite,
+        DatabaseType::Redis,
+        DatabaseType::MsSQL,
+        DatabaseType::MongoDB,
+        DatabaseType::ApiHttp,
+    ];
+
+    #[test]
+    fn db_str_round_trips_for_every_builtin_type() {
+        for ty in ALL_TYPES {
+            assert_eq!(DatabaseType::from_db_str(&ty.as_db_str()), Some(ty.clone()));
+        }
+    }
+
+    #[test]
+    fn db_str_matches_legacy_debug_format() {
+        // Penulis lama menyimpan `format!("{:?}", connection_type)`.
+        for ty in ALL_TYPES {
+            assert_eq!(ty.as_db_str(), format!("{ty:?}"));
+        }
+    }
+
+    #[test]
+    fn unknown_type_is_not_coerced_to_sqlite() {
+        assert_eq!(DatabaseType::from_db_str("ClickHouse"), None);
+        assert_eq!(DatabaseType::from_db_str("plugin:"), None);
+        assert_eq!(DatabaseType::from_db_str("plugin:../x"), None);
+        assert_eq!(DatabaseType::from_db_str(""), None);
+    }
+
+    #[test]
+    fn plugin_type_round_trips() {
+        let ty = DatabaseType::Plugin("clickhouse".into());
+        assert_eq!(ty.as_db_str(), "plugin:clickhouse");
+        assert_eq!(DatabaseType::from_db_str("plugin:clickhouse"), Some(ty.clone()));
+        assert_eq!(ty.plugin_id(), Some("clickhouse"));
+        // Driver tidak terpasang: nama jatuh ke id.
+        assert_eq!(ty.display_name(), "clickhouse");
+    }
+
+    #[test]
+    fn builtin_ids_are_reserved() {
+        assert!(DatabaseType::is_builtin_id("PostgreSQL"));
+        assert!(DatabaseType::is_builtin_id("sqlite"));
+        assert!(!DatabaseType::is_builtin_id("clickhouse"));
     }
 }

@@ -171,6 +171,11 @@ pub fn render_plugin_panel(
             egui_icons::icons::ICON_DESCRIPTION.codepoint,
             "SDK Templates",
         );
+        draw_subtab(
+            PluginModalTab::DatabaseDrivers,
+            egui_icons::icons::MDI_PUZZLE.codepoint,
+            "Database Drivers",
+        );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -324,6 +329,9 @@ pub fn render_plugin_panel(
         }
         PluginModalTab::StarterTemplates => {
             render_starter_templates_tab(ui, state);
+        }
+        PluginModalTab::DatabaseDrivers => {
+            crate::plugin_runtime::drivers_ui::render_drivers_tab(ui, state);
         }
     }
 }
