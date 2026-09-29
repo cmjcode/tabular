@@ -29,7 +29,7 @@ pub const DENSE_OPACITY: f32 = 0.35;
 /// Opacity relasi lain saat sebuah tabel di-hover.
 pub const HOVER_OTHERS_OPACITY: f32 = 0.2;
 /// Lama animasi aliran data sebelum berhenti sendiri (detik).
-pub const FLOW_ANIM_SECS: f64 = 6.0;
+pub const FLOW_ANIM_SECS: f64 = 30.0;
 
 /// Tingkat detail gambar diagram, ditentukan oleh zoom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
