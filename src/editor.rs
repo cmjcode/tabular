@@ -4637,7 +4637,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             caret_line_rect.top() + line_h + 6.0,
         );
         // Offset dari frame sebelumnya; abaikan bila teks sudah berubah bentuk
-        let stmt_top_left = crate::index_check::statement_start(tabular)
+        let stmt_line_end = crate::index_check::statement_start(tabular)
             .filter(|&b| tabular.editor.text.is_char_boundary(b))
             .map(|b| {
                 let ci = tabular.editor.text[..b].chars().count();
@@ -4647,7 +4647,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     .left_top()
             });
         let visible = response.rect.intersect(ui.clip_rect());
-        crate::index_check::show(tabular, ui, anchor, stmt_top_left, visible);
+        crate::index_check::show(tabular, ui, anchor, stmt_line_end, line_h, visible);
     }
 
     // Render autocomplete popup positioned under cursor

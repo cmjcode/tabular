@@ -169,19 +169,50 @@ fn update(app: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
-/// Offset byte awal statement yang sedang dianalisis (untuk posisi badge).
+/// Offset byte akhir baris SQL pertama statement yang sedang dianalisis
+/// (untuk posisi badge). Komentar dan baris kosong di awal statement dilewati
+/// supaya badge menempel ke query, bukan ke header komentar.
 pub fn statement_start(app: &Tabular) -> Option<usize> {
-    app.index_check.stmt.as_ref().map(|(r, _)| r.start)
+    let (r, _) = app.index_check.stmt.as_ref()?;
+    let text = &app.editor.text;
+    let stmt = text.get(r.clone())?;
+    Some(r.start + first_code_line_end(stmt))
+}
+
+/// Offset akhir (tanpa `\n`) baris pertama yang berisi kode, bukan komentar.
+fn first_code_line_end(stmt: &str) -> usize {
+    let mut rest = stmt;
+    loop {
+        let trimmed = rest.trim_start();
+        let skipped = rest.len() - trimmed.len();
+        let after = if trimmed.starts_with("--") || trimmed.starts_with('#') {
+            trimmed.find('\n').map(|i| &trimmed[i + 1..])
+        } else if let Some(body) = trimmed.strip_prefix("/*") {
+            body.find("*/").map(|i| &body[i + 2..])
+        } else {
+            None
+        };
+        match after {
+            Some(next) => rest = next,
+            None => {
+                let start = stmt.len() - rest.len() + skipped;
+                let line_len = trimmed.find('\n').unwrap_or(trimmed.len());
+                return start + trimmed[..line_len].trim_end().len();
+            }
+        }
+    }
 }
 
 /// Dipanggil tiap frame dari editor. `anchor` = kiri-bawah baris kursor,
-/// `stmt_top_left` = kiri-atas baris pertama statement (badge diletakkan tepat
-/// di atasnya), `editor_rect` = area editor yang terlihat.
+/// `stmt_line_end` = kiri-atas posisi akhir baris SQL pertama statement (badge
+/// ditempel di kanannya), `line_h` = tinggi baris, `editor_rect` = area editor
+/// yang terlihat.
 pub fn show(
     app: &mut Tabular,
     ui: &mut egui::Ui,
     anchor: egui::Pos2,
-    stmt_top_left: Option<egui::Pos2>,
+    stmt_line_end: Option<egui::Pos2>,
+    line_h: f32,
     editor_rect: egui::Rect,
 ) {
     update(app, ui.ctx());
@@ -195,8 +226,8 @@ pub fn show(
     if app.index_check.open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         close(app);
     }
-    if let Some(p) = stmt_top_left {
-        render_badge(app, ui, p, editor_rect);
+    if let Some(p) = stmt_line_end {
+        render_badge(app, ui, p, line_h, editor_rect);
     }
     if app.index_check.open {
         render_panel(app, ui, anchor);
@@ -212,7 +243,8 @@ fn close(app: &mut Tabular) {
 fn render_badge(
     app: &mut Tabular,
     ui: &mut egui::Ui,
-    stmt_top_left: egui::Pos2,
+    stmt_line_end: egui::Pos2,
+    line_h: f32,
     editor_rect: egui::Rect,
 ) {
     let Some(report) = app.index_check.report.as_ref() else {
@@ -241,23 +273,21 @@ fn render_badge(
             crate::window_egui::style::theme_success(ui.ctx()),
         )
     };
-    // Tepat di atas baris pertama statement; bila baris itu ter-scroll ke
-    // atas, tahan di tepi atas editor supaya tetap terlihat.
+    // Menempel di ujung kanan baris SQL pertama dan ikut ter-scroll; bila
+    // baris itu keluar dari area editor, badge disembunyikan.
     const BADGE_H: f32 = 18.0;
-    // Jarak badge dari tepi atas editor dan geseran ke kanan dari awal baris
-    const BADGE_TOP_GAP: f32 = 6.0;
-    const BADGE_SHIFT_X: f32 = 12.0;
-    if stmt_top_left.y > editor_rect.bottom() {
+    const BADGE_GAP_X: f32 = 12.0;
+    let line_center = stmt_line_end.y + line_h / 2.0;
+    if line_center - BADGE_H / 2.0 < editor_rect.top()
+        || line_center + BADGE_H / 2.0 > editor_rect.bottom()
+    {
         return;
     }
-    let pos = egui::pos2(
-        stmt_top_left.x + BADGE_SHIFT_X,
-        (stmt_top_left.y - 1.0).max(editor_rect.top() + BADGE_TOP_GAP + BADGE_H),
-    );
+    let pos = egui::pos2(stmt_line_end.x + BADGE_GAP_X, line_center);
     let mut clicked = false;
     egui::Area::new(egui::Id::new("index_check_badge"))
         .fixed_pos(pos)
-        .pivot(egui::Align2::LEFT_BOTTOM)
+        .pivot(egui::Align2::LEFT_CENTER)
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             let resp = ui
@@ -504,6 +534,19 @@ fn render_advice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn badge_anchor_skips_leading_comments() {
+        let s = "-- tabular: connection_id=82\n-- x\n\nSELECT a  \nFROM t";
+        assert_eq!(
+            &s[..first_code_line_end(s)],
+            &s[..s.find("SELECT a").unwrap() + 8]
+        );
+        let s = "/* hdr */ SELECT 1\nFROM t";
+        assert_eq!(first_code_line_end(s), s.find('\n').unwrap());
+        assert_eq!(first_code_line_end("SELECT 1"), 8);
+        assert_eq!(first_code_line_end("-- only comment"), 15);
+    }
 
     #[test]
     fn only_statements_with_column_clauses_are_analyzed() {
