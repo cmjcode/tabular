@@ -3,7 +3,6 @@
 //! yang diubah. Modul ini headless (tanpa `window_egui`) sehingga bisa dites
 //! dan dipakai ulang oleh agent.
 
-pub mod build;
 pub mod layout;
 #[cfg(feature = "query_ast")]
 mod parse;
@@ -75,6 +74,12 @@ pub struct SourceTable {
     pub used: Vec<String>,
     /// `SELECT *` / `t.*` mengambil semua kolom tabel ini.
     pub all_columns: bool,
+    /// Id kartu CTE/subquery yang diisi tabel ini (tabel di dalam CTE).
+    pub feeds: Option<String>,
+    /// Label peran khusus, mis. "IN (subquery)", "EXISTS", "UNION #2".
+    pub badge: Option<String>,
+    /// Cabang UNION/INTERSECT/EXCEPT (0 = query pertama).
+    pub branch: usize,
 }
 
 impl SourceTable {
@@ -88,6 +93,9 @@ impl SourceTable {
             columns: Vec::new(),
             used: Vec::new(),
             all_columns: false,
+            feeds: None,
+            badge: None,
+            branch: 0,
         }
     }
 
@@ -157,6 +165,8 @@ pub struct OutputColumn {
     pub expr: String,
     pub sources: Vec<ColumnRef>,
     pub aggregate: bool,
+    /// Klausa `OVER (...)` bila kolom ini window function.
+    pub window: Option<String>,
 }
 
 /// Perubahan satu kolom target (SET pada UPDATE, kolom pada INSERT).
@@ -185,7 +195,11 @@ pub struct QueryDiagramModel {
     /// Kolom lain yang dipakai (GROUP BY, ORDER BY, HAVING).
     pub referenced: Vec<ColumnRef>,
     pub group_by: Vec<String>,
+    /// Kolom yang dipakai tiap ekspresi GROUP BY (sejajar dengan `group_by`).
+    pub group_columns: Vec<Vec<ColumnRef>>,
     pub having: Option<String>,
+    /// Kolom yang dipakai kondisi HAVING.
+    pub having_columns: Vec<ColumnRef>,
     pub order_by: Vec<String>,
     pub limit: Option<String>,
     pub distinct: bool,
@@ -193,6 +207,28 @@ pub struct QueryDiagramModel {
     pub values_rows: usize,
     /// Catatan tambahan (UNION, CTE, ON CONFLICT, ...), English.
     pub notes: Vec<String>,
+    /// Kata kerja target bila bukan bawaan jenis statement, mis. "REPLACE
+    /// INTO", "TRUNCATE", "SELECT INTO", "CREATE TABLE AS", "MERGE INTO".
+    pub verb: Option<String>,
+    /// Perubahan saat baris sudah ada / tidak cocok (upsert, MERGE).
+    pub upserts: Vec<Mutation>,
+    /// Judul kartu upsert, mis. "ON DUPLICATE KEY UPDATE".
+    pub upsert_label: String,
+    /// Aliran kolom tabel di dalam CTE/subquery ke kolom CTE/subquery itu.
+    pub derived_links: Vec<(ColumnRef, ColumnRef)>,
+    /// Cabang UNION/INTERSECT/EXCEPT; kosong bila tidak ada operasi set.
+    pub branches: Vec<SetBranch>,
+}
+
+/// Satu query dalam UNION/INTERSECT/EXCEPT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetBranch {
+    /// Operator yang menggabungkan cabang ini, mis. "UNION ALL" (kosong untuk
+    /// cabang pertama).
+    pub op: String,
+    /// Tabel yang dibaca cabang ini.
+    pub tables: Vec<String>,
+    pub filter: Option<String>,
 }
 
 impl QueryDiagramModel {
@@ -209,12 +245,19 @@ impl QueryDiagramModel {
             filter_columns: Vec::new(),
             referenced: Vec::new(),
             group_by: Vec::new(),
+            group_columns: Vec::new(),
             having: None,
+            having_columns: Vec::new(),
             order_by: Vec::new(),
             limit: None,
             distinct: false,
             values_rows: 0,
             notes: Vec::new(),
+            verb: None,
+            upserts: Vec::new(),
+            upsert_label: String::new(),
+            derived_links: Vec::new(),
+            branches: Vec::new(),
         }
     }
 
@@ -232,6 +275,40 @@ impl QueryDiagramModel {
             return self.target.as_mut();
         }
         self.sources.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Ganti semua referensi ke sumber `from` menjadi `to`.
+    pub(crate) fn remap_table(&mut self, from: &str, to: &str) {
+        let fix = |r: &mut ColumnRef| {
+            if r.table == from {
+                r.table = to.to_string();
+            }
+        };
+        for j in &mut self.joins {
+            fix(&mut j.left);
+            fix(&mut j.right);
+        }
+        for o in &mut self.output {
+            o.sources.iter_mut().for_each(fix);
+        }
+        for m in self.mutations.iter_mut().chain(self.upserts.iter_mut()) {
+            m.sources.iter_mut().for_each(fix);
+        }
+        for (a, b) in &mut self.derived_links {
+            fix(a);
+            fix(b);
+        }
+        self.filter_columns.iter_mut().for_each(fix);
+        self.referenced.iter_mut().for_each(fix);
+        self.having_columns.iter_mut().for_each(fix);
+        for g in &mut self.group_columns {
+            g.iter_mut().for_each(fix);
+        }
+        for t in &mut self.sources {
+            if t.feeds.as_deref() == Some(from) {
+                t.feeds = Some(to.to_string());
+            }
+        }
     }
 
     /// Nama tabel fisik (tanpa CTE/subquery/VALUES) untuk konteks skema.
@@ -324,11 +401,19 @@ impl QueryDiagramModel {
         for o in &mut self.output {
             o.sources.iter_mut().for_each(resolve);
         }
-        for m in &mut self.mutations {
+        for m in self.mutations.iter_mut().chain(self.upserts.iter_mut()) {
             m.sources.iter_mut().for_each(resolve);
+        }
+        for (from, to) in &mut self.derived_links {
+            resolve(from);
+            resolve(to);
         }
         self.filter_columns.iter_mut().for_each(resolve);
         self.referenced.iter_mut().for_each(resolve);
+        self.having_columns.iter_mut().for_each(resolve);
+        for g in &mut self.group_columns {
+            g.iter_mut().for_each(resolve);
+        }
         // Relasi dengan kedua ujung di tabel yang sama bukan relasi antar tabel.
         self.joins.retain(|j| j.left.table != j.right.table);
 
@@ -341,8 +426,12 @@ impl QueryDiagramModel {
         for o in &self.output {
             refs.extend(o.sources.iter().cloned());
         }
-        for m in &self.mutations {
+        for m in self.mutations.iter().chain(self.upserts.iter()) {
             refs.extend(m.sources.iter().cloned());
+        }
+        for (from, to) in &self.derived_links {
+            refs.push(from.clone());
+            refs.push(to.clone());
         }
         refs.extend(self.filter_columns.iter().cloned());
         refs.extend(self.referenced.iter().cloned());
@@ -352,7 +441,7 @@ impl QueryDiagramModel {
             }
         }
         if let Some(target) = self.target.as_mut() {
-            for m in &self.mutations {
+            for m in self.mutations.iter().chain(self.upserts.iter()) {
                 target.push_used(&m.column);
             }
         }
@@ -386,6 +475,7 @@ impl QueryDiagramModel {
                         expr: format!("{tid}.{c}"),
                         sources: vec![ColumnRef::new(tid.clone(), c.clone())],
                         aggregate: false,
+                        window: None,
                     });
                 }
             } else {

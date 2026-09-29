@@ -12,9 +12,10 @@ use super::Tabular;
 use crate::models::enums::DatabaseType;
 use crate::query_diagram::layout::{QueryLayout, build_layout};
 use crate::query_diagram::render::{
-    QueryDiagramView, floating_bar, floating_window_at_bottom, render_query_diagram,
+    QueryDiagramView, floating_bar, floating_window, floating_window_at_bottom,
+    render_query_diagram,
 };
-use crate::query_diagram::{self, QueryDiagramModel, StatementKind, prompt};
+use crate::query_diagram::{self, QueryDiagramModel, prompt};
 
 /// Lebar minimum panel kanan.
 const MIN_PANEL_W: f32 = 320.0;
@@ -58,7 +59,6 @@ enum PanelAction {
     Close,
     AskAi,
     Apply(String),
-    OpenInTab,
     ContinueInChat,
     Refresh,
 }
@@ -344,15 +344,6 @@ pub fn render_split(
     ui.allocate_rect(full, egui::Sense::hover());
 }
 
-fn kind_color(kind: StatementKind) -> egui::Color32 {
-    match kind {
-        StatementKind::Select => egui::Color32::from_rgb(170, 110, 255),
-        StatementKind::Insert => egui::Color32::from_rgb(60, 200, 120),
-        StatementKind::Update => egui::Color32::from_rgb(255, 170, 40),
-        StatementKind::Delete => egui::Color32::from_rgb(240, 85, 85),
-    }
-}
-
 fn icon_button(ui: &mut egui::Ui, icon: egui_icons::MaterialIcon, tip: &str) -> bool {
     ui.add(egui::Button::new(icon.rich_text().size(15.0)).frame(false))
         .on_hover_text(tip)
@@ -374,61 +365,15 @@ fn render_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
     };
     let mut actions: Vec<PanelAction> = Vec::new();
 
-    egui::Frame::NONE
-        .fill(bg)
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
+    egui::Frame::NONE.fill(bg).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            // Header.
-            ui.horizontal(|ui| {
-                if let Some(m) = &ins.model {
-                    let c = kind_color(m.kind);
-                    egui::Frame::NONE
-                        .fill(c.gamma_multiply(0.18))
-                        .stroke(egui::Stroke::new(1.0, c))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(6, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(m.kind.label())
-                                    .color(c)
-                                    .strong()
-                                    .size(11.0),
-                            );
-                        });
-                }
-                ui.label(egui::RichText::new("Query Diagram").strong());
-                ui.label(egui::RichText::new(&ins.db_label).weak().size(11.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, egui_icons::icons::ICON_CLOSE, "Close") {
-                        actions.push(PanelAction::Close);
-                    }
-                    if ins.layout.is_some() {
-                        if icon_button(
-                            ui,
-                            egui_icons::icons::ICON_OPEN_IN_NEW,
-                            "Open as a diagram tab",
-                        ) {
-                            actions.push(PanelAction::OpenInTab);
-                        }
-                        if icon_button(
-                            ui,
-                            egui_icons::icons::ICON_FIT_SCREEN,
-                            "Fit to panel (or double-click the canvas)",
-                        ) {
-                            ins.view.fit();
-                        }
-                        if icon_button(
-                            ui,
-                            egui_icons::icons::ICON_RESTART_ALT,
-                            "Move all tables back to their original position",
-                        ) {
-                            ins.view.reset_positions();
-                        }
-                        if icon_button(ui, egui_icons::icons::ICON_REPLAY, "Replay animation") {
-                            ins.view.replay();
-                        }
-                    }
+            let has_layout = ins.layout.is_some();
+            // Tombol kanvas melayang di pojok kanan atas (tanpa top bar).
+            let top_buttons = |ui: &mut egui::Ui,
+                               area: egui::Rect,
+                               view: &mut QueryDiagramView,
+                               actions: &mut Vec<PanelAction>| {
+                floating_bar(ui, ui.id().with(("qi_top", tab_id)), area, 0.92, true, |ui| {
                     if icon_button(
                         ui,
                         egui_icons::icons::ICON_REFRESH,
@@ -436,43 +381,76 @@ fn render_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     ) {
                         actions.push(PanelAction::Refresh);
                     }
+                    if has_layout {
+                        if icon_button(ui, egui_icons::icons::ICON_REPLAY, "Replay animation") {
+                            view.replay();
+                        }
+                        if icon_button(
+                            ui,
+                            egui_icons::icons::ICON_RESTART_ALT,
+                            "Move all tables back to their original position",
+                        ) {
+                            view.reset_positions();
+                        }
+                        if icon_button(
+                            ui,
+                            egui_icons::icons::ICON_FIT_SCREEN,
+                            "Fit to panel (or double-click the canvas)",
+                        ) {
+                            view.fit();
+                        }
+                    }
+                    if icon_button(ui, egui_icons::icons::ICON_CLOSE, "Close") {
+                        actions.push(PanelAction::Close);
+                    }
                 });
-            });
+            };
 
             if let Some(err) = &ins.error {
-                ui.add_space(12.0);
-                ui.label(egui::RichText::new("This statement can't be drawn").strong());
-                ui.label(egui::RichText::new(err).weak());
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(crate::query_diagram::clip(&ins.sql, 300))
-                        .family(egui::FontFamily::Monospace)
-                        .size(11.0),
-                );
+                let area = ui.max_rect();
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.add_space(24.0);
+                        ui.label(egui::RichText::new("This statement can't be drawn").strong());
+                        ui.label(egui::RichText::new(err).weak());
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(crate::query_diagram::clip(&ins.sql, 300))
+                                .family(egui::FontFamily::Monospace)
+                                .size(11.0),
+                        );
+                    });
+                top_buttons(ui, area, &mut ins.view, &mut actions);
                 return;
             }
-            let (Some(model), Some(layout)) = (&ins.model, &ins.layout) else {
+            let Some(layout) = &ins.layout else {
                 return;
             };
-            ui.label(egui::RichText::new(model.kind.summary()).weak().size(11.5));
+
+            // Kanvas mengisi seluruh panel; tombol dan jendela lain melayang di atasnya.
+            let canvas = render_query_diagram(ui, layout, &mut ins.view);
+            top_buttons(ui, canvas, &mut ins.view, &mut actions);
+
             if let Some(w) = &layout.warning {
                 let red = egui::Color32::from_rgb(240, 85, 85);
-                egui::Frame::NONE
-                    .fill(red.gamma_multiply(0.14))
-                    .stroke(egui::Stroke::new(1.0, red))
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
+                let width = (canvas.width() - 260.0).clamp(160.0, 380.0);
+                floating_window(
+                    ui,
+                    ui.id().with(("qi_warning", tab_id)),
+                    egui::Rect::from_min_size(
+                        canvas.min + egui::vec2(12.0, 12.0),
+                        egui::vec2(width, 90.0),
+                    ),
+                    0.92,
+                    |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui_icons::icons::ICON_WARNING.rich_text().color(red));
                             ui.label(egui::RichText::new(w).color(red));
                         });
-                    });
+                    },
+                );
             }
-            ui.add_space(4.0);
-
-            // Kanvas mengisi seluruh sisa panel; jendela lain melayang di atasnya.
-            let canvas = render_query_diagram(ui, layout, &mut ins.view);
 
             // --- Tombol floating di pojok kanan bawah ---
             let ai_label = format!(
@@ -485,6 +463,7 @@ fn render_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
                 ui.id().with(("qi_buttons", tab_id)),
                 canvas,
                 0.92,
+                false,
                 |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let help = ui
@@ -633,7 +612,6 @@ fn render_panel(tabular: &mut Tabular, ui: &mut egui::Ui) {
             PanelAction::AskAi => start_ai(tabular, tab_id),
             PanelAction::Refresh => open_query_insight(tabular),
             PanelAction::Apply(sql) => apply_optimized(tabular, tab_id, sql, ui.ctx()),
-            PanelAction::OpenInTab => open_in_tab(tabular, tab_id),
             PanelAction::ContinueInChat => {
                 if let Some(ins) = tabular.query_insights.get(&tab_id) {
                     tabular.ai_input = format!(
@@ -757,31 +735,4 @@ fn apply_optimized(tabular: &mut Tabular, tab_id: usize, sql: String, ctx: &egui
         i.ai = ai;
         i.notice = Some("Applied. The diagram now shows the optimized query.".to_string());
     }
-}
-
-/// Buka diagram query sebagai tab diagram biasa (tidak pernah disimpan).
-fn open_in_tab(tabular: &mut Tabular, tab_id: usize) {
-    let Some((state, kind)) = tabular.query_insights.get(&tab_id).and_then(|i| {
-        let l = i.layout.as_ref()?;
-        Some((crate::query_diagram::build::build_diagram_state(l), l.kind))
-    }) else {
-        return;
-    };
-    let (conn, db) = tabular
-        .query_tabs
-        .iter()
-        .find(|t| t.id == tab_id)
-        .map(|t| (t.connection_id, t.database_name.clone()))
-        .unwrap_or((None, None));
-    crate::editor::create_new_tab_with_connection_and_database(
-        tabular,
-        format!("Diagram: {} query", kind.label()),
-        String::new(),
-        conn,
-        db,
-    );
-    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-        tab.diagram_state = Some(state);
-    }
-    tabular.table_bottom_view = crate::models::structs::TableBottomView::Query;
 }

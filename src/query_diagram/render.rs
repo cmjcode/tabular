@@ -87,6 +87,7 @@ struct Palette {
     data: Color32,
     filter: Color32,
     aggregate: Color32,
+    stage: Color32,
     kind: Color32,
 }
 
@@ -111,6 +112,7 @@ impl Palette {
                 data: Color32::from_rgb(90, 225, 150),
                 filter: Color32::from_rgb(255, 160, 60),
                 aggregate: Color32::from_rgb(240, 110, 180),
+                stage: Color32::from_rgb(175, 165, 235),
                 kind: kind_color,
             }
         } else {
@@ -126,6 +128,7 @@ impl Palette {
                 data: Color32::from_rgb(20, 160, 90),
                 filter: Color32::from_rgb(220, 120, 20),
                 aggregate: Color32::from_rgb(200, 60, 140),
+                stage: Color32::from_rgb(110, 95, 190),
                 kind: kind_color,
             }
         }
@@ -135,6 +138,11 @@ impl Palette {
         match role {
             CardRole::Source => Color32::from_rgb(90, 150, 255),
             CardRole::Clauses => self.filter,
+            CardRole::Group => self.aggregate,
+            CardRole::Having => Color32::from_rgb(255, 120, 90),
+            CardRole::Sort => Color32::from_rgb(110, 170, 210),
+            CardRole::Window => Color32::from_rgb(60, 200, 200),
+            CardRole::Union => Color32::from_rgb(200, 150, 255),
             CardRole::Values => Color32::from_rgb(40, 190, 170),
             CardRole::Result => Color32::from_rgb(170, 110, 255),
             CardRole::Set => Color32::from_rgb(255, 190, 60),
@@ -157,6 +165,7 @@ impl Palette {
             FlowKind::Join => self.join,
             FlowKind::Data => self.data,
             FlowKind::Filter => self.filter,
+            FlowKind::Stage => self.stage,
         }
     }
 }
@@ -189,18 +198,19 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 type Endpoint = (usize, Option<usize>);
 
-/// Kurva alur di koordinat diagram.
+/// Kurva alur di koordinat diagram. Arah ditentukan dari posisi kartu, jadi
+/// tetap rapi setelah kartu digeser: sisi ke sisi bila berjauhan, lengkung
+/// lewat kiri bila bertumpuk atas-bawah.
 fn flow_curve(layout: &QueryLayout, from: Endpoint, to: Endpoint) -> [Pos2; 4] {
     let a = &layout.cards[from.0];
     let b = &layout.cards[to.0];
-    if a.lane == b.lane {
-        // Satu lane (tabel bertumpuk): lengkung lewat sisi kiri.
+    if super::layout::stacked(a.rect, b.rect) {
         let s = a.anchor(from.1, false);
         let e = b.anchor(to.1, false);
         let bend = ((e.y - s.y).abs() * 0.25).clamp(30.0, super::layout::SAME_LANE_BEND);
         let x = s.x.min(e.x) - bend;
         [s, pos2(x, s.y), pos2(x, e.y), e]
-    } else if a.lane < b.lane {
+    } else if b.rect.min.x >= a.rect.max.x {
         let s = a.anchor(from.1, true);
         let e = b.anchor(to.1, false);
         let d = ((e.x - s.x).abs() * 0.5).max(40.0);
@@ -375,7 +385,11 @@ pub fn render_query_diagram(
 
     // --- Alur ---
     let line_w = (1.8 * zoom).max(1.0);
-    for (fi, f) in layout.flows.iter().enumerate() {
+    // Garis pipeline digambar paling bawah, di belakang garis kolom.
+    let mut order: Vec<usize> = (0..layout.flows.len()).collect();
+    order.sort_by_key(|i| layout.flows[*i].kind != FlowKind::Stage);
+    for fi in order {
+        let f = &layout.flows[fi];
         let appear = lane_delay(layout.cards[f.from.0].lane)
             .max(lane_delay(layout.cards[f.to.0].lane))
             + CARD_FADE;
@@ -393,7 +407,12 @@ pub fn render_query_diagram(
         let pts: Vec<Pos2> = (0..=CURVE_SEGMENTS)
             .map(|i| bezier(&curve, progress * i as f32 / CURVE_SEGMENTS as f32))
             .collect();
-        let width = if strong { line_w * 1.6 } else { line_w };
+        let base = if f.kind == FlowKind::Stage {
+            line_w * 2.2
+        } else {
+            line_w
+        };
+        let width = if strong { base * 1.6 } else { base };
         if f.kind == FlowKind::Filter {
             painter.extend(Shape::dashed_line(
                 &pts,
@@ -426,7 +445,11 @@ pub fn render_query_diagram(
         }
         // Partikel data mengalir.
         if progress >= 1.0 && animating && !dim {
-            let count = if f.kind == FlowKind::Filter { 1 } else { 3 };
+            let count = match f.kind {
+                FlowKind::Filter => 1,
+                FlowKind::Stage => 2,
+                _ => 3,
+            };
             for k in 0..count {
                 let u = (t * 0.5 + k as f64 / count as f64 + fi as f64 * 0.137).fract() as f32;
                 let p = bezier(&curve, u);
@@ -833,18 +856,24 @@ pub fn floating_window_at_bottom(
     }
 }
 
-/// Deretan tombol floating yang menempel ke pojok kanan bawah `canvas`.
-/// Lebarnya mengikuti isi (diukur dari frame sebelumnya).
+/// Deretan tombol floating yang menempel ke pojok kanan bawah `canvas`
+/// (atau kanan atas bila `top`). Lebarnya mengikuti isi (diukur dari frame
+/// sebelumnya).
 pub fn floating_bar(
     ui: &mut egui::Ui,
     id: egui::Id,
     canvas: egui::Rect,
     fill_opacity: f32,
+    top: bool,
     add: impl FnOnce(&mut egui::Ui),
 ) {
     let prev: Option<egui::Rect> = ui.data(|d| d.get_temp(id));
     let size = prev.map_or(vec2(150.0, 36.0), |r| r.size());
-    let min = canvas.right_bottom() - size - vec2(12.0, 12.0);
+    let min = if top {
+        pos2(canvas.max.x - size.x - 12.0, canvas.min.y + 12.0)
+    } else {
+        canvas.right_bottom() - size - vec2(12.0, 12.0)
+    };
     if prev.is_some() {
         ui.interact(
             Rect::from_min_size(min, size),
@@ -908,6 +937,7 @@ fn draw_legend(painter: &egui::Painter, rect: Rect, pal: &Palette) {
         ("join", pal.join, false),
         ("data flow", pal.data, false),
         ("filter", pal.filter, true),
+        ("pipeline", pal.stage, false),
     ];
     let font = FontId::proportional(10.5);
     let mut x = rect.min.x + 10.0;

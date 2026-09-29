@@ -2,13 +2,15 @@
 //!
 //! Referensi kolom di dalam ekspresi dikumpulkan lewat tokenizer (bukan
 //! walker AST penuh) supaya tahan terhadap puluhan varian `Expr` dan
-//! sintaks khusus dialek. Hanya kondisi kesetaraan `a.x = b.y` yang dibaca
-//! dari AST untuk membentuk relasi join.
+//! sintaks khusus dialek. Kondisi kesetaraan `a.x = b.y` dan subquery
+//! (`IN`, `EXISTS`, skalar) dibaca dari AST.
 
 use sqlparser::ast::{
-    AssignmentTarget, BinaryOperator, Expr, FromTable, GroupByExpr, Insert, JoinConstraint,
-    JoinOperator, LimitClause, ObjectName, OrderByKind, Query, Select, SelectItem, SetExpr,
-    Statement, TableFactor, TableObject, TableWithJoins, UpdateTableFromKind,
+    AssignmentTarget, BinaryOperator, Expr, FromTable, FunctionArg, FunctionArgExpr,
+    FunctionArguments, GroupByExpr, Insert, JoinConstraint, JoinOperator, LimitClause, MergeAction,
+    MergeClauseKind, MergeInsertKind, ObjectName, OnConflictAction, OnInsert, OrderByKind, Query,
+    Select, SelectItem, SetExpr, Statement, TableFactor, TableObject, TableWithJoins,
+    UpdateTableFromKind,
 };
 use sqlparser::dialect::{
     Dialect, GenericDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
@@ -17,8 +19,8 @@ use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
 use super::{
-    ColumnRef, JoinLink, Mutation, OutputColumn, QueryDiagramError, QueryDiagramModel, SourceKind,
-    SourceTable, StatementKind, VALUES_ID, clip,
+    ColumnRef, JoinLink, Mutation, OutputColumn, QueryDiagramError, QueryDiagramModel, SetBranch,
+    SourceKind, SourceTable, StatementKind, VALUES_ID, clip,
 };
 use crate::models::enums::DatabaseType;
 
@@ -115,6 +117,9 @@ const AGGREGATES: &[&str] = &[
     "COUNT_BIG",
 ];
 
+/// Batas kedalaman CTE/subquery yang diuraikan (mencegah rekursi tanpa akhir).
+const MAX_DEPTH: usize = 3;
+
 pub(super) fn parse_model(
     sql: &str,
     db: &DatabaseType,
@@ -140,8 +145,9 @@ pub(super) fn parse_model(
     let kind = match stmt {
         Statement::Query(_) => StatementKind::Select,
         Statement::Insert(_) => StatementKind::Insert,
-        Statement::Update(_) => StatementKind::Update,
-        Statement::Delete(_) => StatementKind::Delete,
+        Statement::CreateTable(ct) if ct.query.is_some() => StatementKind::Insert,
+        Statement::Update(_) | Statement::Merge(_) => StatementKind::Update,
+        Statement::Delete(_) | Statement::Truncate(_) => StatementKind::Delete,
         _ => {
             let word = sql
                 .split_whitespace()
@@ -153,7 +159,19 @@ pub(super) fn parse_model(
     };
     let mut a = Analyzer::new(kind, sql, dialect.as_ref());
     match stmt {
-        Statement::Query(q) => a.query(q, true),
+        Statement::Query(q) => {
+            a.query(q, true);
+            if let Some(into) = a.select_into.take() {
+                a.copy_output_into(&into, "SELECT INTO", &[]);
+            }
+        }
+        Statement::CreateTable(ct) => {
+            if let Some(q) = &ct.query {
+                a.query(q, true);
+                let names: Vec<String> = ct.columns.iter().map(|c| c.name.value.clone()).collect();
+                a.copy_output_into(&object_name(&ct.name), "CREATE TABLE AS", &names);
+            }
+        }
         Statement::Insert(ins) => a.insert(ins),
         Statement::Update(up) => {
             a.table_with_joins(&up.table, None, true);
@@ -164,20 +182,7 @@ pub(super) fn parse_model(
                 }
             }
             for asg in &up.assignments {
-                let cols: Vec<String> = match &asg.target {
-                    AssignmentTarget::ColumnName(n) => vec![last_part(n)],
-                    AssignmentTarget::Tuple(v) => v.iter().map(last_part).collect(),
-                };
-                let value = asg.value.to_string();
-                let sources = a.column_refs(&value);
-                for c in cols {
-                    a.model.mutations.push(Mutation {
-                        column: c,
-                        new_value: value.clone(),
-                        is_static: sources.is_empty(),
-                        sources: sources.clone(),
-                    });
-                }
+                a.assignment(&asg.target, &asg.value, false);
             }
             if let Some(sel) = &up.selection {
                 a.filter(sel);
@@ -185,6 +190,60 @@ pub(super) fn parse_model(
             a.order_by_exprs(up.order_by.iter().map(|o| &o.expr));
             if let Some(l) = &up.limit {
                 a.model.limit = Some(l.to_string());
+            }
+            a.merge_update_target_alias();
+        }
+        Statement::Merge(m) => {
+            a.model.verb = Some("MERGE INTO".to_string());
+            a.factor(&m.table, None, true);
+            let src = a.factor(&m.source, Some("USING".to_string()), false);
+            a.links_from_expr(&m.on, "ON", src.as_deref());
+            for clause in &m.clauses {
+                let when = match clause.clause_kind {
+                    MergeClauseKind::Matched => "WHEN MATCHED",
+                    MergeClauseKind::NotMatchedBySource => "WHEN NOT MATCHED BY SOURCE",
+                    #[allow(unreachable_patterns)]
+                    _ => "WHEN NOT MATCHED",
+                };
+                if let Some(p) = &clause.predicate {
+                    a.note(format!(
+                        "{when} AND {}: the action runs only for those rows.",
+                        clip(&p.to_string(), 80)
+                    ));
+                }
+                match &clause.action {
+                    MergeAction::Update(u) => {
+                        for asg in &u.assignments {
+                            a.assignment(&asg.target, &asg.value, false);
+                        }
+                    }
+                    MergeAction::Insert(ins) => {
+                        a.model.upsert_label = format!("{when} INSERT");
+                        let cols: Vec<String> = ins.columns.iter().map(last_part).collect();
+                        if let MergeInsertKind::Values(v) = &ins.kind
+                            && let Some(first) = v.rows.first()
+                        {
+                            for (i, e) in first.content.iter().enumerate() {
+                                let value = e.to_string();
+                                let sources = a.column_refs(&value);
+                                a.model.upserts.push(Mutation {
+                                    column: cols
+                                        .get(i)
+                                        .cloned()
+                                        .unwrap_or_else(|| format!("column {}", i + 1)),
+                                    new_value: value,
+                                    is_static: sources.is_empty(),
+                                    sources,
+                                });
+                            }
+                        }
+                    }
+                    MergeAction::Delete { .. } => {
+                        a.note(format!(
+                            "{when} THEN DELETE: those target rows are removed."
+                        ));
+                    }
+                }
             }
         }
         Statement::Delete(del) => {
@@ -197,8 +256,8 @@ pub(super) fn parse_model(
                     a.table_with_joins(twj, Some("USING".to_string()), false);
                 }
             }
-            // Target: tabel yang disebut sebelum FROM (multi-table MySQL),
-            // selain itu tabel FROM pertama.
+            // Target: tabel yang disebut sebelum FROM (multi-table MySQL /
+            // SQL Server), selain itu tabel FROM pertama.
             let wanted = del.tables.first().map(last_part);
             let idx = wanted
                 .and_then(|w| {
@@ -226,6 +285,18 @@ pub(super) fn parse_model(
             if let Some(l) = &del.limit {
                 a.model.limit = Some(l.to_string());
             }
+        }
+        Statement::Truncate(t) => {
+            a.model.verb = Some("TRUNCATE".to_string());
+            if let Some(first) = t.table_names.first() {
+                let table = object_name(&first.name);
+                let id = a.unique_id(short_name(&table));
+                a.add_source(SourceTable::new(id, table, None, SourceKind::Table), true);
+            }
+            if t.table_names.len() > 1 {
+                a.note(format!("{} tables are emptied.", t.table_names.len()));
+            }
+            a.note("TRUNCATE removes every row at once; it cannot be filtered and is usually not logged row by row.".to_string());
         }
         _ => {}
     }
@@ -307,45 +378,6 @@ fn equalities<'e>(e: &'e Expr, out: &mut Vec<(&'e Expr, &'e Expr)>) {
     }
 }
 
-/// Nama kolom-kolom hasil sebuah query (untuk subquery / CTE).
-fn projection_names(q: &Query) -> Vec<String> {
-    let SetExpr::Select(sel) = q.body.as_ref() else {
-        return Vec::new();
-    };
-    sel.projection
-        .iter()
-        .enumerate()
-        .filter_map(|(i, item)| match item {
-            SelectItem::UnnamedExpr(e) => Some(expr_name(e, i)),
-            SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
-            SelectItem::ExprWithAliases { aliases, expr } => Some(
-                aliases
-                    .first()
-                    .map(|a| a.value.clone())
-                    .unwrap_or_else(|| expr_name(expr, i)),
-            ),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Tabel fisik yang dibaca langsung oleh query (dangkal).
-fn tables_in_query(q: &Query) -> Vec<String> {
-    let SetExpr::Select(sel) = q.body.as_ref() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for twj in &sel.from {
-        let factors = std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation));
-        for f in factors {
-            if let TableFactor::Table { name, .. } = f {
-                out.push(object_name(name));
-            }
-        }
-    }
-    out
-}
-
 fn expr_name(e: &Expr, index: usize) -> String {
     match e {
         Expr::Identifier(i) => i.value.clone(),
@@ -357,14 +389,55 @@ fn expr_name(e: &Expr, index: usize) -> String {
     }
 }
 
+/// Klausa `OVER (...)` di teks ekspresi, bila ada (window function).
+fn window_clause(text: &str) -> Option<String> {
+    let upper = text.to_ascii_uppercase();
+    let pos = upper.find(" OVER (").or_else(|| upper.find(" OVER("))?;
+    Some(text[pos + 1..].trim().to_string())
+}
+
+/// Daun-daun UNION/INTERSECT/EXCEPT beserta operator yang mendahuluinya.
+fn flatten_set<'a>(e: &'a SetExpr, op: String, out: &mut Vec<(String, &'a SetExpr)>) {
+    match e {
+        SetExpr::SetOperation {
+            left,
+            op: o,
+            set_quantifier,
+            right,
+        } => {
+            flatten_set(left, op, out);
+            let label = format!("{o} {set_quantifier}").trim().to_string();
+            flatten_set(right, label, out);
+        }
+        other => out.push((op, other)),
+    }
+}
+
+/// Hasil analisis ringan query di dalam CTE, subquery, atau cabang UNION.
+struct InnerResult {
+    /// (nama kolom hasil, kolom sumber). `"*"` = semua kolom.
+    outputs: Vec<(String, Vec<ColumnRef>)>,
+    /// Sumber langsung yang ditambahkan query ini.
+    ids: Vec<String>,
+    filter: Option<String>,
+}
+
 struct Analyzer<'d> {
     model: QueryDiagramModel,
     dialect: &'d dyn Dialect,
-    /// (nama CTE huruf kecil, tabel yang dibacanya)
-    ctes: Vec<(String, Vec<String>)>,
+    /// (nama CTE huruf kecil, nama asli, query)
+    ctes: Vec<(String, String, Query)>,
     /// (kualifier huruf kecil, id sumber). Entri terakhir menang.
     names: Vec<(String, String)>,
     subquery_seq: usize,
+    /// Cabang UNION yang sedang dianalisis.
+    branch: usize,
+    /// Kedalaman CTE/subquery yang sedang diuraikan.
+    depth: usize,
+    /// CTE yang sedang diuraikan (untuk CTE rekursif).
+    expanding: Vec<String>,
+    /// Target `SELECT ... INTO tabel`.
+    select_into: Option<String>,
 }
 
 impl<'d> Analyzer<'d> {
@@ -375,6 +448,10 @@ impl<'d> Analyzer<'d> {
             ctes: Vec::new(),
             names: Vec::new(),
             subquery_seq: 0,
+            branch: 0,
+            depth: 0,
+            expanding: Vec::new(),
+            select_into: None,
         }
     }
 
@@ -408,7 +485,7 @@ impl<'d> Analyzer<'d> {
             .map(|(_, id)| id.clone())
     }
 
-    fn add_source(&mut self, src: SourceTable, as_target: bool) -> String {
+    fn add_source(&mut self, mut src: SourceTable, as_target: bool) -> String {
         let id = src.id.clone();
         self.register(&id, &id);
         if src.kind == SourceKind::Table {
@@ -419,9 +496,14 @@ impl<'d> Analyzer<'d> {
         if as_target {
             self.model.target = Some(src);
         } else {
+            src.branch = self.branch;
             self.model.sources.push(src);
         }
         id
+    }
+
+    fn source_mut(&mut self, id: &str) -> Option<&mut SourceTable> {
+        self.model.sources.iter_mut().find(|t| t.id == id)
     }
 
     fn factor(&mut self, f: &TableFactor, join: Option<String>, as_target: bool) -> Option<String> {
@@ -430,7 +512,7 @@ impl<'d> Analyzer<'d> {
                 let table = object_name(name);
                 let alias = alias.as_ref().map(|a| a.name.value.clone());
                 let short = short_name(&table).to_lowercase();
-                let cte = self.ctes.iter().find(|(n, _)| *n == short).cloned();
+                let cte = self.ctes.iter().find(|(n, _, _)| *n == short).cloned();
                 let kind = if cte.is_some() {
                     SourceKind::Cte
                 } else {
@@ -442,12 +524,13 @@ impl<'d> Analyzer<'d> {
                 let id = self.unique_id(&base);
                 let mut src = SourceTable::new(id, table, alias, kind);
                 src.join = join;
-                if let Some((name, reads)) = cte
-                    && !reads.is_empty()
+                let id = self.add_source(src, as_target);
+                if let Some((lower, name, q)) = cte
+                    && !self.expanding.contains(&lower)
                 {
-                    self.note(format!("CTE `{name}` reads from {}.", reads.join(", ")));
+                    self.expand_derived(&id, &q, &name, &lower);
                 }
-                Some(self.add_source(src, as_target))
+                Some(id)
             }
             TableFactor::Derived {
                 subquery, alias, ..
@@ -465,14 +548,10 @@ impl<'d> Analyzer<'d> {
                     SourceKind::Subquery,
                 );
                 src.join = join;
-                let reads = tables_in_query(subquery);
-                if !reads.is_empty() {
-                    self.note(format!("Subquery `{id}` reads from {}.", reads.join(", ")));
-                }
-                for c in projection_names(subquery) {
-                    src.push_column(&c);
-                }
-                Some(self.add_source(src, as_target))
+                let id = self.add_source(src, as_target);
+                let key = format!("__derived_{id}");
+                self.expand_derived(&id, subquery, &id.clone(), &key);
+                Some(id)
             }
             TableFactor::NestedJoin {
                 table_with_joins, ..
@@ -485,6 +564,301 @@ impl<'d> Analyzer<'d> {
                 src.join = join;
                 Some(self.add_source(src, as_target))
             }
+        }
+    }
+
+    /// Uraikan isi CTE/subquery `q` menjadi tabel-tabel yang mengisi kartu `id`.
+    fn expand_derived(&mut self, id: &str, q: &Query, name: &str, key: &str) {
+        if self.depth >= MAX_DEPTH {
+            return;
+        }
+        self.expanding.push(key.to_string());
+        self.depth += 1;
+        let res = self.inner_query(q, &format!("in {name}"), Some(id), "JOIN");
+        self.depth -= 1;
+        self.expanding.pop();
+        for (out, refs) in res.outputs {
+            let to = if out == "*" {
+                ColumnRef::new(id, "*")
+            } else {
+                if let Some(t) = self.source_mut(id) {
+                    t.push_column(&out);
+                }
+                ColumnRef::new(id, out)
+            };
+            for r in refs {
+                self.model.derived_links.push((r, to.clone()));
+            }
+        }
+        if let Some(f) = res.filter {
+            self.note(format!("{name} keeps only rows where {}.", clip(&f, 100)));
+        }
+    }
+
+    /// Analisis ringan query bersarang: tabel FROM/JOIN, relasi, kondisi, dan
+    /// kolom hasil. Alias di dalamnya hanya berlaku selama analisis ini.
+    fn inner_query(
+        &mut self,
+        q: &Query,
+        badge: &str,
+        feeds: Option<&str>,
+        link: &str,
+    ) -> InnerResult {
+        let mark = self.names.len();
+        if let Some(with) = &q.with {
+            for cte in &with.cte_tables {
+                let name = cte.alias.name.value.clone();
+                self.ctes
+                    .push((name.to_lowercase(), name, (*cte.query).clone()));
+            }
+        }
+        let mut body = q.body.as_ref();
+        loop {
+            match body {
+                SetExpr::Query(inner) => body = inner.body.as_ref(),
+                SetExpr::SetOperation { left, .. } => body = left.as_ref(),
+                _ => break,
+            }
+        }
+        let res = match body {
+            SetExpr::Select(sel) => self.inner_select(sel, badge, feeds, link),
+            _ => InnerResult {
+                outputs: Vec::new(),
+                ids: Vec::new(),
+                filter: None,
+            },
+        };
+        self.names.truncate(mark);
+        res
+    }
+
+    fn inner_select(
+        &mut self,
+        sel: &Select,
+        badge: &str,
+        feeds: Option<&str>,
+        link: &str,
+    ) -> InnerResult {
+        let before = self.model.sources.len();
+        for twj in &sel.from {
+            self.table_with_joins(twj, None, false);
+        }
+        let mut ids = Vec::new();
+        for s in self.model.sources.iter_mut().skip(before) {
+            if s.feeds.is_some() {
+                continue; // milik CTE yang lebih dalam
+            }
+            s.feeds = feeds.map(str::to_string);
+            if s.join.is_none() && s.badge.is_none() {
+                s.badge = Some(badge.to_string());
+            }
+            ids.push(s.id.clone());
+        }
+        let single = (ids.len() == 1).then(|| ids[0].clone());
+        let qualify = |mut refs: Vec<ColumnRef>| {
+            if let Some(id) = &single {
+                for r in &mut refs {
+                    if r.table.is_empty() {
+                        r.table = id.clone();
+                    }
+                }
+            }
+            refs
+        };
+
+        let filter = sel.selection.as_ref().map(|w| w.to_string());
+        if let Some(w) = &sel.selection {
+            let mut eqs = Vec::new();
+            equalities(w, &mut eqs);
+            for (l, r) in eqs {
+                let (Some(cl), Some(cr)) = (self.as_column(l), self.as_column(r)) else {
+                    continue;
+                };
+                let (cl, cr) = (qualify(vec![cl]).remove(0), qualify(vec![cr]).remove(0));
+                if cl.table.is_empty() || cr.table.is_empty() || cl.table == cr.table {
+                    continue;
+                }
+                self.model.joins.push(JoinLink {
+                    left: cl,
+                    right: cr,
+                    join_type: link.to_string(),
+                });
+            }
+            let refs = qualify(self.column_refs(&w.to_string()));
+            self.model.referenced.extend(refs);
+            self.walk_subqueries(w);
+        }
+
+        let mut outputs = Vec::new();
+        for (i, item) in sel.projection.iter().enumerate() {
+            match item {
+                SelectItem::UnnamedExpr(e) => {
+                    outputs.push((expr_name(e, i), qualify(self.column_refs(&e.to_string()))));
+                }
+                SelectItem::ExprWithAlias { expr, alias } => {
+                    outputs.push((
+                        alias.value.clone(),
+                        qualify(self.column_refs(&expr.to_string())),
+                    ));
+                }
+                SelectItem::ExprWithAliases { expr, aliases } => {
+                    let name = aliases
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| expr_name(expr, i));
+                    outputs.push((name, qualify(self.column_refs(&expr.to_string()))));
+                }
+                SelectItem::QualifiedWildcard(kind, _) => {
+                    let text = kind.to_string();
+                    let qual = text.trim_end_matches(".*");
+                    if let Some(id) = self.resolve_qualifier(qual) {
+                        outputs.push(("*".to_string(), vec![ColumnRef::new(id, "*")]));
+                    }
+                }
+                SelectItem::Wildcard(_) => {
+                    let refs = ids
+                        .iter()
+                        .map(|id| ColumnRef::new(id.clone(), "*"))
+                        .collect();
+                    outputs.push(("*".to_string(), refs));
+                }
+            }
+        }
+        if let GroupByExpr::Expressions(v, _) = &sel.group_by {
+            for e in v {
+                let refs = qualify(self.column_refs(&e.to_string()));
+                self.model.referenced.extend(refs);
+            }
+        }
+        InnerResult {
+            outputs,
+            ids,
+            filter,
+        }
+    }
+
+    /// Cari subquery di ekspresi. `IN`/`EXISTS` menambah tabel dan relasi;
+    /// subquery skalar mengembalikan kolom sumbernya.
+    fn walk_subqueries(&mut self, e: &Expr) -> Vec<ColumnRef> {
+        if self.depth >= MAX_DEPTH {
+            return Vec::new();
+        }
+        match e {
+            Expr::InSubquery {
+                expr,
+                subquery,
+                negated,
+            } => {
+                let label = if *negated { "NOT IN" } else { "IN" };
+                self.depth += 1;
+                let res = self.inner_query(subquery, &format!("{label} (subquery)"), None, label);
+                self.depth -= 1;
+                if let Some(outer) = self.as_column(expr)
+                    && let Some((_, refs)) = res.outputs.first()
+                    && let Some(r) = refs.first()
+                    && r.column != "*"
+                {
+                    self.model.joins.push(JoinLink {
+                        left: outer,
+                        right: r.clone(),
+                        join_type: label.to_string(),
+                    });
+                }
+                self.walk_subqueries(expr)
+            }
+            Expr::Exists { subquery, negated } => {
+                let label = if *negated { "NOT EXISTS" } else { "EXISTS" };
+                self.depth += 1;
+                self.inner_query(subquery, label, None, label);
+                self.depth -= 1;
+                Vec::new()
+            }
+            Expr::Subquery(q) => {
+                self.depth += 1;
+                let res = self.inner_query(q, "SCALAR SUBQUERY", None, "SUBQUERY");
+                self.depth -= 1;
+                res.outputs
+                    .into_iter()
+                    .next()
+                    .map(|(_, r)| r)
+                    .unwrap_or_default()
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                let mut out = self.walk_subqueries(left);
+                out.extend(self.walk_subqueries(right));
+                out
+            }
+            Expr::UnaryOp { expr, .. }
+            | Expr::Nested(expr)
+            | Expr::IsNull(expr)
+            | Expr::IsNotNull(expr)
+            | Expr::Cast { expr, .. } => self.walk_subqueries(expr),
+            Expr::Between {
+                expr, low, high, ..
+            } => {
+                let mut out = self.walk_subqueries(expr);
+                out.extend(self.walk_subqueries(low));
+                out.extend(self.walk_subqueries(high));
+                out
+            }
+            Expr::InList { expr, list, .. } => {
+                let mut out = self.walk_subqueries(expr);
+                for x in list {
+                    out.extend(self.walk_subqueries(x));
+                }
+                out
+            }
+            Expr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } => {
+                let mut out = Vec::new();
+                if let Some(o) = operand {
+                    out.extend(self.walk_subqueries(o));
+                }
+                for c in conditions {
+                    out.extend(self.walk_subqueries(&c.condition));
+                    out.extend(self.walk_subqueries(&c.result));
+                }
+                if let Some(x) = else_result {
+                    out.extend(self.walk_subqueries(x));
+                }
+                out
+            }
+            Expr::Function(f) => {
+                let mut out = Vec::new();
+                match &f.args {
+                    FunctionArguments::List(list) => {
+                        for arg in &list.args {
+                            if let FunctionArg::Unnamed(FunctionArgExpr::Expr(x))
+                            | FunctionArg::Named {
+                                arg: FunctionArgExpr::Expr(x),
+                                ..
+                            }
+                            | FunctionArg::ExprNamed {
+                                arg: FunctionArgExpr::Expr(x),
+                                ..
+                            } = arg
+                            {
+                                out.extend(self.walk_subqueries(x));
+                            }
+                        }
+                    }
+                    FunctionArguments::Subquery(q) => {
+                        self.depth += 1;
+                        let res = self.inner_query(q, "SCALAR SUBQUERY", None, "SUBQUERY");
+                        self.depth -= 1;
+                        if let Some((_, r)) = res.outputs.into_iter().next() {
+                            out.extend(r);
+                        }
+                    }
+                    FunctionArguments::None => {}
+                }
+                out
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -589,6 +963,62 @@ impl<'d> Analyzer<'d> {
             self.links_from_expr(e, "WHERE", None);
             self.model.referenced.truncate(before);
         }
+        self.walk_subqueries(e);
+    }
+
+    /// Satu `kolom = nilai` pada UPDATE/MERGE (atau upsert bila `upsert`).
+    fn assignment(&mut self, target: &AssignmentTarget, value: &Expr, upsert: bool) {
+        let cols: Vec<String> = match target {
+            AssignmentTarget::ColumnName(n) => vec![last_part(n)],
+            AssignmentTarget::Tuple(v) => v.iter().map(last_part).collect(),
+        };
+        let text = value.to_string();
+        let mut sources = self.column_refs(&text);
+        for r in self.walk_subqueries(value) {
+            if !sources.contains(&r) {
+                sources.push(r);
+            }
+        }
+        for c in cols {
+            let m = Mutation {
+                column: c,
+                new_value: text.clone(),
+                is_static: sources.is_empty(),
+                sources: sources.clone(),
+            };
+            if upsert {
+                self.model.upserts.push(m);
+            } else {
+                self.model.mutations.push(m);
+            }
+        }
+    }
+
+    /// UPDATE gaya SQL Server: `UPDATE o SET ... FROM orders o JOIN ...`.
+    /// Target yang hanya menyebut alias di FROM digabung dengan tabel itu.
+    fn merge_update_target_alias(&mut self) {
+        let Some(target) = &self.model.target else {
+            return;
+        };
+        if target.alias.is_some() {
+            return;
+        }
+        let name = target.table.to_lowercase();
+        let target_id = target.id.clone();
+        let Some(pos) = self.model.sources.iter().position(|s| {
+            s.kind == SourceKind::Table
+                && (s.alias.as_deref().map(str::to_lowercase) == Some(name.clone())
+                    || (s.alias.is_none() && s.table.to_lowercase() == name))
+        }) else {
+            return;
+        };
+        let src = self.model.sources.remove(pos);
+        let old_id = src.id.clone();
+        if let Some(t) = self.model.target.as_mut() {
+            t.table = src.table;
+            t.alias = src.alias;
+        }
+        self.model.remap_table(&old_id, &target_id);
     }
 
     fn order_by_exprs<'e>(&mut self, exprs: impl Iterator<Item = &'e Expr>) {
@@ -605,7 +1035,10 @@ impl<'d> Analyzer<'d> {
             for cte in &with.cte_tables {
                 let name = cte.alias.name.value.clone();
                 self.ctes
-                    .push((name.to_lowercase(), tables_in_query(&cte.query)));
+                    .push((name.to_lowercase(), name, (*cte.query).clone()));
+            }
+            if with.recursive {
+                self.note("WITH RECURSIVE: the CTE repeats until no new rows are produced; only its first step is drawn.".to_string());
             }
         }
         self.set_expr(&q.body, collect_output);
@@ -632,12 +1065,7 @@ impl<'d> Analyzer<'d> {
         match body {
             SetExpr::Select(sel) => self.select(sel, collect_output),
             SetExpr::Query(q) => self.query(q, collect_output),
-            SetExpr::SetOperation { left, op, .. } => {
-                self.note(format!(
-                    "Combined with another query using {op}; only the first query is drawn."
-                ));
-                self.set_expr(left, collect_output);
-            }
+            SetExpr::SetOperation { .. } => self.set_operation(body, collect_output),
             SetExpr::Values(v) => {
                 self.model.values_rows = v.rows.len();
                 let src = SourceTable::new(
@@ -655,6 +1083,7 @@ impl<'d> Analyzer<'d> {
                             expr: e.to_string(),
                             sources: vec![ColumnRef::new(VALUES_ID, name)],
                             aggregate: false,
+                            window: None,
                         });
                     }
                 }
@@ -663,18 +1092,79 @@ impl<'d> Analyzer<'d> {
         }
     }
 
+    /// UNION / INTERSECT / EXCEPT: query pertama dianalisis penuh, cabang
+    /// berikutnya menambah tabel dan mengisi kolom hasil sesuai posisi.
+    fn set_operation(&mut self, body: &SetExpr, collect_output: bool) {
+        let mut leaves = Vec::new();
+        flatten_set(body, String::new(), &mut leaves);
+        let Some((_, first)) = leaves.first() else {
+            return;
+        };
+        self.set_expr(first, collect_output);
+        let first_tables = self
+            .model
+            .sources
+            .iter()
+            .filter(|s| s.branch == 0 && s.feeds.is_none())
+            .map(|s| s.title())
+            .collect();
+        self.model.branches.push(SetBranch {
+            op: String::new(),
+            tables: first_tables,
+            filter: self.model.filter.clone(),
+        });
+        for (k, (op, leaf)) in leaves.iter().enumerate().skip(1) {
+            self.branch = k;
+            let badge = format!("{op} #{}", k + 1);
+            let mark = self.names.len();
+            let res = match leaf {
+                SetExpr::Select(sel) => self.inner_select(sel, &badge, None, "JOIN"),
+                SetExpr::Query(q) => self.inner_query(q, &badge, None, "JOIN"),
+                _ => InnerResult {
+                    outputs: Vec::new(),
+                    ids: Vec::new(),
+                    filter: None,
+                },
+            };
+            self.names.truncate(mark);
+            for (i, (_, refs)) in res.outputs.iter().enumerate() {
+                if let Some(o) = self.model.output.get_mut(i) {
+                    for r in refs {
+                        if !o.sources.contains(r) {
+                            o.sources.push(r.clone());
+                        }
+                    }
+                }
+            }
+            let tables = res
+                .ids
+                .iter()
+                .filter_map(|id| self.model.table(id).map(|t| t.title()))
+                .collect();
+            self.model.branches.push(SetBranch {
+                op: op.clone(),
+                tables,
+                filter: res.filter,
+            });
+        }
+        self.branch = 0;
+    }
+
     fn select(&mut self, sel: &Select, collect_output: bool) {
         for twj in &sel.from {
-            let first_join = if self.model.sources.is_empty() {
-                None
-            } else {
+            let first_join = if self.model.sources.iter().any(|s| s.branch == self.branch) {
                 Some(",".to_string())
+            } else {
+                None
             };
             self.table_with_joins(twj, first_join, false);
         }
         self.model.distinct = sel.distinct.is_some();
         if let Some(top) = &sel.top {
             self.model.limit = Some(top.to_string());
+        }
+        if let Some(into) = &sel.into {
+            self.select_into = Some(object_name(&into.name));
         }
         if collect_output {
             self.projection(&sel.projection);
@@ -687,17 +1177,23 @@ impl<'d> Analyzer<'d> {
                 for e in v {
                     let text = e.to_string();
                     let refs = self.column_refs(&text);
-                    self.model.referenced.extend(refs);
+                    self.model.referenced.extend(refs.clone());
+                    self.model.group_columns.push(refs);
                     self.model.group_by.push(text);
                 }
             }
-            GroupByExpr::All(_) => self.model.group_by.push("ALL".to_string()),
+            GroupByExpr::All(_) => {
+                self.model.group_by.push("ALL".to_string());
+                self.model.group_columns.push(Vec::new());
+            }
         }
         if let Some(h) = &sel.having {
             let text = h.to_string();
             let refs = self.column_refs(&text);
-            self.model.referenced.extend(refs);
+            self.model.referenced.extend(refs.clone());
+            self.model.having_columns = refs;
             self.model.having = Some(text);
+            self.walk_subqueries(h);
         }
     }
 
@@ -730,14 +1226,22 @@ impl<'d> Analyzer<'d> {
                             expr: text.clone(),
                             sources: vec![ColumnRef::new(id, "*")],
                             aggregate: false,
+                            window: None,
                         });
                     }
                 }
                 SelectItem::Wildcard(_) => {
-                    let ids: Vec<String> =
-                        self.model.sources.iter().map(|t| t.id.clone()).collect();
+                    let ids: Vec<String> = self
+                        .model
+                        .sources
+                        .iter()
+                        .filter(|t| t.feeds.is_none() && t.branch == self.branch)
+                        .map(|t| t.id.clone())
+                        .collect();
                     for t in &mut self.model.sources {
-                        t.all_columns = true;
+                        if ids.contains(&t.id) {
+                            t.all_columns = true;
+                        }
                     }
                     for id in ids {
                         self.model.output.push(OutputColumn {
@@ -745,6 +1249,7 @@ impl<'d> Analyzer<'d> {
                             expr: "*".to_string(),
                             sources: vec![ColumnRef::new(id, "*")],
                             aggregate: false,
+                            window: None,
                         });
                     }
                 }
@@ -754,14 +1259,49 @@ impl<'d> Analyzer<'d> {
 
     fn output_expr(&mut self, name: String, e: &Expr) {
         let expr = e.to_string();
-        let sources = self.column_refs(&expr);
-        let aggregate = self.is_aggregate(&expr);
+        let mut sources = self.column_refs(&expr);
+        for r in self.walk_subqueries(e) {
+            if !sources.contains(&r) {
+                sources.push(r);
+            }
+        }
+        let window = window_clause(&expr);
+        let aggregate = window.is_none() && self.is_aggregate(&expr);
         self.model.output.push(OutputColumn {
             name,
             expr,
             sources,
             aggregate,
+            window,
         });
+    }
+
+    /// `SELECT ... INTO t` / `CREATE TABLE t AS SELECT`: hasil SELECT disalin
+    /// ke tabel baru, digambar seperti INSERT ... SELECT.
+    fn copy_output_into(&mut self, table: &str, verb: &str, names: &[String]) {
+        self.model.kind = StatementKind::Insert;
+        self.model.verb = Some(verb.to_string());
+        let id = self.unique_id(short_name(table));
+        self.add_source(
+            SourceTable::new(id, table.to_string(), None, SourceKind::Table),
+            true,
+        );
+        let outputs = self.model.output.clone();
+        for (i, out) in outputs.iter().enumerate() {
+            if out.name.ends_with(".*") && names.get(i).is_none() {
+                self.note(format!(
+                    "All columns of {} are copied.",
+                    out.name.trim_end_matches(".*")
+                ));
+                continue;
+            }
+            self.model.mutations.push(Mutation {
+                column: names.get(i).cloned().unwrap_or_else(|| out.name.clone()),
+                new_value: out.expr.clone(),
+                sources: out.sources.clone(),
+                is_static: out.sources.is_empty(),
+            });
+        }
     }
 
     fn insert(&mut self, ins: &Insert) {
@@ -769,6 +1309,16 @@ impl<'d> Analyzer<'d> {
             TableObject::TableName(n) => object_name(n),
             other => clip(&other.to_string(), 40),
         };
+        if ins.replace_into {
+            self.model.verb = Some("REPLACE INTO".to_string());
+            self.note(
+                "REPLACE INTO deletes an existing row with the same key, then inserts the new one."
+                    .to_string(),
+            );
+        }
+        if ins.ignore {
+            self.note("INSERT IGNORE: rows that would break a unique key are skipped.".to_string());
+        }
         let alias = ins.table_alias.as_ref().map(|a| a.alias.value.clone());
         let base = alias
             .clone()
@@ -785,20 +1335,7 @@ impl<'d> Analyzer<'d> {
 
         if !ins.assignments.is_empty() {
             for asg in &ins.assignments {
-                let names: Vec<String> = match &asg.target {
-                    AssignmentTarget::ColumnName(n) => vec![last_part(n)],
-                    AssignmentTarget::Tuple(v) => v.iter().map(last_part).collect(),
-                };
-                let value = asg.value.to_string();
-                let sources = self.column_refs(&value);
-                for c in names {
-                    self.model.mutations.push(Mutation {
-                        column: c,
-                        new_value: value.clone(),
-                        is_static: sources.is_empty(),
-                        sources: sources.clone(),
-                    });
-                }
+                self.assignment(&asg.target, &asg.value, false);
             }
         } else if let Some(src) = &ins.source {
             if let SetExpr::Values(v) = src.body.as_ref() {
@@ -841,27 +1378,53 @@ impl<'d> Analyzer<'d> {
                 }
             }
         }
-        if let Some(on) = &ins.on {
-            self.note(format!("On conflict: {}", clip(&on.to_string(), 120)));
+        match &ins.on {
+            Some(OnInsert::DuplicateKeyUpdate(assigns)) => {
+                self.model.upsert_label = "ON DUPLICATE KEY UPDATE".to_string();
+                for asg in assigns {
+                    self.assignment(&asg.target, &asg.value, true);
+                }
+            }
+            Some(OnInsert::OnConflict(oc)) => match &oc.action {
+                OnConflictAction::DoNothing => {
+                    self.note(
+                        "ON CONFLICT DO NOTHING: rows that already exist are skipped.".to_string(),
+                    );
+                }
+                OnConflictAction::DoUpdate(du) => {
+                    self.model.upsert_label = "ON CONFLICT DO UPDATE".to_string();
+                    for asg in &du.assignments {
+                        self.assignment(&asg.target, &asg.value, true);
+                    }
+                    if let Some(sel) = &du.selection {
+                        self.note(format!(
+                            "The conflict update only applies where {}.",
+                            clip(&sel.to_string(), 80)
+                        ));
+                    }
+                }
+            },
+            #[allow(unreachable_patterns)]
+            Some(other) => self.note(format!("On conflict: {}", clip(&other.to_string(), 120))),
+            None => {}
         }
         if ins.returning.is_some() {
             self.note("Returns the inserted rows (RETURNING).".to_string());
         }
     }
 
-    /// Referensi kolom di sebuah potongan SQL (ekspresi).
-    fn column_refs(&self, text: &str) -> Vec<ColumnRef> {
-        let tokens: Vec<Token> = match Tokenizer::new(self.dialect, text).tokenize() {
-            Ok(t) => t
-                .into_iter()
-                .filter(|t| !matches!(t, Token::Whitespace(_)))
-                .collect(),
-            Err(_) => return Vec::new(),
+    /// Token tanpa spasi dan tanpa isi subquery `(SELECT ...)`.
+    fn top_level_tokens(&self, text: &str) -> Vec<Token> {
+        let Ok(tokens) = Tokenizer::new(self.dialect, text).tokenize() else {
+            return Vec::new();
         };
-        let mut out: Vec<ColumnRef> = Vec::new();
+        let tokens: Vec<Token> = tokens
+            .into_iter()
+            .filter(|t| !matches!(t, Token::Whitespace(_)))
+            .collect();
+        let mut out = Vec::with_capacity(tokens.len());
         let mut i = 0;
         while i < tokens.len() {
-            // Lewati subquery "(SELECT ...)": kolomnya milik scope lain.
             if matches!(tokens[i], Token::LParen)
                 && matches!(tokens.get(i + 1), Some(Token::Word(w)) if w.value.eq_ignore_ascii_case("select"))
             {
@@ -882,6 +1445,18 @@ impl<'d> Analyzer<'d> {
                 i += 1;
                 continue;
             }
+            out.push(tokens[i].clone());
+            i += 1;
+        }
+        out
+    }
+
+    /// Referensi kolom di sebuah potongan SQL (ekspresi), tanpa isi subquery.
+    fn column_refs(&self, text: &str) -> Vec<ColumnRef> {
+        let tokens = self.top_level_tokens(text);
+        let mut out: Vec<ColumnRef> = Vec::new();
+        let mut i = 0;
+        while i < tokens.len() {
             let Token::Word(first) = &tokens[i] else {
                 i += 1;
                 continue;
@@ -955,14 +1530,9 @@ impl<'d> Analyzer<'d> {
         out
     }
 
+    /// Ekspresi memakai fungsi agregat di luar subquery.
     fn is_aggregate(&self, text: &str) -> bool {
-        let Ok(tokens) = Tokenizer::new(self.dialect, text).tokenize() else {
-            return false;
-        };
-        let tokens: Vec<Token> = tokens
-            .into_iter()
-            .filter(|t| !matches!(t, Token::Whitespace(_)))
-            .collect();
+        let tokens = self.top_level_tokens(text);
         tokens.windows(2).any(|w| {
             matches!((&w[0], &w[1]), (Token::Word(f), Token::LParen)
                 if AGGREGATES.iter().any(|a| a.eq_ignore_ascii_case(&f.value)))
@@ -981,9 +1551,13 @@ impl<'d> Analyzer<'d> {
             })
             .map(|o| o.name.to_lowercase())
             .collect();
-        self.model
-            .referenced
-            .retain(|r| !(r.table.is_empty() && aliases.contains(&r.column.to_lowercase())));
+        let is_alias =
+            |r: &ColumnRef| r.table.is_empty() && aliases.contains(&r.column.to_lowercase());
+        self.model.referenced.retain(|r| !is_alias(r));
+        self.model.having_columns.retain(|r| !is_alias(r));
+        for g in &mut self.model.group_columns {
+            g.retain(|r| !is_alias(r));
+        }
     }
 }
 
@@ -1016,6 +1590,7 @@ mod tests {
         assert_eq!(m.output[1].sources, vec![ColumnRef::new("o", "id")]);
         assert_eq!(m.limit.as_deref(), Some("10"));
         assert_eq!(m.group_by, vec!["u.name".to_string()]);
+        assert_eq!(m.group_columns, vec![vec![ColumnRef::new("u", "name")]]);
         // Alias `total` di ORDER BY bukan kolom tabel.
         assert!(!cols(&m, "u").contains(&"total".to_string()));
         assert!(cols(&m, "u").contains(&"active".to_string()));
@@ -1184,6 +1759,199 @@ mod tests {
     fn test_cte_is_marked() {
         let m = my("WITH recent AS (SELECT * FROM orders) SELECT r.id FROM recent r");
         assert_eq!(m.sources[0].kind, SourceKind::Cte);
-        assert!(m.notes.iter().any(|n| n.contains("orders")));
+        assert_eq!(
+            m.table("orders").and_then(|t| t.feeds.clone()).as_deref(),
+            Some("r")
+        );
+    }
+
+    fn pg(sql: &str) -> QueryDiagramModel {
+        analyze_statement(sql, &DatabaseType::PostgreSQL).expect("statement valid")
+    }
+
+    fn ms(sql: &str) -> QueryDiagramModel {
+        analyze_statement(sql, &DatabaseType::MsSQL).expect("statement valid")
+    }
+
+    #[test]
+    fn test_in_subquery_adds_table_and_link() {
+        let m = my(
+            "SELECT u.name FROM users u WHERE u.id IN (SELECT o.user_id FROM orders o WHERE o.total > 100)",
+        );
+        let o = m.table("o").expect("tabel subquery ikut digambar");
+        assert_eq!(o.badge.as_deref(), Some("IN (subquery)"));
+        assert!(o.feeds.is_none());
+        assert!(m.joins.iter().any(|j| j.join_type == "IN"
+            && j.left == ColumnRef::new("u", "id")
+            && j.right == ColumnRef::new("o", "user_id")));
+        assert_eq!(m.filter_columns, vec![ColumnRef::new("u", "id")]);
+        assert!(cols(&m, "o").contains(&"total".to_string()));
+    }
+
+    #[test]
+    fn test_not_exists_correlated() {
+        let m = my(
+            "SELECT u.id FROM users u WHERE NOT EXISTS (SELECT 1 FROM bans b WHERE b.user_id = u.id)",
+        );
+        assert_eq!(
+            m.table("b").and_then(|t| t.badge.clone()).as_deref(),
+            Some("NOT EXISTS")
+        );
+        assert!(m.joins.iter().any(|j| j.join_type == "NOT EXISTS"));
+    }
+
+    #[test]
+    fn test_scalar_subquery_in_select_is_not_aggregate() {
+        let m = my(
+            "SELECT u.name, (SELECT MAX(o.total) FROM orders o WHERE o.user_id = u.id) AS top FROM users u",
+        );
+        assert_eq!(m.output[1].sources, vec![ColumnRef::new("o", "total")]);
+        assert!(!m.output[1].aggregate);
+        assert_eq!(
+            m.table("o").and_then(|t| t.badge.clone()).as_deref(),
+            Some("SCALAR SUBQUERY")
+        );
+    }
+
+    #[test]
+    fn test_update_set_from_subquery_is_not_static() {
+        let m = my(
+            "UPDATE products p SET price = (SELECT AVG(h.price) FROM history h WHERE h.product_id = p.id)",
+        );
+        assert!(!m.mutations[0].is_static);
+        assert_eq!(m.mutations[0].sources, vec![ColumnRef::new("h", "price")]);
+    }
+
+    #[test]
+    fn test_cte_tables_feed_the_cte() {
+        let m = my(
+            "WITH recent AS (SELECT o.id, o.user_id FROM orders o WHERE o.total > 5) SELECT r.id FROM recent r",
+        );
+        assert_eq!(m.sources[0].kind, SourceKind::Cte);
+        let o = m.table("o").expect("tabel di dalam CTE");
+        assert_eq!(o.feeds.as_deref(), Some("r"));
+        assert!(
+            m.derived_links
+                .contains(&(ColumnRef::new("o", "id"), ColumnRef::new("r", "id")))
+        );
+        assert_eq!(cols(&m, "r"), vec!["id", "user_id"]);
+        // Alias di dalam CTE tidak bocor ke query luar.
+        assert!(m.output[0].sources == vec![ColumnRef::new("r", "id")]);
+    }
+
+    #[test]
+    fn test_derived_table_is_expanded() {
+        let m = my("SELECT t.n FROM (SELECT u.name AS n FROM users u) t");
+        assert!(
+            m.derived_links
+                .contains(&(ColumnRef::new("u", "name"), ColumnRef::new("t", "n")))
+        );
+        assert_eq!(
+            m.table("u").and_then(|x| x.feeds.clone()).as_deref(),
+            Some("t")
+        );
+    }
+
+    #[test]
+    fn test_recursive_cte_terminates() {
+        let m = pg(
+            "WITH RECURSIVE tree AS (SELECT id, parent_id FROM nodes UNION ALL \
+                    SELECT n.id, n.parent_id FROM nodes n JOIN tree t ON n.parent_id = t.id) \
+                    SELECT * FROM tree",
+        );
+        assert!(m.table("nodes").is_some());
+        assert!(m.notes.iter().any(|n| n.contains("RECURSIVE")));
+    }
+
+    #[test]
+    fn test_union_all_branches() {
+        let m = my("SELECT id, name FROM users UNION ALL SELECT id, name FROM admins");
+        assert_eq!(m.branches.len(), 2);
+        assert_eq!(m.branches[1].op, "UNION ALL");
+        let admins = m.table("admins").unwrap();
+        assert_eq!(admins.branch, 1);
+        assert_eq!(admins.badge.as_deref(), Some("UNION ALL #2"));
+        assert!(m.output[0].sources.contains(&ColumnRef::new("users", "id")));
+        assert!(
+            m.output[0]
+                .sources
+                .contains(&ColumnRef::new("admins", "id"))
+        );
+    }
+
+    #[test]
+    fn test_window_function_is_not_aggregate() {
+        let m = my("SELECT name, SUM(amount) OVER (PARTITION BY dept) AS s FROM emp");
+        assert!(m.output[1].window.is_some());
+        assert!(!m.output[1].aggregate);
+    }
+
+    #[test]
+    fn test_upsert_mysql_and_postgres() {
+        let m = my("INSERT INTO t (id, n) VALUES (1, 'a') ON DUPLICATE KEY UPDATE n = VALUES(n)");
+        assert_eq!(m.upsert_label, "ON DUPLICATE KEY UPDATE");
+        assert_eq!(m.upserts.len(), 1);
+        let p = pg(
+            "INSERT INTO t (id, n) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+        );
+        assert_eq!(p.upsert_label, "ON CONFLICT DO UPDATE");
+        assert_eq!(p.upserts[0].column, "n");
+    }
+
+    #[test]
+    fn test_replace_into_and_truncate() {
+        let m = my("REPLACE INTO t (id) VALUES (1)");
+        assert_eq!(m.verb.as_deref(), Some("REPLACE INTO"));
+        let t = my("TRUNCATE TABLE logs");
+        assert_eq!(t.kind, StatementKind::Delete);
+        assert_eq!(t.verb.as_deref(), Some("TRUNCATE"));
+        assert_eq!(t.target.as_ref().map(|x| x.table.as_str()), Some("logs"));
+    }
+
+    #[test]
+    fn test_select_into_and_create_table_as() {
+        let m = ms("SELECT id, name INTO backup_users FROM users");
+        assert_eq!(m.kind, StatementKind::Insert);
+        assert_eq!(m.verb.as_deref(), Some("SELECT INTO"));
+        assert_eq!(
+            m.target.as_ref().map(|x| x.table.as_str()),
+            Some("backup_users")
+        );
+        assert_eq!(m.mutations.len(), 2);
+        let c = pg("CREATE TABLE top_users AS SELECT u.id FROM users u");
+        assert_eq!(c.verb.as_deref(), Some("CREATE TABLE AS"));
+        assert_eq!(c.mutations[0].sources, vec![ColumnRef::new("u", "id")]);
+    }
+
+    #[test]
+    fn test_merge() {
+        let m = ms(
+            "MERGE INTO stock AS t USING incoming AS s ON t.sku = s.sku \
+                    WHEN MATCHED THEN UPDATE SET t.qty = s.qty \
+                    WHEN NOT MATCHED THEN INSERT (sku, qty) VALUES (s.sku, s.qty);",
+        );
+        assert_eq!(m.kind, StatementKind::Update);
+        assert_eq!(m.verb.as_deref(), Some("MERGE INTO"));
+        assert_eq!(m.target.as_ref().map(|x| x.id.as_str()), Some("t"));
+        assert_eq!(m.joins.len(), 1);
+        assert_eq!(m.mutations[0].sources, vec![ColumnRef::new("s", "qty")]);
+        assert_eq!(m.upserts.len(), 2);
+        assert!(m.upsert_label.contains("NOT MATCHED"));
+    }
+
+    #[test]
+    fn test_mssql_update_alias_from() {
+        let m = ms(
+            "UPDATE o SET o.status = s.name FROM orders o JOIN statuses s ON s.id = o.status_id",
+        );
+        let t = m.target.as_ref().unwrap();
+        assert_eq!(t.table, "orders");
+        assert_eq!(m.sources.len(), 1);
+        assert_eq!(m.mutations[0].sources, vec![ColumnRef::new("s", "name")]);
+        assert!(
+            m.joins
+                .iter()
+                .any(|j| j.left.table == t.id || j.right.table == t.id)
+        );
     }
 }

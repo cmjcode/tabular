@@ -88,6 +88,43 @@ pub fn quick_hints(model: &QueryDiagramModel) -> Vec<String> {
                 .to_string(),
         );
     }
+    let badges: Vec<&str> = model
+        .sources
+        .iter()
+        .filter_map(|t| t.badge.as_deref())
+        .collect();
+    if badges.contains(&"SCALAR SUBQUERY") {
+        hints.push(
+            "A scalar subquery runs once per output row; a JOIN (or a join to a grouped CTE) is usually faster."
+                .to_string(),
+        );
+    }
+    if badges
+        .iter()
+        .any(|b| b.contains("EXISTS") || b.contains("IN (subquery)"))
+    {
+        hints.push(
+            "Index the columns that link the subquery to the outer query so EXISTS/IN can use an index lookup."
+                .to_string(),
+        );
+    }
+    if model
+        .branches
+        .iter()
+        .skip(1)
+        .any(|b| b.op.starts_with("UNION") && !b.op.contains("ALL"))
+    {
+        hints.push(
+            "UNION removes duplicates with an extra sort; use UNION ALL when the branches cannot overlap."
+                .to_string(),
+        );
+    }
+    if model.output.iter().any(|o| o.window.is_some()) {
+        hints.push(
+            "Window functions sort by their PARTITION BY / ORDER BY columns; an index on those columns avoids the sort."
+                .to_string(),
+        );
+    }
     if !model.order_by.is_empty() && model.limit.is_some() {
         hints.push(format!(
             "ORDER BY with LIMIT is fastest with an index on {}.",
@@ -232,6 +269,16 @@ mod tests {
         assert!(hints.iter().any(|h| h.contains("LIMIT")));
         assert!(hints.iter().any(|h| h.contains("starts with `%`")));
         assert!(hints.iter().any(|h| h.contains("function wraps")));
+
+        let sub = analyze_statement(
+            "SELECT u.id, (SELECT MAX(o.total) FROM orders o WHERE o.user_id = u.id) AS t FROM users u \
+             UNION SELECT a.id, 0 FROM admins a",
+            &DatabaseType::MySQL,
+        )
+        .unwrap();
+        let sh = quick_hints(&sub);
+        assert!(sh.iter().any(|h| h.contains("scalar subquery")));
+        assert!(sh.iter().any(|h| h.contains("UNION ALL")));
 
         let d = analyze_statement("DELETE FROM logs", &DatabaseType::MySQL).unwrap();
         assert!(quick_hints(&d)[0].starts_with("No WHERE clause"));
