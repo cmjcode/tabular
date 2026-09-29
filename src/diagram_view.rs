@@ -599,17 +599,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             state.save_requested = true;
         }
         if ui
-            .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
+            .checkbox(&mut state.prevent_overlap, "Prevent table & group overlap")
             .clicked()
         {
             if state.prevent_overlap {
-                resolve_node_overlaps(&mut state.nodes, 20.0);
+                resolve_all_overlaps(&mut state.nodes, 20.0, None);
             }
             state.save_requested = true;
         }
         if ui.button("↔ Resolve Overlaps Now").clicked() {
             ui.close();
-            resolve_node_overlaps(&mut state.nodes, 20.0);
+            resolve_all_overlaps(&mut state.nodes, 20.0, None);
             state.save_requested = true;
         }
         if ui.button("⚡ Auto Arrange Diagram").clicked() {
@@ -780,6 +780,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut _group_rename_request: Option<(usize, String)> = None;
     let mut _group_delete_request: Option<String> = None;
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
+    let mut group_drag_stopped: Option<String> = None;
 
     // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
@@ -996,6 +997,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 let delta = response.drag_delta() / scale;
                 group_drag_delta = Some((group_id.clone(), delta));
             }
+            if !is_hand_mode && !is_linked_group && response.drag_stopped() {
+                group_drag_stopped = Some(group_id.clone());
+            }
 
             if !is_hand_mode && !is_linked_group {
                 response.context_menu(|ui| {
@@ -1071,6 +1075,13 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         {
             *pos += delta;
         }
+    }
+    // Group selesai digeser: group itu yang mengalah bila menabrak group lain.
+    if let Some(group_id) = group_drag_stopped
+        && state.prevent_overlap
+    {
+        resolve_all_overlaps(&mut state.nodes, 20.0, Some(&group_id));
+        state.save_requested = true;
     }
 
     // Draw edges (relationships)
@@ -1356,9 +1367,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     }
                     let in_group = node.is_in_group(gid);
                     let (prefix, action_label) = if in_group {
-                        ("✓", format!("Remove from {}", gtitle))
+                        (
+                            egui_icons::icons::ICON_CHECK.codepoint,
+                            format!("Remove from {}", gtitle),
+                        )
                     } else {
-                        ("➕", format!("Add to {}", gtitle))
+                        (
+                            egui_icons::icons::ICON_ADD.codepoint,
+                            format!("Add to {}", gtitle),
+                        )
                     };
                     let button = egui::Button::new(
                         egui::RichText::new(format!("{} {}", prefix, action_label)).color(
@@ -1979,7 +1996,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     if let Some(id) = drag_stopped_node_id {
         if state.prevent_overlap {
-            resolve_dragged_node_overlap(&mut state.nodes, &id, 20.0);
+            resolve_all_overlaps(&mut state.nodes, 20.0, Some(&id));
             state.save_requested = true;
         }
     }
@@ -2109,12 +2126,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     "Overlap",
                     state.prevent_overlap,
                 )
-                    .on_hover_text("Prevent tables from overlapping (auto-separates on drop and drag)")
+                    .on_hover_text("Prevent tables and non-intersecting groups from overlapping (auto-separates on drop and drag)")
                     .clicked()
                 {
                     state.prevent_overlap = !state.prevent_overlap;
                     if state.prevent_overlap {
-                        resolve_node_overlaps(&mut state.nodes, 20.0);
+                        resolve_all_overlaps(&mut state.nodes, 20.0, None);
                     }
                     state.save_requested = true;
                 }
@@ -2132,12 +2149,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 egui::Popup::menu(&layout_btn).show(
                     |ui| {
                         if ui
-                            .checkbox(&mut state.prevent_overlap, "Prevent table overlap")
-                            .on_hover_text("When enabled, tables will not overlap when moved or organized")
+                            .checkbox(&mut state.prevent_overlap, "Prevent table & group overlap")
+                            .on_hover_text("When enabled, tables and groups that share no table will not overlap when moved or organized")
                             .clicked()
                         {
                             if state.prevent_overlap {
-                                resolve_node_overlaps(&mut state.nodes, 20.0);
+                                resolve_all_overlaps(&mut state.nodes, 20.0, None);
                             }
                             state.save_requested = true;
                         }
@@ -2149,7 +2166,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         }
                         if ui.button("↔ Resolve Overlaps Now").clicked() {
                             ui.close();
-                            resolve_node_overlaps(&mut state.nodes, 20.0);
+                            resolve_all_overlaps(&mut state.nodes, 20.0, None);
                             state.save_requested = true;
                         }
                     },
@@ -4895,6 +4912,220 @@ pub fn resolve_dragged_node_overlap(nodes: &mut [DiagramNode], dragged_id: &str,
     }
 }
 
+/// Padding kotak group di sekitar anggotanya (world unit), sama dengan saat
+/// render: 20 di sisi, plus judul 30 dan offset judul maksimal 16 di atas.
+const GROUP_SIDE_PAD: f32 = 20.0;
+const GROUP_TOP_PAD: f32 = GROUP_SIDE_PAD + 30.0 + 16.0;
+
+/// Kelompokkan group yang beririsan (berbagi tabel) ke dalam satu cluster.
+/// Group dalam cluster yang sama boleh tumpang tindih dan selalu digeser
+/// bersama; hasilnya: cluster per group dan cluster per node (None = tanpa group).
+fn group_clusters(nodes: &[DiagramNode]) -> (HashMap<String, usize>, Vec<Option<usize>>) {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut parent: Vec<usize> = Vec::new();
+    for n in nodes {
+        let mut first: Option<usize> = None;
+        for gid in n.group_ids.iter().chain(n.group_id.as_ref()) {
+            let next = index.len();
+            let g = *index.entry(gid.clone()).or_insert_with(|| {
+                parent.push(next);
+                next
+            });
+            match first {
+                None => first = Some(g),
+                Some(f) => {
+                    let (rf, rg) = (find(&mut parent, f), find(&mut parent, g));
+                    parent[rg] = rf;
+                }
+            }
+        }
+    }
+
+    // Nomori ulang root menjadi 0..jumlah_cluster.
+    let mut dense: HashMap<usize, usize> = HashMap::new();
+    let mut group_cluster: HashMap<String, usize> = HashMap::new();
+    let mut ids: Vec<(&String, usize)> = index.iter().map(|(k, &v)| (k, v)).collect();
+    ids.sort();
+    for (gid, g) in ids {
+        let root = find(&mut parent, g);
+        let next = dense.len();
+        let c = *dense.entry(root).or_insert(next);
+        group_cluster.insert(gid.clone(), c);
+    }
+    let node_cluster = nodes
+        .iter()
+        .map(|n| {
+            n.group_ids
+                .iter()
+                .chain(n.group_id.as_ref())
+                .next()
+                .and_then(|g| group_cluster.get(g).copied())
+        })
+        .collect();
+    (group_cluster, node_cluster)
+}
+
+/// Kotak tiap group dalam koordinat diagram: (id group, cluster, rect).
+fn group_world_rects(
+    nodes: &[DiagramNode],
+    group_cluster: &HashMap<String, usize>,
+) -> Vec<(String, usize, egui::Rect)> {
+    let mut extent: HashMap<&str, egui::Rect> = HashMap::new();
+    for n in nodes {
+        let r = egui::Rect::from_min_size(n.pos, n.size);
+        for gid in n.group_ids.iter().chain(n.group_id.as_ref()) {
+            extent
+                .entry(gid.as_str())
+                .and_modify(|e| *e = e.union(r))
+                .or_insert(r);
+        }
+    }
+    let mut rects: Vec<(String, usize, egui::Rect)> = extent
+        .into_iter()
+        .filter_map(|(gid, r)| {
+            let cluster = *group_cluster.get(gid)?;
+            let rect = egui::Rect::from_min_max(
+                r.min - egui::vec2(GROUP_SIDE_PAD, GROUP_TOP_PAD),
+                r.max + egui::vec2(GROUP_SIDE_PAD, GROUP_SIDE_PAD),
+            );
+            Some((gid.to_string(), cluster, rect))
+        })
+        .collect();
+    // Urutan stabil agar hasil resolusi deterministik.
+    rects.sort_by(|a, b| a.0.cmp(&b.0));
+    rects
+}
+
+/// Cek apakah ada dua group yang tidak beririsan (tidak berbagi tabel) saling
+/// tumpang tindih dalam batas padding.
+pub fn check_groups_overlap(nodes: &[DiagramNode], padding: f32) -> bool {
+    let (group_cluster, _) = group_clusters(nodes);
+    let half_pad = padding.max(0.0) / 2.0;
+    let rects = group_world_rects(nodes, &group_cluster);
+    rects.iter().enumerate().any(|(i, (_, ci, ri))| {
+        rects[(i + 1)..].iter().any(|(_, cj, rj)| {
+            let inter = ri.expand(half_pad).intersect(rj.expand(half_pad));
+            ci != cj && inter.width() > 0.0 && inter.height() > 0.0
+        })
+    })
+}
+
+/// Pisahkan group yang tidak beririsan agar kotaknya tidak tumpang tindih.
+/// Seluruh anggota satu cluster (group-group yang berbagi tabel) digeser
+/// bersama. Bila `mover` (id tabel atau id group) diisi, hanya cluster milik
+/// `mover` yang digeser saat bertabrakan; cluster lain tetap di tempatnya.
+pub fn resolve_group_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Option<&str>) {
+    let (group_cluster, node_cluster) = group_clusters(nodes);
+    let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
+    if cluster_count < 2 {
+        return;
+    }
+
+    // Cluster yang berisi tabel link database tidak digeser.
+    let mut pinned = vec![false; cluster_count];
+    for (n, c) in nodes.iter().zip(&node_cluster) {
+        if let Some(c) = c
+            && crate::diagram_links::is_linked_id(&n.id)
+        {
+            pinned[*c] = true;
+        }
+    }
+    let mover_cluster = mover.and_then(|m| {
+        group_cluster.get(m).copied().or_else(|| {
+            nodes
+                .iter()
+                .position(|n| n.id == m)
+                .and_then(|i| node_cluster[i])
+        })
+    });
+
+    let half_pad = padding.max(0.0) / 2.0;
+    for _ in 0..40 {
+        let rects = group_world_rects(nodes, &group_cluster);
+        let mut shift = vec![egui::Vec2::ZERO; cluster_count];
+        let mut any_collision = false;
+
+        for (i, (_, ci, ri)) in rects.iter().enumerate() {
+            for (_, cj, rj) in &rects[(i + 1)..] {
+                let (ci, cj) = (*ci, *cj);
+                if ci == cj || (pinned[ci] && pinned[cj]) {
+                    continue;
+                }
+                let (ri, rj) = (ri.expand(half_pad), rj.expand(half_pad));
+                let inter = ri.intersect(rj);
+                if inter.width() <= 0.0 || inter.height() <= 0.0 {
+                    continue;
+                }
+                any_collision = true;
+
+                // Dorong pada sumbu irisan terkecil; `push` menggeser ci
+                // menjauh dari cj sejauh seluruh irisan.
+                let push = if inter.width() < inter.height() {
+                    let dir = if ri.center().x <= rj.center().x {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    egui::vec2(dir * (inter.width() + 1.0), 0.0)
+                } else {
+                    let dir = if ri.center().y <= rj.center().y {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    egui::vec2(0.0, dir * (inter.height() + 1.0))
+                };
+
+                let i_fixed = pinned[ci] || mover_cluster.is_some_and(|m| m == cj);
+                let j_fixed = pinned[cj] || mover_cluster.is_some_and(|m| m == ci);
+                match (i_fixed, j_fixed) {
+                    (true, false) => shift[cj] -= push,
+                    (false, true) => shift[ci] += push,
+                    _ => {
+                        shift[ci] += push / 2.0;
+                        shift[cj] -= push / 2.0;
+                    }
+                }
+            }
+        }
+
+        if !any_collision {
+            break;
+        }
+        for (n, c) in nodes.iter_mut().zip(&node_cluster) {
+            if let Some(c) = c {
+                n.pos += shift[*c];
+            }
+        }
+    }
+}
+
+/// Pisahkan tabel dan group yang tumpang tindih sekaligus. Menggeser tabel
+/// dapat memperbesar group sehingga keduanya diulang sampai stabil. `mover`
+/// (id tabel atau group yang baru digeser) diprioritaskan untuk mengalah.
+pub fn resolve_all_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Option<&str>) {
+    for _ in 0..5 {
+        resolve_group_overlaps(nodes, padding, mover);
+        match mover {
+            Some(id) if nodes.iter().any(|n| n.id == id) => {
+                resolve_dragged_node_overlap(nodes, id, padding)
+            }
+            _ => resolve_node_overlaps(nodes, padding),
+        }
+        if !check_groups_overlap(nodes, padding) {
+            break;
+        }
+    }
+}
+
 /// Auto-arrange tabel host saja; kontainer link database lalu dijajarkan di
 /// kanannya (posisi tabel di dalam kontainer milik diagram sumber).
 pub fn auto_layout_host(state: &mut DiagramState) {
@@ -5022,8 +5253,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
             }
         }
 
-        // Catatan: Group boleh tumpang tindih (groups are allowed to overlap),
-        // sehingga tidak ada tolakan paksa antar group bounds di sini.
+        // Catatan: tidak ada tolakan antar group bounds di sini; group yang
+        // tidak beririsan dipisahkan pada post-process di bawah.
 
         // 4. Center Gravity (Pull to 0,0) + Apply Forces
         for (node, force) in state.nodes.iter_mut().zip(forces.iter_mut()) {
@@ -5046,8 +5277,13 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
     }
 
     // STRICT COLLISION RESOLUTION (Post-Process)
-    // Pastikan semua tabel terpisah sempurna dengan padding aman
-    resolve_node_overlaps(&mut state.nodes, 20.0);
+    // Pastikan semua tabel terpisah sempurna dengan padding aman; group yang
+    // tidak beririsan ikut dipisahkan bila anti-overlap aktif.
+    if state.prevent_overlap {
+        resolve_all_overlaps(&mut state.nodes, 20.0, None);
+    } else {
+        resolve_node_overlaps(&mut state.nodes, 20.0);
+    }
 
     // Normalize coordinates to be positive and start at somewhat reasonable position
     let mut min_x = f32::MAX;
@@ -5529,6 +5765,66 @@ mod tests {
 
         // Dan kedua tabel sudah tidak lagi tumpang tindih
         assert!(!check_nodes_overlap(&nodes, 20.0));
+    }
+
+    fn grouped_node(id: &str, x: f32, y: f32, groups: &[&str]) -> DiagramNode {
+        DiagramNode {
+            id: id.to_string(),
+            title: id.to_string(),
+            pos: egui::pos2(x, y),
+            size: egui::vec2(200.0, 100.0),
+            columns: vec!["id".to_string()],
+            foreign_keys: vec![],
+            group_ids: groups.iter().map(|g| g.to_string()).collect(),
+            group_id: groups.first().map(|g| g.to_string()),
+            column_meta: vec![],
+            detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
+        }
+    }
+
+    #[test]
+    fn test_disjoint_groups_are_separated() {
+        // Group a dan b tidak berbagi tabel, kotaknya bertumpuk.
+        let mut nodes = vec![
+            grouped_node("a1", 0.0, 0.0, &["a"]),
+            grouped_node("a2", 0.0, 150.0, &["a"]),
+            grouped_node("b1", 150.0, 60.0, &["b"]),
+        ];
+        assert!(check_groups_overlap(&nodes, 20.0));
+        resolve_all_overlaps(&mut nodes, 20.0, None);
+        assert!(!check_groups_overlap(&nodes, 20.0));
+        assert!(!check_nodes_overlap(&nodes, 20.0));
+        // Anggota satu group bergeser bersama: jarak relatif tetap.
+        assert_eq!(nodes[1].pos - nodes[0].pos, egui::vec2(0.0, 150.0));
+    }
+
+    #[test]
+    fn test_intersecting_groups_may_overlap() {
+        // Tabel "shared" dimiliki a dan b, jadi kedua group boleh bertumpuk.
+        let mut nodes = vec![
+            grouped_node("a1", 0.0, 0.0, &["a"]),
+            grouped_node("shared", 250.0, 0.0, &["a", "b"]),
+            grouped_node("b1", 500.0, 0.0, &["b"]),
+        ];
+        let before: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos).collect();
+        assert!(!check_groups_overlap(&nodes, 20.0));
+        resolve_group_overlaps(&mut nodes, 20.0, None);
+        let after: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn test_group_mover_yields_to_stationary_group() {
+        let mut nodes = vec![
+            grouped_node("a1", 0.0, 0.0, &["a"]),
+            grouped_node("b1", 150.0, 60.0, &["b"]),
+        ];
+        resolve_group_overlaps(&mut nodes, 20.0, Some("b"));
+        assert_eq!(nodes[0].pos, egui::pos2(0.0, 0.0));
+        assert!(!check_groups_overlap(&nodes, 20.0));
     }
 
     #[test]
