@@ -352,6 +352,7 @@ Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested w
 ## 11. Roadmap (High level)
 
 ### Recently Shipped ✅
+- **Result Charts, Map View & EXPLAIN Compare**: Bar/line/area/scatter charts over any result with X/Y picking and Sum/Avg/Count/Min/Max aggregation; a map for PostGIS/MySQL geometry, WKT and GeoJSON columns (OpenStreetMap basemap, toggleable); EXPLAIN self-cost/self-time/rows bar chart; plan history per query with pinning and per-node cost/time deltas
 - **Modern Developer SQL Editor & IntelliSense 2.0**: Context-aware alias resolution (`u.`), Foreign Key auto-join completions, statement-level execution (`Ctrl+Enter`), quick query formatting (`Ctrl+Shift+F`), line comments (`Ctrl+/`), line duplication & moving (`Alt+Up/Down`), active line highlight, and multi-format result clipboard exports (Markdown, JSON, CSV, SQL INSERTs) (v0.17)
 - **Editor Tab Drag & Drop & Tab Pinning**: Interactive tab reordering, 📌 pinned tabs with accidental close prevention, smart boundary synchronization, and full context menus (v0.15)
 - **Smart Sidebar Tree Search & Folder Content Preservation**: Case-insensitive filtering across Connections, Queries, History, and Collections while preserving parent hierarchies and expanding folders (v0.14)
@@ -373,7 +374,6 @@ Contributions are welcome (bug fixes, new drivers, UI, performance). Suggested w
 
 ### Upcoming
 - Automated Database Diagram / ERD interactive editor
-- Query result chart & data visualization widgets
 - Step-by-step Stored Procedure & PL/pgSQL visual debugger
 - Native iPadOS touch-optimized UI layout
 - Windows signed installer package (MSI / AppX)

@@ -435,6 +435,10 @@ pub struct Tabular {
     pub index_dialog: Option<models::structs::IndexDialogState>,
     // Bottom panel view mode (Data / Structure)
     pub table_bottom_view: models::structs::TableBottomView,
+    // State Map view (peta walkers + cache layer geometry)
+    pub geo_map_state: crate::geo_map::MapViewState,
+    // Cache riwayat plan EXPLAIN untuk view Compare
+    pub explain_history: crate::query_profiler::history::ExplainHistoryCache,
     // Cached structure info for current table
     pub structure_columns: Vec<models::structs::ColumnStructInfo>,
     pub structure_indexes: Vec<models::structs::IndexStructInfo>,
@@ -709,6 +713,8 @@ pub struct Tabular {
     pub visual_filter: models::structs::VisualFilterState,
     // Dedicated Cell Value Inspector (JSON, Hex, Image, Raw Virtual Text)
     pub cell_inspector: crate::data_table::CellInspectorState,
+    // Fitur data grid: review/undo/rewind, find, highlight, kolom (lihat data_table::grid_state)
+    pub grid_ext: crate::data_table::GridExtState,
     // Pinned columns for data table freeze
     pub pinned_columns: std::collections::HashSet<String>,
     // CSV Import wizard
@@ -731,6 +737,8 @@ pub struct Tabular {
     pub schema_diff_receiver: Option<std::sync::mpsc::Receiver<models::structs::SchemaDiffResult>>,
     /// Pengambilan skema diagram ERD yang sedang berjalan di background.
     pub diagram_schema_jobs: Vec<diagram::DiagramSchemaJob>,
+    /// Tab fokus diagram (dari Quick Open) yang menunggu skema database-nya.
+    pub diagram_focus_requests: Vec<diagram::DiagramFocusRequest>,
     /// Pemindaian repository group diagram (saran tabel) yang sedang berjalan.
     pub diagram_repo_scan_jobs: Vec<diagram::DiagramRepoScanJob>,
     // Backup & Restore dialogs

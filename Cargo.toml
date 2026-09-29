@@ -48,6 +48,10 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.36", features = ["datepicker"] }
 egui_commonmark = { version = "0.25", features = ["pulldown_cmark"] }
+# Chart hasil query dan metrik EXPLAIN (C1/C2).
+egui_plot = "0.37"
+# Peta slippy untuk kolom geometry/PostGIS (C4).
+walkers = "0.60"
 # Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
 jiff = "0.2"
 colorful = "0.3.2"

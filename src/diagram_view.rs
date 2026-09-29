@@ -412,6 +412,10 @@ pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
     state.view_anim = None;
 }
 
+/// Warna glow tabel asal pada diagram fokus. Dibedakan dari emas (relasi
+/// terpilih), merah (hasil cari), dan amber (tabrakan saat drag).
+const FOCUS_ORIGIN_GLOW: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
+
 /// Tabel `table_id` beserta semua tabel yang berelasi dengannya (FK, relasi
 /// virtual, dan relasi bawaan link database), dua arah.
 pub fn related_tables(state: &DiagramState, table_id: &str) -> std::collections::HashSet<String> {
@@ -436,6 +440,31 @@ pub fn related_tables(state: &DiagramState, table_id: &str) -> std::collections:
         }
     }
     set
+}
+
+/// Id node tabel di diagram untuk nama `name` dari luar diagram (mis. cache
+/// tabel Quick Open). Urutan: id persis, lalu id/judul tanpa beda huruf,
+/// lalu nama tanpa prefix schema (`dbo.users` ↔ `users`).
+pub fn find_table_id(state: &DiagramState, name: &str) -> Option<String> {
+    fn bare(s: &str) -> &str {
+        s.rsplit('.').next().unwrap_or(s)
+    }
+    let nodes = &state.nodes;
+    nodes
+        .iter()
+        .find(|n| n.id == name)
+        .or_else(|| {
+            nodes
+                .iter()
+                .find(|n| n.id.eq_ignore_ascii_case(name) || n.title.eq_ignore_ascii_case(name))
+        })
+        .or_else(|| {
+            nodes.iter().find(|n| {
+                bare(&n.id).eq_ignore_ascii_case(bare(name))
+                    || bare(&n.title).eq_ignore_ascii_case(bare(name))
+            })
+        })
+        .map(|n| n.id.clone())
 }
 
 /// Id tabel anggota group `group_id`.
@@ -481,6 +510,7 @@ pub fn focus_subset_state(source: &DiagramState, table_id: &str) -> DiagramState
         })
         .collect();
     let mut out = subset_with_relations(source, nodes, table_id);
+    out.focus_origin = Some(table_id.to_string());
     layout_focus_subset(&mut out, table_id);
     out
 }
@@ -2027,9 +2057,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             && check_single_node_collision(&nodes_snapshot, &node.id, 20.0);
 
         let is_glow = is_selected_edge_node || is_search_match || is_colliding_drag;
+        let is_focus_origin = state.focus_origin.as_deref() == Some(node.id.as_str());
 
         // Draw Shadow/Border
-        if is_glow {
+        if is_focus_origin && !is_glow {
+            // Tabel asal diagram fokus: glow berlapis yang memudar ke luar.
+            for (spread, alpha) in [(14.0, 0.10), (10.0, 0.18), (6.0, 0.30), (3.0, 0.45)] {
+                ui.painter().rect_filled(
+                    node_rect.expand(spread * scale),
+                    (4.0 + spread) * scale,
+                    FOCUS_ORIGIN_GLOW.linear_multiply(alpha),
+                );
+            }
+        } else if is_glow {
             // Glow effect
             let glow_color = if is_search_match {
                 egui::Color32::from_rgb(255, 0, 0) // Bright Red
@@ -2061,11 +2101,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             egui::Color32::from_rgb(255, 140, 0)
         } else if is_selected_edge_node {
             egui::Color32::from_rgb(255, 215, 0)
+        } else if is_focus_origin {
+            FOCUS_ORIGIN_GLOW
         } else {
             egui::Color32::from_gray(60)
         };
 
-        let border_width = if is_glow { 2.0 * scale } else { 1.0 * scale };
+        let border_width = if is_glow || is_focus_origin {
+            2.0 * scale
+        } else {
+            1.0 * scale
+        };
 
         ui.painter().rect_stroke(
             node_rect,
@@ -7405,6 +7451,23 @@ mod tests {
     }
 
     #[test]
+    fn find_table_id_matches_exact_case_and_schema_prefix() {
+        let mut state = focus_fixture();
+        state.nodes.push(node("dbo.Invoices", &["id"]));
+        assert_eq!(find_table_id(&state, "orders").as_deref(), Some("orders"));
+        assert_eq!(find_table_id(&state, "USERS").as_deref(), Some("users"));
+        assert_eq!(
+            find_table_id(&state, "invoices").as_deref(),
+            Some("dbo.Invoices")
+        );
+        assert_eq!(
+            find_table_id(&state, "public.audit").as_deref(),
+            Some("audit")
+        );
+        assert_eq!(find_table_id(&state, "missing"), None);
+    }
+
+    #[test]
     fn test_zoom_around_keeps_anchor_fixed() {
         let pan = egui::vec2(40.0, -20.0);
         let anchor = egui::vec2(300.0, 200.0);
@@ -7581,12 +7644,14 @@ mod tests {
     fn test_focus_state_is_not_serialized() {
         let state = DiagramState {
             focus_table: Some("users".to_string()),
+            focus_origin: Some("users".to_string()),
             ..Default::default()
         };
         let json = serde_json::to_string(&state).expect("serialize");
         assert!(!json.contains("focus_table"));
         assert!(!json.contains("flow_anim"));
         assert!(!json.contains("scoped_to"));
+        assert!(!json.contains("focus_origin"));
     }
 
     fn ids(state: &DiagramState) -> Vec<&str> {
@@ -7605,6 +7670,7 @@ mod tests {
         let sub = focus_subset_state(&focus_fixture(), "orders");
         assert_eq!(ids(&sub), ["items", "orders", "users"]);
         assert_eq!(sub.scoped_to.as_deref(), Some("orders"));
+        assert_eq!(sub.focus_origin.as_deref(), Some("orders"));
         assert_eq!(sub.edges.len(), 1);
         assert_eq!(sub.virtual_relations.len(), 1);
         assert!(sub.focus_table.is_none());
@@ -7680,6 +7746,7 @@ mod tests {
         let sub = group_subset_state(&source, "g").expect("group subset");
         assert_eq!(ids(&sub), ["items", "orders"]);
         assert_eq!(sub.scoped_to.as_deref(), Some("g"));
+        assert_eq!(sub.focus_origin, None);
         // Hanya relasi items -> orders yang kedua ujungnya di dalam group.
         assert!(sub.edges.is_empty());
         assert_eq!(sub.virtual_relations.len(), 1);

@@ -20,6 +20,10 @@ pub enum QuickOpenKind {
     History,
     Connection,
     Command,
+    /// Request HTTP tersimpan di collection (workspace → folder → request).
+    HttpRequest,
+    /// Diagram ER satu database.
+    Diagram,
 }
 
 impl QuickOpenKind {
@@ -33,6 +37,8 @@ impl QuickOpenKind {
             Self::History => "History",
             Self::Connection => "Connection",
             Self::Command => "Command",
+            Self::HttpRequest => "HTTP API",
+            Self::Diagram => "Diagram",
         }
     }
 
@@ -46,6 +52,8 @@ impl QuickOpenKind {
             Self::History => egui_icons::icons::ICON_HISTORY.codepoint,
             Self::Connection => egui_icons::icons::MDI_DATABASE.codepoint,
             Self::Command => egui_icons::icons::ICON_TERMINAL.codepoint,
+            Self::HttpRequest => egui_icons::icons::ICON_API.codepoint,
+            Self::Diagram => egui_icons::icons::ICON_SCHEMA.codepoint,
         }
     }
 
@@ -85,6 +93,14 @@ impl QuickOpenKind {
                     egui::Color32::from_rgb(60, 25, 45),
                     egui::Color32::from_rgb(244, 114, 182),
                 ),
+                Self::HttpRequest => (
+                    egui::Color32::from_rgb(20, 55, 55),
+                    egui::Color32::from_rgb(45, 212, 191),
+                ),
+                Self::Diagram => (
+                    egui::Color32::from_rgb(35, 50, 75),
+                    egui::Color32::from_rgb(147, 197, 253),
+                ),
             }
         } else {
             match self {
@@ -120,6 +136,14 @@ impl QuickOpenKind {
                     egui::Color32::from_rgb(252, 231, 243),
                     egui::Color32::from_rgb(157, 23, 77),
                 ),
+                Self::HttpRequest => (
+                    egui::Color32::from_rgb(204, 251, 241),
+                    egui::Color32::from_rgb(17, 94, 89),
+                ),
+                Self::Diagram => (
+                    egui::Color32::from_rgb(219, 234, 254),
+                    egui::Color32::from_rgb(30, 64, 175),
+                ),
             }
         }
     }
@@ -141,6 +165,8 @@ pub struct QuickOpenItem {
     pub file_path: Option<String>,
     pub sql_content: Option<String>,
     pub shortcut: Option<String>,
+    /// Id `SavedRequest` untuk item [`QuickOpenKind::HttpRequest`].
+    pub request_id: Option<String>,
 }
 
 impl QuickOpenItem {
@@ -173,7 +199,13 @@ impl QuickOpenItem {
             file_path,
             sql_content,
             shortcut,
+            request_id: None,
         }
+    }
+
+    /// Item tabel bisa dibuka sebagai diagram fokus (tabel + relasinya).
+    pub fn supports_focus(&self) -> bool {
+        self.kind == QuickOpenKind::Table && self.connection_id.is_some()
     }
 }
 
@@ -228,6 +260,8 @@ impl QuickOpenState {
             Some(QuickOpenKind::SavedQuery),
             Some(QuickOpenKind::History),
             Some(QuickOpenKind::Connection),
+            Some(QuickOpenKind::HttpRequest),
+            Some(QuickOpenKind::Diagram),
             Some(QuickOpenKind::Command),
         ];
 
@@ -265,11 +299,8 @@ impl QuickOpenState {
         for (idx, item) in self.items.iter().enumerate() {
             // Apply category filter if active
             if let Some(cat) = effective_category {
-                if item.kind != cat {
-                    // Match function/procedure under procedure filter
-                    if !(cat == QuickOpenKind::Procedure && item.kind == QuickOpenKind::Function) {
-                        continue;
-                    }
+                if !category_includes(cat, item.kind) {
+                    continue;
                 }
             }
 
@@ -282,6 +313,8 @@ impl QuickOpenState {
                     QuickOpenKind::Procedure | QuickOpenKind::Function => 600,
                     QuickOpenKind::SavedQuery => 500,
                     QuickOpenKind::History => 400,
+                    QuickOpenKind::Diagram => 550,
+                    QuickOpenKind::HttpRequest => 450,
                     QuickOpenKind::Command => 300,
                 };
                 scored.push((idx, base_score));
@@ -306,6 +339,14 @@ impl QuickOpenState {
             self.selected_index = 0;
         }
     }
+}
+
+/// Apakah filter kategori `cat` menampilkan item berjenis `kind`. Function
+/// ikut di bawah Procedure; tabel ikut di bawah Diagram (Enter = fokus).
+fn category_includes(cat: QuickOpenKind, kind: QuickOpenKind) -> bool {
+    kind == cat
+        || (cat == QuickOpenKind::Procedure && kind == QuickOpenKind::Function)
+        || (cat == QuickOpenKind::Diagram && kind == QuickOpenKind::Table)
 }
 
 /// Similarity terbaik item terhadap query (judul, nama tabel, atau isi SQL),
@@ -396,6 +437,24 @@ fn parse_query_prefix(query: &str) -> (Option<QuickOpenKind>, &str) {
     }) {
         return (
             Some(QuickOpenKind::Connection),
+            query[query.len() - rest.len()..].trim(),
+        );
+    }
+    if let Some(rest) = lower_str
+        .strip_prefix("a:")
+        .or_else(|| lower_str.strip_prefix("@api "))
+    {
+        return (
+            Some(QuickOpenKind::HttpRequest),
+            query[query.len() - rest.len()..].trim(),
+        );
+    }
+    if let Some(rest) = lower_str
+        .strip_prefix("d:")
+        .or_else(|| lower_str.strip_prefix("@diagram "))
+    {
+        return (
+            Some(QuickOpenKind::Diagram),
             query[query.len() - rest.len()..].trim(),
         );
     }
@@ -579,7 +638,19 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
             .unwrap_or_default()
         });
 
+        // Satu item diagram per (koneksi, database) yang punya tabel.
+        let mut diagram_dbs: Vec<(i64, String)> = Vec::new();
         for (conn_id, db_name, tbl_name, tbl_type) in fetched {
+            if tbl_type.eq_ignore_ascii_case("table")
+                && conn_map
+                    .get(&conn_id)
+                    .is_some_and(|c| supports_diagram(&c.connection_type))
+                && !diagram_dbs
+                    .iter()
+                    .any(|(c, d)| *c == conn_id && *d == db_name)
+            {
+                diagram_dbs.push((conn_id, db_name.clone()));
+            }
             let kind = match tbl_type.to_lowercase().as_str() {
                 "view" => QuickOpenKind::View,
                 "procedure" => QuickOpenKind::Procedure,
@@ -610,6 +681,14 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
                     Some("↵ Open".to_string()),
                 ));
             }
+        }
+
+        for (conn_id, db_name) in diagram_dbs {
+            let conn_name = conn_map
+                .get(&conn_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("Conn #{}", conn_id));
+            items.push(diagram_item(conn_id, &conn_name, &db_name));
         }
     }
 
@@ -816,7 +895,14 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         }
     }
 
-    // 5. ACTIONS & COMMANDS
+    // 5. HTTP API REQUESTS (collection)
+    for item in collect_http_items(&tabular.yaak_workspaces) {
+        if seen_ids.insert(item.id.clone()) {
+            items.push(item);
+        }
+    }
+
+    // 6. ACTIONS & COMMANDS
     let commands = [
         (
             "Query: Run",
@@ -965,6 +1051,109 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
     }
 
     items
+}
+
+/// Jenis database yang punya fitur diagram (sama dengan menu sidebar).
+fn supports_diagram(db_type: &models::enums::DatabaseType) -> bool {
+    matches!(
+        db_type,
+        models::enums::DatabaseType::MySQL
+            | models::enums::DatabaseType::PostgreSQL
+            | models::enums::DatabaseType::SQLite
+            | models::enums::DatabaseType::MsSQL
+    )
+}
+
+/// Item Quick Open untuk membuka diagram penuh satu database.
+fn diagram_item(conn_id: i64, conn_name: &str, db_name: &str) -> QuickOpenItem {
+    QuickOpenItem::new(
+        format!("diagram_{}_{}", conn_id, db_name),
+        format!("Diagram: {}", db_name),
+        format!("Diagram • {} • {}", db_name, conn_name),
+        QuickOpenKind::Diagram,
+        Some(conn_id),
+        Some(conn_name.to_string()),
+        Some(db_name.to_string()),
+        None,
+        None,
+        None,
+        Some("↵ Open Diagram".to_string()),
+    )
+}
+
+/// Semua request HTTP tersimpan di collection, termasuk yang ada di dalam
+/// folder bersarang. Subjudul memuat method, jalur workspace/folder, dan URL.
+pub fn collect_http_items(
+    workspaces: &[crate::http_collection::HttpWorkspace],
+) -> Vec<QuickOpenItem> {
+    use crate::http_collection::{HttpFolder, SavedRequest};
+
+    fn push_request(items: &mut Vec<QuickOpenItem>, req: &SavedRequest, path: &str) {
+        let url = if req.url.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" • {}", req.url.trim())
+        };
+        let mut item = QuickOpenItem::new(
+            format!("http_{}", req.id),
+            req.display_name(),
+            format!("{} • {}{}", req.method.label(), path, url),
+            QuickOpenKind::HttpRequest,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("↵ Open".to_string()),
+        );
+        item.request_id = Some(req.id.clone());
+        items.push(item);
+    }
+
+    fn walk_folder(items: &mut Vec<QuickOpenItem>, folder: &HttpFolder, parent: &str) {
+        let path = format!("{} / {}", parent, folder.name);
+        for req in &folder.requests {
+            push_request(items, req, &path);
+        }
+        for child in &folder.children {
+            walk_folder(items, child, &path);
+        }
+    }
+
+    let mut items = Vec::new();
+    for ws in workspaces {
+        for req in &ws.requests {
+            push_request(&mut items, req, &ws.name);
+        }
+        for folder in &ws.folders {
+            walk_folder(&mut items, folder, &ws.name);
+        }
+    }
+    items
+}
+
+/// Cari `SavedRequest` berdasarkan id di seluruh workspace (rekursif).
+fn find_saved_request<'a>(
+    workspaces: &'a [crate::http_collection::HttpWorkspace],
+    request_id: &str,
+) -> Option<&'a crate::http_collection::SavedRequest> {
+    fn in_folder<'a>(
+        folder: &'a crate::http_collection::HttpFolder,
+        id: &str,
+    ) -> Option<&'a crate::http_collection::SavedRequest> {
+        folder
+            .requests
+            .iter()
+            .find(|r| r.id == id)
+            .or_else(|| folder.children.iter().find_map(|c| in_folder(c, id)))
+    }
+    workspaces.iter().find_map(|ws| {
+        ws.requests
+            .iter()
+            .find(|r| r.id == request_id)
+            .or_else(|| ws.folders.iter().find_map(|f| in_folder(f, request_id)))
+    })
 }
 
 /// Execute an item selected from Quick Open
@@ -1151,7 +1340,47 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                 editor::execute_command(tabular, cmd);
             }
         }
+        QuickOpenKind::HttpRequest => {
+            let saved = item
+                .request_id
+                .as_deref()
+                .and_then(|id| find_saved_request(&tabular.yaak_workspaces, id))
+                .cloned();
+            match saved {
+                Some(req) => {
+                    crate::sidebar_collection::apply_collection_request_to_active_tab(tabular, &req)
+                }
+                None => tabular
+                    .toasts
+                    .warning(format!("Saved request '{}' no longer exists", item.title)),
+            }
+        }
+        QuickOpenKind::Diagram => {
+            if let (Some(conn_id), Some(db_name)) = (item.connection_id, item.database_name.clone())
+            {
+                tabular.show_database_diagram(conn_id, db_name);
+            }
+        }
     }
+}
+
+/// Buka diagram fokus untuk item tabel: tabel itu beserta semua tabel yang
+/// berelasi dengannya, di tab baru. Item lain dieksekusi seperti biasa.
+pub fn focus_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
+    let (Some(conn_id), true) = (item.connection_id, item.supports_focus()) else {
+        execute_quick_open_item(tabular, item);
+        return;
+    };
+    let table = item
+        .table_name
+        .clone()
+        .unwrap_or_else(|| item.title.clone());
+    info!("🚀 Quick Open focus diagram: {}", table);
+    tabular.open_table_focus_diagram(
+        conn_id,
+        item.database_name.clone().unwrap_or_default(),
+        table,
+    );
 }
 
 /// Helper function to open Quick Open modal (instant cached load)
@@ -1161,6 +1390,13 @@ pub fn open_quick_open(tabular: &mut Tabular) {
         tabular.quick_open_state.items = items;
         // Indeks tabel cukup diperbarui saat daftar item dimuat ulang.
         sync_schema_index(tabular);
+    } else {
+        // Collection HTTP bisa berubah dari banyak jalur (simpan, rename,
+        // import, sync); ambil ulang dari RAM agar selalu terbaru.
+        let fresh = collect_http_items(&tabular.yaak_workspaces);
+        let items = &mut tabular.quick_open_state.items;
+        items.retain(|it| it.kind != QuickOpenKind::HttpRequest);
+        items.extend(fresh);
     }
     tabular.quick_open_state.is_open = true;
     tabular.quick_open_state.query.clear();
@@ -1210,7 +1446,10 @@ fn apply_semantic_history(tabular: &mut Tabular) {
         return;
     };
     let want_history = matches!(category, None | Some(QuickOpenKind::History));
-    let want_tables = matches!(category, None | Some(QuickOpenKind::Table));
+    let want_tables = matches!(
+        category,
+        None | Some(QuickOpenKind::Table) | Some(QuickOpenKind::Diagram)
+    );
 
     let rt = tabular.get_runtime();
     let (history_hits, table_hits) = rt.block_on(async {
@@ -1301,24 +1540,42 @@ pub fn cycle_filter_category(tabular: &mut Tabular) {
     tabular.quick_open_state.cycle_category();
 }
 
+/// Filter Diagram aktif (chip atau prefix `d:`): Enter pada tabel = fokus.
+fn diagram_filter_active(state: &QuickOpenState) -> bool {
+    parse_query_prefix(state.query.trim())
+        .0
+        .or(state.active_category)
+        == Some(QuickOpenKind::Diagram)
+}
+
+/// Jalankan aksi utama item; di bawah filter Diagram, tabel dibuka sebagai
+/// diagram fokus.
+fn run_item(tabular: &mut Tabular, item: &QuickOpenItem, focus: bool) {
+    let focus = focus || diagram_filter_active(&tabular.quick_open_state);
+    tabular.quick_open_state.close();
+    if focus {
+        focus_quick_open_item(tabular, item);
+    } else {
+        execute_quick_open_item(tabular, item);
+    }
+}
+
+/// Shift+Enter: buka diagram fokus untuk tabel terpilih.
+pub fn focus_selected_quick_open(tabular: &mut Tabular) {
+    if let Some(item) = selected_item(&tabular.quick_open_state) {
+        run_item(tabular, &item, true);
+    }
+}
+
+fn selected_item(state: &QuickOpenState) -> Option<QuickOpenItem> {
+    let &(item_idx, _) = state.filtered_items.get(state.selected_index)?;
+    state.items.get(item_idx).cloned()
+}
+
 /// Helper function to execute selected item
 pub fn execute_selected_quick_open(tabular: &mut Tabular) {
-    let selected_item = {
-        if tabular.quick_open_state.filtered_items.is_empty()
-            || tabular.quick_open_state.selected_index
-                >= tabular.quick_open_state.filtered_items.len()
-        {
-            None
-        } else {
-            let item_idx =
-                tabular.quick_open_state.filtered_items[tabular.quick_open_state.selected_index].0;
-            tabular.quick_open_state.items.get(item_idx).cloned()
-        }
-    };
-
-    if let Some(item) = selected_item {
-        tabular.quick_open_state.close();
-        execute_quick_open_item(tabular, &item);
+    if let Some(item) = selected_item(&tabular.quick_open_state) {
+        run_item(tabular, &item, false);
     }
 }
 
@@ -1390,7 +1647,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                         |ui, draft| {
                                             let text_edit = egui::TextEdit::singleline(draft)
                                                 .id(search_id)
-                                                .hint_text("Search tables, views, procedures, queries, history, connections... (⌘P / ⌘K)")
+                                                .hint_text("Search tables, diagrams, HTTP APIs, queries, history, connections... (⌘P / ⌘K)")
                                                 .frame(egui::Frame::NONE)
                                                 .font(egui::FontId::proportional(16.0));
                                             ui.add_sized([modal_width - 130.0, 28.0], text_edit)
@@ -1450,6 +1707,8 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                         (Some(QuickOpenKind::SavedQuery), "Saved Queries", egui_icons::icons::ICON_DESCRIPTION.codepoint),
                                         (Some(QuickOpenKind::History), "History", egui_icons::icons::ICON_HISTORY.codepoint),
                                         (Some(QuickOpenKind::Connection), "Connections", egui_icons::icons::MDI_DATABASE.codepoint),
+                                        (Some(QuickOpenKind::HttpRequest), "HTTP API", egui_icons::icons::ICON_API.codepoint),
+                                        (Some(QuickOpenKind::Diagram), "Diagram", egui_icons::icons::ICON_SCHEMA.codepoint),
                                         (Some(QuickOpenKind::Command), "Commands", egui_icons::icons::ICON_TERMINAL.codepoint),
                                     ];
 
@@ -1511,7 +1770,8 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                         let row_height = 44.0_f32;
                         let total_count = tabular.quick_open_state.filtered_items.len();
 
-                        let mut item_to_execute: Option<QuickOpenItem> = None;
+                        // (item, buka sebagai diagram fokus?)
+                        let mut item_to_execute: Option<(QuickOpenItem, bool)> = None;
 
                         egui::ScrollArea::vertical()
                             .max_height(list_height)
@@ -1527,7 +1787,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                         );
                                         ui.add_space(6.0);
                                         ui.label(
-                                            egui::RichText::new("Tip: Try searching by table name, query text, or use prefix: t: (tables), v: (views), p: (procedures), q: (queries), h: (history), c: (connections)")
+                                            egui::RichText::new("Tip: Try searching by table name, query text, or use prefix: t: (tables), v: (views), p: (procedures), q: (queries), h: (history), c: (connections), a: (HTTP API), d: (diagram)")
                                                 .size(11.5)
                                                 .color(ui.visuals().text_color().linear_multiply(0.4)),
                                         );
@@ -1574,6 +1834,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                             .corner_radius(egui::CornerRadius::same(8u8))
                                             .inner_margin(egui::Margin::symmetric(12, 6));
 
+                                        let mut focus_rect: Option<egui::Rect> = None;
                                         let row_resp = item_frame.show(ui, |ui| {
                                             ui.set_height(row_height - 12.0);
                                             ui.horizontal(|ui| {
@@ -1622,23 +1883,31 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                                     if let Some(sc) = &item.shortcut {
                                                         window_egui::style::render_shortcut_badge(ui, sc);
                                                     }
+                                                    if item.supports_focus() {
+                                                        ui.add_space(4.0);
+                                                        focus_rect = Some(render_focus_chip(ui, is_selected, accent_color));
+                                                    }
                                                 });
                                             });
                                         }).response;
 
-                                        let clicked = row_resp.interact(egui::Sense::click()).clicked();
-                                        if clicked {
+                                        // Chip Focus tertutup respons baris (didaftarkan belakangan),
+                                        // jadi klik dibedakan lewat posisi pointer.
+                                        let row_click = row_resp.interact(egui::Sense::click());
+                                        if row_click.clicked() {
+                                            let on_focus = focus_rect.is_some_and(|r| {
+                                                row_click.interact_pointer_pos().is_some_and(|p| r.contains(p))
+                                            });
                                             tabular.quick_open_state.selected_index = filtered_idx;
-                                            item_to_execute = Some(item.clone());
+                                            item_to_execute = Some((item.clone(), on_focus));
                                             break;
                                         }
                                     }
                                 }
                             });
 
-                        if let Some(item) = item_to_execute {
-                            tabular.quick_open_state.close();
-                            execute_quick_open_item(tabular, &item);
+                        if let Some((item, focus)) = item_to_execute {
+                            run_item(tabular, &item, focus);
                         }
 
                         // ─── FOOTER BAR ───────────────────────────────────────────
@@ -1667,6 +1936,10 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                                         ui.label(egui::RichText::new("Close").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
                                         ui.add_space(8.0);
 
+                                        window_egui::style::render_shortcut_badge(ui, "⇧↵");
+                                        ui.label(egui::RichText::new("Focus Diagram").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
+                                        ui.add_space(8.0);
+
                                         window_egui::style::render_shortcut_badge(ui, "Tab");
                                         ui.label(egui::RichText::new("Filter").size(11.0).color(ui.visuals().text_color().linear_multiply(0.6)));
                                         ui.add_space(8.0);
@@ -1683,6 +1956,30 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
                     });
                 });
         });
+}
+
+/// Chip "Focus" pada baris tabel: membuka tabel + relasinya sebagai diagram.
+/// Mengembalikan rect chip untuk membedakan klik chip dari klik baris.
+fn render_focus_chip(ui: &mut egui::Ui, is_selected: bool, accent: egui::Color32) -> egui::Rect {
+    let fg = if is_selected {
+        accent
+    } else {
+        ui.visuals().text_color().linear_multiply(0.75)
+    };
+    let resp = egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, fg.linear_multiply(0.5)))
+        .corner_radius(egui::CornerRadius::same(5u8))
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("{} Focus", egui_icons::icons::ICON_HUB.codepoint))
+                    .size(11.0)
+                    .color(fg),
+            );
+        })
+        .response;
+    resp.on_hover_text("Open this table and all related tables as a diagram (⇧↵)")
+        .rect
 }
 
 /// Aksi keymap untuk judul command Quick Open (jika punya shortcut).
@@ -1758,7 +2055,136 @@ mod tests {
             parse_query_prefix(">format"),
             (Some(QuickOpenKind::Command), "format")
         );
+        assert_eq!(
+            parse_query_prefix("a:login"),
+            (Some(QuickOpenKind::HttpRequest), "login")
+        );
+        assert_eq!(
+            parse_query_prefix("@api users"),
+            (Some(QuickOpenKind::HttpRequest), "users")
+        );
+        assert_eq!(
+            parse_query_prefix("d:orders"),
+            (Some(QuickOpenKind::Diagram), "orders")
+        );
+        assert_eq!(
+            parse_query_prefix("@diagram shop"),
+            (Some(QuickOpenKind::Diagram), "shop")
+        );
         assert_eq!(parse_query_prefix("users"), (None, "users"));
+    }
+
+    fn saved(id: &str, name: &str, url: &str) -> crate::http_collection::SavedRequest {
+        crate::http_collection::SavedRequest {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: url.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn workspaces_fixture() -> Vec<crate::http_collection::HttpWorkspace> {
+        use crate::http_collection::{HttpFolder, HttpWorkspace};
+        vec![HttpWorkspace {
+            id: "ws".to_string(),
+            name: "Shop".to_string(),
+            requests: vec![saved("r1", "Health", "https://api.test/health")],
+            folders: vec![HttpFolder {
+                id: "f1".to_string(),
+                name: "Auth".to_string(),
+                requests: vec![saved("r2", "Login", "https://api.test/login")],
+                children: vec![HttpFolder {
+                    id: "f2".to_string(),
+                    name: "Admin".to_string(),
+                    requests: vec![saved("r3", "", "https://api.test/admin/users")],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]
+    }
+
+    #[test]
+    fn collect_http_items_walks_nested_folders() {
+        let items = collect_http_items(&workspaces_fixture());
+        let ids: Vec<_> = items
+            .iter()
+            .filter_map(|i| i.request_id.as_deref())
+            .collect();
+        assert_eq!(ids, ["r1", "r2", "r3"]);
+        assert!(items.iter().all(|i| i.kind == QuickOpenKind::HttpRequest));
+        assert_eq!(
+            items[1].subtitle,
+            "GET • Shop / Auth • https://api.test/login"
+        );
+        // Request tanpa nama memakai path endpoint sebagai judul.
+        assert_eq!(items[2].title, "/admin/users");
+        assert!(items[2].subtitle.contains("Shop / Auth / Admin"));
+    }
+
+    #[test]
+    fn find_saved_request_searches_nested_folders() {
+        let ws = workspaces_fixture();
+        assert_eq!(
+            find_saved_request(&ws, "r3").map(|r| r.id.as_str()),
+            Some("r3")
+        );
+        assert_eq!(
+            find_saved_request(&ws, "r1").map(|r| r.id.as_str()),
+            Some("r1")
+        );
+        assert!(find_saved_request(&ws, "nope").is_none());
+    }
+
+    #[test]
+    fn diagram_filter_includes_tables_for_focus() {
+        let mut state = QuickOpenState::default();
+        state.items = vec![
+            diagram_item(1, "Local", "shop"),
+            QuickOpenItem::new(
+                "t".to_string(),
+                "orders".to_string(),
+                "Table".to_string(),
+                QuickOpenKind::Table,
+                Some(1),
+                None,
+                Some("shop".to_string()),
+                Some("orders".to_string()),
+                None,
+                None,
+                None,
+            ),
+            QuickOpenItem::new(
+                "v".to_string(),
+                "order_view".to_string(),
+                "View".to_string(),
+                QuickOpenKind::View,
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ];
+        state.set_category(Some(QuickOpenKind::Diagram));
+        let kinds: Vec<_> = state
+            .filtered_items
+            .iter()
+            .map(|(i, _)| state.items[*i].kind)
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert!(kinds.contains(&QuickOpenKind::Diagram));
+        assert!(kinds.contains(&QuickOpenKind::Table));
+        assert!(diagram_filter_active(&state));
+        assert!(state.items[1].supports_focus());
+        assert!(!state.items[0].supports_focus());
+
+        state.set_category(None);
+        state.query = "d:orders".to_string();
+        assert!(diagram_filter_active(&state));
     }
 
     #[test]

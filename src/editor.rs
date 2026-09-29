@@ -1344,7 +1344,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         &tabular.keymap,
         crate::keymap::Action::FindReplace,
     );
-    if trigger_find {
+    // Saat grid hasil yang terakhir diklik, ⌘F membuka Find in results.
+    if trigger_find && tabular.table_recently_clicked && !tabular.current_table_headers.is_empty() {
+        tabular.grid_ext.find.open = true;
+        tabular.grid_ext.find.focus_request = true;
+        ui.ctx().request_repaint();
+    } else if trigger_find {
         tabular.advanced_editor.show_find_replace = true;
         tabular.advanced_editor.focus_find_input = true;
         if tabular.selection_start < tabular.selection_end
@@ -10008,6 +10013,10 @@ pub(crate) fn process_query_result(
             tabular.table_bottom_view = models::structs::TableBottomView::Explain;
             tabular.show_message_panel = false;
             tabular.show_lint_panel = false;
+            // Riwayat plan per query untuk view Compare.
+            if data_table::looks_like_plan(query, &all_text) {
+                data_table::record_explain_plan(tabular, connection_id, query, &all_text);
+            }
         }
 
         // Persist into tab state

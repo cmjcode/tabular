@@ -1371,7 +1371,7 @@ pub(crate) fn delete_folder_from_workspaces(
 
 /// Load a saved request into an HTTP client tab.
 /// Automatically creates a new tab for different requests or switches to an existing tab if already open.
-fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
+pub(crate) fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
     let display_title = req.display_name();
 
     // 1. If a tab for this exact saved request is already open, switch to that tab and refresh it

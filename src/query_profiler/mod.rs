@@ -1,11 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod compare;
+mod compare_view;
 pub mod graph;
+pub mod history;
 pub mod parser;
 pub mod warnings;
 
-pub use graph::render_query_profiler;
+pub use graph::{
+    CompareAction, CompareContext, render_query_profiler, render_query_profiler_with_history,
+};
 pub use warnings::{ProfilerWarning, WarningCategory, WarningSeverity};
 
 /// Database engine detected for the EXPLAIN output
@@ -199,6 +204,47 @@ impl ExplainNode {
         self.children.iter().any(|c| c.has_disk_spill())
     }
 
+    /// Total waktu node untuk semua loop (ms). PostgreSQL melaporkan waktu per loop.
+    pub fn inclusive_time_ms(&self) -> Option<f64> {
+        self.actual_total_time
+            .map(|t| t * self.actual_loops.unwrap_or(1).max(1) as f64)
+    }
+
+    /// Cost milik node ini saja: total cost dikurangi total cost anak langsung.
+    pub fn self_cost(&self) -> f64 {
+        let children: f64 = self.children.iter().map(|c| c.total_cost).sum();
+        (self.total_cost - children).max(0.0)
+    }
+
+    /// Waktu milik node ini saja (ms), tanpa waktu anak. None bila plan tanpa ANALYZE.
+    pub fn self_time_ms(&self) -> Option<f64> {
+        let own = self.inclusive_time_ms()?;
+        let children: f64 = self
+            .children
+            .iter()
+            .filter_map(|c| c.inclusive_time_ms())
+            .sum();
+        Some((own - children).max(0.0))
+    }
+
+    /// Baris keluaran node: aktual (dikali loop) bila ada, selain itu estimasi planner.
+    pub fn output_rows(&self) -> u64 {
+        match self.actual_rows {
+            Some(r) => r.saturating_mul(self.actual_loops.unwrap_or(1).max(1)),
+            None => self.plan_rows,
+        }
+    }
+
+    /// Label ringkas untuk daftar dan chart: tipe node plus relasi/index bila ada.
+    pub fn short_label(&self) -> String {
+        match (&self.relation_name, &self.index_name) {
+            (Some(rel), Some(idx)) => format!("{} on {} ({})", self.node_type, rel, idx),
+            (Some(rel), None) => format!("{} on {}", self.node_type, rel),
+            (None, Some(idx)) => format!("{} ({})", self.node_type, idx),
+            (None, None) => self.node_type.clone(),
+        }
+    }
+
     /// Recursively collect all nodes in depth-first order
     pub fn collect_all_nodes<'a>(&'a self, list: &mut Vec<&'a ExplainNode>) {
         list.push(self);
@@ -271,6 +317,72 @@ impl ExplainSummary {
     }
 }
 
+/// Metrik yang bisa ditampilkan pada bar chart EXPLAIN (C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlanMetric {
+    #[default]
+    SelfCost,
+    SelfTime,
+    Rows,
+}
+
+impl PlanMetric {
+    pub const ALL: [PlanMetric; 3] = [Self::SelfCost, Self::SelfTime, Self::Rows];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SelfCost => "Self cost",
+            Self::SelfTime => "Self time",
+            Self::Rows => "Rows",
+        }
+    }
+
+    /// Nilai metrik untuk satu node; None bila plan tidak memuat data tersebut.
+    pub fn value(self, node: &ExplainNode) -> Option<f64> {
+        match self {
+            Self::SelfCost => Some(node.self_cost()),
+            Self::SelfTime => node.self_time_ms(),
+            Self::Rows => Some(node.output_rows() as f64),
+        }
+    }
+}
+
+/// Satu baris bar chart metrik: node dan nilainya, diurutkan menurun.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeMetricRow {
+    pub node_id: usize,
+    pub label: String,
+    pub value: f64,
+    pub share: f32, // 0.0 - 1.0 terhadap jumlah seluruh node
+}
+
+/// Menyusun baris bar chart untuk metrik tertentu, terbesar dulu.
+pub fn metric_rows(root: &ExplainNode, metric: PlanMetric) -> Vec<NodeMetricRow> {
+    let mut nodes = Vec::new();
+    root.collect_all_nodes(&mut nodes);
+    let mut rows: Vec<NodeMetricRow> = nodes
+        .iter()
+        .filter_map(|n| {
+            metric.value(n).map(|v| NodeMetricRow {
+                node_id: n.id,
+                label: n.short_label(),
+                value: v,
+                share: 0.0,
+            })
+        })
+        .collect();
+    let total: f64 = rows.iter().map(|r| r.value).sum();
+    for r in &mut rows {
+        r.share = if total > 0.0 {
+            (r.value / total) as f32
+        } else {
+            0.0
+        };
+    }
+    rows.sort_by(|a, b| b.value.total_cmp(&a.value));
+    rows
+}
+
 /// Main entry point to parse raw EXPLAIN output into a processed ExplainNode tree
 pub fn parse_explain(raw_plan: &str) -> Option<(ExplainNode, ExplainSummary)> {
     let (mut root, engine) = parser::parse_explain_raw(raw_plan)?;
@@ -315,5 +427,48 @@ fn calculate_percentages(node: &mut ExplainNode, max_cost: f64, max_duration: f6
 
     for child in &mut node.children {
         calculate_percentages(child, max_cost, max_duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(
+        cost: f64,
+        time: Option<f64>,
+        loops: Option<u64>,
+        children: Vec<ExplainNode>,
+    ) -> ExplainNode {
+        ExplainNode {
+            total_cost: cost,
+            actual_total_time: time,
+            actual_loops: loops,
+            children,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn self_cost_dan_self_time_mengurangi_anak() {
+        let child = node(40.0, Some(2.0), Some(5), vec![]);
+        let root = node(100.0, Some(15.0), Some(1), vec![child]);
+        assert_eq!(root.self_cost(), 60.0);
+        // Anak: 2 ms x 5 loop = 10 ms, sehingga root sendiri 5 ms.
+        assert_eq!(root.self_time_ms(), Some(5.0));
+        assert_eq!(root.children[0].self_time_ms(), Some(10.0));
+    }
+
+    #[test]
+    fn metric_rows_urut_menurun_dan_share() {
+        let mut root = node(100.0, None, None, vec![node(75.0, None, None, vec![])]);
+        root.id = 1;
+        root.children[0].id = 2;
+        let rows = metric_rows(&root, PlanMetric::SelfCost);
+        assert_eq!(rows[0].node_id, 2);
+        assert_eq!(rows[0].value, 75.0);
+        assert!((rows[0].share - 0.75).abs() < 1e-6);
+        // Tanpa ANALYZE tidak ada baris self time.
+        assert!(metric_rows(&root, PlanMetric::SelfTime).is_empty());
     }
 }

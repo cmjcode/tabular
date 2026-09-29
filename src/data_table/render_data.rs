@@ -27,6 +27,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
         tabular.current_table_headers = tab.result_headers.clone();
     }
 
+    // View Chart / Map / Explain menggantikan grid; bar paginasi tetap tampil untuk berpindah view.
+    if super::render_alternate_result_view(tabular, ui) {
+        render_pagination_bar(tabular, ui);
+        return;
+    }
+
     // 2. Jika ada kolom header: cek apakah 0 rows pada mode query atau ada data/browse mode
     if !tabular.current_table_headers.is_empty() {
         if tabular.current_table_data.is_empty() && !tabular.is_table_browse_mode {
@@ -145,14 +151,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                         {
                             tabular.sql_filter_text.clear();
                             tabular.visual_filter.conditions.clear();
+                            tabular.grid_ext.find.server_filter_active = false;
                             apply_sql_filter(tabular);
-                        }
-                        if tabular.spreadsheet_state.is_dirty {
-                            ui.separator();
-                            ui.colored_label(
-                                crate::window_egui::style::theme_warning(ui.ctx()),
-                                "Unsaved changes (⌘S)",
-                            );
                         }
                     },
                 );
@@ -160,12 +160,26 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                 if tabular.visual_filter.is_open {
                     render_visual_filter_panel(tabular, ui);
+                    super::grid_ui::render_saved_filters_bar(tabular, ui);
                     ui.add_space(4.0);
                 }
 
                 ui.separator();
                 ui.add_space(2.0);
             }
+
+            // Fitur grid: preferensi per tabel, action bar (find, kolom,
+            // rules, undo/redo, review & save), dan find bar.
+            let mut grid_req = super::grid_state::GridRequests::default();
+            super::grid_state::sync_table_context(tabular);
+            super::grid_ui::render_grid_action_bar(tabular, ui, &mut grid_req);
+            super::grid_ui::render_find_bar(tabular, ui);
+            ui.add_space(2.0);
+            let grid_marks = super::grid_ui::GridMarks::compute(tabular);
+            let has_custom_order = super::grid_state::column_order(tabular).is_some();
+            let db_type_for_menu = tabular
+                .current_connection_id
+                .and_then(|cid| super::grid_state::connection_db_type(tabular, cid));
 
             // Store sort state locally to avoid borrowing issues
             let current_sort_column = tabular.sort_column;
@@ -181,8 +195,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let mut cell_edit_text_update: Option<String> = None;
             // Defer any column width updates to avoid mut borrow in closures
             let mut deferred_width_updates: Vec<(usize, f32)> = Vec::new();
-            // Defer delete-row action to avoid mutable borrow inside UI closures
-            let mut delete_row_index_request: Option<usize> = None;
             let mut add_row_request: Option<usize> = None;
             let mut open_csv_import = false;
             let mut pin_toggle_requests: Vec<(String, bool)> = Vec::new();
@@ -233,20 +245,20 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 }
             }
 
-            // Compute display column ordering (pinned columns placed first)
-            let mut display_col_indices: Vec<usize> = Vec::with_capacity(headers.len());
-            let mut pinned_count = 0;
-            for (i, h) in headers.iter().enumerate() {
-                if tabular.pinned_columns.contains(h) {
-                    display_col_indices.push(i);
-                    pinned_count += 1;
-                }
-            }
-            for (i, h) in headers.iter().enumerate() {
-                if !tabular.pinned_columns.contains(h) {
-                    display_col_indices.push(i);
-                }
-            }
+            // Urutan tampil kolom: pinned dulu, kolom tersembunyi dibuang,
+            // urutan kustom (drag header) dihormati.
+            let display_col_indices: Vec<usize> = super::grid_model::display_order(
+                &headers,
+                &tabular.pinned_columns,
+                &super::grid_state::hidden_columns(tabular),
+                super::grid_state::column_order(tabular).as_deref(),
+            );
+            let pinned_count = display_col_indices
+                .iter()
+                .filter(|&&i| tabular.pinned_columns.contains(&headers[i]))
+                .count();
+            let mut header_rects: Vec<(usize, egui::Rect)> = Vec::new();
+            let mut header_drag_started: Option<usize> = None;
 
             // If this is an error table (usually 1 column, header contains "error"), set error column width to max
             let mut error_column_index: Option<usize> = None;
@@ -422,6 +434,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             let text_color = header_text_color;
                             let font_size = if metrics.is_touch { 14.0 } else { 13.0 };
                             let mut header_display_title = header.clone();
+                            let invisible_count =
+                                grid_marks.invisible_cols.get(&col_index).copied();
+                            if invisible_count.is_some() {
+                                header_display_title = format!("⚠ {}", header_display_title);
+                            }
                             if fk_info.is_some() {
                                 header_display_title = format!(
                                     "{} {}",
@@ -581,17 +598,28 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 };
                                 sort_requests.push((col_index, new_ascending));
                             }
+                            // Klik = pilih kolom; drag = ubah urutan kolom di grid.
                             let header_click_resp = ui.interact(
                                 label_rect,
                                 egui::Id::new(("col_hdr_s", col_index)),
-                                egui::Sense::click(),
+                                egui::Sense::click_and_drag(),
                             );
+                            header_rects.push((col_index, rect));
+                            if header_click_resp.drag_started() {
+                                header_drag_started = Some(col_index);
+                            }
                             if let Some(fk) = fk_info {
                                 header_click_resp.clone().on_hover_text(format!(
                                     "{} Foreign Key -> {}.{}",
                                     egui_icons::icons::ICON_LINK.codepoint,
                                     fk.referenced_table_name,
                                     fk.referenced_column_name
+                                ));
+                            }
+                            if let Some(count) = invisible_count {
+                                header_click_resp.clone().on_hover_text(format!(
+                                    "⚠ {} loaded value(s) contain invisible characters (tab, CR, NBSP or zero-width)",
+                                    count
                                 ));
                             }
                             if header_click_resp.clicked() {
@@ -640,6 +668,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                         sort_requests.push((col_index, new_ascending));
                                         ui.close();
                                     }
+                                    super::grid_ui::render_header_menu_extras(
+                                        ui,
+                                        header,
+                                        tabular.is_table_browse_mode,
+                                        has_custom_order,
+                                        &mut grid_req,
+                                    );
                                     if let Some(fk) = fk_info {
                                         ui.separator();
                                         ui.label(
@@ -689,6 +724,45 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     );
                     current_header_x += column_width;
                 }
+
+                // Drag header untuk mengubah urutan kolom (hanya tampilan grid).
+                if let Some(col) = header_drag_started {
+                    tabular.grid_ext.dragging_column = Some(col);
+                }
+                if let Some(moving) = tabular.grid_ext.dragging_column {
+                    let (pointer, down) =
+                        hdr_ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
+                    let target = pointer.and_then(|p| {
+                        header_rects
+                            .iter()
+                            .find(|(_, r)| p.x >= r.min.x && p.x < r.max.x)
+                            .map(|(c, r)| (*c, *r, p.x > r.center().x))
+                    });
+                    if down {
+                        if let Some((target_col, r, after)) = target
+                            && target_col != moving
+                        {
+                            let x = if after { r.max.x } else { r.min.x };
+                            hdr_ui.painter().with_clip_rect(header_alloc_rect).line_segment(
+                                [egui::pos2(x, r.min.y), egui::pos2(x, r.max.y)],
+                                egui::Stroke::new(
+                                    3.0,
+                                    crate::window_egui::style::theme_accent(hdr_ui.ctx()),
+                                ),
+                            );
+                        }
+                        hdr_ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    } else {
+                        if let Some((target_col, _, after)) = target
+                            && target_col != moving
+                            && let (Some(m), Some(t)) =
+                                (headers.get(moving), headers.get(target_col))
+                        {
+                            grid_req.reorder = Some((m.clone(), t.clone(), after));
+                        }
+                        tabular.grid_ext.dragging_column = None;
+                    }
+                }
             }
             // ── Data scroll area ────────────────────────────────────────────────────
             // Keep bottom scrollbar tight against the bottom pagination bar (zero gap)
@@ -735,6 +809,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let mut inspect_value_request: Option<(String, String, usize, usize)> = None;
             let mut open_plugin_modal = false;
             let tab: &window_egui::Tabular = &*tabular;
+            let resolved_rules = super::grid_model::resolve_rules(&grid_marks.rules, &headers);
 
             let scroll_out = egui::ScrollArea::both()
                 .id_salt("table_data_scroll")
@@ -764,9 +839,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     {
                         let is_selected_row = selected_rows.contains(&row_index)
                             || selected_row == Some(row_index);
-                        let is_newly_created = newly_created_rows.contains(&row_index);
+                        let is_pending_delete = grid_marks.deleted.contains(&row_index);
+                        let is_pending_insert = grid_marks.inserted.contains(&row_index);
+                        let is_newly_created =
+                            newly_created_rows.contains(&row_index) || is_pending_insert;
+                        let (rule_row_color, rule_cell_colors) =
+                            super::grid_model::evaluate_row_highlight(&resolved_rules, row);
 
-                        let row_color = if is_newly_created {
+                        let row_color = if is_pending_delete {
+                            super::grid_ui::pending_delete_tint(ui.visuals().dark_mode)
+                        } else if is_newly_created {
                             if ui.visuals().dark_mode {
                                 egui::Color32::from_rgba_unmultiplied(50, 200, 100, 40)
                             } else {
@@ -778,6 +860,8 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             } else {
                                 egui::Color32::from_rgba_unmultiplied(200, 220, 255, 80)
                             }
+                        } else if let Some(color) = rule_row_color {
+                            super::grid_ui::tint(color, ui.visuals().dark_mode, false)
                         } else {
                             egui::Color32::TRANSPARENT
                         };
@@ -873,7 +957,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     let is_selected_col =
                                         tab.selected_columns.contains(&col_index);
                                     let fk_info = fk_by_col_idx.get(&col_index);
-                                    let is_fk_link = fk_info.is_some() && !cell.is_empty() && cell != "NULL";
+                                    let is_raw_value = super::grid_model::as_raw_sql(&cell).is_some();
+                                    let is_fk_link = fk_info.is_some()
+                                        && !cell.is_empty()
+                                        && cell != "NULL"
+                                        && !is_raw_value;
+                                    let rule_cell_color = rule_cell_colors
+                                        .iter()
+                                        .find(|(c, _)| *c == col_index)
+                                        .map(|(_, color)| *color);
 
                                     let column_width = if Some(col_index) == error_column_index {
                                         get_column_width(tab, col_index).max(100.0)
@@ -932,6 +1024,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.painter().rect_filled(rect, 0.0, sel_color);
                                                 }
                                             }
+                                            // Penanda grid: sel diubah, hasil find, highlight rule.
+                                            super::grid_ui::paint_cell_marks(
+                                                ui,
+                                                rect,
+                                                &grid_marks,
+                                                rule_cell_color,
+                                                row_index,
+                                                col_index,
+                                            );
                                             let border_color = if ui.visuals().dark_mode {
                                                 egui::Color32::from_gray(60)
                                             } else {
@@ -989,15 +1090,18 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             }
                                             let max_chars =
                                                 ((column_width / 8.0).floor() as usize).max(10);
-                                            let display_text = if cell.chars().count() > max_chars {
+                                            let shown =
+                                                super::grid_model::display_value(&cell).into_owned();
+                                            let display_text = if shown.chars().count() > max_chars {
                                                 format!(
                                                     "{}...",
-                                                    cell.chars()
+                                                    shown
+                                                        .chars()
                                                         .take(max_chars.saturating_sub(3))
                                                         .collect::<String>()
                                                 )
                                             } else {
-                                                cell.clone()
+                                                shown.clone()
                                             };
                                             let cell_response = ui.allocate_response(
                                                 rect.size(),
@@ -1049,8 +1153,20 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell
                                                 ));
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                            } else if cell.chars().count() > max_chars || !cell.is_empty() {
-                                                cell_resp = cell_resp.on_hover_text(&cell);
+                                            } else if let Some(original) =
+                                                grid_marks.updated.get(&(row_index, col_index))
+                                            {
+                                                cell_resp = cell_resp.on_hover_text(format!(
+                                                    "{}\n\nOriginal value: {}",
+                                                    shown,
+                                                    super::grid_model::display_value(original)
+                                                ));
+                                            } else if is_pending_delete {
+                                                cell_resp = cell_resp.on_hover_text(
+                                                    "Row marked for deletion — Review & Save to commit, or Restore Row",
+                                                );
+                                            } else if shown.chars().count() > max_chars || !shown.is_empty() {
+                                                cell_resp = cell_resp.on_hover_text(&shown);
                                             }
 
                                             // Drag-to-select lifecycle
@@ -1264,9 +1380,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 }
                                             } else {
                                                 // Show normal cell text
-                                                let text_pos = rect.left_top()
-                                                    + egui::vec2(5.0, rect.height() * 0.5);
-
                                                 let col_type_hint = tab
                                                     .current_column_metadata
                                                     .as_ref()
@@ -1291,33 +1404,64 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 };
 
                                                 if is_null {
-                                                    let mut job = egui::text::LayoutJob::default();
-                                                    job.append(
+                                                    super::grid_ui::paint_cell_text(
+                                                        ui,
+                                                        rect,
                                                         &display_text,
-                                                        0.0,
-                                                        egui::TextFormat {
-                                                            color: draw_color,
-                                                            font_id: egui::FontId::proportional(12.5),
-                                                            italics: true,
-                                                            ..Default::default()
-                                                        },
+                                                        egui::FontId::proportional(12.5),
+                                                        draw_color,
+                                                        true,
+                                                        false,
+                                                        is_pending_delete,
                                                     );
-                                                    let text_galley = ui.painter().layout_job(job);
-                                                    let pos = egui::pos2(rect.left() + 5.0, rect.center().y - text_galley.size().y * 0.5);
-                                                    ui.painter().galley(pos, text_galley, draw_color);
+                                                } else if is_raw_value {
+                                                    // DEFAULT / NOW() / '' belum dikirim ke server.
+                                                    super::grid_ui::paint_cell_text(
+                                                        ui,
+                                                        rect,
+                                                        &display_text,
+                                                        egui::FontId::proportional(12.5),
+                                                        crate::window_egui::style::theme_accent(ui.ctx()),
+                                                        true,
+                                                        false,
+                                                        is_pending_delete,
+                                                    );
                                                 } else {
-                                                    ui.painter().text(
-                                                        text_pos,
-                                                        egui::Align2::LEFT_CENTER,
+                                                    super::grid_ui::paint_cell_text(
+                                                        ui,
+                                                        rect,
                                                         &display_text,
                                                         egui::FontId::default(),
                                                         draw_color,
+                                                        false,
+                                                        grid_marks.show_invisibles,
+                                                        is_pending_delete,
                                                     );
                                                 }
                                             }
                                             cell_resp.context_menu(|ui| {
                                                 ui.set_min_width(160.0);
                                                 ui.vertical(|ui| {
+                                                    let column_name = headers
+                                                        .get(col_index)
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    super::grid_ui::render_cell_menu_extras(
+                                                        ui,
+                                                        &super::grid_ui::CellMenuCtx {
+                                                            row: row_index,
+                                                            col: col_index,
+                                                            column: &column_name,
+                                                            value: &cell,
+                                                            browse: tab.is_table_browse_mode,
+                                                            fk: fk_info,
+                                                            pending_delete: is_pending_delete,
+                                                            pending_insert: is_pending_insert,
+                                                            db_type: db_type_for_menu.as_ref(),
+                                                            selected_rows: &tab.selected_rows,
+                                                        },
+                                                        &mut grid_req,
+                                                    );
                                                     if is_fk_link && let Some(fk) = fk_info && let Some(cid) = conn_id {
                                                         if ui.button(format!("{} Open {}.{} = '{}'", egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell)).clicked() {
                                                             fk_nav_request = Some((
@@ -1524,14 +1668,6 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         && ui.button("📥 Import CSV...").clicked()
                                                     {
                                                         open_csv_import = true;
-                                                        ui.close();
-                                                    }
-                                                    ui.separator();
-                                                    if tabular.is_table_browse_mode
-                                                        && ui.button("🗑 Delete this Row").clicked()
-                                                    {
-                                                        // Defer the actual deletion until after the grid borrow ends
-                                                        delete_row_index_request = Some(row_index);
                                                         ui.close();
                                                     }
                                                 });
@@ -2123,16 +2259,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                 tabular.show_csv_import_dialog = true;
             }
 
-            // Perform deferred delete after UI borrows are released
-            if let Some(ri) = delete_row_index_request.take() {
-                // Ensure the row intended for deletion is selected, then delete
-                tabular.selected_row = Some(ri);
-                tabular.spreadsheet_delete_selected_row();
-            }
-
             if let Some(_ri) = add_row_request.take() {
                 tabular.spreadsheet_add_row();
             }
+
+            // Aksi fitur grid (menu, shortcut, drag header) setelah borrow render selesai.
+            super::grid_ui::handle_grid_shortcuts(tabular, ui, &mut grid_req);
+            super::grid_state::apply_grid_requests(tabular, grid_req);
 
             for (column_index, ascending) in sort_requests {
                 sort_table_data(tabular, column_index, ascending);

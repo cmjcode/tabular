@@ -9,6 +9,16 @@ pub struct DiagramSchemaJob {
     rx: std::sync::mpsc::Receiver<Result<crate::diagram_schema::SchemaSnapshot, String>>,
 }
 
+/// Tab diagram fokus (tabel + relasinya) yang dibuka sebelum diagram
+/// database-nya ada di cache; diisi saat skema (conn, db) selesai diambil.
+pub struct DiagramFocusRequest {
+    conn_id: i64,
+    db_name: String,
+    table: String,
+    /// [`models::structs::QueryTab::id`] tab placeholder.
+    tab_id: usize,
+}
+
 /// Pemindaian repository untuk saran tabel sebuah group diagram.
 pub struct DiagramRepoScanJob {
     conn_id: Option<i64>,
@@ -874,6 +884,174 @@ impl super::Tabular {
         );
     }
 
+    /// Tampilkan diagram penuh (conn, db): pindah ke tab yang sudah terbuka,
+    /// atau buka tab baru.
+    pub fn show_database_diagram(&mut self, conn_id: i64, db_name: String) {
+        match self
+            .query_tabs
+            .iter()
+            .position(|t| Self::is_diagram_host_tab(t, conn_id, &db_name))
+        {
+            Some(idx) => crate::editor::switch_to_tab(self, idx),
+            None => self.open_database_diagram(conn_id, db_name),
+        }
+    }
+
+    /// Buka tab baru berisi `table` dan semua tabel yang berelasi dengannya.
+    /// Sumber diagram: tab diagram penuh yang terbuka, lalu cache lokal. Bila
+    /// keduanya belum memuat tabel itu, tab placeholder dibuka dan diisi
+    /// setelah skema live selesai diambil di background.
+    pub fn open_table_focus_diagram(&mut self, conn_id: i64, db_name: String, table: String) {
+        let open_host = self
+            .query_tabs
+            .iter()
+            .find(|t| Self::is_diagram_host_tab(t, conn_id, &db_name))
+            .and_then(|t| t.diagram_state.clone());
+        let source = match open_host {
+            Some(s) => Some(s),
+            None => self.load_prepared_diagram(conn_id, &db_name).map(|mut s| {
+                self.materialize_links(&mut s, None);
+                s
+            }),
+        };
+        if let Some(src) = source
+            && let Some(id) = crate::diagram_view::find_table_id(&src, &table)
+        {
+            self.open_focus_subset_tab(Some(conn_id), Some(db_name), &src, &id);
+            return;
+        }
+
+        let placeholder = models::structs::DiagramState {
+            scoped_to: Some(table.clone()),
+            schema_syncing: true,
+            ..Default::default()
+        };
+        self.open_subset_tab(
+            Some(conn_id),
+            Some(db_name.clone()),
+            format!("Diagram: {table} + related"),
+            placeholder,
+        );
+        if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
+            self.diagram_focus_requests.push(DiagramFocusRequest {
+                conn_id,
+                db_name: db_name.clone(),
+                table,
+                tab_id: tab.id,
+            });
+        }
+        self.request_diagram_schema(conn_id, &db_name);
+    }
+
+    /// Ambil request fokus yang menunggu skema (conn, db).
+    fn take_focus_requests(&mut self, conn_id: i64, db_name: &str) -> Vec<DiagramFocusRequest> {
+        let (done, rest) = std::mem::take(&mut self.diagram_focus_requests)
+            .into_iter()
+            .partition(|r| r.conn_id == conn_id && r.db_name == db_name);
+        self.diagram_focus_requests = rest;
+        done
+    }
+
+    /// Isi tab placeholder fokus setelah skema (conn, db) tersedia.
+    fn resolve_focus_requests(
+        &mut self,
+        conn_id: i64,
+        db_name: &str,
+        snapshot: &crate::diagram_schema::SchemaSnapshot,
+        conn_name: Option<&str>,
+    ) {
+        let requests = self.take_focus_requests(conn_id, db_name);
+        if requests.is_empty() {
+            return;
+        }
+        let open_host = self
+            .query_tabs
+            .iter()
+            .find(|t| Self::is_diagram_host_tab(t, conn_id, db_name))
+            .and_then(|t| t.diagram_state.clone());
+        let source = match open_host {
+            Some(s) => s,
+            None => {
+                let mut st = self.build_schema_source(conn_id, db_name, snapshot, conn_name);
+                self.materialize_links(&mut st, None);
+                st
+            }
+        };
+        for req in requests {
+            let Some(tab) = self.query_tabs.iter_mut().find(|t| t.id == req.tab_id) else {
+                continue; // tab sudah ditutup user
+            };
+            match crate::diagram_view::find_table_id(&source, &req.table) {
+                Some(id) => {
+                    let subset = crate::diagram_view::focus_subset_state(&source, &id);
+                    log::info!(
+                        "[DIAGRAM] focus '{}' ready with {} table(s)",
+                        req.table,
+                        subset.nodes.len()
+                    );
+                    tab.diagram_state = Some(subset);
+                }
+                None => {
+                    if let Some(st) = tab.diagram_state.as_mut() {
+                        st.schema_syncing = false;
+                    }
+                    self.toasts.warning(format!(
+                        "Table '{}' not found in the diagram of '{db_name}'",
+                        req.table
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Skema live gagal diambil: hentikan indikator sync tab fokus terkait.
+    fn fail_focus_requests(&mut self, conn_id: i64, db_name: &str, error: &str) {
+        let requests = self.take_focus_requests(conn_id, db_name);
+        for req in &requests {
+            if let Some(st) = self
+                .query_tabs
+                .iter_mut()
+                .find(|t| t.id == req.tab_id)
+                .and_then(|t| t.diagram_state.as_mut())
+            {
+                st.schema_syncing = false;
+            }
+        }
+        if let Some(req) = requests.first() {
+            self.toasts.warning(format!(
+                "Could not load diagram for '{}': {error}",
+                req.table
+            ));
+        }
+    }
+
+    /// State diagram (conn, db) dari layout bersama / cache lokal yang
+    /// digabung dengan skema live, lalu disimpan agar pembukaan berikutnya
+    /// instan. Dipakai saat tab diagram database tersebut tidak terbuka.
+    fn build_schema_source(
+        &mut self,
+        conn_id: i64,
+        db_name: &str,
+        snapshot: &crate::diagram_schema::SchemaSnapshot,
+        conn_name: Option<&str>,
+    ) -> models::structs::DiagramState {
+        use crate::diagram_schema::{merge_schema, prepare_stored_state};
+        let mut st = match snapshot.shared_state.clone() {
+            Some(mut shared) => {
+                prepare_stored_state(&mut shared, conn_id, db_name);
+                shared
+            }
+            None => self
+                .load_prepared_diagram(conn_id, db_name)
+                .unwrap_or_default(),
+        };
+        merge_schema(&mut st, snapshot, conn_id, db_name, conn_name);
+        if !st.nodes.is_empty() {
+            self.save_diagram(conn_id, db_name, &st);
+        }
+        st
+    }
+
     /// Sumber untuk tab subset: bila `state` sendiri sudah subset, pakai tab
     /// diagram penuh milik (conn, db) agar tabel/relasi di luar subset ikut.
     fn subset_source<'a>(
@@ -1079,6 +1257,8 @@ impl super::Tabular {
             ));
         }
 
+        self.resolve_focus_requests(conn_id, db_name, snapshot, conn_name.as_deref());
+
         let linked = self.query_tabs.iter().any(|t| {
             t.diagram_state.as_ref().is_some_and(|s| {
                 s.linked_databases
@@ -1091,25 +1271,9 @@ impl super::Tabular {
         }
         let source = match source {
             Some(s) => s,
-            None => {
-                // Tab database sumber tidak terbuka: bangun dari layout
-                // bersama / cache lokal, lalu simpan supaya pembukaan
-                // berikutnya instan.
-                let mut st = match snapshot.shared_state.clone() {
-                    Some(mut shared) => {
-                        prepare_stored_state(&mut shared, conn_id, db_name);
-                        shared
-                    }
-                    None => self
-                        .load_prepared_diagram(conn_id, db_name)
-                        .unwrap_or_default(),
-                };
-                merge_schema(&mut st, snapshot, conn_id, db_name, conn_name.as_deref());
-                if !st.nodes.is_empty() {
-                    self.save_diagram(conn_id, db_name, &st);
-                }
-                st
-            }
+            // Tab database sumber tidak terbuka: bangun dari layout bersama /
+            // cache lokal.
+            None => self.build_schema_source(conn_id, db_name, snapshot, conn_name.as_deref()),
         };
         if source.nodes.is_empty() {
             self.fail_diagram_links(
@@ -1138,6 +1302,7 @@ impl super::Tabular {
     /// Pengambilan skema (conn, db) gagal: tampilan cache dipertahankan.
     fn fail_diagram_schema(&mut self, conn_id: i64, db_name: &str, error: String) {
         log::warn!("[DIAGRAM] schema of '{db_name}' not refreshed: {error}");
+        self.fail_focus_requests(conn_id, db_name, &error);
         let mut was_syncing = false;
         for tab in &mut self.query_tabs {
             if Self::is_diagram_host_tab(tab, conn_id, db_name)

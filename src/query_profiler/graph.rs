@@ -1,4 +1,5 @@
-use super::{ExplainNode, ExplainSummary, ProfilerWarning, parse_explain};
+use super::history::PlanSnapshot;
+use super::{ExplainNode, ExplainSummary, PlanMetric, ProfilerWarning, parse_explain};
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 use std::collections::HashSet;
 
@@ -8,6 +9,8 @@ pub enum ProfilerViewMode {
     VisualGraph,
     TreeList,
     Advisor,
+    Metrics,
+    Compare,
     RawPlan,
 }
 
@@ -21,6 +24,9 @@ pub struct QueryProfilerState {
     pub pan_offset: Vec2,
     pub is_dragging: bool,
     pub collapsed_nodes: HashSet<usize>,
+    pub metric: PlanMetric,
+    /// Id snapshot yang dipilih sebagai baseline Compare; None = pilihan default.
+    pub compare_baseline: Option<i64>,
 }
 
 impl Default for QueryProfilerState {
@@ -33,12 +39,38 @@ impl Default for QueryProfilerState {
             pan_offset: Vec2::ZERO,
             is_dragging: false,
             collapsed_nodes: HashSet::new(),
+            metric: PlanMetric::default(),
+            compare_baseline: None,
         }
     }
 }
 
+/// Riwayat plan untuk view Compare, disiapkan pemanggil dari cache aplikasi.
+pub struct CompareContext<'a> {
+    /// Plan tersimpan untuk query yang sama, terbaru dulu.
+    pub snapshots: &'a [PlanSnapshot],
+    /// Id snapshot yang mewakili plan yang sedang ditampilkan.
+    pub current_id: Option<i64>,
+}
+
+/// Aksi dari view Compare yang harus dijalankan pemanggil (menyentuh database).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareAction {
+    SetPinned { id: i64, pinned: bool },
+}
+
 /// Entry point to render the full Visual Execution Profiler & Query Intelligence interface
 pub fn render_query_profiler(ui: &mut egui::Ui, raw_plan: &str) {
+    let _ = render_query_profiler_with_history(ui, raw_plan, None);
+}
+
+/// Sama seperti `render_query_profiler`, dengan riwayat plan untuk view Compare.
+pub fn render_query_profiler_with_history(
+    ui: &mut egui::Ui,
+    raw_plan: &str,
+    compare: Option<CompareContext<'_>>,
+) -> Option<CompareAction> {
+    let mut action = None;
     let state_id = ui.id().with("query_profiler_state");
     let mut state = ui.data_mut(|d| {
         d.get_temp::<QueryProfilerState>(state_id)
@@ -66,6 +98,17 @@ pub fn render_query_profiler(ui: &mut egui::Ui, raw_plan: &str) {
                     ProfilerViewMode::Advisor => {
                         render_advisor_view(ui, &root, &summary, &mut state);
                     }
+                    ProfilerViewMode::Metrics => {
+                        super::compare_view::render_metrics_view(ui, &root, &mut state);
+                    }
+                    ProfilerViewMode::Compare => {
+                        action = super::compare_view::render_compare_view(
+                            ui,
+                            &root,
+                            compare.as_ref(),
+                            &mut state,
+                        );
+                    }
                     ProfilerViewMode::RawPlan => {
                         render_raw_plan_view(ui, raw_plan);
                     }
@@ -76,6 +119,7 @@ pub fn render_query_profiler(ui: &mut egui::Ui, raw_plan: &str) {
         });
 
     ui.data_mut(|d| d.insert_temp(state_id, state));
+    action
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +170,19 @@ fn render_profiler_header(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // View Mode Selector
             ui.selectable_value(&mut state.view_mode, ProfilerViewMode::RawPlan, "📝 Raw");
+            ui.selectable_value(
+                &mut state.view_mode,
+                ProfilerViewMode::Compare,
+                format!(
+                    "{} Compare",
+                    egui_icons::icons::ICON_COMPARE_ARROWS.codepoint
+                ),
+            );
+            ui.selectable_value(
+                &mut state.view_mode,
+                ProfilerViewMode::Metrics,
+                format!("{} Metrics", egui_icons::icons::ICON_BAR_CHART.codepoint),
+            );
             ui.selectable_value(
                 &mut state.view_mode,
                 ProfilerViewMode::Advisor,
@@ -714,7 +771,7 @@ fn get_badge_info(node_type: &str) -> (&'static str, Color32) {
     }
 }
 
-fn get_cost_color(pct: f32) -> Color32 {
+pub(super) fn get_cost_color(pct: f32) -> Color32 {
     if pct >= 75.0 {
         Color32::from_rgb(244, 67, 54) // Red
     } else if pct >= 45.0 {

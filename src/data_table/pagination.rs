@@ -441,6 +441,28 @@ pub(crate) fn render_footer_view_buttons(tabular: &mut window_egui::Tabular, ui:
                 tabular.show_lint_panel = false;
             }
 
+            // Chart & Map (hanya bila ada baris; Map hanya bila ada kolom geometry)
+            let has_rows =
+                !tabular.current_table_headers.is_empty() && !tabular.current_table_data.is_empty();
+            if has_rows {
+                super::render_view_toggle(
+                    tabular,
+                    ui,
+                    crate::models::structs::TableBottomView::Chart,
+                    format!("{} Chart", egui_icons::icons::ICON_BAR_CHART.codepoint),
+                    button_height,
+                );
+                if super::has_geometry_column(tabular) {
+                    super::render_view_toggle(
+                        tabular,
+                        ui,
+                        crate::models::structs::TableBottomView::Map,
+                        format!("{} Map", egui_icons::icons::ICON_MAP.codepoint),
+                        button_height,
+                    );
+                }
+            }
+
             // Explain Button (shown if EXPLAIN output present)
             let has_explain = tabular
                 .query_tabs

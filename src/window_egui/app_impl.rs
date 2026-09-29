@@ -4951,6 +4951,11 @@ impl App for Tabular {
                     crate::quick_open::navigate_quick_open(self, -8);
                 } else if i.key_pressed(egui::Key::Tab) {
                     crate::quick_open::cycle_filter_category(self);
+                } else if i.key_pressed(egui::Key::Enter)
+                    && i.modifiers.shift
+                    && !quick_open_search_pending
+                {
+                    crate::quick_open::focus_selected_quick_open(self);
                 } else if i.key_pressed(egui::Key::Enter) && !quick_open_search_pending {
                     crate::quick_open::execute_selected_quick_open(self);
                 }
@@ -5004,6 +5009,8 @@ impl App for Tabular {
                     self.show_command_palette = false;
                     self.command_palette_input.clear();
                     self.command_palette_selected_index = 0;
+                } else if self.grid_ext.close_topmost_overlay() {
+                    // Dialog/overlay grid (review SQL, find, jump, picker) ditutup dulu.
                 } else if self.spreadsheet_state.editing_cell.is_some() {
                     // If currently editing a cell, cancel the in-progress edit only
                     self.spreadsheet_finish_cell_edit(false);
@@ -5016,18 +5023,8 @@ impl App for Tabular {
                         self.spreadsheet_state.pending_operations.len(),
                         self.spreadsheet_state.is_dirty
                     );
-                    self.reset_spreadsheet_state();
-
-                    // Reload table view to revert any in-memory edits
-                    if self.is_table_browse_mode {
-                        // Ensure we stay in table browse mode so double-click editing works
-                        self.is_table_browse_mode = true;
-                        if self.use_server_pagination && !self.current_base_query.is_empty() {
-                            self.execute_paginated_query();
-                        } else {
-                            data_table::refresh_current_table_data(self);
-                        }
-                    }
+                    // Data dikembalikan lewat undo stack lalu tabel dimuat ulang.
+                    data_table::grid_state::discard_pending_changes(self);
                 } else {
                     // Clear selections in table
                     self.selected_rows.clear();
@@ -5064,7 +5061,8 @@ impl App for Tabular {
                 );
                 // Hasil simpan (sukses/gagal) dilaporkan oleh callback job di
                 // execute_spreadsheet_sql karena penyimpanan berjalan di latar belakang.
-                self.spreadsheet_save_changes();
+                // Tampilkan review SQL dulu (B1); commit terjadi dari dialog.
+                data_table::grid_state::request_save_review(self);
             } else if !self.query_tabs.is_empty() {
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
 
@@ -5405,6 +5403,7 @@ impl App for Tabular {
         dialog::render_parameter_dialog(self, ctx);
         dialog::render_unsafe_dml_dialog(self, ctx);
         crate::data_table::render_cell_inspector(self, ctx);
+        crate::data_table::grid_ui::render_grid_windows(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_rename_query_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);

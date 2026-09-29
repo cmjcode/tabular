@@ -1004,6 +1004,10 @@ pub struct DiagramState {
     /// disinkronkan skema, atau dipakai sebagai sumber link.
     #[serde(skip)]
     pub scoped_to: Option<String>,
+    /// Tabel asal diagram fokus (tab "<tabel> + related"); digambar dengan
+    /// glow agar mudah ditemukan di antara tabel yang berelasi.
+    #[serde(skip)]
+    pub focus_origin: Option<String>,
     /// Modal pengaturan repository group yang sedang terbuka.
     #[serde(skip)]
     pub group_repo_editor: Option<GroupRepoDraft>,
@@ -1261,6 +1265,7 @@ impl Default for DiagramState {
             relations_panel: None,
             relations_panel_query: String::new(),
             scoped_to: None,
+            focus_origin: None,
             group_repo_editor: None,
             group_table_suggestions: None,
             group_table_picker: None,
@@ -1824,6 +1829,10 @@ pub enum TableBottomView {
     Query,
     Messages,
     Explain,
+    /// Chart dari hasil query (egui_plot).
+    Chart,
+    /// Peta untuk kolom geometry.
+    Map,
 }
 
 // Simplified column info for Structure tab (can be extended later per RDBMS)
