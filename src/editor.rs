@@ -4621,6 +4621,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tabular.suppress_editor_arrow_once = false;
     }
 
+    // Index Check: status index statement di kursor (panel terpisah dari autocomplete)
+    {
+        let cursor_char_idx = {
+            let s = &tabular.editor.text;
+            let clamp = tabular.cursor_position.min(s.len());
+            s[..clamp].chars().count()
+        };
+        let caret_line_rect = galley
+            .pos_from_cursor(CCursor::new(cursor_char_idx))
+            .translate(galley_pos.to_vec2());
+        let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
+        let anchor = egui::pos2(
+            response.rect.left() + 48.0,
+            caret_line_rect.top() + line_h + 6.0,
+        );
+        crate::index_check::show(tabular, ui, anchor, response.rect);
+    }
+
     // Render autocomplete popup positioned under cursor
     if tabular.show_autocomplete && !tabular.autocomplete_suggestions.is_empty() {
         let cursor_char_idx = {

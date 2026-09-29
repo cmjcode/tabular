@@ -411,6 +411,8 @@ pub struct Tabular {
         std::sync::Arc<std::collections::HashMap<String, Vec<crate::autocomplete::IndexDef>>>,
     >,
     pub autocomplete_indexes_requested: std::collections::HashSet<(i64, String)>,
+    /// Panel Index Check (status index statement di kursor, muncul otomatis).
+    pub index_check: crate::index_check::IndexCheckState,
     /// Rekomendasi performa untuk statement di kursor, tampil di kaki popup.
     pub autocomplete_hint: Option<crate::autocomplete::IndexAdvice>,
     // Background receiver and sender for non-blocking autocomplete warm tasks

@@ -361,8 +361,20 @@ fn start_view_animation(state: &mut DiagramState, node_id: &str, view_size: egui
     let Some(node) = state.nodes.iter().find(|n| n.id == node_id) else {
         return;
     };
-    let to_zoom = FOCUS_ZOOM.clamp(MIN_ZOOM, MAX_ZOOM);
     let center = node.pos + node.size / 2.0;
+    animate_view_to(state, center, FOCUS_ZOOM, view_size, now);
+}
+
+/// Mulai animasi viewport yang menaruh titik diagram `center` di tengah
+/// layar dengan zoom `to_zoom`.
+pub(crate) fn animate_view_to(
+    state: &mut DiagramState,
+    center: egui::Pos2,
+    to_zoom: f32,
+    view_size: egui::Vec2,
+    now: f64,
+) {
+    let to_zoom = to_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     state.view_anim = Some(DiagramViewAnimation {
         from_pan: state.pan,
         to_pan: pan_to_center(center, view_size, to_zoom),
@@ -3042,9 +3054,14 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     // Render Search Box
     if state.show_search {
+        // Sorotan objek yang baru dipilih dari list hasil, di bawah kartu search.
+        crate::diagram_search::draw_highlight(ui, state, rect, now);
+
         // Two-row card layout: search field + close button on row 1, filter checkboxes on row 2
-        let search_rect =
-            egui::Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(295.0, 70.0));
+        let search_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(20.0, 20.0),
+            egui::vec2(crate::diagram_search::PANEL_WIDTH, 70.0),
+        );
 
         let card_fill = ui.visuals().window_fill;
         let card_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
@@ -3202,6 +3219,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 });
             },
         );
+
+        // List hasil (Table / Column / Group) di bawah kartu search.
+        if state.show_search {
+            crate::diagram_search::render_results_panel(ui, state, rect, search_rect, now);
+        }
 
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             state.show_search = false;

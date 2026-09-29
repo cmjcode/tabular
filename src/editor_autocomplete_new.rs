@@ -774,6 +774,52 @@ fn live_index_hint(
     advice.into_iter().next()
 }
 
+/// Hasil [`statement_report`].
+pub enum ReportStatus {
+    /// Tab bukan SQL atau belum ada koneksi: tidak ada yang dianalisis.
+    Unavailable,
+    /// Metadata index/kolom sedang dimuat di background; coba lagi sebentar.
+    Loading,
+    Ready(autocomplete::QueryReport),
+}
+
+/// Analisis index untuk satu statement (panel Query Insight). Tidak pernah
+/// blocking: metadata yang belum ada dimuat di background.
+pub fn statement_report(app: &mut Tabular, sql: &str) -> ReportStatus {
+    let (cid, db) = active_connection(app);
+    let (Some(cid), Some(dialect)) = (cid, dialect_for(app, cid)) else {
+        return ReportStatus::Unavailable;
+    };
+    let Some(indexes) = index_map(app, cid, &db) else {
+        return if app.autocomplete_indexes_requested.contains(&(cid, db)) {
+            ReportStatus::Loading
+        } else {
+            ReportStatus::Unavailable
+        };
+    };
+    // Kolom tabel dipakai untuk me-resolve kolom tanpa qualifier; muat bila belum ada
+    let mut loading = false;
+    // Spasi penutup: kursor di luar token terakhir (mis. angka `LIMIT 10`)
+    let padded = format!("{sql} ");
+    for t in autocomplete::analyze(&padded, padded.len(), dialect).referenced_tables() {
+        get_cached_columns(app, cid, &db, &t);
+        loading |= app
+            .autocomplete_cols_pending
+            .contains(&(cid, db.clone(), t));
+    }
+    if loading {
+        return ReportStatus::Loading;
+    }
+    let cat = advisor_catalog(app, cid, &db, indexes);
+    ReportStatus::Ready(autocomplete::report(sql, dialect, &cat))
+}
+
+/// Dialek SQL tab aktif; `None` untuk tab non-SQL.
+pub fn active_dialect(app: &Tabular) -> Option<Dialect> {
+    let (cid, _) = active_connection(app);
+    dialect_for(app, cid)
+}
+
 /// Pelajari query yang baru dieksekusi supaya ranking langsung ikut berubah.
 pub fn learn_executed_query(app: &mut Tabular, connection_id: i64, query: &str) {
     let Some(dialect) = dialect_for(app, Some(connection_id)) else {

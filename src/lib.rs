@@ -31,6 +31,7 @@ pub mod diagram_relation_editor;
 pub mod diagram_repo;
 pub mod diagram_repo_paths;
 pub mod diagram_schema;
+pub mod diagram_search;
 pub mod diagram_storage;
 pub mod diagram_view;
 pub mod dialog;
@@ -47,6 +48,7 @@ pub mod driver_sqlite;
 pub mod editor;
 pub mod editor_autocomplete;
 pub mod editor_autocomplete_new; // temporary clean implementation backing the shim
+pub mod index_check;
 pub mod editor_buffer;
 pub mod editor_selection;
 pub mod editor_state_adapter;

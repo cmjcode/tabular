@@ -67,6 +67,9 @@ pub struct Card {
     pub lane: usize,
     pub rect: Rect,
     pub rows: Vec<CardRow>,
+    /// Nama tabel fisik (boleh diawali schema) untuk kartu tabel sumber/target;
+    /// dipakai mencocokkan temuan index ke baris kolom.
+    pub table: Option<String>,
 }
 
 impl Card {
@@ -182,6 +185,7 @@ fn new_card(
         lane,
         rect: Rect::from_min_size(Pos2::ZERO, vec2(w, h)),
         rows,
+        table: None,
     }
 }
 
@@ -335,14 +339,11 @@ pub fn build_layout(model: &QueryDiagramModel) -> QueryLayout {
         } else {
             LANE_SOURCE
         };
-        cards.push(new_card(
-            &t.id,
-            t.title(),
-            badge,
-            CardRole::Source,
-            lane,
-            rows,
-        ));
+        let mut card = new_card(&t.id, t.title(), badge, CardRole::Source, lane, rows);
+        if t.kind == SourceKind::Table {
+            card.table = Some(t.table.clone());
+        }
+        cards.push(card);
     }
 
     // Tahap WHERE: menyaring baris.
@@ -719,14 +720,9 @@ pub fn build_layout(model: &QueryDiagramModel) -> QueryLayout {
             }
             .to_string()
         });
-        cards.push(new_card(
-            &t.id,
-            t.title(),
-            badge,
-            CardRole::Target,
-            LANE_TARGET,
-            rows,
-        ));
+        let mut card = new_card(&t.id, t.title(), badge, CardRole::Target, LANE_TARGET, rows);
+        card.table = Some(t.table.clone());
+        cards.push(card);
     }
 
     position_cards(&mut cards);
@@ -1369,6 +1365,20 @@ mod tests {
 
     fn card<'a>(l: &'a QueryLayout, id: &str) -> &'a Card {
         &l.cards[l.card_index(id).unwrap()]
+    }
+
+    #[test]
+    fn table_cards_carry_physical_table_name() {
+        let l = layout("SELECT a.x FROM app.orders a JOIN users u ON u.id = a.user_id");
+        assert_eq!(card(&l, "a").table.as_deref(), Some("app.orders"));
+        assert_eq!(card(&l, "u").table.as_deref(), Some("users"));
+        // kartu tahap (bukan tabel) tidak punya nama tabel
+        assert!(
+            l.cards
+                .iter()
+                .filter(|c| c.role != CardRole::Source && c.role != CardRole::Target)
+                .all(|c| c.table.is_none())
+        );
     }
 
     fn stage_labels(l: &QueryLayout) -> Vec<String> {

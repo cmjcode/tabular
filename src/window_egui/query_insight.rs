@@ -12,7 +12,7 @@ use super::Tabular;
 use crate::models::enums::DatabaseType;
 use crate::query_diagram::layout::{QueryLayout, build_layout};
 use crate::query_diagram::render::{
-    QueryDiagramView, floating_bar, floating_window, floating_window_at_bottom,
+    ColumnIssue, QueryDiagramView, floating_bar, floating_window, floating_window_at_bottom,
     render_query_diagram,
 };
 use crate::query_diagram::{self, QueryDiagramModel, prompt};
@@ -52,6 +52,8 @@ pub struct QueryInsight {
     pub show_ai: bool,
     pub notice: Option<String>,
     md_cache: egui_commonmark::CommonMarkCache,
+    /// Metadata index masih dimuat; temuan index diisi begitu tersedia.
+    index_pending: bool,
 }
 
 /// Aksi yang dijalankan setelah panel selesai digambar (butuh `&mut Tabular`).
@@ -162,6 +164,7 @@ fn analyze_into(tabular: &mut Tabular, tab_id: usize, sql: String) {
         show_ai: false,
         notice: None,
         md_cache: egui_commonmark::CommonMarkCache::default(),
+        index_pending: false,
     };
     // Jendela floating yang sedang terbuka tetap terbuka saat dianalisis ulang.
     if let Some(prev) = tabular.query_insights.get(&tab_id) {
@@ -179,6 +182,13 @@ fn analyze_into(tabular: &mut Tabular, tab_id: usize, sql: String) {
             insight.hints = prompt::quick_hints(&model);
             insight.layout = Some(build_layout(&model));
             insight.model = Some(model);
+            match index_issues(tabular, &insight.sql) {
+                Some((issues, hints)) => {
+                    insight.view.issues = issues;
+                    insight.hints.extend(hints);
+                }
+                None => insight.index_pending = true,
+            }
         }
         Err(e) => {
             log::debug!("[QUERY_DIAGRAM] analisis gagal: {e}");
@@ -186,6 +196,88 @@ fn analyze_into(tabular: &mut Tabular, tab_id: usize, sql: String) {
         }
     }
     tabular.query_insights.insert(tab_id, insight);
+}
+
+/// Temuan Index Check untuk statement: kolom yang ditandai glow di diagram
+/// dan ringkasan untuk daftar hint / prompt AI. `None` bila metadata index
+/// masih dimuat (dicoba lagi di frame berikutnya).
+fn index_issues(tabular: &mut Tabular, sql: &str) -> Option<(Vec<ColumnIssue>, Vec<String>)> {
+    use crate::editor_autocomplete::ReportStatus;
+    let report = match crate::editor_autocomplete::statement_report(tabular, sql) {
+        ReportStatus::Ready(r) => r,
+        ReportStatus::Loading => return None,
+        ReportStatus::Unavailable => return Some((Vec::new(), Vec::new())),
+    };
+    let mut issues: Vec<ColumnIssue> = Vec::new();
+    for u in &report.usages {
+        let (status, good) = crate::index_check::status_text(&u.status);
+        if good != Some(false) && u.defeated_by.is_none() {
+            continue;
+        }
+        let mut message = match &u.defeated_by {
+            Some(why) => format!("{status}, but {why}: index not used"),
+            None => status,
+        };
+        message.push_str(&format!(" (used in {})", u.used_in));
+        // SQL perbaikan yang menyebut kolom ini
+        if let Some(ddl) = report
+            .advice
+            .iter()
+            .filter(|a| a.table.eq_ignore_ascii_case(&u.table))
+            .filter_map(|a| a.ddl.as_deref())
+            .find(|d| d.to_lowercase().contains(&u.column.to_lowercase()))
+        {
+            message.push_str(&format!("\nFix: {ddl}"));
+        }
+        match issues.iter_mut().find(|i| {
+            i.table.eq_ignore_ascii_case(&u.table) && i.column.eq_ignore_ascii_case(&u.column)
+        }) {
+            Some(existing) => {
+                existing.message.push('\n');
+                existing.message.push_str(&message);
+            }
+            None => issues.push(ColumnIssue {
+                table: u.table.clone(),
+                column: u.column.clone(),
+                message,
+            }),
+        }
+    }
+    let hints = report
+        .advice
+        .iter()
+        .map(|a| match &a.ddl {
+            Some(ddl) => format!("{} Suggested: {ddl}", a.message),
+            None => a.message.clone(),
+        })
+        .collect();
+    Some((issues, hints))
+}
+
+/// Isi temuan index yang tertunda untuk panel tab aktif.
+fn refresh_pending_index_issues(tabular: &mut Tabular) {
+    let Some(tab_id) = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id)
+    else {
+        return;
+    };
+    let Some(sql) = tabular
+        .query_insights
+        .get(&tab_id)
+        .filter(|i| i.index_pending)
+        .map(|i| i.sql.clone())
+    else {
+        return;
+    };
+    if let Some((issues, hints)) = index_issues(tabular, &sql)
+        && let Some(ins) = tabular.query_insights.get_mut(&tab_id)
+    {
+        ins.index_pending = false;
+        ins.view.issues = issues;
+        ins.hints.extend(hints);
+    }
 }
 
 /// Ringkasan skema tabel yang dipakai statement untuk prompt AI.
@@ -295,6 +387,7 @@ pub fn render_split(
     left: impl FnOnce(&mut Tabular, &mut egui::Ui),
 ) {
     poll_ai(tabular);
+    refresh_pending_index_issues(tabular);
     let full = ui.available_rect_before_wrap();
     let max_w = (full.width() * 0.7).max(MIN_PANEL_W);
     let panel_w = if full.width() < MIN_PANEL_W * 2.0 {

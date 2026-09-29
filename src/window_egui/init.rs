@@ -423,6 +423,7 @@ impl super::Tabular {
             autocomplete_indexes_mem: std::collections::HashMap::new(),
             autocomplete_indexes_requested: std::collections::HashSet::new(),
             autocomplete_hint: None,
+            index_check: Default::default(),
             autocomplete_warm_receiver: Some(autocomplete_warm_receiver),
             autocomplete_warm_sender,
             selection_force_clear: false,

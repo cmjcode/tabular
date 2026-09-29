@@ -24,6 +24,33 @@ const CURVE_SEGMENTS: usize = 28;
 /// Tinggi strip legenda di bawah kanvas.
 const LEGEND_H: f32 = 24.0;
 
+/// Kolom yang perlu di-index / dioptimalkan (hasil analisis index), ditandai
+/// glow berdenyut di kartu tabelnya.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnIssue {
+    /// Nama tabel fisik (schema opsional; dicocokkan tanpa schema).
+    pub table: String,
+    pub column: String,
+    /// Penjelasan singkat + SQL perbaikan untuk tooltip.
+    pub message: String,
+}
+
+fn short_name(t: &str) -> &str {
+    t.rsplit('.').next().unwrap_or(t)
+}
+
+/// Temuan untuk baris `key` di kartu bertabel `table`.
+fn issue_for<'a>(
+    issues: &'a [ColumnIssue],
+    table: Option<&str>,
+    key: &str,
+) -> Option<&'a ColumnIssue> {
+    let table = short_name(table?);
+    issues.iter().find(|i| {
+        short_name(&i.table).eq_ignore_ascii_case(table) && i.column.eq_ignore_ascii_case(key)
+    })
+}
+
 /// State tampilan per panel (pan/zoom/waktu mulai animasi).
 #[derive(Debug, Clone)]
 pub struct QueryDiagramView {
@@ -35,6 +62,8 @@ pub struct QueryDiagramView {
     offsets: Vec<Vec2>,
     /// Kartu yang sedang di-drag.
     dragging: Option<usize>,
+    /// Kolom bermasalah secara index; diisi panel Query Insight.
+    pub issues: Vec<ColumnIssue>,
 }
 
 impl Default for QueryDiagramView {
@@ -46,6 +75,7 @@ impl Default for QueryDiagramView {
             fitted: false,
             offsets: Vec::new(),
             dragging: None,
+            issues: Vec::new(),
         }
     }
 }
@@ -82,6 +112,8 @@ struct Palette {
     aggregate: Color32,
     stage: Color32,
     kind: Color32,
+    /// Glow kolom yang perlu index.
+    issue: Color32,
 }
 
 impl Palette {
@@ -107,6 +139,7 @@ impl Palette {
                 aggregate: Color32::from_rgb(240, 110, 180),
                 stage: Color32::from_rgb(175, 165, 235),
                 kind: kind_color,
+                issue: Color32::from_rgb(255, 95, 95),
             }
         } else {
             Self {
@@ -123,6 +156,7 @@ impl Palette {
                 aggregate: Color32::from_rgb(200, 60, 140),
                 stage: Color32::from_rgb(110, 95, 190),
                 kind: kind_color,
+                issue: Color32::from_rgb(215, 45, 45),
             }
         }
     }
@@ -609,6 +643,39 @@ pub fn render_query_diagram(
             if bg != Color32::TRANSPARENT {
                 painter.rect_filled(row_rect, radius(4.0 * zoom), bg.gamma_multiply(alpha));
             }
+            // Kolom yang perlu index: glow berdenyut + chip "needs index"
+            let issue = issue_for(&view.issues, card.table.as_deref(), &row.key);
+            if issue.is_some() {
+                let pulse = if animating {
+                    0.5 + 0.5 * ((t * 3.2 + ri as f64 * 0.7).sin() as f32)
+                } else {
+                    0.7
+                };
+                painter.rect_filled(
+                    row_rect,
+                    radius(4.0 * zoom),
+                    pal.issue.gamma_multiply((0.10 + 0.14 * pulse) * alpha),
+                );
+                for k in 0..3 {
+                    let spread = (k as f32 + 1.0) * (1.2 + 1.6 * pulse) * zoom;
+                    let fade = (0.55 - 0.17 * k as f32) * (0.35 + 0.65 * pulse);
+                    painter.rect_stroke(
+                        row_rect.expand(spread),
+                        radius(4.0 * zoom + spread),
+                        Stroke::new(1.4 * zoom, pal.issue.gamma_multiply(fade * alpha)),
+                        StrokeKind::Outside,
+                    );
+                }
+                if zoom >= 0.5 {
+                    painter.text(
+                        pos2(row_rect.max.x - 4.0 * zoom, cy),
+                        egui::Align2::RIGHT_CENTER,
+                        "⚠ index",
+                        FontId::proportional(9.5 * zoom),
+                        pal.issue.gamma_multiply((0.6 + 0.4 * pulse) * alpha),
+                    );
+                }
+            }
             if hovered == Some((ci, Some(ri))) {
                 painter.rect_stroke(
                     row_rect,
@@ -754,19 +821,18 @@ pub fn render_query_diagram(
         }
     }
 
-    draw_legend(&painter, rect, &pal);
+    draw_legend(&painter, rect, &pal, !view.issues.is_empty());
 
     // --- Tooltip baris ---
     if let (Some((ci, Some(ri))), Some(p)) = (hovered, pointer)
         && let Some(row) = layout.cards[ci].rows.get(ri)
         && !row.detail.is_empty()
     {
-        let galley = painter.layout(
-            row.detail.clone(),
-            FontId::proportional(12.0),
-            pal.text,
-            320.0,
-        );
+        let mut text = row.detail.clone();
+        if let Some(issue) = issue_for(&view.issues, layout.cards[ci].table.as_deref(), &row.key) {
+            text.push_str(&format!("\n\n⚠ {}", issue.message));
+        }
+        let galley = painter.layout(text, FontId::proportional(12.0), pal.text, 320.0);
         let mut tip = Rect::from_min_size(p + vec2(14.0, 14.0), galley.size() + vec2(14.0, 10.0));
         if tip.max.x > rect.max.x {
             tip = tip.translate(vec2(rect.max.x - tip.max.x - 4.0, 0.0));
@@ -927,13 +993,16 @@ fn inserted_label(layout: &QueryLayout) -> String {
     }
 }
 
-fn draw_legend(painter: &egui::Painter, rect: Rect, pal: &Palette) {
-    let items = [
+fn draw_legend(painter: &egui::Painter, rect: Rect, pal: &Palette, has_issues: bool) {
+    let mut items = vec![
         ("join", pal.join, false),
         ("data flow", pal.data, false),
         ("filter", pal.filter, true),
         ("pipeline", pal.stage, false),
     ];
+    if has_issues {
+        items.push(("needs index", pal.issue, false));
+    }
     let font = FontId::proportional(10.5);
     let mut x = rect.min.x + 10.0;
     let y = rect.max.y - LEGEND_H * 0.5;
@@ -1012,6 +1081,7 @@ mod tests {
             lane: 0,
             rect: Rect::from_min_size(Pos2::ZERO, vec2(100.0, 50.0)),
             rows: Vec::new(),
+            table: None,
         };
         let layout = QueryLayout {
             kind: StatementKind::Select,
@@ -1024,6 +1094,20 @@ mod tests {
         let moved = moved_layout(&layout, &[vec2(300.0, 20.0)]);
         assert_eq!(moved.cards[0].rect.min, pos2(300.0, 20.0));
         assert!(moved.bounds.contains_rect(moved.cards[0].rect));
+    }
+
+    #[test]
+    fn test_issue_matches_card_table_and_column() {
+        let issues = vec![ColumnIssue {
+            table: "orders".into(),
+            column: "user_id".into(),
+            message: "FK to users, no index".into(),
+        }];
+        assert!(issue_for(&issues, Some("app.orders"), "USER_ID").is_some());
+        assert!(issue_for(&issues, Some("orders"), "id").is_none());
+        assert!(issue_for(&issues, Some("users"), "user_id").is_none());
+        // kartu tahap (tanpa tabel) tidak pernah ditandai
+        assert!(issue_for(&issues, None, "user_id").is_none());
     }
 
     #[test]

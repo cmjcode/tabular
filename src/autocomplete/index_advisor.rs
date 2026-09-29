@@ -74,7 +74,10 @@ pub enum ColumnStatus {
 impl ColumnStatus {
     /// Kolom bisa dilayani index.
     pub fn is_good(&self) -> bool {
-        matches!(self, ColumnStatus::PrimaryKey | ColumnStatus::Indexed { .. })
+        matches!(
+            self,
+            ColumnStatus::PrimaryKey | ColumnStatus::Indexed { .. }
+        )
     }
 }
 
@@ -534,8 +537,7 @@ impl<'a> Block<'a> {
                 .first()
                 .is_some_and(|c| c.eq_ignore_ascii_case(col))
         };
-        if let Some(ix) = idx.iter().filter(lead).find(|ix| is_primary_index(ix)) {
-            let _ = ix;
+        if idx.iter().filter(lead).any(is_primary_index) {
             return ColumnStatus::PrimaryKey;
         }
         if let Some(ix) = idx.iter().find(lead) {
@@ -550,11 +552,7 @@ impl<'a> Block<'a> {
             };
         }
         for ix in idx {
-            if let Some(p) = ix
-                .columns
-                .iter()
-                .position(|c| c.eq_ignore_ascii_case(col))
-            {
+            if let Some(p) = ix.columns.iter().position(|c| c.eq_ignore_ascii_case(col)) {
                 return ColumnStatus::NotLeading {
                     index: ix.name.clone(),
                     position: p + 1,
@@ -565,7 +563,7 @@ impl<'a> Block<'a> {
     }
 
     fn record_usages(&self, uses: &[ColUse], joins: &[JoinUse], rep: &mut QueryReport) {
-        let mut note_missing = |t: &ScopeTable, rep: &mut QueryReport| {
+        let note_missing = |t: &ScopeTable, rep: &mut QueryReport| {
             if self.indexes(t).is_none()
                 && !rep
                     .missing_metadata
@@ -1105,6 +1103,75 @@ mod tests {
             a[0].ddl.as_deref(),
             Some("CREATE INDEX idx_order_details_qty ON [Order Details] ([Qty]);")
         );
+    }
+
+    #[test]
+    fn report_lists_every_column_with_its_index_status() {
+        let mut c = cat();
+        c.idx[1]
+            .1
+            .push(ix("orders_status_created", &["status", "created_at"]));
+        let r = report(
+            "SELECT * FROM users u JOIN orders o ON o.user_id = u.id WHERE u.email = 'x' AND o.created_at > now() AND audit = 1",
+            Dialect::Postgres,
+            &c,
+        );
+        let st = |t: &str, col: &str| {
+            r.usages
+                .iter()
+                .find(|u| u.table == t && u.column == col)
+                .map(|u| (u.used_in, u.status.clone()))
+                .unwrap_or_else(|| panic!("{t}.{col} missing: {:?}", r.usages))
+        };
+        assert_eq!(st("users", "id"), ("JOIN", ColumnStatus::PrimaryKey));
+        assert_eq!(
+            st("orders", "user_id"),
+            (
+                "JOIN",
+                ColumnStatus::ForeignKeyNoIndex {
+                    references: "users".into()
+                }
+            )
+        );
+        assert_eq!(
+            st("users", "email").1,
+            ColumnStatus::Indexed {
+                index: "users_email".into(),
+                unique: false
+            }
+        );
+        assert_eq!(
+            st("orders", "created_at"),
+            (
+                "WHERE range",
+                ColumnStatus::NotLeading {
+                    index: "orders_status_created".into(),
+                    position: 2
+                }
+            )
+        );
+        assert!(!r.is_optimal());
+    }
+
+    #[test]
+    fn report_marks_defeated_columns_and_missing_metadata() {
+        let r = report(
+            "SELECT * FROM users WHERE LOWER(email) = 'a'; SELECT * FROM audit_log WHERE actor = 'x'",
+            Dialect::Postgres,
+            &cat(),
+        );
+        let u = r.usages.iter().find(|u| u.column == "email").unwrap();
+        assert_eq!(u.defeated_by.as_deref(), Some("wrapped in LOWER()"));
+        assert!(u.status.is_good());
+        assert_eq!(r.missing_metadata, vec!["audit_log".to_string()]);
+        // query yang sepenuhnya memakai index dianggap optimal
+        let ok = report(
+            "SELECT * FROM users WHERE id = 1",
+            Dialect::Postgres,
+            &cat(),
+        );
+        assert!(ok.is_optimal() && ok.advice.is_empty());
+        assert_eq!(ok.usages[0].status, ColumnStatus::PrimaryKey);
     }
 
     #[test]
