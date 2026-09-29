@@ -80,12 +80,9 @@ impl super::Tabular {
         };
 
         let _ = std::fs::create_dir_all(&path);
-        // Sanitize filename
-        let safe_db_name: String = db_name
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '_' })
-            .collect();
-        path.push(format!("conn_{}_{}.json", conn_id, safe_db_name));
+        path.push(crate::diagram_storage::local_diagram_file_name(
+            conn_id, db_name,
+        ));
         log::debug!(
             "get_diagram_path: inputs=({}, '{}') -> path={:?}",
             conn_id,

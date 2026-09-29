@@ -508,6 +508,76 @@ pub async fn search_history(
     Ok(rows.into_iter().map(|(t, d)| (t, d as f32)).collect())
 }
 
+/// Satu entri history yang mirip, lengkap dengan asal koneksinya.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct HistoryHit {
+    pub query_text: String,
+    pub connection_id: i64,
+    pub connection_name: String,
+    pub executed_at: String,
+    pub distance: f32,
+}
+
+/// Seperti [`search_history`], tetapi bisa difilter per koneksi, bisa
+/// membuang query yang dijalankan agent (`connection_name` berakhiran
+/// ` (agent)`), dan teks query yang sama hanya muncul sekali (yang terbaru).
+pub async fn search_history_hits(
+    pool: &SqlitePool,
+    query: &str,
+    connection_id: Option<i64>,
+    include_agent: bool,
+    limit: usize,
+    max_distance: f32,
+) -> Result<Vec<HistoryHit>, sqlx::Error> {
+    let Some(embedding) = embed_text(query) else {
+        return Ok(Vec::new());
+    };
+    ensure_schema(pool).await?;
+    let rows: Vec<(String, i64, String, String, f64)> = sqlx::query_as(
+        "SELECT query_text, connection_id, connection_name, executed_at, distance FROM (
+             SELECT h.query_text, h.connection_id, h.connection_name,
+                    COALESCE(CAST(h.executed_at AS TEXT), '') AS executed_at,
+                    vec_distance_cosine(e.embedding, ?) AS distance
+             FROM history_embedding e
+             JOIN query_history h ON h.id = e.history_id
+             WHERE (? IS NULL OR h.connection_id = ?)
+               AND (? OR h.connection_name NOT LIKE '% (agent)')
+         )
+         WHERE distance <= ?
+         ORDER BY distance ASC, executed_at DESC
+         LIMIT ?",
+    )
+    .bind(to_blob(&embedding))
+    .bind(connection_id)
+    .bind(connection_id)
+    .bind(include_agent)
+    .bind(f64::from(max_distance))
+    // Ambil lebih banyak karena duplikat dibuang di bawah.
+    .bind((limit.saturating_mul(4)).max(1) as i64)
+    .fetch_all(pool)
+    .await?;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for (query_text, connection_id, connection_name, executed_at, distance) in rows {
+        let key = query_text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(HistoryHit {
+            query_text,
+            connection_id,
+            connection_name,
+            executed_at,
+            distance: distance as f32,
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// Hasil satu kali sinkronisasi indeks vault.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct NoteSyncStats {

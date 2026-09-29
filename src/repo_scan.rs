@@ -1223,6 +1223,13 @@ pub fn default_cache_root() -> PathBuf {
     harness::agent_workspace_dir().join("repos")
 }
 
+/// Folder clone `url` di cache Tabular bila sudah pernah di-clone oleh
+/// pemindaian sebelumnya. Tidak pernah memicu operasi git.
+pub fn cached_clone_dir(url: &str) -> Option<PathBuf> {
+    let dir = cache_dir_for(&default_cache_root(), url.trim());
+    dir.is_dir().then_some(dir)
+}
+
 /// Jalankan pemindaian di thread terpisah.
 pub fn spawn_scan(input: ScanInput) -> ScanHandle {
     let (tx, rx) = mpsc::channel();

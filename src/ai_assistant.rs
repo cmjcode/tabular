@@ -774,7 +774,12 @@ pub fn system_prompt_for(cfg: &ChatBackend, schema: &str) -> String {
              You have an MCP server named `tabular` with tools: list_connections, list_databases, \
              describe_schema(connection_id, question), schema_diagram(connection_id) for the \
              foreign-key relationships as a Mermaid erDiagram, run_query(connection_id, sql, database?), \
-             explain_query, check_sql_safety and format_sql. Queries are read-only and results are \
+             explain_query, check_sql_safety and format_sql. For context beyond the schema: \
+             describe_diagram(connection_id, table?) returns the user's diagram notes, business groups \
+             and virtual relations; search_query_history(question) returns queries the user already \
+             ran; analyze_query(sql) explains a statement and flags unindexed join/filter columns \
+             without running it; find_table_usages(connection_id, tables) finds where the linked code \
+             repository uses a table. Queries are read-only and results are \
              truncated, so add LIMIT. Use the `connection_id` values given in the context below; \
              when the answer depends on real data or on schema details that are not in the context, \
              verify with these tools before answering instead of guessing. Never ask the user to run \

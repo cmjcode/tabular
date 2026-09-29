@@ -907,6 +907,10 @@ fn is_tabular_tool(name: &str) -> bool {
             | "save_note"
             | "read_note"
             | "search_notes"
+            | "describe_diagram"
+            | "search_query_history"
+            | "analyze_query"
+            | "find_table_usages"
     )
 }
 
@@ -985,6 +989,52 @@ fn format_tabular_mcp_tool(
                     .map(|s| format!("Search notes \"{s}\""))
                     .unwrap_or_else(|| "Search memory notes".to_string()),
                 q,
+            )
+        }
+        "describe_diagram" => {
+            let target = args_ref
+                .get("table")
+                .or_else(|| args_ref.get("group"))
+                .and_then(clean_arg_str);
+            (
+                target
+                    .as_ref()
+                    .map(|t| format!("Read diagram notes for '{t}'"))
+                    .unwrap_or_else(|| "Read diagram notes and groups".to_string()),
+                target,
+            )
+        }
+        "search_query_history" => {
+            let q = args_ref.get("question").and_then(clean_arg_str);
+            (
+                q.as_ref()
+                    .map(|s| format!("Search query history \"{s}\""))
+                    .unwrap_or_else(|| "Search query history".to_string()),
+                q,
+            )
+        }
+        "analyze_query" => (
+            "Analyze query".to_string(),
+            args_ref.get("sql").and_then(clean_arg_str),
+        ),
+        "find_table_usages" => {
+            let tables = args_ref
+                .get("tables")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| args_ref.get("group").and_then(clean_arg_str));
+            (
+                tables
+                    .as_ref()
+                    .map(|t| format!("Find code using {t}"))
+                    .unwrap_or_else(|| "Find table usages in code".to_string()),
+                tables,
             )
         }
         other => {

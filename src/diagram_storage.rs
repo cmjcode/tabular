@@ -10,6 +10,17 @@ use sqlx::Row;
 pub const TABLE_NAME: &str = "diagram_by_tabular";
 pub const DEFAULT_DIAGRAM_ID: &str = "default";
 
+/// Nama file cache JSON lokal diagram `(conn_id, db_name)` di folder
+/// `{data_dir}/diagrams`. Dipakai GUI dan lapisan agent supaya keduanya
+/// membaca file yang sama.
+pub fn local_diagram_file_name(conn_id: i64, db_name: &str) -> String {
+    let safe_db_name: String = db_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("conn_{conn_id}_{safe_db_name}.json")
+}
+
 /// Periksa apakah tabel `diagram_by_tabular` sudah ada di database target.
 pub async fn check_diagram_table_exists(
     pool: &DatabasePool,

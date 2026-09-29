@@ -5,6 +5,8 @@
 //! - [`classify`]: gerbang read-only (klasifikasi statement SQL/Redis).
 //! - [`core`]: sesi headless di atas `connections.db` dan pool driver; tidak
 //!   bergantung pada egui sama sekali.
+//! - [`knowledge`]: pengetahuan di luar skema mentah (diagram, riwayat
+//!   query, analisis statement, pemakaian tabel di repository).
 //! - [`mcp`]: server Model Context Protocol lewat stdio (`tabular mcp`).
 //! - [`cli`]: parsing argumen baris perintah sebelum GUI dijalankan.
 //! - [`harness`]: arah sebaliknya — Tabular menjalankan CLI agent (`agy`,
@@ -20,6 +22,7 @@
 pub mod classify;
 pub mod core;
 pub mod harness;
+pub mod knowledge;
 pub mod live_edit;
 
 #[cfg(not(target_os = "ios"))]

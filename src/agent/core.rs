@@ -16,6 +16,7 @@
 //!   model.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -110,6 +111,28 @@ pub struct ForeignKeyDescription {
     pub references_column: String,
 }
 
+/// Index dari `index_cache`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexDescription {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+}
+
+/// Ringkasan partisi dari `partition_cache` (bisa ratusan, jadi hanya contoh).
+#[derive(Debug, Clone, Serialize)]
+pub struct PartitionSummary {
+    pub count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    /// Beberapa nama partisi pertama.
+    pub sample: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TableDescription {
     pub name: String,
@@ -117,6 +140,24 @@ pub struct TableDescription {
     pub kind: String,
     pub columns: Vec<ColumnDescription>,
     pub foreign_keys: Vec<ForeignKeyDescription>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<IndexDescription>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partitioning: Option<PartitionSummary>,
+    /// Relasi tanpa FK yang user buat / terima di diagram Tabular, dengan
+    /// tabel ini sebagai sisi child.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub virtual_relations: Vec<super::knowledge::VirtualRelationInfo>,
+    /// Judul group diagram (domain bisnis) yang memuat tabel ini.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// Jumlah sticky note diagram tentang tabel ini (baca lewat describe_diagram).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub diagram_notes: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Skema sebagai Mermaid `erDiagram`: ringkas untuk context agent dan bisa
@@ -148,12 +189,16 @@ impl SchemaDescription {
                         name: c.name.clone(),
                         type_name: c.data_type.clone(),
                         is_pk: c.primary_key,
-                        is_fk: table.foreign_keys.iter().any(|fk| fk.column == c.name),
+                        is_fk: table.foreign_keys.iter().any(|fk| fk.column == c.name)
+                            || table
+                                .virtual_relations
+                                .iter()
+                                .any(|v| v.child_column == c.name),
                         nullable: None,
                     })
                     .collect(),
-                groups: Vec::new(),
-                group: None,
+                groups: table.groups.clone(),
+                group: table.groups.first().cloned(),
             });
             for fk in &table.foreign_keys {
                 model.relations.push(ErRelation {
@@ -163,6 +208,22 @@ impl SchemaDescription {
                     parent_column: fk.references_column.clone(),
                     inferred: false,
                 });
+            }
+            for v in &table.virtual_relations {
+                let rel = ErRelation {
+                    child: table.name.clone(),
+                    child_column: v.child_column.clone(),
+                    parent: v.parent.clone(),
+                    parent_column: v.parent_column.clone(),
+                    inferred: false,
+                };
+                if !model.relations.contains(&rel) {
+                    // Garis putus-putus: bukan FK di database.
+                    model.relations.push(ErRelation {
+                        inferred: true,
+                        ..rel
+                    });
+                }
             }
         }
         model
@@ -260,6 +321,9 @@ pub struct HeadlessSession {
     pools: Mutex<HashMap<i64, DatabasePool>>,
     next_job_id: AtomicU64,
     pub limits: AgentLimits,
+    /// Folder data Tabular (`~/.tabular` atau `TABULAR_DATA_DIR`): tempat
+    /// file diagram dan `diagram_repo_paths.json`.
+    app_dir: PathBuf,
 }
 
 /// Buka `connections.db` milik Tabular dalam mode baca-tulis tanpa membuat
@@ -309,11 +373,22 @@ impl HeadlessSession {
             pools: Mutex::new(HashMap::new()),
             next_job_id: AtomicU64::new(1),
             limits: AgentLimits::default(),
+            app_dir: crate::config::get_data_dir(),
         }
+    }
+
+    /// Ganti folder data (untuk tes atau data dir kustom).
+    pub fn with_app_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.app_dir = dir.into();
+        self
     }
 
     pub fn cache_pool(&self) -> &SqlitePool {
         &self.cache_pool
+    }
+
+    pub(super) fn app_dir(&self) -> &std::path::Path {
+        &self.app_dir
     }
 
     /// Daftar koneksi tersimpan, tanpa kolom rahasia.
@@ -347,7 +422,7 @@ impl HeadlessSession {
             .collect())
     }
 
-    async fn load_connection(&self, id: i64) -> Result<ConnectionConfig, AgentError> {
+    pub(super) async fn load_connection(&self, id: i64) -> Result<ConnectionConfig, AgentError> {
         crate::connection::pool::load_connection_by_id(id, &self.cache_pool)
             .await
             .ok_or(AgentError::ConnectionNotFound(id))
@@ -355,7 +430,10 @@ impl HeadlessSession {
 
     /// Ambil (atau buat) pool driver untuk koneksi. Pool dipakai ulang selama
     /// proses hidup; SSH tunnel dan TLS ditangani oleh pembuat pool GUI.
-    async fn pool_for(&self, id: i64) -> Result<(ConnectionConfig, DatabasePool), AgentError> {
+    pub(super) async fn pool_for(
+        &self,
+        id: i64,
+    ) -> Result<(ConnectionConfig, DatabasePool), AgentError> {
         let conn = self.load_connection(id).await?;
         if matches!(conn.connection_type, DatabaseType::ApiHttp) {
             return Err(AgentError::Unsupported(
@@ -419,7 +497,7 @@ impl HeadlessSession {
         Ok(dbs)
     }
 
-    async fn resolve_database(
+    pub(super) async fn resolve_database(
         &self,
         conn: &ConnectionConfig,
         requested: Option<&str>,
@@ -511,6 +589,12 @@ impl HeadlessSession {
             }
         }
 
+        // Pengetahuan dari diagram Tabular (relasi virtual, group, notes).
+        // Hanya file lokal supaya describe_schema tetap cepat dan offline.
+        let diagram = self
+            .load_local_diagram(id, &db)
+            .map(|state| super::knowledge::DiagramContext::from_state(&state));
+
         let mut described = Vec::new();
         let mut ddl = format!("-- Database: {db}\n");
         for (name, kind) in tables.iter().take(max_tables) {
@@ -535,6 +619,13 @@ impl HeadlessSession {
             .await
             .unwrap_or_default();
 
+            let indexes = self.cached_indexes(id, &db, name).await;
+            let partitioning = self.cached_partitions(id, &db, name).await;
+            let (virtual_relations, groups, diagram_notes) = diagram
+                .as_ref()
+                .map(|d| d.for_table(name))
+                .unwrap_or_default();
+
             ddl.push_str(&format!("-- {kind}: {name}\n"));
             if cols.is_empty() {
                 ddl.push_str(&format!(
@@ -558,6 +649,15 @@ impl HeadlessSession {
                 for (c, rt, rc) in &fks {
                     ddl.push_str(&format!("-- FK {name}.{c} -> {rt}.{rc}\n"));
                 }
+                push_table_extras(
+                    &mut ddl,
+                    name,
+                    &indexes,
+                    partitioning.as_ref(),
+                    &virtual_relations,
+                    &groups,
+                    diagram_notes,
+                );
                 ddl.push('\n');
             }
 
@@ -580,6 +680,11 @@ impl HeadlessSession {
                         references_column: rc,
                     })
                     .collect(),
+                indexes,
+                partitioning,
+                virtual_relations,
+                groups,
+                diagram_notes,
             });
         }
 
@@ -644,6 +749,51 @@ impl HeadlessSession {
             ranked_by_relevance: schema.ranked_by_relevance,
             mermaid,
             note,
+        })
+    }
+
+    /// Index tabel dari `index_cache`; kosong bila belum di-cache.
+    async fn cached_indexes(&self, id: i64, db: &str, table: &str) -> Vec<IndexDescription> {
+        let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
+            "SELECT index_name, method, is_unique, columns_json FROM index_cache \
+             WHERE connection_id = ? AND database_name = ? COLLATE NOCASE AND table_name = ? COLLATE NOCASE \
+             ORDER BY index_name",
+        )
+        .bind(id)
+        .bind(db)
+        .bind(table)
+        .fetch_all(&self.cache_pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter()
+            .map(|(name, method, unique, cols)| IndexDescription {
+                name,
+                columns: serde_json::from_str(&cols).unwrap_or_default(),
+                unique: unique != 0,
+                method: method.filter(|m| !m.trim().is_empty()),
+            })
+            .collect()
+    }
+
+    /// Ringkasan partisi tabel dari `partition_cache`.
+    async fn cached_partitions(&self, id: i64, db: &str, table: &str) -> Option<PartitionSummary> {
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT partition_name, partition_type, partition_expression FROM partition_cache \
+             WHERE connection_id = ? AND database_name = ? COLLATE NOCASE AND table_name = ? COLLATE NOCASE \
+             ORDER BY id",
+        )
+        .bind(id)
+        .bind(db)
+        .bind(table)
+        .fetch_all(&self.cache_pool)
+        .await
+        .unwrap_or_default();
+        let first = rows.first()?;
+        Some(PartitionSummary {
+            count: rows.len(),
+            kind: first.1.clone().filter(|k| !k.trim().is_empty()),
+            expression: first.2.clone().filter(|e| !e.trim().is_empty()),
+            sample: rows.iter().take(5).map(|r| r.0.clone()).collect(),
         })
     }
 
@@ -974,6 +1124,51 @@ impl HeadlessSession {
     }
 }
 
+/// Baris komentar DDL untuk index, partisi, dan pengetahuan diagram.
+fn push_table_extras(
+    ddl: &mut String,
+    name: &str,
+    indexes: &[IndexDescription],
+    partitioning: Option<&PartitionSummary>,
+    virtual_relations: &[super::knowledge::VirtualRelationInfo],
+    groups: &[String],
+    diagram_notes: usize,
+) {
+    for idx in indexes {
+        ddl.push_str(&format!(
+            "-- INDEX {} ({}){}\n",
+            idx.name,
+            idx.columns.join(", "),
+            if idx.unique { " UNIQUE" } else { "" }
+        ));
+    }
+    if let Some(p) = partitioning {
+        ddl.push_str(&format!(
+            "-- PARTITION BY {}{}: {} partitions\n",
+            p.kind.as_deref().unwrap_or("?"),
+            p.expression
+                .as_deref()
+                .map(|e| format!(" ({e})"))
+                .unwrap_or_default(),
+            p.count
+        ));
+    }
+    for v in virtual_relations {
+        ddl.push_str(&format!(
+            "-- VIRTUAL FK {name}.{} -> {}.{} ({}, no database constraint)\n",
+            v.child_column, v.parent, v.parent_column, v.origin
+        ));
+    }
+    if !groups.is_empty() {
+        ddl.push_str(&format!("-- diagram groups: {}\n", groups.join(", ")));
+    }
+    if diagram_notes > 0 {
+        ddl.push_str(&format!(
+            "-- {diagram_notes} diagram note(s): describe_diagram(table=\"{name}\")\n"
+        ));
+    }
+}
+
 /// Buang awalan `EXPLAIN ...` yang mungkin sudah ditulis agent supaya prefix
 /// sesuai dialek bisa dipasang ulang.
 fn strip_leading_explain(stmt: &str) -> String {
@@ -1113,11 +1308,26 @@ mod tests {
                     references_table: "customers".into(),
                     references_column: "id".into(),
                 }],
+                indexes: Vec::new(),
+                partitioning: None,
+                virtual_relations: vec![super::super::knowledge::VirtualRelationInfo {
+                    child: "orders".into(),
+                    child_column: "region_code".into(),
+                    parent: "regions".into(),
+                    parent_column: "code".into(),
+                    origin: "manual",
+                }],
+                groups: vec!["Sales".into()],
+                diagram_notes: 0,
             }],
             ddl: String::new(),
             note: None,
         };
-        let text = schema.to_er_model().to_mermaid(Default::default());
+        let model = schema.to_er_model();
+        assert_eq!(model.entities[0].groups, vec!["Sales"]);
+        let text = model.to_mermaid(Default::default());
+        // Relasi virtual digambar putus-putus.
+        assert!(text.contains("regions ||..o{ orders"), "{text}");
         assert!(text.contains("integer id PK"));
         assert!(text.contains("integer customer_id FK"));
         // Tabel referensi di luar daftar tetap muncul lewat relasi.

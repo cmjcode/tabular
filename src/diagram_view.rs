@@ -827,7 +827,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         }
         if ui.button("↔ Resolve Overlaps Now").clicked() {
             ui.close();
-            resolve_all_overlaps(&mut state.nodes, 20.0, None);
+            compact_and_resolve_overlaps(&mut state.nodes, 20.0);
             state.save_requested = true;
         }
         if ui.button("⚡ Auto Arrange Diagram").clicked() {
@@ -2689,7 +2689,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         }
                         if ui.button("↔ Resolve Overlaps Now").clicked() {
                             ui.close();
-                            resolve_all_overlaps(&mut state.nodes, 20.0, None);
+                            compact_and_resolve_overlaps(&mut state.nodes, 20.0);
                             state.save_requested = true;
                         }
                     },
@@ -6199,6 +6199,137 @@ pub fn resolve_all_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Opti
     }
 }
 
+/// Jarak kosong maksimal antar tabel di dalam satu group (world unit).
+pub const GROUP_MAX_GAP: f32 = 40.0;
+/// Jarak kosong maksimal antar blok (group atau tabel tanpa group).
+pub const BLOCK_MAX_GAP: f32 = 80.0;
+
+/// Hitung pergeseran tiap kotak agar celah kosong di antaranya tidak melebihi
+/// `max_gap`. Dipadatkan per sumbu (x lalu y) dengan sapuan: urutan relatif
+/// tetap, kotak yang semula tidak bertumpuk tetap tidak bertumpuk, dan kotak
+/// paling kiri/atas tetap di tempat.
+fn compact_rects(rects: &[egui::Rect], max_gap: f32) -> Vec<egui::Vec2> {
+    let max_gap = max_gap.max(0.0);
+    let mut offsets = vec![egui::Vec2::ZERO; rects.len()];
+    for axis in [0usize, 1] {
+        let mut order: Vec<usize> = (0..rects.len()).collect();
+        order.sort_by(|&a, &b| rects[a].min[axis].total_cmp(&rects[b].min[axis]));
+
+        let mut frontier: Option<f32> = None;
+        let mut shift = 0.0;
+        for &i in &order {
+            let s = rects[i].min[axis] - shift;
+            if let Some(f) = frontier
+                && s > f + max_gap
+            {
+                shift += s - (f + max_gap);
+            }
+            offsets[i][axis] = -shift;
+            let end = rects[i].max[axis] - shift;
+            frontier = Some(frontier.map_or(end, |f| f.max(end)));
+        }
+    }
+    offsets
+}
+
+/// Cluster yang berisi tabel link database tidak boleh digeser.
+fn pinned_clusters(
+    nodes: &[DiagramNode],
+    node_cluster: &[Option<usize>],
+    count: usize,
+) -> Vec<bool> {
+    let mut pinned = vec![false; count];
+    for (n, c) in nodes.iter().zip(node_cluster) {
+        if let Some(c) = c
+            && crate::diagram_links::is_linked_id(&n.id)
+        {
+            pinned[*c] = true;
+        }
+    }
+    pinned
+}
+
+/// Rapatkan tabel di dalam tiap group agar celah kosong di antaranya tidak
+/// melebihi `max_gap`, sehingga group tidak makan tempat. Sudut kiri-atas
+/// group tetap di tempat. Cluster yang berisi tabel link database tidak disentuh.
+pub fn compact_groups(nodes: &mut [DiagramNode], max_gap: f32) {
+    let (group_cluster, node_cluster) = group_clusters(nodes);
+    let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
+    let pinned = pinned_clusters(nodes, &node_cluster, cluster_count);
+
+    for c in (0..cluster_count).filter(|&c| !pinned[c]) {
+        let members: Vec<usize> = (0..nodes.len())
+            .filter(|&i| node_cluster[i] == Some(c))
+            .collect();
+        let rects: Vec<egui::Rect> = members
+            .iter()
+            .map(|&i| egui::Rect::from_min_size(nodes[i].pos, nodes[i].size))
+            .collect();
+        for (&i, off) in members.iter().zip(compact_rects(&rects, max_gap)) {
+            nodes[i].pos += off;
+        }
+    }
+}
+
+/// Rapatkan antar blok: tiap cluster group digeser utuh sebagai satu kotak,
+/// tabel tanpa group sebagai kotak sendiri. Tabel link database dan cluster
+/// yang memuatnya tidak digeser.
+pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
+    let (group_cluster, node_cluster) = group_clusters(nodes);
+    let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
+    let pinned = pinned_clusters(nodes, &node_cluster, cluster_count);
+
+    // Kotak cluster = gabungan kotak group-nya (termasuk judul & padding).
+    let mut cluster_rect: Vec<Option<egui::Rect>> = vec![None; cluster_count];
+    for (_, c, r) in group_world_rects(nodes, &group_cluster) {
+        cluster_rect[c] = Some(cluster_rect[c].map_or(r, |e| e.union(r)));
+    }
+
+    // Blok: indeks cluster (Some) atau indeks tabel tanpa group (None, i).
+    let mut blocks: Vec<(Option<usize>, usize)> = Vec::new();
+    let mut rects: Vec<egui::Rect> = Vec::new();
+    for (c, r) in cluster_rect.iter().enumerate() {
+        if let Some(r) = r
+            && !pinned[c]
+        {
+            blocks.push((Some(c), 0));
+            rects.push(*r);
+        }
+    }
+    for (i, n) in nodes.iter().enumerate() {
+        if node_cluster[i].is_none() && !crate::diagram_links::is_linked_id(&n.id) {
+            blocks.push((None, i));
+            rects.push(egui::Rect::from_min_size(n.pos, n.size));
+        }
+    }
+    if blocks.len() < 2 {
+        return;
+    }
+
+    let offsets = compact_rects(&rects, max_gap);
+    let mut cluster_off = vec![egui::Vec2::ZERO; cluster_count];
+    for (&(c, i), off) in blocks.iter().zip(offsets) {
+        match c {
+            Some(c) => cluster_off[c] = off,
+            None => nodes[i].pos += off,
+        }
+    }
+    for (n, c) in nodes.iter_mut().zip(&node_cluster) {
+        if let Some(c) = c {
+            n.pos += cluster_off[*c];
+        }
+    }
+}
+
+/// Aksi "Resolve Overlaps Now": rapatkan isi group, pisahkan yang tumpang
+/// tindih, lalu rapatkan jarak antar group dan tabel tanpa group.
+pub fn compact_and_resolve_overlaps(nodes: &mut [DiagramNode], padding: f32) {
+    compact_groups(nodes, GROUP_MAX_GAP.max(padding));
+    resolve_all_overlaps(nodes, padding, None);
+    compact_blocks(nodes, BLOCK_MAX_GAP.max(padding));
+    resolve_all_overlaps(nodes, padding, None);
+}
+
 /// Auto-arrange tabel host saja; kontainer link database lalu dijajarkan di
 /// kanannya (posisi tabel di dalam kontainer milik diagram sumber).
 pub fn auto_layout_host(state: &mut DiagramState) {
@@ -6923,6 +7054,41 @@ mod tests {
         resolve_group_overlaps(&mut nodes, 20.0, None);
         let after: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos).collect();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn test_compact_groups_limits_gap_inside_group() {
+        // Anggota group "a" berjauhan; tabel tanpa group tidak disentuh.
+        let mut nodes = vec![
+            grouped_node("a1", 0.0, 0.0, &["a"]),
+            grouped_node("a2", 1000.0, 0.0, &["a"]),
+            grouped_node("a3", 0.0, 900.0, &["a"]),
+            grouped_node("free", 5000.0, 5000.0, &[]),
+        ];
+        compact_groups(&mut nodes, 40.0);
+        assert_eq!(nodes[0].pos, egui::pos2(0.0, 0.0));
+        assert_eq!(nodes[1].pos, egui::pos2(240.0, 0.0));
+        assert_eq!(nodes[2].pos, egui::pos2(0.0, 140.0));
+        assert_eq!(nodes[3].pos, egui::pos2(5000.0, 5000.0));
+        assert!(!check_nodes_overlap(&nodes, 20.0));
+    }
+
+    #[test]
+    fn test_compact_blocks_moves_groups_and_free_tables_closer() {
+        // Group "a" (dua tabel) dan tabel bebas berjauhan.
+        let mut nodes = vec![
+            grouped_node("a1", 0.0, 0.0, &["a"]),
+            grouped_node("a2", 250.0, 0.0, &["a"]),
+            grouped_node("free", 3000.0, 2000.0, &[]),
+        ];
+        compact_blocks(&mut nodes, 80.0);
+        // Anggota group bergeser bersama (di sini tetap karena paling kiri-atas).
+        assert_eq!(nodes[0].pos, egui::pos2(0.0, 0.0));
+        assert_eq!(nodes[1].pos, egui::pos2(250.0, 0.0));
+        // Kotak group: x -20..470, y -66..120 -> tabel bebas di 550, 200.
+        assert_eq!(nodes[2].pos, egui::pos2(550.0, 200.0));
+        assert!(!check_groups_overlap(&nodes, 20.0));
+        assert!(!check_nodes_overlap(&nodes, 20.0));
     }
 
     #[test]

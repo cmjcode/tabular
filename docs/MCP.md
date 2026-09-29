@@ -53,12 +53,36 @@ installed `tabular` executable. The server speaks MCP over stdio; it opens no ne
 |---|---|
 | `list_connections` | Saved connections: id, name, kind, host, default database, `supports_query`. No secrets. |
 | `list_databases` | Databases / schemas known for a connection (fetches from the server on first use). |
-| `describe_schema` | Tables, columns, primary keys and foreign keys as compact DDL plus JSON. Pass `question` and the most relevant tables are returned first, ranked by Tabular's local vector index (nothing leaves your machine). |
+| `describe_schema` | Tables, columns, primary keys, foreign keys, cached indexes and partitions as compact DDL plus JSON. Also adds what you drew in the diagram: virtual relations, the groups a table belongs to, and how many notes mention it. Pass `question` and the most relevant tables are returned first, ranked by Tabular's local vector index (nothing leaves your machine). |
+| `schema_diagram` | The same schema as a Mermaid `erDiagram`. Virtual relations are drawn as dotted lines. |
+| `describe_diagram` | Your Tabular diagram for a database: groups with their tables and linked repositories, virtual relations, sticky notes and linked databases. Pass `table` or `group` to narrow it. |
 | `refresh_schema_cache` | Re-fetch schema metadata from the server into Tabular's cache. |
 | `run_query` | Execute a **read-only** statement (or read-only Redis commands) and return rows. |
 | `explain_query` | Execution plan for PostgreSQL, MySQL and SQLite, parsed into a tree with cost percentages and bottleneck warnings from Tabular's query profiler. |
+| `analyze_query` | Explain one statement without running it: tables, joins, filter, output columns and their sources, optimization hints, and join or filter columns that no cached index starts with. |
+| `search_query_history` | Queries you already ran that are similar to a question, found with the local vector index. Passwords are masked. Queries run by agents are left out unless asked for. |
+| `find_table_usages` | Search the code repository linked to a diagram group for the files and lines that use a table. |
 | `check_sql_safety` | Classify each statement (read / write / ddl / admin), flag `UPDATE`/`DELETE` without `WHERE`, and lint, without executing. |
 | `format_sql` | Format SQL with Tabular's formatter. |
+| `search_notes` | Search your Obsidian vault for notes about tables, business rules and conventions. |
+| `read_note` | Read one whole vault note, with its tags and `[[wikilinks]]`. |
+| `save_note` | Create a new note in the vault's `Tabular Memory` folder. Only works when you allow it in Settings. |
+
+### Where the knowledge comes from
+
+The agent reads what Tabular already stores. Nothing is copied into Markdown files first.
+
+| Source | Stored in | Tools |
+|---|---|---|
+| Schema, indexes, partitions | `connections.db` cache | `describe_schema`, `schema_diagram`, `analyze_query` |
+| Groups, virtual relations, sticky notes | The diagram file in `<data dir>/diagrams/`, or the shared `diagram_by_tabular` table when there is no local file | `describe_diagram`, and as a summary in `describe_schema` |
+| Repository per group | Git URL in the diagram, local folder in `diagram_repo_paths.json` | `describe_diagram`, `find_table_usages` |
+| Query history | `connections.db` | `search_query_history` |
+| Your own notes | Obsidian vault | `search_notes`, `read_note`, `save_note` |
+
+`find_table_usages` reads only the local folder you picked for a group, or a clone Tabular
+already made when you ran "Suggest tables". It never runs git and never reads other folders.
+Git URLs are shown with any embedded credentials masked.
 
 Supported for `run_query`: PostgreSQL, MySQL/MariaDB, SQLite, SQL Server, Redis.
 MongoDB and HTTP connections are listed but cannot run queries yet.
@@ -77,6 +101,8 @@ MongoDB and HTTP connections are listed but cannot run queries yet.
 - **Bounded output.** Results are capped (default 200 rows, 500 characters per cell, about
   256 KB per response) and flagged `truncated: true` so the agent knows to add `LIMIT`.
 - **Statement timeout.** 30 seconds per statement.
+- **Diagram knowledge is read-only.** The agent cannot add or edit sticky notes, groups or
+  relations. Durable facts go to the vault through `save_note`.
 - **Audit trail.** Every query the agent runs is written to your Tabular query history with
   the connection name suffixed `(agent)`, so you can review what it did.
 

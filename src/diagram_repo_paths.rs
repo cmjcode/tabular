@@ -10,7 +10,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-const FILE_NAME: &str = "diagram_repo_paths.json";
+/// Nama file di `{data_dir}`; dibaca juga oleh lapisan agent (proses MCP).
+pub const FILE_NAME: &str = "diagram_repo_paths.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FileBody {

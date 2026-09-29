@@ -465,7 +465,7 @@ pub fn render_group_table_suggestions(
     style::render_modal_backdrop(ctx, "group_table_suggestions_backdrop", true);
     let screen = ctx.content_rect();
     let win_w = (screen.width() - 48.0).clamp(380.0, 720.0);
-    let list_h = (screen.height() * 0.45).clamp(160.0, 420.0);
+    let list_h = (screen.height() * 0.5).clamp(240.0, 480.0);
 
     egui::Window::new("Suggested tables")
         .title_bar(false)
@@ -602,6 +602,9 @@ pub fn render_group_table_suggestions(
 
                 egui::ScrollArea::vertical()
                     .max_height(list_h)
+                    // tinggi minimal saat bisa di-scroll: tanpa ini ScrollArea
+                    // menyusut ke sisa tinggi window yang fixed_size-nya 0
+                    .min_scrolled_height(list_h)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for (s, on) in sugg.items.iter_mut() {
