@@ -10,11 +10,16 @@
 //! Parser hanya mendukung subset `erDiagram` yang dihasilkan modul ini plus
 //! sintaks umum (blok atribut, relasi `||--o{`, alias `a["Label"]`); baris
 //! lain dilewati dan dilaporkan sebagai warning, bukan error.
+//!
+//! Flow card (proses bisnis) diekspor satu arah sebagai `flowchart`
+//! ([`flow_to_mermaid`], [`flows_markdown`]); tidak ada impor balik.
 
 use std::collections::{HashMap, HashSet};
 
+use crate::diagram_flow::FlowDirection;
 use crate::models::structs::{
-    DiagramColumn, DiagramGroup, DiagramNode, DiagramState, RelationOrigin, VirtualRelation,
+    DiagramColumn, DiagramGroup, DiagramNode, DiagramState, FlowCard, FlowOp, FlowStepKind,
+    FlowTarget, RelationOrigin, VirtualRelation,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -875,6 +880,256 @@ fn ensure_group(state: &mut DiagramState, title: &str) -> String {
     id
 }
 
+// ── Flowchart proses bisnis ─────────────────────────────────────────────────
+
+/// Kolom maksimum yang ditulis di label garis ke tabel.
+const FLOW_EDGE_COLUMNS: usize = 4;
+
+/// Teks aman di dalam label berkutip Mermaid: kutip, `<`/`>` (label HTML)
+/// dan baris baru di-escape.
+fn flow_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("#quot;"),
+            '<' => out.push_str("#lt;"),
+            '>' => out.push_str("#gt;"),
+            '\r' | '\n' | '\t' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn step_kind_name(kind: FlowStepKind) -> &'static str {
+    match kind {
+        FlowStepKind::Auth => "auth",
+        FlowStepKind::Validate => "validate",
+        FlowStepKind::Db => "db",
+        FlowStepKind::External => "external",
+        FlowStepKind::Queue => "queue",
+        FlowStepKind::Cache => "cache",
+        FlowStepKind::Logic => "logic",
+        FlowStepKind::Branch => "branch",
+        FlowStepKind::Respond => "respond",
+        FlowStepKind::Unknown => "step",
+    }
+}
+
+fn op_name(op: FlowOp) -> &'static str {
+    match op {
+        FlowOp::Read => "read",
+        FlowOp::Insert => "insert",
+        FlowOp::Update => "update",
+        FlowOp::Delete => "delete",
+        FlowOp::Upsert => "upsert",
+        FlowOp::Call => "call",
+        FlowOp::Publish => "publish",
+        FlowOp::Consume => "consume",
+        FlowOp::Unknown => "",
+    }
+}
+
+/// Judul card untuk heading dan node trigger: `POST /orders`, atau nama job.
+pub fn flow_title(card: &FlowCard) -> String {
+    let t = &card.trigger;
+    let target = if t.target.trim().is_empty() {
+        card.id.as_str()
+    } else {
+        t.target.trim()
+    };
+    if t.method.trim().is_empty() {
+        target.to_string()
+    } else {
+        format!("{} {target}", t.method.trim())
+    }
+}
+
+/// Node resource (tabel, API luar, queue, cache, flow lain) yang sudah ditulis.
+struct FlowResources<'a> {
+    state: &'a DiagramState,
+    ids: Vec<(FlowTarget, String)>,
+    lines: Vec<String>,
+}
+
+impl FlowResources<'_> {
+    fn table_name(&self, id: &str) -> String {
+        self.state
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.title.trim())
+            .filter(|t| !t.is_empty())
+            .unwrap_or(id)
+            .to_string()
+    }
+
+    /// Id Mermaid untuk `target`; node-nya ditulis sekali saja.
+    fn id(&mut self, target: &FlowTarget) -> Option<String> {
+        if let Some((_, id)) = self.ids.iter().find(|(t, _)| t == target) {
+            return Some(id.clone());
+        }
+        let id = format!("r{}", self.ids.len() + 1);
+        let node = match target {
+            FlowTarget::Table(t) => format!("{id}[(\"{}\")]", flow_label(&self.table_name(t))),
+            FlowTarget::External(s) => format!("{id}{{{{\"{}\"}}}}", flow_label(s)),
+            FlowTarget::Queue(s) => format!("{id}>\"{}\"]", flow_label(s)),
+            FlowTarget::Cache(s) => format!("{id}[/\"{}\"/]", flow_label(s)),
+            FlowTarget::Flow(other) => {
+                let label = self
+                    .state
+                    .flow_cards
+                    .iter()
+                    .find(|c| &c.id == other)
+                    .map(flow_title)
+                    .unwrap_or_else(|| other.clone());
+                format!("{id}[[\"{}\"]]", flow_label(&label))
+            }
+            FlowTarget::Unknown => return None,
+        };
+        self.lines.push(format!("    {node}"));
+        self.ids.push((target.clone(), id.clone()));
+        Some(id)
+    }
+}
+
+/// Flowchart Mermaid satu flow card: trigger, langkah berurutan, dan resource
+/// yang disentuh tiap langkah. Tabel digambar sebagai silinder, arah panah
+/// mengikuti operasi (`read` dari tabel ke langkah, tulis ke tabel). Card
+/// tanpa langkah hanya menggambar trigger dan tabel dari `endpoint_links`.
+pub fn flow_to_mermaid(state: &DiagramState, card: &FlowCard) -> String {
+    let title = flow_label(&flow_title(card));
+    let mut out = format!(
+        "flowchart TD\n    %% flow {}: {title}\n    trigger([\"{title}\"])\n",
+        card.id
+    );
+    let mut res = FlowResources {
+        state,
+        ids: Vec::new(),
+        lines: Vec::new(),
+    };
+    let mut edges: Vec<String> = Vec::new();
+
+    if card.steps.is_empty() {
+        out.push_str("    %% no business process yet; tables come from the endpoint links\n");
+        for table in crate::diagram_flow::tables_of(state, card) {
+            if let Some(r) = res.id(&FlowTarget::Table(table)) {
+                edges.push(format!("    trigger --- {r}"));
+            }
+        }
+    }
+
+    let mut prev = "trigger".to_string();
+    for (i, step) in card.steps.iter().enumerate() {
+        let id = format!("s{}", i + 1);
+        let label = flow_label(&format!("{}. {}", i + 1, step.title.trim()));
+        let node = match step.kind {
+            FlowStepKind::Branch => format!("{id}{{\"{label}\"}}"),
+            FlowStepKind::Respond => format!("{id}([\"{label}\"])"),
+            _ => format!("{id}[\"{label}\"]"),
+        };
+        out.push_str(&format!("    {node}\n"));
+        out.push_str(&format!(
+            "    %% {id}: {}{}\n",
+            step_kind_name(step.kind),
+            step.source
+                .as_deref()
+                .map(|s| format!(" at {}", flow_label(s)))
+                .unwrap_or_default()
+        ));
+        match step
+            .condition
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            Some(cond) => edges.push(format!("    {prev} -.->|\"{}\"| {id}", flow_label(cond))),
+            None => edges.push(format!("    {prev} --> {id}")),
+        }
+        if let Some(target) = &step.target
+            && let Some(r) = res.id(target)
+        {
+            let mut text = step.op.map(op_name).unwrap_or_default().to_string();
+            if !step.columns.is_empty() {
+                let mut cols: Vec<&str> = step
+                    .columns
+                    .iter()
+                    .take(FLOW_EDGE_COLUMNS)
+                    .map(String::as_str)
+                    .collect();
+                if step.columns.len() > FLOW_EDGE_COLUMNS {
+                    cols.push("…");
+                }
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(&cols.join(", "));
+            }
+            let label = if text.is_empty() {
+                String::new()
+            } else {
+                format!("|\"{}\"|", flow_label(&text))
+            };
+            edges.push(match crate::diagram_flow::op_direction(step.op) {
+                FlowDirection::FromTarget => format!("    {r} -->{label} {id}"),
+                FlowDirection::ToTarget | FlowDirection::Both => {
+                    format!("    {id} -->{label} {r}")
+                }
+                FlowDirection::Unknown => format!("    {id} ---{label} {r}"),
+            });
+        }
+        prev = id;
+    }
+
+    for line in res.lines.into_iter().chain(edges) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Dokumen Markdown berisi satu blok `flowchart` per card, urut path lalu
+/// method. `card_ids` kosong = semua card.
+pub fn flows_markdown(state: &DiagramState, title: &str, card_ids: &[String]) -> String {
+    let mut cards: Vec<&FlowCard> = state
+        .flow_cards
+        .iter()
+        .filter(|c| card_ids.is_empty() || card_ids.contains(&c.id))
+        .collect();
+    cards.sort_by_key(|c| {
+        (
+            c.trigger.target.as_str(),
+            crate::repo_links::method_rank(&c.trigger.method),
+        )
+    });
+    let mut out = format!(
+        "# {title}\n\n> Business processes generated by Tabular from the diagram's API cards.\n"
+    );
+    for card in cards {
+        out.push_str(&format!("\n## {}\n\n", flow_title(card)));
+        if !card.summary.trim().is_empty() {
+            out.push_str(&format!("{}\n\n", card.summary.trim()));
+        }
+        if let Some(meta) = &card.meta {
+            let mut line = format!("_Generated {}", meta.generated_at);
+            if let Some(commit) = meta.commit.as_deref().filter(|c| !c.is_empty()) {
+                let short: String = commit.chars().take(7).collect();
+                line.push_str(&format!(" from `{short}`"));
+            }
+            if meta.partial {
+                line.push_str(" (partial: the AI saw code snippets only)");
+            }
+            line.push_str("_\n\n");
+            out.push_str(&line);
+        }
+        out.push_str(&format!(
+            "```mermaid\n{}```\n",
+            flow_to_mermaid(state, card)
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,5 +1434,157 @@ mod tests {
         assert!(!node.is_in_group("group_auth"));
         assert!(node.is_in_group("group_admin"));
         assert_eq!(node.group_id.as_deref(), Some("group_admin"));
+    }
+
+    fn table_node(id: &str, title: &str) -> DiagramNode {
+        DiagramNode {
+            id: id.into(),
+            title: title.into(),
+            pos: eframe::egui::Pos2::ZERO,
+            size: eframe::egui::Vec2::ZERO,
+            columns: vec![],
+            foreign_keys: vec![],
+            group_ids: vec![],
+            group_id: None,
+            column_meta: vec![],
+            detached: false,
+            database_name: None,
+            connection_id: None,
+            connection_name: None,
+        }
+    }
+
+    fn flow_state() -> DiagramState {
+        use crate::models::structs::{EndpointLink, FlowStep, FlowTrigger, FlowTriggerKind};
+        let step = |kind, title: &str, target: Option<FlowTarget>, op| FlowStep {
+            kind,
+            title: title.into(),
+            target,
+            op,
+            ..Default::default()
+        };
+        let mut read = step(
+            FlowStepKind::Db,
+            "Load \"the\" <customer>",
+            Some(FlowTarget::Table("t_users".into())),
+            Some(FlowOp::Read),
+        );
+        read.columns = ["id", "status", "email", "name", "plan"]
+            .map(String::from)
+            .to_vec();
+        let mut publish = step(
+            FlowStepKind::Queue,
+            "Publish order.created",
+            Some(FlowTarget::Queue("order.created".into())),
+            Some(FlowOp::Publish),
+        );
+        publish.condition = Some("if paid".into());
+        DiagramState {
+            nodes: vec![
+                table_node("t_users", "users"),
+                table_node("t_orders", "orders"),
+            ],
+            flow_cards: vec![
+                FlowCard {
+                    id: "flw_2".into(),
+                    trigger: FlowTrigger {
+                        kind: FlowTriggerKind::Http,
+                        method: "POST".into(),
+                        target: "/orders".into(),
+                    },
+                    summary: "Creates an order".into(),
+                    steps: vec![
+                        step(FlowStepKind::Auth, "Verify token", None, None),
+                        read,
+                        step(
+                            FlowStepKind::Db,
+                            "Create the order",
+                            Some(FlowTarget::Table("t_orders".into())),
+                            Some(FlowOp::Insert),
+                        ),
+                        step(
+                            FlowStepKind::Db,
+                            "Touch the customer",
+                            Some(FlowTarget::Table("t_users".into())),
+                            None,
+                        ),
+                        publish,
+                        step(FlowStepKind::Respond, "Return 201", None, None),
+                    ],
+                    ..Default::default()
+                },
+                FlowCard {
+                    id: "flw_1".into(),
+                    trigger: FlowTrigger {
+                        kind: FlowTriggerKind::Http,
+                        method: "GET".into(),
+                        target: "/orders".into(),
+                    },
+                    ..Default::default()
+                },
+            ],
+            endpoint_links: vec![EndpointLink {
+                table: "t_orders".into(),
+                method: "GET".into(),
+                path: "/orders".into(),
+                summary: String::new(),
+                request_id: None,
+                repo_key: None,
+                source: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn flow_exports_steps_resources_and_directions() {
+        let state = flow_state();
+        let text = flow_to_mermaid(&state, &state.flow_cards[0]);
+        assert!(text.starts_with("flowchart TD\n"), "{text}");
+        assert!(text.contains("trigger([\"POST /orders\"])"), "{text}");
+        // Kutip dan tanda sudut di-escape.
+        assert!(
+            text.contains("s2[\"2. Load #quot;the#quot; #lt;customer#gt;\"]"),
+            "{text}"
+        );
+        // Tabel memakai judul node dan hanya ditulis sekali.
+        assert_eq!(text.matches("[(\"users\")]").count(), 1, "{text}");
+        assert!(text.contains("r1[(\"users\")]"), "{text}");
+        assert!(text.contains("r3>\"order.created\"]"), "{text}");
+        // Baca: tabel -> langkah, kolom dipotong; tulis: langkah -> tabel.
+        assert!(
+            text.contains("r1 -->|\"read id, status, email, name, …\"| s2"),
+            "{text}"
+        );
+        assert!(text.contains("s3 -->|\"insert\"| r2"), "{text}");
+        // Operasi tidak diketahui: tanpa panah.
+        assert!(text.contains("s4 --- r1"), "{text}");
+        assert!(text.contains("s4 -.->|\"if paid\"| s5"), "{text}");
+        assert!(text.contains("s6([\"6. Return 201\"])"), "{text}");
+        assert!(text.contains("trigger --> s1"), "{text}");
+    }
+
+    #[test]
+    fn flow_without_steps_links_tables_from_endpoint_links() {
+        let state = flow_state();
+        let text = flow_to_mermaid(&state, &state.flow_cards[1]);
+        assert!(text.contains("no business process yet"), "{text}");
+        assert!(text.contains("r1[(\"orders\")]"), "{text}");
+        assert!(text.contains("trigger --- r1"), "{text}");
+    }
+
+    #[test]
+    fn flows_markdown_orders_cards_and_filters() {
+        let state = flow_state();
+        let all = flows_markdown(&state, "Shop", &[]);
+        let get = all.find("## GET /orders").expect("GET");
+        let post = all.find("## POST /orders").expect("POST");
+        assert!(get < post, "{all}");
+        assert_eq!(all.matches("```mermaid").count(), 2);
+        assert!(all.contains("Creates an order"));
+
+        let one = flows_markdown(&state, "Shop", &["flw_2".to_string()]);
+        assert_eq!(one.matches("```mermaid").count(), 1);
+        assert!(!one.contains("## GET /orders"));
     }
 }

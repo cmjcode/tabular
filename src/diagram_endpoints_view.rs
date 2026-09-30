@@ -224,6 +224,8 @@ pub fn render_endpoints_panel(
     let mut close = false;
     let mut action = None;
     let mut unlink: Option<crate::models::structs::EndpointLink> = None;
+    let mut show_card: Option<crate::models::structs::EndpointLink> = None;
+    let cards_shown = state.endpoint_display.shows_cards();
     if scrollable {
         ui.data_mut(|d| d.insert_temp(scroll_rect_id(ui), card));
     }
@@ -296,6 +298,14 @@ pub fn render_endpoints_panel(
                             {
                                 unlink = Some(l.clone());
                             }
+                            if cards_shown
+                                && ui
+                                    .small_button(egui_icons::icons::ICON_VISIBILITY.codepoint)
+                                    .on_hover_text("Show the process card of this endpoint")
+                                    .clicked()
+                            {
+                                show_card = Some(l.clone());
+                            }
                             if ui
                                 .small_button(egui_icons::icons::ICON_OPEN_IN_NEW.codepoint)
                                 .on_hover_text("Open the request in the HTTP client")
@@ -332,6 +342,21 @@ pub fn render_endpoints_panel(
         close = true;
     }
 
+    if let Some(l) = show_card {
+        let id = crate::diagram_flow::card_for_endpoint(
+            state,
+            l.repo_key.as_deref(),
+            &l.method,
+            &l.path,
+        )
+        .map(|c| c.id.clone());
+        let now = ui.input(|i| i.time);
+        if let Some(id) = id
+            && crate::diagram_flow_view::reveal_card(state, &id, rect.size(), now)
+        {
+            state.endpoints_panel = None;
+        }
+    }
     if let Some(l) = unlink {
         crate::diagram_flow::unlink_endpoint(state, &l);
         state.save_requested = true;

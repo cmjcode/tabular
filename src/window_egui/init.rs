@@ -688,6 +688,7 @@ impl super::Tabular {
             diagram_schema_jobs: Vec::new(),
             diagram_focus_requests: Vec::new(),
             diagram_repo_scan_jobs: Vec::new(),
+            diagram_flow_jobs: Vec::new(),
             show_backup_dialog: false,
             show_restore_dialog: false,
             backup_state: None,

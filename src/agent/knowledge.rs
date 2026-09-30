@@ -19,7 +19,10 @@ use serde::Serialize;
 
 use crate::diagram_notes::{parse_wikilinks, resolve_table};
 use crate::models::enums::DatabaseType;
-use crate::models::structs::{DiagramNode, DiagramState, NoteAnchor, RelationOrigin};
+use crate::models::structs::{
+    DiagramNode, DiagramState, FlowOp, FlowStepKind, FlowTarget, FlowTriggerKind, NoteAnchor,
+    RelationOrigin,
+};
 use crate::query_diagram::{self, ColumnRef, QueryDiagramModel};
 
 use super::core::{AgentError, HeadlessSession};
@@ -32,6 +35,8 @@ const MAX_NOTES: usize = 50;
 const MAX_HISTORY_CHARS: usize = 2_000;
 /// Batas kolom hasil `analyze_query` (SELECT * bisa sangat lebar).
 const MAX_OUTPUT_COLUMNS: usize = 100;
+/// Jumlah maksimum proses bisnis (flow card) per respons.
+const MAX_FLOWS: usize = 40;
 /// Batas waktu memuat diagram bersama dari tabel `diagram_by_tabular`.
 const REMOTE_DIAGRAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// Batas waktu pencarian teks di satu repository.
@@ -90,6 +95,67 @@ pub struct DiagramNoteInfo {
     pub truncated: bool,
 }
 
+/// Pemakaian satu tabel oleh sebuah proses bisnis.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowTableInfo {
+    pub table: String,
+    /// Operasi dari langkah (`read`, `insert`, ...). Kosong bila tabel hanya
+    /// diketahui dari link endpoint, tanpa langkah hasil generate.
+    pub ops: Vec<FlowOp>,
+    /// Nomor langkah (mulai 1) yang menyentuh tabel ini.
+    pub steps: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowStepInfo {
+    pub kind: FlowStepKind,
+    pub title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    /// `{"kind": "table", "id": "<nama tabel>"}`, atau API luar / queue /
+    /// cache / flow lain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<FlowTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op: Option<FlowOp>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    /// `path/file:line` di repository group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Satu proses bisnis (flow card di diagram): pemicu, tabel yang disentuh,
+/// dan langkah berurutan hasil generate AI dari kode repository.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowInfo {
+    pub id: String,
+    /// `http`, `job`, `queue`, `cron`, `event`, atau `cli`.
+    pub trigger: FlowTriggerKind,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    /// Path route, nama job, topik queue, atau ekspresi cron.
+    pub target: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// File handler di repository.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub tables: Vec<FlowTableInfo>,
+    /// Kosong bila alurnya belum di-generate.
+    pub steps: Vec<FlowStepInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    /// Commit HEAD saat generate (7 karakter).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// AI hanya melihat cuplikan kode; langkahnya bisa kurang lengkap.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LinkedDatabaseInfo {
     pub connection_id: Option<i64>,
@@ -115,6 +181,11 @@ pub struct DiagramDescription {
     pub virtual_relations: Vec<VirtualRelationInfo>,
     pub notes: Vec<DiagramNoteInfo>,
     pub total_notes: usize,
+    /// Proses bisnis (flow card) yang menyentuh tabel dalam cakupan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flows: Vec<FlowInfo>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub total_flows: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub linked_databases: Vec<LinkedDatabaseInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,6 +321,85 @@ fn clip_chars(text: &str, max: usize) -> (String, bool) {
         Some((cut, _)) => (format!("{}…", &text[..cut]), true),
         None => (text.to_string(), false),
     }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Proses bisnis yang menyentuh tabel dalam cakupan (`None` = semua), urut
+/// path lalu method. Id node tabel diganti nama tabelnya; `request_id`,
+/// posisi dan kunci repository tidak ikut karena hanya berarti di GUI.
+fn flow_infos(
+    state: &DiagramState,
+    scope_tables: Option<&HashSet<String>>,
+    name_of: &dyn Fn(&str) -> String,
+) -> Vec<FlowInfo> {
+    let tables_by_card = crate::diagram_flow::tables_by_card(state);
+    let mut cards: Vec<(&crate::models::structs::FlowCard, &[&str])> = state
+        .flow_cards
+        .iter()
+        .filter_map(|c| {
+            let tables = tables_by_card.get(c.id.as_str())?.as_slice();
+            let in_scope = scope_tables.is_none_or(|s| tables.iter().any(|t| s.contains(*t)));
+            in_scope.then_some((c, tables))
+        })
+        .collect();
+    cards.sort_by_key(|(c, _)| {
+        (
+            c.trigger.target.clone(),
+            crate::repo_links::method_rank(&c.trigger.method),
+        )
+    });
+    cards
+        .into_iter()
+        .map(|(card, tables)| {
+            let tables = crate::diagram_flow::table_uses(card, tables)
+                .into_iter()
+                .map(|u| FlowTableInfo {
+                    table: name_of(&u.table),
+                    ops: u.ops,
+                    steps: u.steps.iter().map(|i| i + 1).collect(),
+                })
+                .collect();
+            let steps = card
+                .steps
+                .iter()
+                .map(|s| FlowStepInfo {
+                    kind: s.kind,
+                    title: s.title.clone(),
+                    detail: s.detail.clone(),
+                    target: s.target.as_ref().map(|t| match t {
+                        FlowTarget::Table(id) => FlowTarget::Table(name_of(id)),
+                        other => other.clone(),
+                    }),
+                    op: s.op,
+                    columns: s.columns.clone(),
+                    condition: s.condition.clone(),
+                    source: s.source.clone(),
+                })
+                .collect();
+            let meta = card.meta.as_ref();
+            FlowInfo {
+                id: card.id.clone(),
+                trigger: card.trigger.kind,
+                method: card.trigger.method.clone(),
+                target: card.trigger.target.clone(),
+                summary: card.summary.clone(),
+                source: card.source.clone(),
+                tables,
+                steps,
+                generated_at: meta
+                    .map(|m| m.generated_at.clone())
+                    .filter(|s| !s.is_empty()),
+                commit: meta
+                    .and_then(|m| m.commit.as_deref())
+                    .filter(|c| !c.is_empty())
+                    .map(|c| c.chars().take(7).collect()),
+                partial: meta.is_some_and(|m| m.partial),
+            }
+        })
+        .collect()
 }
 
 fn column_ref(r: &ColumnRef) -> String {
@@ -474,6 +624,8 @@ impl HeadlessSession {
                 virtual_relations: Vec::new(),
                 notes: Vec::new(),
                 total_notes: 0,
+                flows: Vec::new(),
+                total_flows: 0,
                 linked_databases: Vec::new(),
                 note: Some(load_note.unwrap_or_else(|| {
                     "no Tabular diagram for this database yet; the user can open it from the \
@@ -660,11 +812,25 @@ impl HeadlessSession {
             })
             .collect::<Vec<_>>();
 
-        let mut note = load_note;
+        let mut flows = flow_infos(&state, scope_tables.as_ref(), &name_of);
+        let total_flows = flows.len();
+        flows.truncate(MAX_FLOWS);
+
+        let mut clipped: Vec<String> = Vec::new();
         if total_notes > notes.len() {
+            clipped.push(format!("showing {} of {total_notes} notes", notes.len()));
+        }
+        if total_flows > flows.len() {
+            clipped.push(format!(
+                "showing {} of {total_flows} business processes",
+                flows.len()
+            ));
+        }
+        let mut note = load_note;
+        if !clipped.is_empty() {
             note = Some(format!(
-                "showing {} of {total_notes} notes; pass `table` or `group` to narrow",
-                notes.len()
+                "{}; pass `table` or `group` to narrow",
+                clipped.join(", ")
             ));
         }
 
@@ -680,6 +846,8 @@ impl HeadlessSession {
             virtual_relations,
             notes,
             total_notes,
+            flows,
+            total_flows,
             linked_databases: state
                 .linked_databases
                 .iter()
@@ -1150,7 +1318,10 @@ fn summarize_model(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::structs::{DiagramGroup, DiagramNote, VirtualRelation};
+    use crate::models::structs::{
+        DiagramGroup, DiagramNote, EndpointLink, FlowCard, FlowMeta, FlowStep, FlowTrigger,
+        VirtualRelation,
+    };
     use eframe::egui;
 
     fn node(id: &str, cols: &[&str], group: Option<&str>) -> DiagramNode {
@@ -1228,9 +1399,115 @@ mod tests {
                     false,
                 ),
             ],
+            flow_cards: vec![
+                FlowCard {
+                    id: "flw_1".into(),
+                    trigger: FlowTrigger {
+                        kind: FlowTriggerKind::Http,
+                        method: "POST".into(),
+                        target: "/orders".into(),
+                    },
+                    summary: "Creates an order".into(),
+                    request_id: Some("req_local".into()),
+                    pos: Some([10.0, 20.0]),
+                    steps: vec![
+                        FlowStep {
+                            kind: FlowStepKind::Db,
+                            title: "Load the customer".into(),
+                            target: Some(FlowTarget::Table("users".into())),
+                            op: Some(FlowOp::Read),
+                            columns: vec!["id".into()],
+                            source: Some("src/orders.ts:12".into()),
+                            ..Default::default()
+                        },
+                        FlowStep {
+                            kind: FlowStepKind::Db,
+                            title: "Create the order".into(),
+                            target: Some(FlowTarget::Table("orders".into())),
+                            op: Some(FlowOp::Insert),
+                            ..Default::default()
+                        },
+                    ],
+                    meta: Some(FlowMeta {
+                        commit: Some("a1b2c3d4e5f6".into()),
+                        generated_at: "2026-09-30T10:00:00Z".into(),
+                        backend: "Claude Code".into(),
+                        partial: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                FlowCard {
+                    id: "flw_2".into(),
+                    trigger: FlowTrigger {
+                        kind: FlowTriggerKind::Http,
+                        method: "GET".into(),
+                        target: "/audit".into(),
+                    },
+                    ..Default::default()
+                },
+            ],
+            endpoint_links: vec![EndpointLink {
+                table: "audit_log".into(),
+                method: "GET".into(),
+                path: "/audit".into(),
+                summary: String::new(),
+                request_id: None,
+                repo_key: None,
+                source: None,
+            }],
             diagram_title: Some("Shop".into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn flow_infos_use_table_names_and_skip_gui_fields() {
+        let mut state = sample_state();
+        // Id node berbeda dari judulnya: agent harus melihat nama tabel.
+        state.nodes[0].title = "public.users".into();
+        let name_of = |id: &str| {
+            state
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| node_name(n).to_string())
+                .unwrap_or_else(|| id.to_string())
+        };
+        let all = flow_infos(&state, None, &name_of);
+        let targets: Vec<&str> = all.iter().map(|f| f.target.as_str()).collect();
+        assert_eq!(targets, vec!["/audit", "/orders"]);
+
+        let post = &all[1];
+        assert_eq!(post.tables.len(), 2);
+        assert_eq!(post.tables[0].table, "public.users");
+        assert_eq!(post.tables[0].ops, vec![FlowOp::Read]);
+        assert_eq!(post.tables[0].steps, vec![1]);
+        assert_eq!(
+            post.steps[0].target,
+            Some(FlowTarget::Table("public.users".into()))
+        );
+        assert_eq!(post.commit.as_deref(), Some("a1b2c3d"));
+        assert!(post.partial);
+
+        let json = serde_json::to_value(post).expect("json");
+        assert_eq!(json["trigger"], "http");
+        assert_eq!(json["steps"][1]["op"], "insert");
+        assert_eq!(json["steps"][0]["target"]["kind"], "table");
+        for gui_only in ["request_id", "pos", "repo_key", "collapsed", "meta"] {
+            assert!(json.get(gui_only).is_none(), "{gui_only} leaked: {json}");
+        }
+
+        // Card tanpa langkah: tabel dari link, tanpa operasi, tanpa `partial`.
+        let get = serde_json::to_value(&all[0]).expect("json");
+        assert_eq!(get["tables"][0]["table"], "audit_log");
+        assert_eq!(get["tables"][0]["ops"], serde_json::json!([]));
+        assert!(get.get("partial").is_none(), "{get}");
+
+        let scope = HashSet::from(["orders".to_string()]);
+        let scoped = flow_infos(&state, Some(&scope), &name_of);
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, "flw_1");
     }
 
     #[test]
@@ -1337,6 +1614,7 @@ mod tests {
         assert_eq!(all.total_notes, 3);
         // Note pinned didahulukan.
         assert_eq!(all.notes[0].id, "n2");
+        assert_eq!(all.total_flows, 2);
 
         let orders = session
             .describe_diagram(3, None, None, Some("orders"))
@@ -1346,6 +1624,8 @@ mod tests {
         let ids: Vec<&str> = orders.notes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["n2", "n1"]);
         assert!(orders.ungrouped_tables.is_empty());
+        let flows: Vec<&str> = orders.flows.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(flows, vec!["flw_1"]);
 
         let users = session
             .describe_diagram(3, None, None, Some("users"))

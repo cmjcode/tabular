@@ -38,9 +38,9 @@ pub const DEFAULT_PARALLEL_BATCHES: usize = 3;
 pub const MAX_PARALLEL_BATCHES: usize = 6;
 /// Batas giliran AI yang berjalan bersamaan dari semua job generate endpoint
 /// (beberapa folder sekaligus), supaya provider tidak kebanjiran permintaan.
-const MAX_GLOBAL_AI_TURNS: usize = 6;
+pub(crate) const MAX_GLOBAL_AI_TURNS: usize = 6;
 /// Batas byte kode per batch pada mode cuplikan (backend API).
-const SNIPPET_BYTES_PER_BATCH: usize = 60_000;
+pub(crate) const SNIPPET_BYTES_PER_BATCH: usize = 60_000;
 /// Batas byte satu file pada mode cuplikan.
 const SNIPPET_BYTES_PER_FILE: usize = 16_000;
 
@@ -1251,7 +1251,7 @@ fn common_rules(tables: &[String]) -> String {
     s
 }
 
-fn repo_location(mode: PromptMode, repo_root: Option<&Path>) -> String {
+pub(crate) fn repo_location(mode: PromptMode, repo_root: Option<&Path>) -> String {
     match (mode, repo_root) {
         (PromptMode::ReadRepo, Some(root)) => format!(
             "The repository is at `{}`, which is also your current working directory. Stay \
@@ -1346,29 +1346,37 @@ pub fn redact_code_secrets(code: &str) -> String {
         .into_owned()
 }
 
+/// File sumber dari lokasi `path/file:line` (tanpa nomor baris).
+pub(crate) fn source_file(source: &str) -> &str {
+    source.rsplit_once(':').map_or(source, |(f, _)| f)
+}
+
 /// Cuplikan kode untuk mode tanpa akses file: isi file (terpotong) yang
 /// memuat route batch ini, maksimal [`SNIPPET_BYTES_PER_BATCH`].
 fn batch_snippets(root: &Path, batch: &[GeneratedEndpoint]) -> String {
-    let mut files: Vec<String> = Vec::new();
-    for ep in batch {
-        let file = ep
-            .source
-            .rsplit_once(':')
-            .map_or(ep.source.as_str(), |(f, _)| f);
-        if !file.is_empty() && !files.iter().any(|f| f == file) {
-            files.push(file.to_string());
-        }
-    }
+    let files: Vec<&str> = batch.iter().map(|ep| source_file(&ep.source)).collect();
+    file_snippets(root, &files)
+}
+
+/// Isi file `files` (relatif ke `root`, terpotong, bernomor baris dan sudah
+/// diredaksi), maksimal [`SNIPPET_BYTES_PER_BATCH`]. File duplikat, kosong,
+/// absolut atau yang keluar dari `root` dilewati.
+pub(crate) fn file_snippets(root: &Path, files: &[&str]) -> String {
+    let mut seen: Vec<&str> = Vec::new();
     let mut out = String::new();
-    for file in files {
+    for &file in files {
+        if file.is_empty() || seen.contains(&file) {
+            continue;
+        }
+        seen.push(file);
         if out.len() >= SNIPPET_BYTES_PER_BATCH {
             break;
         }
         // Hanya path relatif di dalam root.
-        if file.contains("..") || Path::new(&file).is_absolute() {
+        if file.contains("..") || Path::new(file).is_absolute() {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(root.join(&file)) else {
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
             continue;
         };
         let budget = SNIPPET_BYTES_PER_FILE.min(SNIPPET_BYTES_PER_BATCH - out.len());
@@ -1415,7 +1423,7 @@ fn ai_slots() -> &'static AiSlots {
 }
 
 /// Slot yang dipegang selama satu giliran AI; dilepas saat di-drop.
-struct AiSlot;
+pub(crate) struct AiSlot;
 
 impl Drop for AiSlot {
     fn drop(&mut self) {
@@ -1428,7 +1436,7 @@ impl Drop for AiSlot {
 }
 
 /// Tunggu sampai ada slot giliran AI global. Menunggu tetap bisa dibatalkan.
-fn acquire_ai_slot(limit: usize, cancel: &AtomicBool) -> Result<AiSlot, RepoScanError> {
+pub(crate) fn acquire_ai_slot(limit: usize, cancel: &AtomicBool) -> Result<AiSlot, RepoScanError> {
     let slots = ai_slots();
     let mut active = slots
         .active
@@ -1453,7 +1461,7 @@ fn acquire_ai_slot(limit: usize, cancel: &AtomicBool) -> Result<AiSlot, RepoScan
 /// Jalankan `work(i)` untuk `i` in `0..total` dengan `workers` thread.
 /// Worker berhenti mengambil pekerjaan baru setelah `cancel`. Hasil diurutkan
 /// menurut indeks.
-fn run_pool<T: Send>(
+pub(crate) fn run_pool<T: Send>(
     total: usize,
     workers: usize,
     cancel: &AtomicBool,
@@ -1546,25 +1554,35 @@ pub fn merge_endpoints(
 
 /// Kelompokkan endpoint per file sumber lalu potong jadi batch.
 fn batches(endpoints: &[GeneratedEndpoint]) -> Vec<Vec<GeneratedEndpoint>> {
-    let mut by_file: Vec<(String, Vec<GeneratedEndpoint>)> = Vec::new();
-    for ep in endpoints {
-        let file = ep
-            .source
-            .rsplit_once(':')
-            .map_or(ep.source.clone(), |(f, _)| f.to_string());
+    batches_by_file(endpoints, BATCH_SIZE, |ep| {
+        source_file(&ep.source).to_string()
+    })
+}
+
+/// Kelompokkan `items` per file (`file_of`) lalu potong jadi batch berisi
+/// paling banyak `size`. Item dari file yang sama diusahakan satu batch.
+pub(crate) fn batches_by_file<T: Clone>(
+    items: &[T],
+    size: usize,
+    file_of: impl Fn(&T) -> String,
+) -> Vec<Vec<T>> {
+    let size = size.max(1);
+    let mut by_file: Vec<(String, Vec<T>)> = Vec::new();
+    for item in items {
+        let file = file_of(item);
         match by_file.iter_mut().find(|(f, _)| *f == file) {
-            Some((_, v)) => v.push(ep.clone()),
-            None => by_file.push((file, vec![ep.clone()])),
+            Some((_, v)) => v.push(item.clone()),
+            None => by_file.push((file, vec![item.clone()])),
         }
     }
-    let mut out: Vec<Vec<GeneratedEndpoint>> = Vec::new();
-    let mut current: Vec<GeneratedEndpoint> = Vec::new();
-    for (_, eps) in by_file {
-        if !current.is_empty() && current.len() + eps.len() > BATCH_SIZE {
+    let mut out: Vec<Vec<T>> = Vec::new();
+    let mut current: Vec<T> = Vec::new();
+    for (_, group) in by_file {
+        if !current.is_empty() && current.len() + group.len() > size {
             out.push(std::mem::take(&mut current));
         }
-        for chunk in eps.chunks(BATCH_SIZE) {
-            if current.len() + chunk.len() > BATCH_SIZE {
+        for chunk in group.chunks(size) {
+            if current.len() + chunk.len() > size {
                 out.push(std::mem::take(&mut current));
             }
             current.extend_from_slice(chunk);

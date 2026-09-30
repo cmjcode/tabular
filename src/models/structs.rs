@@ -1083,9 +1083,24 @@ pub struct DiagramState {
     /// Garis proses mana yang digambar.
     #[serde(default, skip_serializing_if = "is_default")]
     pub flow_lines: FlowLineMode,
+    /// Tampilkan langkah di semua card. `false` = card ringkas (header saja),
+    /// langkah hanya tampil di card terpilih.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub flow_show_steps: bool,
+    /// Ukuran pita API per group pada frame terakhir (runtime), dipakai
+    /// perhitungan kotak group di luar render (mis. anchor note).
+    #[serde(skip)]
+    pub flow_band_sizes: std::collections::HashMap<String, eframe::egui::Vec2>,
     /// Flow card terpilih.
     #[serde(skip)]
     pub selected_flow: Option<String>,
+    /// Indeks langkah card terpilih yang detailnya sedang dibuka di card.
+    #[serde(skip)]
+    pub flow_open_step: Option<usize>,
+    /// Tinggi bagian bawah card terpilih (tombol + tabel) terukur di frame
+    /// terakhir, koordinat diagram; card memanjang setinggi ini.
+    #[serde(skip)]
+    pub flow_footer_h: f32,
     /// Flow card yang sedang difokuskan (meredupkan lainnya). Tidak pernah
     /// aktif bersamaan dengan `focus_table` atau `focus_group`.
     #[serde(skip)]
@@ -1093,6 +1108,9 @@ pub struct DiagramState {
     /// Pemutaran animasi langkah flow card.
     #[serde(skip)]
     pub flow_play: Option<FlowPlayback>,
+    /// Jendela progress generate alur bisnis (AI).
+    #[serde(skip)]
+    pub flow_gen: Option<FlowGenWindow>,
 }
 
 /// Endpoint HTTP API yang membaca/menulis sebuah tabel diagram.
@@ -1361,9 +1379,49 @@ pub struct FlowPlayback {
     pub card_id: String,
     /// Posisi waktu di timeline (detik), sudah memperhitungkan kecepatan.
     pub position: f64,
-    /// `egui::InputState::time` pada frame terakhir; `None` saat jeda.
+    /// `egui::InputState::time` pada frame terakhir; `None` saat jeda atau
+    /// sebelum frame pertama pemutaran.
     pub last_tick: Option<f64>,
     pub speed: f32,
+    /// `false` = dijeda (juga setelah sampai `Done`).
+    pub playing: bool,
+}
+
+/// Jendela progress job generate alur bisnis sebuah diagram (runtime saja).
+/// Job-nya sendiri ada di `window_egui::diagram::DiagramFlowGenJob`.
+#[derive(Clone, Debug, Default)]
+pub struct FlowGenWindow {
+    /// Judul group atau folder repository yang sedang diproses.
+    pub scope: String,
+    /// Label repository (path lokal atau URL tanpa kredensial).
+    pub repo_label: String,
+    /// Repository ke-`repo_index` (mulai 1) dari `repo_total`.
+    pub repo_index: usize,
+    pub repo_total: usize,
+    /// Jumlah card yang diminta.
+    pub card_count: usize,
+    /// Tahapan kemajuan repository yang sedang diproses.
+    pub progress: Vec<crate::agent::harness::ProgressStep>,
+    /// `true` selama job background belum selesai.
+    pub running: bool,
+    /// Pesan gagal job (bukan kegagalan per card).
+    pub error: Option<String>,
+    /// Catatan tambahan, mis. AI hanya melihat cuplikan.
+    pub note: Option<String>,
+    /// Card yang alurnya berhasil di-generate.
+    pub generated: usize,
+    /// Card yang dilewati karena file sumbernya tidak berubah.
+    pub skipped_fresh: usize,
+    /// (label endpoint, pesan) untuk card yang gagal.
+    pub failed: Vec<(String, String)>,
+    /// Permintaan batal dari user; dibaca oleh poller job.
+    pub cancel_requested: bool,
+    /// `true` = jendela disembunyikan; job tetap berjalan dan hasilnya
+    /// dilaporkan lewat toast.
+    pub hidden: bool,
+    pub started_at: Option<std::time::Instant>,
+    pub last_activity_at: Option<std::time::Instant>,
+    pub elapsed: Option<std::time::Duration>,
 }
 
 /// Draft modal edit relasi virtual: tabel tetap, kolom kedua ujung bisa diganti.
@@ -1609,9 +1667,14 @@ impl Default for DiagramState {
             flow_cards: Vec::new(),
             endpoint_display: EndpointDisplay::default(),
             flow_lines: FlowLineMode::default(),
+            flow_show_steps: false,
+            flow_band_sizes: Default::default(),
             selected_flow: None,
+            flow_open_step: None,
+            flow_footer_h: 0.0,
             focus_flow: None,
             flow_play: None,
+            flow_gen: None,
         }
     }
 }

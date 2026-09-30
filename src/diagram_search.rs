@@ -28,10 +28,12 @@ pub enum SearchTarget {
         column: String,
     },
     Group(String),
-    /// Endpoint HTTP API yang tertaut ke `table`.
+    /// Endpoint HTTP API yang tertaut ke `table`. `card` = flow card-nya
+    /// bila endpoint tampil sebagai card; hasilnya melompat ke card itu.
     Endpoint {
         table: String,
         label: String,
+        card: Option<String>,
     },
 }
 
@@ -144,25 +146,57 @@ pub fn search_hits(state: &DiagramState, query: &str) -> SearchHits {
         }
     }
 
-    // Endpoint HTTP API ikut filter tabel: hasilnya menunjuk tabel pemakainya.
+    // Endpoint HTTP API ikut filter tabel: hasilnya menunjuk tabel pemakainya,
+    // atau pada mode Cards satu hasil per card yang melompat ke card itu.
     if state.search_tables && state.show_endpoints {
+        let cards = state.endpoint_display.shows_cards();
+        let mut seen_cards: std::collections::HashSet<&str> = Default::default();
         for link in &state.endpoint_links {
             let label = format!("{} {}", link.method, link.path);
             let Some(score) = q.score(&label).or_else(|| q.score(&link.summary)) else {
                 continue;
             };
-            let table = state
-                .nodes
-                .iter()
-                .find(|n| n.id == link.table)
-                .map_or(link.table.as_str(), |n| n.title.as_str());
+            let card = cards
+                .then(|| {
+                    crate::diagram_flow::card_for_endpoint(
+                        state,
+                        link.repo_key.as_deref(),
+                        &link.method,
+                        &link.path,
+                    )
+                })
+                .flatten();
+            if let Some(c) = card
+                && !seen_cards.insert(c.id.as_str())
+            {
+                continue;
+            }
+            let detail = match card {
+                Some(c) => {
+                    let n = crate::diagram_flow::tables_of(state, c).len();
+                    if c.steps.is_empty() {
+                        format!("process card · {n} table(s)")
+                    } else {
+                        format!("process card · {} steps · {n} table(s)", c.steps.len())
+                    }
+                }
+                None => {
+                    let table = state
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == link.table)
+                        .map_or(link.table.as_str(), |n| n.title.as_str());
+                    format!("uses {table}")
+                }
+            };
             hits.push(SearchHit {
                 target: SearchTarget::Endpoint {
                     table: link.table.clone(),
                     label: label.clone(),
+                    card: card.map(|c| c.id.clone()),
                 },
                 label,
-                detail: format!("uses {table}"),
+                detail,
                 score,
             });
         }
@@ -184,6 +218,9 @@ pub fn search_hits(state: &DiagramState, query: &str) -> SearchHits {
 /// objeknya sudah tidak ada.
 pub fn target_world_rect(state: &DiagramState, target: &SearchTarget) -> Option<egui::Rect> {
     match target {
+        SearchTarget::Endpoint {
+            card: Some(card), ..
+        } => crate::diagram_flow_layout::card_world_rect(state, card),
         SearchTarget::Table(id) | SearchTarget::Endpoint { table: id, .. } => state
             .nodes
             .iter()
@@ -240,6 +277,12 @@ pub fn focus_target(
     }
     .clamp(MIN_ZOOM, MAX_ZOOM);
     crate::diagram_view::animate_view_to(state, world.center(), zoom, view_size, now);
+    if let SearchTarget::Endpoint {
+        card: Some(card), ..
+    } = target
+    {
+        state.selected_flow = Some(card.clone());
+    }
     true
 }
 
@@ -265,6 +308,13 @@ fn fingerprint(state: &DiagramState) -> u64 {
         .hash(&mut h);
     state.nodes.len().hash(&mut h);
     state.groups.len().hash(&mut h);
+    (
+        state.show_endpoints,
+        state.endpoint_display.shows_cards(),
+        state.endpoint_links.len(),
+        state.flow_cards.len(),
+    )
+        .hash(&mut h);
     for n in &state.nodes {
         n.title.hash(&mut h);
         n.columns.len().hash(&mut h);
@@ -484,7 +534,8 @@ fn result_row(
         SearchTarget::Table(_) => "Focus this table",
         SearchTarget::Column { .. } => "Focus this column",
         SearchTarget::Group(_) => "Focus this group",
-        SearchTarget::Endpoint { .. } => "Focus the table this endpoint uses",
+        SearchTarget::Endpoint { card: Some(_), .. } => "Show the process card of this endpoint",
+        SearchTarget::Endpoint { card: None, .. } => "Focus the table this endpoint uses",
     };
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -635,6 +686,48 @@ mod tests {
         assert_eq!(hit.label, "POST /api/orders");
         assert_eq!(hit.detail, "uses orders");
         assert!(target_world_rect(&state, &hit.target).is_some());
+
+        // Mode Cards: satu hasil per card, melompat ke card.
+        state
+            .endpoint_links
+            .push(crate::models::structs::EndpointLink {
+                table: "users".into(),
+                ..state.endpoint_links[0].clone()
+            });
+        crate::diagram_flow::sync_cards_from_links(&mut state);
+        let hits = search_hits(&state, "api/orders");
+        let endpoints: Vec<&SearchHit> = hits
+            .hits
+            .iter()
+            .filter(|h| matches!(h.target, SearchTarget::Endpoint { .. }))
+            .collect();
+        assert_eq!(endpoints.len(), 1);
+        let SearchTarget::Endpoint {
+            card: Some(card), ..
+        } = &endpoints[0].target
+        else {
+            panic!("endpoint hit must point to its card");
+        };
+        let rect = target_world_rect(&state, &endpoints[0].target).unwrap();
+        assert_eq!(
+            Some(rect),
+            crate::diagram_flow_layout::card_world_rect(&state, card)
+        );
+        assert!(focus_target(
+            &mut state,
+            &endpoints[0].target.clone(),
+            egui::vec2(800.0, 600.0),
+            0.0
+        ));
+        assert_eq!(state.selected_flow.as_deref(), Some(card.as_str()));
+
+        state.endpoint_display = crate::models::structs::EndpointDisplay::Badges;
+        let hits = search_hits(&state, "api/orders");
+        assert!(
+            hits.hits
+                .iter()
+                .any(|h| matches!(h.target, SearchTarget::Endpoint { card: None, .. }))
+        );
 
         state.show_endpoints = false;
         assert!(

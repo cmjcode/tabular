@@ -254,6 +254,7 @@ impl super::Tabular {
                 | DiagramAction::RelinkDatabase(_)
                 | DiagramAction::SyncToServer
                 | DiagramAction::SuggestGroupTables(_)
+                | DiagramAction::GenerateFlows { .. }
         );
         if modifies_source && state.scoped_to.is_some() {
             self.toasts.info(
@@ -267,6 +268,9 @@ impl super::Tabular {
             }
             DiagramAction::OpenGroupInNewTab(group_id) => {
                 self.open_group_subset_tab(conn_id, db_name, state, &group_id)
+            }
+            DiagramAction::OpenFlowInNewTab(card_id) => {
+                self.open_flow_subset_tab(conn_id, db_name, state, &card_id)
             }
             DiagramAction::Save => self.save_diagram_with_defaults(conn_id, db_name, state),
             DiagramAction::Info(msg) => self.toasts.success(msg),
@@ -299,6 +303,11 @@ impl super::Tabular {
             DiagramAction::SuggestGroupTables(group_id) => {
                 self.start_group_table_scan(conn_id, db_name, &group_id);
             }
+            DiagramAction::GenerateFlows {
+                group_id,
+                card_ids,
+                force,
+            } => self.start_flow_generation(conn_id, db_name, group_id.as_deref(), &card_ids, force),
             DiagramAction::OpenEndpointRequest { request_id, label } => match request_id {
                 Some(request_id) => crate::http_repo::perform(
                     self,
@@ -330,7 +339,7 @@ impl super::Tabular {
     }
 
     /// State diagram penuh milik (conn, db) yang sedang terbuka.
-    fn diagram_state_for_mut(
+    pub(crate) fn diagram_state_for_mut(
         &mut self,
         conn_id: Option<i64>,
         db_name: Option<&str>,
@@ -695,6 +704,7 @@ impl super::Tabular {
                     current_state.flow_cards = loaded_state.flow_cards;
                     current_state.endpoint_display = loaded_state.endpoint_display;
                     current_state.flow_lines = loaded_state.flow_lines;
+                    current_state.flow_show_steps = loaded_state.flow_show_steps;
                     crate::diagram_flow::sync_cards_from_links(current_state);
                     current_state.pan = loaded_state.pan;
                     current_state.zoom = loaded_state.zoom;
@@ -1179,6 +1189,32 @@ impl super::Tabular {
         let count = subset.nodes.len();
         self.open_subset_tab(conn_id, db_name, format!("Diagram: {title}"), subset);
         log::info!("[DIAGRAM] opened group '{title}' with {count} table(s) in a new tab");
+    }
+
+    /// Buka tab baru berisi flow card endpoint `card_id` beserta semua tabel
+    /// yang tertaut dengannya.
+    fn open_flow_subset_tab(
+        &mut self,
+        conn_id: Option<i64>,
+        db_name: Option<String>,
+        state: &models::structs::DiagramState,
+        card_id: &str,
+    ) {
+        let source = self.subset_source(conn_id, db_name.as_deref(), state);
+        let subset = crate::diagram_view::flow_subset_state(source, card_id)
+            .or_else(|| crate::diagram_view::flow_subset_state(state, card_id));
+        let Some(subset) = subset else {
+            self.toasts
+                .info("This endpoint is not linked to any table in the diagram");
+            return;
+        };
+        let title = subset.flow_cards.first().map_or_else(
+            || card_id.to_string(),
+            |c| format!("{} {}", c.trigger.method, c.trigger.target),
+        );
+        let count = subset.nodes.len();
+        self.open_subset_tab(conn_id, db_name, format!("Diagram: {title}"), subset);
+        log::info!("[DIAGRAM] opened endpoint '{title}' with {count} linked table(s) in a new tab");
     }
 
     /// Terima hasil pengambilan skema yang sudah selesai. Dipanggil tiap frame.

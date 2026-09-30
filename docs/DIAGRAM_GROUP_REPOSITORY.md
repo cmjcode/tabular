@@ -82,9 +82,25 @@ scan, including the git and AI processes.
 
 A group is linked to every folder in the **APIs** sidebar that uses the same git
 repository. Right-click the group title and choose **HTTP API Folders…** to
-show it. When endpoints are generated from that folder's repository, each table
-the endpoints read or write gets a blue **API n** badge; click it for the list
-of methods and paths. See [HTTP_API_REPOSITORY.md](HTTP_API_REPOSITORY.md).
+show it. When endpoints are generated from that folder's repository, each
+endpoint appears as an API card in a lane beside the tables it reads or writes
+(or, if you choose **Badges** in the diagram menu, as a blue **API n** badge on
+each table header).
+
+## Generate Business Process (AI)
+
+Right-click the group title and choose **Generate Business Process (AI)**. The
+AI follows each API card of the group's repository from its route handler into
+services, repositories and SQL, and fills the card with the steps in order and
+the tables each step reads or writes. Double-click a card to play the process
+on the canvas. Cards whose source files have not changed since the last run
+are skipped. While the job runs, the menu item becomes **Show Generation
+Progress**.
+
+The item is enabled when the group has a repository and at least one API card
+comes from that repository. See
+[HTTP_API_REPOSITORY.md](HTTP_API_REPOSITORY.md#business-processes-ai) for
+cards, playback and Mermaid export.
 
 ## Notes
 

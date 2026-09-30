@@ -1,10 +1,11 @@
+use crate::diagram_flow_layout::BandSizes;
 use crate::diagram_lod::{
     DASH_BUDGET, Emphasis, KindFilter, Lod, TableLink, curve_samples, curve_visible, lod_for_zoom,
     node_index, quantize_font,
 };
 use crate::models::structs::{
-    DiagramFlowAnimation, DiagramNode, DiagramState, DiagramViewAnimation, RelationOrigin,
-    VirtualRelation,
+    DiagramFlowAnimation, DiagramNode, DiagramState, DiagramViewAnimation, EndpointDisplay,
+    FlowLineMode, RelationOrigin, VirtualRelation,
 };
 use crate::rfd;
 use eframe::egui;
@@ -91,6 +92,9 @@ pub enum DiagramAction {
     SuggestGroupTables(String),
     /// Buka tab baru berisi seluruh tabel anggota group (id group).
     OpenGroupInNewTab(String),
+    /// Buka tab baru berisi flow card endpoint ini (id card) dan semua
+    /// tabel yang tertaut dengannya.
+    OpenFlowInNewTab(String),
     /// Buka request HTTP API sebuah endpoint yang tertaut ke tabel.
     OpenEndpointRequest {
         request_id: Option<String>,
@@ -98,6 +102,14 @@ pub enum DiagramAction {
     },
     /// Tampilkan folder HTTP API yang repository-nya sama dengan group ini.
     ShowLinkedHttpFolders(String),
+    /// Generate alur bisnis dengan AI. `card_ids` kosong = semua card milik
+    /// repository group `group_id` (atau semua card bila `group_id` juga
+    /// kosong). `force` = generate ulang meski file sumbernya tidak berubah.
+    GenerateFlows {
+        group_id: Option<String>,
+        card_ids: Vec<String>,
+        force: bool,
+    },
     Info(String),
     Error(String),
 }
@@ -148,6 +160,26 @@ fn export_mermaid(state: &DiagramState) -> Option<DiagramAction> {
     };
     Some(match write_atomic(&path, text.as_bytes()) {
         Ok(()) => DiagramAction::Info(format!("Mermaid exported to {}", path.display())),
+        Err(e) => DiagramAction::Error(format!("Export failed: {e}")),
+    })
+}
+
+/// Ekspor semua flow card sebagai Markdown berisi satu `flowchart` per card.
+fn export_flows_mermaid(state: &DiagramState) -> Option<DiagramAction> {
+    let path = rfd::FileDialog::new()
+        .add_filter("Markdown", &["md"])
+        .set_file_name("business-processes.md")
+        .save_file()?;
+    let title = state
+        .diagram_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("{t} business processes"))
+        .unwrap_or_else(|| "Business processes".to_string());
+    let text = crate::diagram_mermaid::flows_markdown(state, &title, &[]);
+    Some(match write_atomic(&path, text.as_bytes()) {
+        Ok(()) => DiagramAction::Info(format!("Business processes exported to {}", path.display())),
         Err(e) => DiagramAction::Error(format!("Export failed: {e}")),
     })
 }
@@ -409,10 +441,17 @@ fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egu
 /// Zoom sampai seluruh diagram muat di viewport, lalu pusatkan. Tidak
 /// memperbesar melebihi zoom normal.
 pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
-    let Some(bounds) = crate::diagram_lod::content_bounds(&state.nodes) else {
+    let Some(mut bounds) = crate::diagram_lod::content_bounds(&state.nodes) else {
         state.pan = egui::Vec2::ZERO;
         return;
     };
+    // Flow card di pita API di atas tabel ikut termuat.
+    if crate::diagram_flow_layout::cards_visible(state) {
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(state);
+        for i in 0..frame.rects.len() {
+            bounds = bounds.union(frame.drawn_rect(state, i));
+        }
+    }
     let zoom = crate::diagram_lod::fit_zoom(bounds.size(), view_size, MIN_ZOOM, DEFAULT_ZOOM);
     state.zoom = zoom;
     state.pan = pan_to_center(bounds.center(), view_size, zoom);
@@ -422,6 +461,17 @@ pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
 /// Warna glow tabel asal pada diagram fokus. Dibedakan dari emas (relasi
 /// terpilih), merah (hasil cari), dan amber (tabrakan saat drag).
 const FOCUS_ORIGIN_GLOW: egui::Color32 = egui::Color32::from_rgb(56, 189, 248);
+
+/// Tabel yang disentuh flow card fokus (`focus_flow`), `None` bila tidak ada.
+fn flow_focus_tables(state: &DiagramState) -> Option<HashSet<String>> {
+    let id = state.focus_flow.as_deref()?;
+    let card = state.flow_cards.iter().find(|c| c.id == id)?;
+    Some(
+        crate::diagram_flow::tables_of(state, card)
+            .into_iter()
+            .collect(),
+    )
+}
 
 /// Tabel `table_id` beserta semua tabel yang berelasi dengannya (FK, relasi
 /// virtual, dan relasi bawaan link database), dua arah.
@@ -560,6 +610,63 @@ pub fn group_subset_state(source: &DiagramState, group_id: &str) -> Option<Diagr
     Some(out)
 }
 
+/// Salinan diagram yang hanya berisi flow card endpoint `card_id` beserta
+/// semua tabel yang tertaut dengannya (lihat [`crate::diagram_flow::tables_of`])
+/// dan relasi di antara tabel itu. Tabel dijajarkan dalam baris, card-nya
+/// ditata otomatis di pita API di atasnya. `None` bila card tidak ada atau
+/// belum tertaut ke tabel mana pun di diagram.
+///
+/// Dipakai tombol "Open in tab" pada chip mode fokus endpoint.
+pub fn flow_subset_state(source: &DiagramState, card_id: &str) -> Option<DiagramState> {
+    const GAP_X: f32 = 80.0;
+    const GAP_Y: f32 = 80.0;
+    const MIN_SIZE: egui::Vec2 = egui::vec2(160.0, 60.0);
+    const MAX_ROW_WIDTH: f32 = 2400.0;
+
+    let card = source.flow_cards.iter().find(|c| c.id == card_id)?;
+    let order = crate::diagram_flow::tables_of(source, card);
+    let nodes: Vec<DiagramNode> = order
+        .iter()
+        .filter_map(|t| source.nodes.iter().find(|n| &n.id == t))
+        .map(|n| {
+            let mut n = n.clone();
+            n.group_id = None;
+            n.group_ids.clear();
+            n
+        })
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    let mut out = subset_with_relations(source, nodes, card_id);
+    out.flow_cards = vec![crate::models::structs::FlowCard {
+        pos: None,
+        collapsed: false,
+        ..card.clone()
+    }];
+    // Card hanya tampil bila endpoint ditampilkan sebagai card.
+    out.show_endpoints = true;
+    if !out.endpoint_display.shows_cards() {
+        out.endpoint_display = crate::models::structs::EndpointDisplay::Both;
+    }
+    out.selected_flow = Some(card_id.to_string());
+
+    // Baris tabel sesuai urutan tautan; baris baru bila terlalu lebar.
+    let (mut x, mut y, mut row_h) = (0.0_f32, 0.0_f32, 0.0_f32);
+    for n in &mut out.nodes {
+        let size = n.size.max(MIN_SIZE);
+        if x > 0.0 && x + size.x > MAX_ROW_WIDTH {
+            x = 0.0;
+            y += row_h + GAP_Y;
+            row_h = 0.0;
+        }
+        n.pos = egui::pos2(x, y);
+        x += size.x + GAP_X;
+        row_h = row_h.max(size.y);
+    }
+    Some(out)
+}
+
 /// Diagram baru berisi `nodes` dan relasi yang kedua ujungnya ada di
 /// dalamnya; opsi tampilan disalin dari `source`. Ditandai `scoped_to`
 /// supaya tab-nya tidak pernah disimpan sebagai diagram database.
@@ -625,6 +732,7 @@ fn subset_with_relations(
         show_endpoints: source.show_endpoints,
         endpoint_display: source.endpoint_display,
         flow_lines: source.flow_lines,
+        flow_show_steps: source.flow_show_steps,
         show_notes: source.show_notes,
         show_grid: source.show_grid,
         prevent_overlap: source.prevent_overlap,
@@ -830,7 +938,7 @@ fn draw_key_legend(ui: &egui::Ui, rect: egui::Rect) {
         .map(|(_, t)| painter.layout_no_wrap((*t).to_owned(), font.clone(), text_color))
         .collect();
     let hint = painter.layout_no_wrap(
-        "relation: FK side → referenced side".to_owned(),
+        "relation: FK side to referenced side".to_owned(),
         font.clone(),
         egui::Color32::from_gray(150),
     );
@@ -871,6 +979,25 @@ fn fade(color: egui::Color32, dim: f32) -> egui::Color32 {
     }
 }
 
+/// Ukuran pita API berubah (card baru, hasil generate, saklar langkah):
+/// pisahkan group yang kini bertabrakan karena pitanya bila "Prevent table &
+/// group overlap" aktif. Ditunda selama pointer ditekan supaya tidak melawan
+/// drag; ukuran lama dipertahankan agar dicoba lagi di frame berikutnya.
+fn settle_bands(ui: &egui::Ui, state: &mut DiagramState, bands: &BandSizes) {
+    if state.prevent_overlap && state.scoped_to.is_none() {
+        if ui.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        let before: Vec<egui::Pos2> = state.nodes.iter().map(|n| n.pos).collect();
+        resolve_all_overlaps(&mut state.nodes, 20.0, None, bands);
+        if state.nodes.iter().zip(&before).any(|(n, p)| n.pos != *p) {
+            state.save_requested = true;
+            ui.ctx().request_repaint();
+        }
+    }
+    state.flow_band_sizes = bands.clone();
+}
+
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
     let frame_start = std::time::Instant::now();
     let mut action: Option<DiagramAction> = None;
@@ -891,9 +1018,12 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         state.pan += response.drag_delta();
         state.view_anim = None;
     }
-    // Klik latar kosong menghentikan animasi aliran data.
+    // Klik latar kosong menghentikan animasi aliran data dan melepas flow card.
     if response.clicked() {
         state.flow_anim = None;
+        state.selected_flow = None;
+        state.focus_flow = None;
+        state.flow_play = None;
     }
 
     // Context Menu for Background
@@ -932,12 +1062,70 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         {
             state.save_requested = true;
         }
+        if state.show_endpoints {
+            ui.indent("diagram_endpoint_display", |ui| {
+                let before = (
+                    state.endpoint_display,
+                    state.flow_lines,
+                    state.flow_show_steps,
+                );
+                ui.horizontal(|ui| {
+                    ui.label("API endpoints as:");
+                    ui.selectable_value(
+                        &mut state.endpoint_display,
+                        EndpointDisplay::Cards,
+                        "Cards",
+                    )
+                    .on_hover_text("A process card per endpoint in an API band above its tables");
+                    ui.selectable_value(
+                        &mut state.endpoint_display,
+                        EndpointDisplay::Badges,
+                        "Badges",
+                    )
+                    .on_hover_text("An \"API n\" badge on each table header");
+                    ui.selectable_value(&mut state.endpoint_display, EndpointDisplay::Both, "Both");
+                });
+                if state.endpoint_display.shows_cards() {
+                    ui.horizontal(|ui| {
+                        ui.label("Process lines:");
+                        ui.selectable_value(
+                            &mut state.flow_lines,
+                            FlowLineMode::Selected,
+                            "Selected",
+                        )
+                        .on_hover_text("Only lines of the selected, hovered or playing card");
+                        ui.selectable_value(&mut state.flow_lines, FlowLineMode::All, "All");
+                    });
+                    ui.checkbox(&mut state.flow_show_steps, "Show steps on all cards")
+                        .on_hover_text(
+                            "Off: cards show only method and path; select a card to see its steps",
+                        );
+                    if ui
+                        .button("Arrange API cards")
+                        .on_hover_text("Put every API card back in the API band above its tables")
+                        .clicked()
+                    {
+                        ui.close();
+                        arrange_flow_cards(state);
+                    }
+                }
+                let after = (
+                    state.endpoint_display,
+                    state.flow_lines,
+                    state.flow_show_steps,
+                );
+                if before != after {
+                    state.save_requested = true;
+                }
+            });
+        }
         if ui
             .checkbox(&mut state.prevent_overlap, "Prevent table & group overlap")
             .clicked()
         {
             if state.prevent_overlap {
-                resolve_all_overlaps(&mut state.nodes, 20.0, None);
+                let bands = crate::diagram_flow_layout::band_sizes(state);
+                resolve_all_overlaps(&mut state.nodes, 20.0, None, &bands);
             }
             state.save_requested = true;
         }
@@ -946,19 +1134,24 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             auto_arrange(state);
             state.save_requested = true;
         }
-        if state.focus_table.is_some() || state.focus_group.is_some() {
+        if state.focus_table.is_some() || state.focus_group.is_some() || state.focus_flow.is_some()
+        {
             ui.separator();
             if ui.button("Clear focus (Esc)").clicked() {
                 ui.close();
                 state.focus_table = None;
                 state.focus_group = None;
+                state.focus_flow = None;
+                state.flow_play = None;
             }
         }
     });
 
     // Cek apakah pengguna sedang fokus mengetik teks di widget lain
     let typing = ui.ctx().egui_wants_keyboard_input() || ui.memory(|m| m.focused().is_some());
-    let space_held = !typing && ui.input(|i| i.key_down(egui::Key::Space));
+    // Selama flow card diputar, Spasi = Play/Pause (bukan hand tool).
+    let flow_space = crate::diagram_flow_play_view::handle_space(ui, state, typing);
+    let space_held = !typing && !flow_space && ui.input(|i| i.key_down(egui::Key::Space));
 
     // Pointer benar-benar di atas kanvas (bukan di jendela/popup yang menutupinya).
     let pointer_over_canvas = ui.rect_contains_pointer(rect);
@@ -983,6 +1176,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 state.focus_table = None;
                 state.focus_group = None;
                 state.flow_anim = None;
+                state.selected_flow = None;
+                state.focus_flow = None;
+                state.flow_play = None;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::L) {
                 state.show_relations = !state.show_relations;
@@ -1072,6 +1268,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             ui.ctx().request_repaint();
         }
     }
+    // Majukan pemutaran flow card; berhenti sendiri di akhir timeline.
+    crate::diagram_flow_play_view::tick(state, now);
     // Tabel fokus yang sudah hilang dari diagram tidak boleh meredupkan semua.
     if let Some(f) = &state.focus_table
         && !state.nodes.iter().any(|n| &n.id == f)
@@ -1088,6 +1286,17 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         && !state.nodes.iter().any(|n| n.id == f.table_id)
     {
         state.flow_anim = None;
+    }
+    // Flow card terpilih/fokus yang sudah dihapus dilepas.
+    let card_alive = |id: &Option<String>| {
+        id.as_ref()
+            .is_none_or(|id| state.flow_cards.iter().any(|c| &c.id == id))
+    };
+    if !card_alive(&state.selected_flow) {
+        state.selected_flow = None;
+    }
+    if !card_alive(&state.focus_flow) {
+        state.focus_flow = None;
     }
 
     // Handle Initial Centering
@@ -1123,13 +1332,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let focus_set = match (focus_table.as_deref(), focus_group.as_deref()) {
         (Some(f), _) => Some(related_tables(state, f)),
         (None, Some(g)) => Some(group_focus_tables(state, g)),
-        (None, None) => None,
+        (None, None) => flow_focus_tables(state),
     };
 
     let mut _group_rename_request: Option<(usize, String)> = None;
     let mut _group_delete_request: Option<String> = None;
     let mut group_repo_request: Option<String> = None;
     let mut group_suggest_request: Option<String> = None;
+    let mut group_flow_request: Option<String> = None;
+    let mut flow_progress_request = false;
+    let flow_gen_running = crate::diagram_flow_gen_view::is_running(state);
     let mut group_picker_request: Option<String> = None;
     let mut group_open_folder_request: Option<std::path::PathBuf> = None;
     let mut group_drag_delta: Option<(String, egui::Vec2)> = None;
@@ -1137,15 +1349,28 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut group_focus_request: Option<Option<String>> = None;
     let mut note_request: Option<crate::diagram_notes_view::NoteRequest> = None;
     let note_counts = crate::diagram_notes::note_counts(&state.notes);
-    let endpoint_counts: HashMap<String, usize> = if state.show_endpoints {
-        crate::repo_links::endpoint_counts(state)
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect()
-    } else {
-        HashMap::new()
-    };
+    let endpoint_counts: HashMap<String, usize> =
+        if state.show_endpoints && state.endpoint_display.shows_badges() {
+            crate::repo_links::endpoint_counts(state)
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        } else {
+            HashMap::new()
+        };
     let mut endpoint_panel_request: Option<String> = None;
+
+    // Flow card dihitung sekali per frame, sebelum bingkai group, karena
+    // pita API group ikut di dalam bingkainya.
+    let flow_frame = if state.show_endpoints && state.endpoint_display.shows_cards() {
+        crate::diagram_flow_layout::FlowFrame::compute(state)
+    } else {
+        crate::diagram_flow_layout::FlowFrame::default()
+    };
+    let band_sizes = flow_frame.band_sizes();
+    if band_sizes != state.flow_band_sizes {
+        settle_bands(ui, state, &band_sizes);
+    }
 
     // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
@@ -1192,6 +1417,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
             continue;
         };
+
+        // Pita API group ikut di dalam bingkai, di atas tabelnya.
+        if let Some(&band) = band_sizes.get(group.id.as_str()) {
+            let content = crate::diagram_flow_layout::group_content_rect(
+                egui::Rect::from_min_max(min_pos, max_pos),
+                Some(band),
+            );
+            (min_pos, max_pos) = (content.min, content.max);
+        }
 
         // Padding
         let padding = 20.0;
@@ -1465,6 +1699,35 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.close();
                         group_suggest_request = Some(group_id.clone());
                     }
+                    let has_cards = has_repo
+                        && group.repo_key().is_some_and(|k| {
+                            state
+                                .flow_cards
+                                .iter()
+                                .any(|c| c.repo_key.as_deref() == Some(k.as_str()))
+                        });
+                    match crate::diagram_flow_gen_view::generate_menu_item(
+                        ui,
+                        flow_gen_running,
+                        has_cards,
+                        false,
+                        if has_repo {
+                            "No API cards use this repository yet. Generate endpoints from a \
+                             linked HTTP API folder first."
+                        } else {
+                            "Set a git repository for this group first"
+                        },
+                    ) {
+                        Some(crate::diagram_flow_gen_view::GenMenuPick::Generate) => {
+                            ui.close();
+                            group_flow_request = Some(group_id.clone());
+                        }
+                        Some(crate::diagram_flow_gen_view::GenMenuPick::ShowProgress) => {
+                            ui.close();
+                            flow_progress_request = true;
+                        }
+                        None => {}
+                    }
                     if has_repo
                         && ui
                             .button(format!(
@@ -1645,6 +1908,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some(gid) = group_suggest_request {
         action = Some(DiagramAction::SuggestGroupTables(gid));
     }
+    if let Some(gid) = group_flow_request {
+        action = Some(DiagramAction::GenerateFlows {
+            group_id: Some(gid),
+            card_ids: Vec::new(),
+            force: false,
+        });
+    }
+    if flow_progress_request {
+        crate::diagram_flow_gen_view::show_progress(state);
+    }
     if let Some(gid) = group_picker_request
         && let Some(g) = state.groups.iter().find(|g| g.id == gid)
     {
@@ -1684,7 +1957,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some(group_id) = group_drag_stopped
         && state.prevent_overlap
     {
-        resolve_all_overlaps(&mut state.nodes, 20.0, Some(&group_id));
+        let bands = crate::diagram_flow_layout::band_sizes(state);
+        resolve_all_overlaps(&mut state.nodes, 20.0, Some(&group_id), &bands);
         state.save_requested = true;
     }
 
@@ -1790,6 +2064,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         clip,
         hover_pos,
     );
+
+    // Flow card proses bisnis: garisnya di bawah tabel, card-nya di atas
+    // tabel. Posisinya dihitung sebelum bingkai group (lihat di atas).
+    if !flow_frame.rects.is_empty() {
+        crate::diagram_flow_view::draw_bands(ui, state, &flow_frame, &to_screen, clip);
+        crate::diagram_flow_view::draw_flow_lines(
+            ui,
+            state,
+            &flow_frame,
+            &to_screen,
+            clip,
+            hover_pos,
+        );
+    }
 
     let virtual_clicked = match virtual_outcome {
         VirtualOutcome::None => false,
@@ -2738,9 +3026,54 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
     if let Some(id) = drag_stopped_node_id {
         if state.prevent_overlap {
-            resolve_all_overlaps(&mut state.nodes, 20.0, Some(&id));
+            let bands = crate::diagram_flow_layout::band_sizes(state);
+            resolve_all_overlaps(&mut state.nodes, 20.0, Some(&id), &bands);
             state.save_requested = true;
         }
+    }
+
+    if !flow_frame.rects.is_empty() {
+        let flow = crate::diagram_flow_view::render_flow_cards(
+            ui,
+            state,
+            &flow_frame,
+            &to_screen,
+            rect,
+            !is_hand_mode,
+            focus_set.as_ref(),
+            now,
+        );
+        if flow.action.is_some() {
+            action = flow.action;
+        }
+    }
+    // Animasi pemutaran flow card (di atas tabel dan card) dan bilah
+    // kontrolnya. Card yang baru dihapus frame ini menggeser indeks, jadi
+    // dilewati sampai frame berikutnya.
+    if state.flow_play.is_some() && flow_frame.rects.len() == state.flow_cards.len() {
+        let lod = lod_for_zoom(state.zoom);
+        let index_of = |id: &str| state.flow_cards.iter().position(|c| c.id == id);
+        let card_rect = |id: &str| {
+            let r = crate::diagram_flow_layout::lod_rect(
+                flow_frame.drawn_rect(state, index_of(id)?),
+                lod,
+            );
+            Some(egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max)))
+        };
+        let curve = |id: &str, table: &str| {
+            crate::diagram_flow_view::card_curve(
+                state,
+                &flow_frame,
+                index_of(id)?,
+                table,
+                &to_screen,
+            )
+        };
+        crate::diagram_flow_play_view::draw_playback(
+            ui, state, &to_screen, &card_rect, &curve, now,
+        );
+        let play_rect = state.flow_play.as_ref().and_then(|p| card_rect(&p.card_id));
+        crate::diagram_flow_play_view::render_play_controls(ui, state, play_rect);
     }
 
     // Kartu note digambar di atas tabel dan di bawah toolbar.
@@ -2890,7 +3223,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                             .clicked()
                         {
                             if state.prevent_overlap {
-                                resolve_all_overlaps(&mut state.nodes, 20.0, None);
+                                let bands = crate::diagram_flow_layout::band_sizes(state);
+                                resolve_all_overlaps(&mut state.nodes, 20.0, None, &bands);
                             }
                             state.save_requested = true;
                         }
@@ -3204,6 +3538,18 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                                 "Mermaid copied to clipboard".to_string(),
                             ));
                         }
+                        if ui
+                            .add_enabled(
+                                !state.flow_cards.is_empty(),
+                                egui::Button::new("Business processes (Mermaid .md)…"),
+                            )
+                            .on_hover_text("One Mermaid flowchart per API card")
+                            .on_disabled_hover_text("This diagram has no API cards")
+                            .clicked()
+                        {
+                            ui.close();
+                            action = export_flows_mermaid(state);
+                        }
                     },
                 );
             });
@@ -3480,11 +3826,23 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     if let Some(a) = crate::diagram_repo::render_group_table_suggestions(ui.ctx(), state) {
         action = Some(a);
     }
+    crate::diagram_flow_gen_view::render_flow_gen_window(ui.ctx(), state);
     if let Some(a) = crate::diagram_repo::render_group_table_picker(ui.ctx(), state) {
         action = Some(a);
     }
 
     render_relations_panel(ui, state, rect, now);
+    // Detail proses menempel di bawah card terpilih (hanya LOD Detail).
+    let selected_card_rect = state
+        .selected_flow
+        .as_deref()
+        .filter(|_| lod == Lod::Detail && flow_frame.rects.len() == state.flow_cards.len())
+        .and_then(|id| state.flow_cards.iter().position(|c| c.id == id))
+        .map(|i| {
+            let r = flow_frame.drawn_rect(state, i);
+            egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max))
+        });
+    crate::diagram_flow_play_view::render_process_panel(ui, state, selected_card_rect, rect, now);
     let endpoint_table_screen = state
         .endpoints_panel
         .as_ref()
@@ -3502,8 +3860,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     crate::diagram_notes_view::render_note_editor(ui.ctx(), state);
     crate::diagram_relation_editor::render_relation_editor(ui.ctx(), state);
 
-    if lod == Lod::Detail && !state.nodes.is_empty() {
+    let key_legend = lod == Lod::Detail && !state.nodes.is_empty();
+    if key_legend {
         draw_key_legend(ui, rect);
+    }
+    // Legenda flow hanya saat ada card di layar.
+    let card_on_screen = flow_frame
+        .rects
+        .iter()
+        .any(|r| rect.intersects(egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max))));
+    if card_on_screen {
+        // Di atas legenda kunci (tinggi 40 + jarak) bila legenda itu tampil.
+        let bottom = rect.bottom() - if key_legend { 12.0 + 40.0 + 8.0 } else { 12.0 };
+        crate::diagram_flow_view::draw_flow_legend(ui, state, &flow_frame, rect.left(), bottom);
     }
 
     // Overlay performa (build debug, toggle F3): waktu CPU membangun frame
@@ -3569,31 +3938,46 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 /// Toolbar kecil melayang di tengah atas kanvas selama mode fokus aktif:
 /// `[ikon] Focusing  nama_tabel │ [⧉ Open in tab] [×]`. Satu baris, tombol
 /// setinggi 26px agar mudah diklik, aksi utama diberi label teks. Pada mode
-/// fokus group, yang tampil nama group dan "Open in tab" membuka group itu.
+/// fokus group, yang tampil nama group dan "Open in tab" membuka group itu;
+/// pada fokus endpoint (`focus_flow`), card beserta tabel tertautnya.
 fn render_focus_chip(
     ui: &mut egui::Ui,
     state: &mut DiagramState,
     rect: egui::Rect,
     action: &mut Option<DiagramAction>,
 ) -> Option<egui::Rect> {
-    let (fid, is_group) = match (&state.focus_table, &state.focus_group) {
-        (Some(t), _) => (t.clone(), false),
-        (None, Some(g)) => (g.clone(), true),
-        (None, None) => return None,
+    #[derive(PartialEq)]
+    enum Kind {
+        Table,
+        Group,
+        Flow,
+    }
+    let (fid, kind) = match (&state.focus_table, &state.focus_group, &state.focus_flow) {
+        (Some(t), _, _) => (t.clone(), Kind::Table),
+        (None, Some(g), _) => (g.clone(), Kind::Group),
+        (None, None, Some(f)) => (f.clone(), Kind::Flow),
+        (None, None, None) => return None,
     };
     let fid = fid.as_str();
-    let title = if is_group {
-        state
+    let flow_title;
+    let title = match kind {
+        Kind::Group => state
             .groups
             .iter()
             .find(|g| g.id == fid)
-            .map_or(fid, |g| g.title.as_str())
-    } else {
-        state
+            .map_or(fid, |g| g.title.as_str()),
+        Kind::Table => state
             .nodes
             .iter()
             .find(|n| n.id == fid)
-            .map_or(fid, |n| n.title.as_str())
+            .map_or(fid, |n| n.title.as_str()),
+        Kind::Flow => {
+            flow_title = state.flow_cards.iter().find(|c| c.id == fid).map_or_else(
+                || fid.to_string(),
+                |c| format!("{} {}", c.trigger.method, c.trigger.target),
+            );
+            flow_title.as_str()
+        }
     };
 
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
@@ -3684,10 +4068,10 @@ fn render_focus_chip(
         ui,
         open_rect,
         "focus_chip_open_tab",
-        if is_group {
-            "Open all tables in this group in a new diagram tab"
-        } else {
-            "Open this table and its related tables in a new diagram tab"
+        match kind {
+            Kind::Group => "Open all tables in this group in a new diagram tab",
+            Kind::Table => "Open this table and its related tables in a new diagram tab",
+            Kind::Flow => "Open this endpoint and all its linked tables in a new diagram tab",
         },
     );
     let open_color = chip_icon_color(ui, &open_resp);
@@ -3706,10 +4090,10 @@ fn render_focus_chip(
         open_color,
     );
     if open_resp.clicked() {
-        *action = Some(if is_group {
-            DiagramAction::OpenGroupInNewTab(fid.to_string())
-        } else {
-            DiagramAction::OpenFocusInNewTab(fid.to_string())
+        *action = Some(match kind {
+            Kind::Group => DiagramAction::OpenGroupInNewTab(fid.to_string()),
+            Kind::Table => DiagramAction::OpenFocusInNewTab(fid.to_string()),
+            Kind::Flow => DiagramAction::OpenFlowInNewTab(fid.to_string()),
         });
     }
 
@@ -3733,6 +4117,10 @@ fn render_focus_chip(
     if resp.clicked() {
         state.focus_table = None;
         state.focus_group = None;
+        if kind == Kind::Flow {
+            state.focus_flow = None;
+            state.flow_play = None;
+        }
     }
 
     Some(chip)
@@ -5079,7 +5467,7 @@ fn bundle_width(count: u32) -> f32 {
 }
 
 /// Label kecil berlatar di layar (dipakai garis ringkas yang di-hover).
-fn draw_chip_label(ui: &egui::Ui, at: egui::Pos2, text: String, color: egui::Color32) {
+pub(crate) fn draw_chip_label(ui: &egui::Ui, at: egui::Pos2, text: String, color: egui::Color32) {
     let galley =
         ui.painter()
             .layout_no_wrap(text, egui::FontId::proportional(11.0), egui::Color32::WHITE);
@@ -6341,9 +6729,11 @@ fn group_clusters(nodes: &[DiagramNode]) -> (HashMap<String, usize>, Vec<Option<
 }
 
 /// Kotak tiap group dalam koordinat diagram: (id group, cluster, rect).
+/// Pita API group (`bands`) ikut di dalam kotaknya.
 fn group_world_rects(
     nodes: &[DiagramNode],
     group_cluster: &HashMap<String, usize>,
+    bands: &BandSizes,
 ) -> Vec<(String, usize, egui::Rect)> {
     let mut extent: HashMap<&str, egui::Rect> = HashMap::new();
     for n in nodes {
@@ -6359,6 +6749,7 @@ fn group_world_rects(
         .into_iter()
         .filter_map(|(gid, r)| {
             let cluster = *group_cluster.get(gid)?;
+            let r = crate::diagram_flow_layout::group_content_rect(r, bands.get(gid).copied());
             let rect = egui::Rect::from_min_max(
                 r.min - egui::vec2(GROUP_SIDE_PAD, GROUP_TOP_PAD),
                 r.max + egui::vec2(GROUP_SIDE_PAD, GROUP_SIDE_PAD),
@@ -6373,10 +6764,10 @@ fn group_world_rects(
 
 /// Cek apakah ada dua group yang tidak beririsan (tidak berbagi tabel) saling
 /// tumpang tindih dalam batas padding.
-pub fn check_groups_overlap(nodes: &[DiagramNode], padding: f32) -> bool {
+pub fn check_groups_overlap(nodes: &[DiagramNode], padding: f32, bands: &BandSizes) -> bool {
     let (group_cluster, _) = group_clusters(nodes);
     let half_pad = padding.max(0.0) / 2.0;
-    let rects = group_world_rects(nodes, &group_cluster);
+    let rects = group_world_rects(nodes, &group_cluster, bands);
     rects.iter().enumerate().any(|(i, (_, ci, ri))| {
         rects[(i + 1)..].iter().any(|(_, cj, rj)| {
             let inter = ri.expand(half_pad).intersect(rj.expand(half_pad));
@@ -6389,7 +6780,12 @@ pub fn check_groups_overlap(nodes: &[DiagramNode], padding: f32) -> bool {
 /// Seluruh anggota satu cluster (group-group yang berbagi tabel) digeser
 /// bersama. Bila `mover` (id tabel atau id group) diisi, hanya cluster milik
 /// `mover` yang digeser saat bertabrakan; cluster lain tetap di tempatnya.
-pub fn resolve_group_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Option<&str>) {
+pub fn resolve_group_overlaps(
+    nodes: &mut [DiagramNode],
+    padding: f32,
+    mover: Option<&str>,
+    bands: &BandSizes,
+) {
     let (group_cluster, node_cluster) = group_clusters(nodes);
     let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
     if cluster_count < 2 {
@@ -6416,7 +6812,7 @@ pub fn resolve_group_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Op
 
     let half_pad = padding.max(0.0) / 2.0;
     for _ in 0..40 {
-        let rects = group_world_rects(nodes, &group_cluster);
+        let rects = group_world_rects(nodes, &group_cluster, bands);
         let mut shift = vec![egui::Vec2::ZERO; cluster_count];
         let mut any_collision = false;
 
@@ -6478,16 +6874,22 @@ pub fn resolve_group_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Op
 /// Pisahkan tabel dan group yang tumpang tindih sekaligus. Menggeser tabel
 /// dapat memperbesar group sehingga keduanya diulang sampai stabil. `mover`
 /// (id tabel atau group yang baru digeser) diprioritaskan untuk mengalah.
-pub fn resolve_all_overlaps(nodes: &mut [DiagramNode], padding: f32, mover: Option<&str>) {
+/// `bands` = ukuran pita API per group (lihat `diagram_flow_layout::band_sizes`).
+pub fn resolve_all_overlaps(
+    nodes: &mut [DiagramNode],
+    padding: f32,
+    mover: Option<&str>,
+    bands: &BandSizes,
+) {
     for _ in 0..5 {
-        resolve_group_overlaps(nodes, padding, mover);
+        resolve_group_overlaps(nodes, padding, mover, bands);
         match mover {
             Some(id) if nodes.iter().any(|n| n.id == id) => {
                 resolve_dragged_node_overlap(nodes, id, padding)
             }
             _ => resolve_node_overlaps(nodes, padding),
         }
-        if !check_groups_overlap(nodes, padding) {
+        if !check_groups_overlap(nodes, padding, bands) {
             break;
         }
     }
@@ -6568,14 +6970,14 @@ pub fn compact_groups(nodes: &mut [DiagramNode], max_gap: f32) {
 /// Rapatkan antar blok: tiap cluster group digeser utuh sebagai satu kotak,
 /// tabel tanpa group sebagai kotak sendiri. Tabel link database dan cluster
 /// yang memuatnya tidak digeser.
-pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
+pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32, bands: &BandSizes) {
     let (group_cluster, node_cluster) = group_clusters(nodes);
     let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
     let pinned = pinned_clusters(nodes, &node_cluster, cluster_count);
 
     // Kotak cluster = gabungan kotak group-nya (termasuk judul & padding).
     let mut cluster_rect: Vec<Option<egui::Rect>> = vec![None; cluster_count];
-    for (_, c, r) in group_world_rects(nodes, &group_cluster) {
+    for (_, c, r) in group_world_rects(nodes, &group_cluster, bands) {
         cluster_rect[c] = Some(cluster_rect[c].map_or(r, |e| e.union(r)));
     }
 
@@ -6616,19 +7018,32 @@ pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
 }
 
 /// Aksi menu "Auto Arrange": susun ulang seluruh diagram (smart layout),
-/// lalu rapatkan group dan hilangkan tumpang tindih dalam satu langkah.
+/// kembalikan semua flow card ke pita API group-nya, lalu rapatkan group
+/// dan hilangkan tumpang tindih (kotak group termasuk pitanya).
 pub fn auto_arrange(state: &mut DiagramState) {
+    crate::diagram_flow_view::arrange_all(state);
     auto_layout_host(state);
-    compact_and_resolve_overlaps(&mut state.nodes, 20.0);
+    let bands = crate::diagram_flow_layout::band_sizes(state);
+    compact_and_resolve_overlaps(&mut state.nodes, 20.0, &bands);
+}
+
+/// Aksi menu "Arrange API cards": kembalikan card ke pita otomatis, lalu
+/// pisahkan group yang kini tumpang tindih karena pitanya.
+pub fn arrange_flow_cards(state: &mut DiagramState) {
+    crate::diagram_flow_view::arrange_all(state);
+    if state.prevent_overlap {
+        let bands = crate::diagram_flow_layout::band_sizes(state);
+        resolve_all_overlaps(&mut state.nodes, 20.0, None, &bands);
+    }
 }
 
 /// Rapatkan isi group, pisahkan yang tumpang tindih, lalu rapatkan jarak
 /// antar group dan tabel tanpa group.
-pub fn compact_and_resolve_overlaps(nodes: &mut [DiagramNode], padding: f32) {
+pub fn compact_and_resolve_overlaps(nodes: &mut [DiagramNode], padding: f32, bands: &BandSizes) {
     compact_groups(nodes, GROUP_MAX_GAP.max(padding));
-    resolve_all_overlaps(nodes, padding, None);
-    compact_blocks(nodes, BLOCK_MAX_GAP.max(padding));
-    resolve_all_overlaps(nodes, padding, None);
+    resolve_all_overlaps(nodes, padding, None, bands);
+    compact_blocks(nodes, BLOCK_MAX_GAP.max(padding), bands);
+    resolve_all_overlaps(nodes, padding, None, bands);
 }
 
 /// Auto-arrange tabel host saja; kontainer link database lalu dijajarkan di
@@ -6785,7 +7200,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
     // Pastikan semua tabel terpisah sempurna dengan padding aman; group yang
     // tidak beririsan ikut dipisahkan bila anti-overlap aktif.
     if state.prevent_overlap {
-        resolve_all_overlaps(&mut state.nodes, 20.0, None);
+        let bands = crate::diagram_flow_layout::band_sizes(state);
+        resolve_all_overlaps(&mut state.nodes, 20.0, None, &bands);
     } else {
         resolve_node_overlaps(&mut state.nodes, 20.0);
     }
@@ -7334,9 +7750,9 @@ mod tests {
             grouped_node("a2", 0.0, 150.0, &["a"]),
             grouped_node("b1", 150.0, 60.0, &["b"]),
         ];
-        assert!(check_groups_overlap(&nodes, 20.0));
-        resolve_all_overlaps(&mut nodes, 20.0, None);
-        assert!(!check_groups_overlap(&nodes, 20.0));
+        assert!(check_groups_overlap(&nodes, 20.0, &BandSizes::new()));
+        resolve_all_overlaps(&mut nodes, 20.0, None, &BandSizes::new());
+        assert!(!check_groups_overlap(&nodes, 20.0, &BandSizes::new()));
         assert!(!check_nodes_overlap(&nodes, 20.0));
         // Anggota satu group bergeser bersama: jarak relatif tetap.
         assert_eq!(nodes[1].pos - nodes[0].pos, egui::vec2(0.0, 150.0));
@@ -7351,8 +7767,8 @@ mod tests {
             grouped_node("b1", 500.0, 0.0, &["b"]),
         ];
         let before: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos).collect();
-        assert!(!check_groups_overlap(&nodes, 20.0));
-        resolve_group_overlaps(&mut nodes, 20.0, None);
+        assert!(!check_groups_overlap(&nodes, 20.0, &BandSizes::new()));
+        resolve_group_overlaps(&mut nodes, 20.0, None, &BandSizes::new());
         let after: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos).collect();
         assert_eq!(before, after);
     }
@@ -7382,13 +7798,13 @@ mod tests {
             grouped_node("a2", 250.0, 0.0, &["a"]),
             grouped_node("free", 3000.0, 2000.0, &[]),
         ];
-        compact_blocks(&mut nodes, 80.0);
+        compact_blocks(&mut nodes, 80.0, &BandSizes::new());
         // Anggota group bergeser bersama (di sini tetap karena paling kiri-atas).
         assert_eq!(nodes[0].pos, egui::pos2(0.0, 0.0));
         assert_eq!(nodes[1].pos, egui::pos2(250.0, 0.0));
         // Kotak group: x -20..470, y -66..120 -> tabel bebas di 550, 200.
         assert_eq!(nodes[2].pos, egui::pos2(550.0, 200.0));
-        assert!(!check_groups_overlap(&nodes, 20.0));
+        assert!(!check_groups_overlap(&nodes, 20.0, &BandSizes::new()));
         assert!(!check_nodes_overlap(&nodes, 20.0));
     }
 
@@ -7398,9 +7814,9 @@ mod tests {
             grouped_node("a1", 0.0, 0.0, &["a"]),
             grouped_node("b1", 150.0, 60.0, &["b"]),
         ];
-        resolve_group_overlaps(&mut nodes, 20.0, Some("b"));
+        resolve_group_overlaps(&mut nodes, 20.0, Some("b"), &BandSizes::new());
         assert_eq!(nodes[0].pos, egui::pos2(0.0, 0.0));
-        assert!(!check_groups_overlap(&nodes, 20.0));
+        assert!(!check_groups_overlap(&nodes, 20.0, &BandSizes::new()));
     }
 
     #[test]
@@ -8262,5 +8678,263 @@ mod tests {
                 total.as_secs_f64() * 1000.0 / frames as f64
             );
         }
+    }
+
+    /// Diagram kecil dengan `cards` flow card (satu endpoint per card) yang
+    /// masing-masing menyentuh dua tabel dan punya beberapa langkah.
+    fn flow_fixture(cards: usize) -> DiagramState {
+        use crate::models::structs::{EndpointLink, FlowOp, FlowStep, FlowStepKind, FlowTarget};
+        let mut state = DiagramState {
+            is_centered: true,
+            ..Default::default()
+        };
+        for (i, t) in ["users", "orders"].iter().enumerate() {
+            state.nodes.push(DiagramNode {
+                id: t.to_string(),
+                title: t.to_string(),
+                pos: egui::pos2(600.0 + i as f32 * 320.0, 100.0),
+                size: egui::vec2(220.0, 160.0),
+                columns: vec!["id".into(), "user_id".into(), "total".into()],
+                ..Default::default()
+            });
+        }
+        for c in 0..cards {
+            for t in ["users", "orders"] {
+                state.endpoint_links.push(EndpointLink {
+                    table: t.into(),
+                    method: if c % 2 == 0 { "GET" } else { "POST" }.into(),
+                    path: format!("/api/orders/{c}"),
+                    summary: format!("Endpoint {c}"),
+                    request_id: None,
+                    repo_key: None,
+                    source: None,
+                });
+            }
+        }
+        crate::diagram_flow::sync_cards_from_links(&mut state);
+        for card in &mut state.flow_cards {
+            card.steps = vec![
+                FlowStep {
+                    kind: FlowStepKind::Auth,
+                    title: "Verify token".into(),
+                    ..Default::default()
+                },
+                FlowStep {
+                    kind: FlowStepKind::Db,
+                    title: "Load the customer".into(),
+                    target: Some(FlowTarget::Table("users".into())),
+                    op: Some(FlowOp::Read),
+                    columns: vec!["id".into()],
+                    ..Default::default()
+                },
+                FlowStep {
+                    kind: FlowStepKind::Db,
+                    title: "Create the order".into(),
+                    target: Some(FlowTarget::Table("orders".into())),
+                    op: Some(FlowOp::Insert),
+                    columns: vec!["user_id".into(), "total".into()],
+                    ..Default::default()
+                },
+                FlowStep {
+                    kind: FlowStepKind::Respond,
+                    title: "Return 201".into(),
+                    ..Default::default()
+                },
+            ];
+        }
+        state
+    }
+
+    /// Tab endpoint hanya membawa card itu dan tabel tertautnya, dan frame
+    /// pertamanya memuat card beserta tabel di viewport.
+    #[test]
+    fn test_flow_subset_keeps_card_and_linked_tables() {
+        let mut source = flow_fixture(3);
+        source.nodes.push(DiagramNode {
+            id: "audit".into(),
+            title: "audit".into(),
+            size: egui::vec2(200.0, 100.0),
+            ..Default::default()
+        });
+        source.endpoint_display = crate::models::structs::EndpointDisplay::Badges;
+        let id = source.flow_cards[1].id.clone();
+        let mut sub = flow_subset_state(&source, &id).expect("subset");
+        let mut tables: Vec<&str> = sub.nodes.iter().map(|n| n.id.as_str()).collect();
+        tables.sort();
+        assert_eq!(tables, ["orders", "users"]);
+        assert_eq!(sub.flow_cards.len(), 1);
+        assert_eq!(sub.flow_cards[0].id, id);
+        assert_eq!(sub.scoped_to.as_deref(), Some(id.as_str()));
+        assert!(sub.endpoint_display.shows_cards());
+        assert!(flow_subset_state(&source, "missing").is_none());
+
+        let ctx = egui::Context::default();
+        render_frame(&ctx, &mut sub, None);
+        let view = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&sub);
+        let card = frame.drawn_rect(&sub, 0);
+        let min = egui::Pos2::ZERO + sub.pan + card.min.to_vec2() * sub.zoom;
+        let max = egui::Pos2::ZERO + sub.pan + card.max.to_vec2() * sub.zoom;
+        assert!(
+            view.contains(min) && view.contains(max),
+            "card outside view"
+        );
+    }
+
+    /// Pusatkan viewport (1600x1000) ke bounding box semua card.
+    fn center_on_cards(state: &mut DiagramState, zoom: f32) {
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(state);
+        let bounds = frame
+            .rects
+            .iter()
+            .copied()
+            .reduce(|a, b| a.union(b))
+            .expect("cards");
+        state.zoom = zoom;
+        state.pan = pan_to_center(bounds.center(), egui::vec2(1600.0, 1000.0), zoom);
+    }
+
+    /// Vertex yang dihasilkan card saja: selisih mode Cards dan Badges.
+    fn card_vertices(state: &mut DiagramState) -> usize {
+        let ctx = egui::Context::default();
+        let mut badges = state.clone();
+        badges.endpoint_display = crate::models::structs::EndpointDisplay::Badges;
+        render_frame(&ctx, &mut badges, None);
+        let (without, _) = render_frame(&ctx, &mut badges, None);
+        let ctx = egui::Context::default();
+        render_frame(&ctx, state, None);
+        let (with, _) = render_frame(&ctx, state, None);
+        with.saturating_sub(without)
+    }
+
+    /// Card di luar layar tidak menghasilkan geometri; card di layar ya.
+    #[test]
+    fn test_flow_cards_offscreen_produce_no_geometry() {
+        let mut state = flow_fixture(40);
+        center_on_cards(&mut state, 1.0);
+        let near = card_vertices(&mut state);
+        assert!(
+            near > 1_000,
+            "visible cards must be drawn ({near} vertices)"
+        );
+
+        state.pan += egui::vec2(60_000.0, 60_000.0);
+        let far = card_vertices(&mut state);
+        assert!(far < 50, "off-screen cards produced {far} vertices");
+    }
+
+    /// LOD Overview (titik) jauh lebih ringan daripada Detail (card penuh).
+    #[test]
+    fn test_flow_cards_overview_is_lighter_than_detail() {
+        let mut state = flow_fixture(12);
+        center_on_cards(&mut state, 1.0);
+        let detail = card_vertices(&mut state);
+        center_on_cards(&mut state, 0.2);
+        let overview = card_vertices(&mut state);
+        assert!(overview > 0, "overview must still draw the cards");
+        assert!(
+            overview * 5 < detail,
+            "overview {overview} vertices vs detail {detail}"
+        );
+    }
+
+    /// Garis proses mode `Selected` hanya untuk card terpilih; mode `All`
+    /// menggambar semua card.
+    #[test]
+    fn test_flow_lines_follow_line_mode() {
+        let mut state = flow_fixture(6);
+        center_on_cards(&mut state, 1.0);
+        let lines = |state: &DiagramState| {
+            let ctx = egui::Context::default();
+            let mut drawn = 0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let frame = crate::diagram_flow_layout::FlowFrame::compute(state);
+                let (pan, zoom) = (state.pan, state.zoom);
+                let to_screen = |p: egui::Pos2| egui::Pos2::ZERO + pan + p.to_vec2() * zoom;
+                drawn = crate::diagram_flow_view::draw_flow_lines(
+                    ui,
+                    state,
+                    &frame,
+                    &to_screen,
+                    ui.clip_rect(),
+                    None,
+                );
+            });
+            out.textures_delta.clear();
+            drawn
+        };
+        assert_eq!(lines(&state), 0);
+        state.selected_flow = Some(state.flow_cards[0].id.clone());
+        assert_eq!(lines(&state), 2);
+        state.selected_flow = None;
+        state.flow_lines = crate::models::structs::FlowLineMode::All;
+        assert_eq!(lines(&state), 12);
+    }
+
+    /// Double-click card memfokuskan card dan memilihnya; Esc melepasnya.
+    #[test]
+    fn test_double_click_card_sets_focus_flow() {
+        let ctx = egui::Context::default();
+        let mut state = flow_fixture(3);
+        center_on_cards(&mut state, 1.0);
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&state);
+        let world = frame.rects[1];
+        let to_screen = |p: egui::Pos2| egui::Pos2::ZERO + state.pan + p.to_vec2() * state.zoom;
+        // Titik di header card, bukan di baris langkah.
+        let p = to_screen(egui::pos2(world.center().x, world.top() + 10.0));
+        let id = state.flow_cards[1].id.clone();
+
+        let mut t = 0.0;
+        let mut step = |state: &mut DiagramState, events: Vec<egui::Event>| {
+            t += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                time: Some(t),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                render_diagram(ui, state);
+            });
+            out.textures_delta.clear();
+        };
+        let button = |pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        step(&mut state, vec![egui::Event::PointerMoved(p)]);
+        step(&mut state, vec![egui::Event::PointerMoved(p)]);
+        step(&mut state, vec![button(true)]);
+        step(&mut state, vec![button(false)]);
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
+        step(&mut state, vec![button(true)]);
+        step(&mut state, vec![button(false)]);
+        step(&mut state, vec![]);
+        assert_eq!(state.focus_flow.as_deref(), Some(id.as_str()));
+        assert!(state.view_anim.is_some(), "viewport tweens to the card");
+
+        step(
+            &mut state,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(state.focus_flow.is_none() && state.selected_flow.is_none());
     }
 }

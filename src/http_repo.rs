@@ -148,6 +148,8 @@ struct EndpointWindow {
     filter: String,
     subfolders: bool,
     link_diagrams: bool,
+    /// Setelah link, generate alur bisnis card di diagram yang sedang terbuka.
+    also_flows: bool,
     selected: Option<usize>,
     files_scanned: usize,
     /// `false` = jendela disembunyikan user; job tetap berjalan di background
@@ -484,6 +486,36 @@ fn link_to_diagrams(app: &mut Tabular, key: &str, endpoints: &[EndpointTables]) 
     report
 }
 
+/// Mulai generate alur bisnis untuk card repository `key` di tiap diagram
+/// terbuka yang punya group dengan repository itu. Card yang file sumbernya
+/// tidak berubah dilewati oleh job.
+fn generate_flows_in_open_diagrams(app: &mut Tabular, key: &str) {
+    let targets: Vec<(Option<i64>, Option<String>, Vec<String>)> = app
+        .query_tabs
+        .iter()
+        .filter_map(|tab| {
+            let state = tab.diagram_state.as_ref()?;
+            if state.scoped_to.is_some() || !has_key(state, key) {
+                return None;
+            }
+            let ids: Vec<String> = state
+                .flow_cards
+                .iter()
+                .filter(|c| c.repo_key.as_deref() == Some(key))
+                .map(|c| c.id.clone())
+                .collect();
+            (!ids.is_empty()).then(|| (tab.connection_id, tab.database_name.clone(), ids))
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    for (conn_id, db_name, ids) in targets {
+        // Diagram yang terbuka di beberapa tab cukup satu job.
+        if seen.insert((conn_id, db_name.clone())) {
+            app.start_flow_generation(conn_id, db_name, None, &ids, false);
+        }
+    }
+}
+
 /// Tampilkan folder di sidebar HTTP API (buka tab APIs, expand leluhurnya).
 fn reveal_folder(app: &mut Tabular, folder_id: &str) {
     fn path_to(folders: &[HttpFolder], id: &str, out: &mut Vec<String>) -> bool {
@@ -805,6 +837,7 @@ impl HttpRepoUi {
             filter: String::new(),
             subfolders: true,
             link_diagrams: linked_groups > 0,
+            also_flows: false,
             selected: None,
             files_scanned: 0,
             visible: true,
@@ -998,7 +1031,8 @@ fn poll_endpoints(win: &mut EndpointWindow) -> bool {
     !finished
 }
 
-fn method_color(method: &str) -> egui::Color32 {
+/// Warna method HTTP (juga dipakai flow card di diagram).
+pub(crate) fn method_color(method: &str) -> egui::Color32 {
     match method.to_ascii_uppercase().as_str() {
         "GET" => egui::Color32::from_rgb(76, 175, 80),
         "POST" => egui::Color32::from_rgb(255, 167, 38),
@@ -1505,6 +1539,23 @@ impl HttpRepoUi {
         let mut open = true;
         let mut open_group_ref: Option<GroupRef> = None;
         let mut reveal: Option<String> = None;
+        // Sertakan id dan nama koneksi: dua koneksi bisa menunjuk database yang sama.
+        let group_labels: Vec<String> = popup
+            .groups
+            .iter()
+            .map(|g| {
+                let conn_name = app
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(g.conn_id))
+                    .map(|c| c.name.as_str())
+                    .unwrap_or("unknown connection");
+                format!(
+                    "#{} {} · {} · {}",
+                    g.conn_id, conn_name, g.db_name, g.group_title
+                )
+            })
+            .collect();
         egui::Window::new(&popup.title)
             .id(egui::Id::new("http_repo_links_popup"))
             .open(&mut open)
@@ -1512,9 +1563,9 @@ impl HttpRepoUi {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                for g in &popup.groups {
+                for (g, label) in popup.groups.iter().zip(&group_labels) {
                     ui.horizontal(|ui| {
-                        ui.label(format!("{} · {}", g.db_name, g.group_title));
+                        ui.label(label);
                         if ui.small_button("Open diagram").clicked() {
                             open_group_ref = Some(g.clone());
                         }
@@ -1609,6 +1660,19 @@ fn endpoints_results(
         win.key.is_some(),
         egui::Checkbox::new(&mut win.link_diagrams, label),
     );
+    if !cfg!(target_os = "ios") {
+        ui.indent("http_repo_also_flows", |ui| {
+            ui.add_enabled(
+                win.key.is_some() && win.link_diagrams,
+                egui::Checkbox::new(&mut win.also_flows, "Also generate business process"),
+            )
+            .on_hover_text(
+                "After linking, trace each endpoint step by step with AI and show it as a \
+                 process card in the diagrams that are open now. Other diagrams only get the \
+                 links; generate their process from the diagram later.",
+            );
+        });
+    }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         style::render_search_field(ui, &mut win.filter, "Filter by path, name or table…", 280.0);
@@ -1800,6 +1864,9 @@ fn add_endpoints(app: &mut Tabular, win: &EndpointWindow) {
             .collect();
         let report = link_to_diagrams(app, key, &links);
         msg.push_str(&report.summary());
+        if win.also_flows {
+            generate_flows_in_open_diagrams(app, key);
+        }
     }
     reveal_folder(app, &win.folder_id);
     log::info!("[HTTP_REPO] {msg}");

@@ -249,6 +249,131 @@ pub fn tables_of(state: &DiagramState, card: &FlowCard) -> Vec<String> {
     out
 }
 
+/// `tables_of` untuk semua card sekaligus: satu lintasan `endpoint_links`,
+/// bukan satu lintasan per card. Dipakai tiap frame oleh kanvas.
+pub fn tables_by_card(state: &DiagramState) -> HashMap<&str, Vec<&str>> {
+    let mut by_key: HashMap<CardKey, Vec<&str>> = HashMap::new();
+    for l in &state.endpoint_links {
+        let list = by_key.entry(link_key(l)).or_default();
+        if !list.contains(&l.table.as_str()) {
+            list.push(l.table.as_str());
+        }
+    }
+    state
+        .flow_cards
+        .iter()
+        .map(|c| {
+            let mut out: Vec<&str> = http_key(c)
+                .and_then(|k| by_key.get(&k))
+                .cloned()
+                .unwrap_or_default();
+            for t in c.steps.iter().filter_map(|s| s.target.as_ref()?.table()) {
+                if !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+            (c.id.as_str(), out)
+        })
+        .collect()
+}
+
+/// Pemakaian satu tabel oleh sebuah card: operasi dan nomor langkahnya.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TableUse {
+    pub table: String,
+    /// Operasi unik, urut kemunculan. Kosong = hanya dari `endpoint_links`.
+    pub ops: Vec<FlowOp>,
+    /// Indeks langkah (0-based) yang menyentuh tabel ini.
+    pub steps: Vec<usize>,
+    /// Kolom pertama yang disebut langkah mana pun (untuk ujung garis).
+    pub column: Option<String>,
+}
+
+impl TableUse {
+    /// Arah gabungan semua operasi ke tabel ini.
+    pub fn direction(&self) -> FlowDirection {
+        self.ops
+            .iter()
+            .map(|op| op_direction(Some(*op)))
+            .reduce(FlowDirection::combine)
+            .unwrap_or(FlowDirection::Unknown)
+    }
+
+    /// Lencana CRUD (`C`, `R`, `U`, `D`) urut CRUD, tanpa duplikat.
+    pub fn crud_badges(&self) -> Vec<char> {
+        let mut out = Vec::new();
+        for (ch, hit) in [
+            ('C', self.has(&[FlowOp::Insert, FlowOp::Upsert])),
+            ('R', self.has(&[FlowOp::Read])),
+            ('U', self.has(&[FlowOp::Update, FlowOp::Upsert])),
+            ('D', self.has(&[FlowOp::Delete])),
+        ] {
+            if hit {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    fn has(&self, ops: &[FlowOp]) -> bool {
+        self.ops.iter().any(|o| ops.contains(o))
+    }
+}
+
+/// Tabel yang disentuh card beserta operasinya, urut seperti `tables_of`.
+/// `tables` adalah hasil `tables_of` / `tables_by_card` untuk card ini.
+pub fn table_uses(card: &FlowCard, tables: &[&str]) -> Vec<TableUse> {
+    tables
+        .iter()
+        .map(|&t| {
+            let mut u = TableUse {
+                table: t.to_string(),
+                ..Default::default()
+            };
+            for (i, s) in card.steps.iter().enumerate() {
+                if s.target.as_ref().and_then(|x| x.table()) != Some(t) {
+                    continue;
+                }
+                u.steps.push(i);
+                if let Some(op) = s.op
+                    && !u.ops.contains(&op)
+                {
+                    u.ops.push(op);
+                }
+                if u.column.is_none() {
+                    u.column = s.columns.first().cloned();
+                }
+            }
+            u
+        })
+        .collect()
+}
+
+/// Hapus card beserta link endpoint-nya (supaya tidak dibuat ulang oleh
+/// `sync_cards_from_links`).
+pub fn remove_card(state: &mut DiagramState, card_id: &str) {
+    let Some(i) = state.flow_cards.iter().position(|c| c.id == card_id) else {
+        return;
+    };
+    let card = state.flow_cards.remove(i);
+    state
+        .endpoint_links
+        .retain(|l| !card_matches_link(&card, l));
+    if state.selected_flow.as_deref() == Some(card_id) {
+        state.selected_flow = None;
+    }
+    if state.focus_flow.as_deref() == Some(card_id) {
+        state.focus_flow = None;
+    }
+    if state
+        .flow_play
+        .as_ref()
+        .is_some_and(|p| p.card_id == card_id)
+    {
+        state.flow_play = None;
+    }
+}
+
 /// Hapus card HTTP tanpa langkah yang sudah tidak punya link. Card yang
 /// punya langkah tetap ada. Pilihan, fokus, dan pemutaran yang menunjuk card
 /// terhapus ikut dilepas. `true` bila ada card yang dihapus.
@@ -446,6 +571,72 @@ mod tests {
         ];
         let card = st.flow_cards[0].clone();
         assert_eq!(tables_of(&st, &card), vec!["users", "orders", "stock"]);
+    }
+
+    #[test]
+    fn tables_by_card_matches_tables_of() {
+        let mut st = state(
+            &["users", "orders"],
+            vec![
+                link("users", "POST", "/orders", None),
+                link("orders", "GET", "/orders", None),
+            ],
+        );
+        sync_cards_from_links(&mut st);
+        st.flow_cards[0].steps = vec![db_step("orders", FlowOp::Insert)];
+        let by_card = tables_by_card(&st);
+        for c in &st.flow_cards {
+            let expected = tables_of(&st, c);
+            assert_eq!(by_card[c.id.as_str()], expected);
+        }
+    }
+
+    #[test]
+    fn table_uses_collects_ops_steps_and_crud_badges() {
+        let mut card = FlowCard::default();
+        let mut write = db_step("orders", FlowOp::Insert);
+        write.columns = vec!["user_id".into()];
+        card.steps = vec![
+            db_step("users", FlowOp::Read),
+            write,
+            db_step("orders", FlowOp::Update),
+        ];
+        let uses = table_uses(&card, &["users", "orders", "audit"]);
+        assert_eq!(uses[0].steps, vec![0]);
+        assert_eq!(uses[0].crud_badges(), vec!['R']);
+        assert_eq!(uses[0].direction(), FlowDirection::FromTarget);
+        assert_eq!(uses[1].steps, vec![1, 2]);
+        assert_eq!(uses[1].crud_badges(), vec!['C', 'U']);
+        assert_eq!(uses[1].column.as_deref(), Some("user_id"));
+        assert_eq!(uses[1].direction(), FlowDirection::ToTarget);
+        // Tabel hanya dari link: tanpa operasi, arah tidak diketahui.
+        assert!(uses[2].ops.is_empty());
+        assert_eq!(uses[2].direction(), FlowDirection::Unknown);
+    }
+
+    #[test]
+    fn remove_card_drops_its_links_and_runtime_state() {
+        let mut st = state(
+            &["users"],
+            vec![
+                link("users", "GET", "/users", None),
+                link("users", "POST", "/users", None),
+            ],
+        );
+        sync_cards_from_links(&mut st);
+        let id = card_for_endpoint(&st, None, "GET", "/users")
+            .unwrap()
+            .id
+            .clone();
+        st.selected_flow = Some(id.clone());
+        st.focus_flow = Some(id.clone());
+        st.flow_play = Some(crate::diagram_flow_play::new_playback(&id));
+        remove_card(&mut st, &id);
+        assert_eq!(st.flow_cards.len(), 1);
+        assert_eq!(st.endpoint_links.len(), 1);
+        assert!(st.selected_flow.is_none() && st.focus_flow.is_none() && st.flow_play.is_none());
+        // Tidak dibuat ulang saat sinkron berikutnya.
+        assert!(!sync_cards_from_links(&mut st));
     }
 
     #[test]

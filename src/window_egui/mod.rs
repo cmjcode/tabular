@@ -17,6 +17,7 @@ pub mod connection_mgr;
 pub mod db_context_bar;
 pub mod device_profile;
 pub mod diagram;
+pub mod diagram_flow_jobs;
 pub mod git_avatar;
 pub mod git_diff_view;
 pub(crate) mod git_graph_dialogs;
@@ -799,6 +800,8 @@ pub struct Tabular {
     pub diagram_focus_requests: Vec<diagram::DiagramFocusRequest>,
     /// Pemindaian repository group diagram (saran tabel) yang sedang berjalan.
     pub diagram_repo_scan_jobs: Vec<diagram::DiagramRepoScanJob>,
+    /// Generate alur bisnis flow card (AI) yang sedang berjalan, satu per diagram.
+    pub diagram_flow_jobs: Vec<diagram_flow_jobs::DiagramFlowGenJob>,
     // Backup & Restore dialogs
     pub show_backup_dialog: bool,
     pub show_restore_dialog: bool,

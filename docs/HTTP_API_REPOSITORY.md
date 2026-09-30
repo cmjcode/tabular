@@ -99,6 +99,10 @@ examples. New endpoints start selected; existing ones do not.
 - **Group into sub-folders by resource** creates one sub-folder per resource,
   such as `users` for `/api/v1/users/{id}`.
 - **Link endpoints to diagram tables** is on when a linked diagram group exists.
+- **Also generate business process** starts [business process
+  generation](#business-processes-ai) for the linked diagrams that are open,
+  right after the links are added. Diagrams that are not open get the links
+  only; generate their processes from the diagram later.
 
 **Add N endpoint(s)** creates the requests. Selected rows that already exist are
 updated in place; tokens, passwords and API key values you already entered are
@@ -115,15 +119,108 @@ file, the `diagram_by_tabular` table, the vault and cloud sync together with
 groups and notes. A diagram that is not open is updated in its local file; open
 it and save it to share the links.
 
-- A blue **API n** badge on a table header shows how many endpoints use the
-  table. Hover it for the list of `METHOD /path`.
-- Click the badge for the endpoint panel: filter, open an endpoint's request in
-  the HTTP client, or unlink it from the table.
-- **Show API endpoints** in the diagram menu hides or shows the badges.
-- Diagram search (Cmd+F) finds endpoints by method or path; the result jumps to
-  the table the endpoint uses.
+Each endpoint appears as an **API card** in a lane to the left of the tables it
+uses, one lane per repository. The diagram menu controls how endpoints are
+shown:
+
+| Setting | Options |
+|---|---|
+| **Show API endpoints** | Hides or shows cards and badges |
+| **API endpoints as** | **Cards** (default), **Badges** (a blue **API n** on each table header, as in earlier versions) or **Both** |
+| **Process lines** | **Selected** (default): lines only for the selected, hovered or playing card. **All**: every card's lines, faded except the active one |
+| **Arrange API cards** | Puts every card back in its automatic lane |
+
+Working with cards:
+
+- Click a card to select it and draw its lines to the tables. Drag a card to
+  move it; the position is saved with the diagram.
+- Line colour follows the operation: blue for reads (arrow from the table),
+  green for insert, update and upsert, red for delete (arrow to the table), grey
+  when the operation is unknown. A table that is both read and written gets the
+  write colour and a two-way arrow.
+- Right-click a card for **Open Request**, **Collapse** / **Expand**, **Copy as
+  Mermaid**, **Generate Business Process (AI)** / **Regenerate**, **Reset
+  Position** and **Remove Card**. Removing a card also unlinks its endpoint
+  from the tables.
+- With badges on, click a badge for the endpoint panel: filter, open an
+  endpoint's request in the HTTP client, show its card, or unlink it from the
+  table. Unlinking the last table of a card that has no steps removes the card.
+- Diagram search (Cmd+F) finds endpoints by method or path. With cards, the
+  result jumps to the card; with badges only, it jumps to the table.
+- **Esc** or a click on empty canvas clears the selection.
 - Links to tables that disappear from the schema are removed on the next schema
-  sync. Focus and group tabs keep the links of the tables they show.
+  sync. Steps that pointed at such a table keep their text. Focus and group tabs
+  show the cards that touch their tables, read-only.
+
+## Business processes (AI)
+
+A card can show the business process behind its endpoint: the steps the code
+runs in order, such as auth, validation, database reads and writes, calls to
+other services, queue messages and the response, with the table, columns and
+`path/file:line` of each step.
+
+Start it from the diagram:
+
+- right-click a group title and choose **Generate Business Process (AI)** for
+  every card of that group's repository;
+- right-click a card and choose **Generate Business Process (AI)**, or
+  **Regenerate** when it already has steps;
+- press **Regenerate** in the card's Process panel.
+
+The same code preparation and AI backend as endpoint generation are used.
+Cards are sent in batches of 6, grouped by source file, and share the limit of
+6 AI turns at once with the other jobs. A progress window shows each step; it
+has **Cancel**, and **Run in Background** hides it until a notification says the
+job is done. When the job ends, the window lists how many cards were generated,
+how many were unchanged and which failed.
+
+- Table names in the steps are matched to the diagram. A step whose table is
+  not in the diagram keeps its text without a line. New tables found in the
+  steps are linked to the endpoint.
+- Tabular records the files the AI read and a hash of their content. The next
+  run skips cards whose files have not changed; **Regenerate** on a card always
+  runs it again.
+- API providers see route snippets only, not the whole repository. Their cards
+  are labelled **partial**; a CLI agent (Claude Code, Gemini CLI) gives more
+  complete processes.
+- Without an AI backend, cards still show their tables from the links and say
+  **No business process yet**.
+- The Mac App Store build cannot start external processes, so generation is not
+  available there.
+
+### Playing a process
+
+Double-click a card to focus it: the other cards and unrelated tables fade, the
+view zooms to the card and its tables, and the process plays. The request
+enters the card, each step lights up in turn, a particle runs along the line
+to its table in the direction of the data, and the table's header and columns
+pulse. The response leaves the card at the end. Playback stops by itself.
+
+The bar under the card has Play / Pause (**Space**), Previous step, Next step,
+speed (0.5×, 1×, 2×), Replay and Close. A card without steps plays one step per
+linked table.
+
+The **Process** panel opens for the selected card. It shows the summary, the
+commit and time the process was generated from, **Tables involved** with
+C / R / U / D badges and step numbers (click to jump to the table), and every
+step with its detail, condition and source (click to play from that step).
+
+### Export
+
+- **Copy as Mermaid** on a card copies its process as a Mermaid `flowchart`:
+  steps in order, tables as cylinders, arrows in the direction of the data,
+  and conditional steps as dotted arrows labelled with the condition.
+- **Export → Business processes (Mermaid .md)…** in the diagram toolbar writes
+  one Markdown file with a flowchart per card, ordered by path.
+- AI agents read the same processes through the MCP tool `describe_diagram`
+  ([MCP.md](MCP.md)).
+
+### Compatibility
+
+Cards and steps are saved in the diagram (`flow_cards`). Older Tabular versions
+open these diagrams but drop the cards when they save them. The cards come back
+from the endpoint links the next time a current version opens the diagram; the
+steps need to be generated again.
 
 ## Integration tests (AI)
 

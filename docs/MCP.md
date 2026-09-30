@@ -65,7 +65,7 @@ installed `tabular` executable. The server speaks MCP over stdio; it opens no ne
 | `execute_statement` | Run writes, DDL or admin statements on a connection whose access is Ask, Edit or Agent, after approval where required. |
 | `describe_schema` | Tables, columns, primary keys, foreign keys, cached indexes and partitions as compact DDL plus JSON. Also adds what you drew in the diagram: virtual relations, the groups a table belongs to, and how many notes mention it. Pass `question` and the most relevant tables are returned first, ranked by Tabular's local vector index (nothing leaves your machine). |
 | `schema_diagram` | The same schema as a Mermaid `erDiagram`. Virtual relations are drawn as dotted lines. |
-| `describe_diagram` | Your Tabular diagram for a database: groups with their tables and linked repositories, virtual relations, sticky notes and linked databases. Pass `table` or `group` to narrow it. |
+| `describe_diagram` | Your Tabular diagram for a database: groups with their tables and linked repositories, virtual relations, sticky notes, linked databases and business processes (`flows`, see below). Pass `table` or `group` to narrow it. |
 | `refresh_schema_cache` | Re-fetch schema metadata from the server into Tabular's cache. |
 | `run_query` | Execute a **read-only** statement (or read-only Redis commands) and return rows. |
 | `explain_query` | Execution plan for PostgreSQL, MySQL and SQLite, parsed into a tree with cost percentages and bottleneck warnings from Tabular's query profiler. |
@@ -91,6 +91,7 @@ The agent reads what Tabular already stores. Nothing is copied into Markdown fil
 | Schema, indexes, partitions | `connections.db` cache | `describe_schema`, `schema_diagram`, `analyze_query` |
 | Groups, virtual relations, sticky notes | The diagram file in `<data dir>/diagrams/`, or the shared `diagram_by_tabular` table when there is no local file | `describe_diagram`, and as a summary in `describe_schema` |
 | Repository per group | Git URL in the diagram, local folder in `diagram_repo_paths.json` | `describe_diagram`, `find_table_usages` |
+| Business processes (API cards and their steps) | The diagram, generated with **Generate Business Process (AI)** | `describe_diagram` |
 | Query history | `connections.db` | `search_query_history` |
 | Your own notes | Obsidian vault | `search_notes`, `read_note`, `save_note` |
 | Projects and project memory | `<data dir>/projects/<id>/project.json` and `<data dir>/projects/<id>/memory/*.md` | `list_projects`, `project_context`, `save_project_memory` |
@@ -98,6 +99,42 @@ The agent reads what Tabular already stores. Nothing is copied into Markdown fil
 `find_table_usages` reads only the local folder you picked for a group, or a clone Tabular
 already made when you ran "Suggest tables". It never runs git and never reads other folders.
 Git URLs are shown with any embedded credentials masked.
+
+`describe_diagram` returns the diagram's API cards as `flows`, ordered by path, at most 40
+per call (`total_flows` gives the full count; pass `table` or `group` to see the rest). With
+`table` or `group`, only processes that touch those tables are returned. Each flow is plain
+data:
+
+```json
+{
+  "id": "flw_3",
+  "trigger": "http",
+  "method": "POST",
+  "target": "/orders",
+  "summary": "Creates an order and reserves stock",
+  "source": "src/routes/orders.ts:12",
+  "tables": [
+    { "table": "users", "ops": ["read"], "steps": [2] },
+    { "table": "orders", "ops": ["insert"], "steps": [3] }
+  ],
+  "steps": [
+    { "kind": "auth", "title": "Verify bearer token", "source": "src/middleware/auth.ts:12" },
+    { "kind": "db", "title": "Load the customer", "target": { "kind": "table", "id": "users" },
+      "op": "read", "columns": ["id", "status"] },
+    { "kind": "db", "title": "Create the order", "target": { "kind": "table", "id": "orders" },
+      "op": "insert", "columns": ["user_id", "total"] },
+    { "kind": "queue", "title": "Publish order.created",
+      "target": { "kind": "queue", "id": "order.created" }, "op": "publish" }
+  ],
+  "generated_at": "2026-09-30T10:00:00Z",
+  "commit": "a1b2c3d"
+}
+```
+
+Table names are the names in the diagram, not internal ids. `steps` is empty for an
+endpoint whose process was not generated yet; `tables` then comes from the endpoint links
+and has no `ops`. `partial: true` means the AI saw code snippets only. The saved request id,
+card position and repository key stay in the GUI and are not returned.
 
 Supported for `run_query`: PostgreSQL, MySQL/MariaDB, SQLite, SQL Server, Redis.
 MongoDB and HTTP connections are listed but cannot run queries yet.
