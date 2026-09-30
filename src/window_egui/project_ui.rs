@@ -635,6 +635,7 @@ pub fn render_dialog(t: &mut Tabular, ctx: &egui::Context) {
 
     egui::Window::new("project_dialog")
         .id(egui::Id::new("project_dialog"))
+        .order(egui::Order::Foreground)
         .title_bar(false)
         .frame(style::modal_window_frame(ctx))
         .collapsible(false)
