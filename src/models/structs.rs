@@ -1178,7 +1178,7 @@ pub enum FlowLineMode {
 }
 
 /// Jenis pemicu sebuah flow.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowTriggerKind {
     #[default]
@@ -1208,7 +1208,7 @@ pub struct FlowTrigger {
 
 /// Resource yang disentuh sebuah langkah. Ditulis sebagai
 /// `{"kind": "table", "id": "users"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum FlowTarget {
     /// Id node tabel di diagram.
@@ -1264,7 +1264,7 @@ impl FlowTarget {
 }
 
 /// Operasi sebuah langkah terhadap targetnya.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowOp {
     Read,
@@ -1281,7 +1281,7 @@ pub enum FlowOp {
 }
 
 /// Jenis langkah di dalam flow.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowStepKind {
     Auth,

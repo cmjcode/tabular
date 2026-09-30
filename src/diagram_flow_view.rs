@@ -622,7 +622,8 @@ pub fn focus_card(
 }
 
 /// Pilih card `card_id` dan geser viewport ke card itu (dari panel endpoint
-/// atau pencarian). `false` bila card tidak ada.
+/// atau pencarian). Seperti klik card, prosesnya langsung diputar dan card
+/// difokuskan. `false` bila card tidak ada.
 pub fn reveal_card(
     state: &mut DiagramState,
     card_id: &str,
@@ -633,6 +634,10 @@ pub fn reveal_card(
         return false;
     };
     state.selected_flow = Some(card_id.to_string());
+    crate::diagram_flow_play_view::start_playback(state, card_id);
+    state.focus_flow = Some(card_id.to_string());
+    state.focus_table = None;
+    state.focus_group = None;
     let zoom = state.zoom.max(crate::diagram_view::FOCUS_ZOOM);
     crate::diagram_view::animate_view_to(state, rect.center(), zoom, view_size, now);
     true

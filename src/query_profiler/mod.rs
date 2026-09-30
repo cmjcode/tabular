@@ -14,7 +14,7 @@ pub use graph::{
 pub use warnings::{ProfilerWarning, WarningCategory, WarningSeverity};
 
 /// Database engine detected for the EXPLAIN output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub enum ProfilerEngine {
     #[default]
     PostgreSQL,
@@ -37,7 +37,7 @@ impl ProfilerEngine {
 }
 
 /// Unified representation of a node in the execution plan tree
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExplainNode {
     pub id: usize,
     pub node_type: String,
@@ -268,7 +268,7 @@ impl ExplainNode {
 }
 
 /// Aggregated query profile summary
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct ExplainSummary {
     pub engine: ProfilerEngine,
     pub total_cost: f64,

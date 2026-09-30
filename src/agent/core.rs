@@ -83,7 +83,7 @@ impl Default for AgentLimits {
 }
 
 /// Ringkasan koneksi yang aman dibagikan ke agent (tanpa rahasia).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ConnectionSummary {
     pub id: i64,
     pub name: String,
@@ -97,14 +97,14 @@ pub struct ConnectionSummary {
     pub supports_query: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ColumnDescription {
     pub name: String,
     pub data_type: String,
     pub primary_key: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ForeignKeyDescription {
     pub column: String,
     pub references_table: String,
@@ -112,7 +112,7 @@ pub struct ForeignKeyDescription {
 }
 
 /// Index dari `index_cache`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct IndexDescription {
     pub name: String,
     pub columns: Vec<String>,
@@ -122,7 +122,7 @@ pub struct IndexDescription {
 }
 
 /// Ringkasan partisi dari `partition_cache` (bisa ratusan, jadi hanya contoh).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PartitionSummary {
     pub count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,7 +133,7 @@ pub struct PartitionSummary {
     pub sample: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableDescription {
     pub name: String,
     /// "table" atau "view".
@@ -162,7 +162,7 @@ fn is_zero(n: &usize) -> bool {
 
 /// Skema sebagai Mermaid `erDiagram`: ringkas untuk context agent dan bisa
 /// langsung ditulis ke catatan Obsidian lewat `save_note`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SchemaDiagram {
     pub connection_id: i64,
     pub database: String,
@@ -230,7 +230,7 @@ impl SchemaDescription {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SchemaDescription {
     pub connection_id: i64,
     pub database: String,
@@ -244,7 +244,7 @@ pub struct SchemaDescription {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AgentQueryResult {
     pub connection_id: i64,
     pub database: Option<String>,
@@ -260,7 +260,7 @@ pub struct AgentQueryResult {
     pub affected_rows: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct StatementSafety {
     pub statement: String,
     pub kind: StatementKind,
@@ -269,14 +269,14 @@ pub struct StatementSafety {
     pub unsafe_dml: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LintEntry {
     pub severity: String,
     pub message: String,
     pub hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SafetyReport {
     pub read_only: bool,
     /// `true` bila agent boleh menjalankannya lewat `run_query`.
@@ -285,7 +285,7 @@ pub struct SafetyReport {
     pub lints: Vec<LintEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ExplainResult {
     pub connection_id: i64,
     pub executed_sql: String,
@@ -295,13 +295,13 @@ pub struct ExplainResult {
     pub plan: Option<crate::query_profiler::ExplainNode>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct NoteSearchResult {
     pub results: Vec<crate::vector_index::NoteHit>,
     pub hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct NoteContent {
     /// Path relatif terhadap root vault.
     pub path: String,
@@ -313,7 +313,7 @@ pub struct NoteContent {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SavedNote {
     pub path: String,
 }

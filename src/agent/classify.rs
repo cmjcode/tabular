@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::models::enums::DatabaseType;
 
 /// Jenis statement dari sudut pandang keamanan agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StatementKind {
     /// Hanya membaca: SELECT, SHOW, EXPLAIN (tanpa DML di dalamnya), dll.

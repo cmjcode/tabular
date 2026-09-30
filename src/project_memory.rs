@@ -26,7 +26,7 @@ pub const MAX_ENTRIES: usize = 200;
 /// Pengganti nilai secret yang ditemukan di isi memory.
 const REDACTED: &str = "[redacted]";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct MemoryEntry {
     /// Slug unik, juga nama file (`{name}.md`).
     pub name: String,

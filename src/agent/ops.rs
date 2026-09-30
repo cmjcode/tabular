@@ -20,7 +20,7 @@ use super::core::{
 use crate::models::enums::DatabaseType;
 
 /// Satu statement di dalam rencana.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PlannedStatement {
     pub statement: String,
     pub kind: StatementKind,
@@ -82,7 +82,7 @@ pub fn aggregate(decisions: &[Decision]) -> Decision {
 }
 
 /// Koneksi sebagaimana dilihat oleh satu klien agent.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AgentConnection {
     #[serde(flatten)]
     pub summary: ConnectionSummary,
@@ -94,13 +94,13 @@ pub struct AgentConnection {
     pub environment: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableListEntry {
     pub name: String,
     pub kind: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableList {
     pub connection_id: i64,
     pub database: String,
@@ -110,14 +110,14 @@ pub struct TableList {
 }
 
 /// FK dari tabel lain yang menunjuk ke tabel ini.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct IncomingReference {
     pub table: String,
     pub column: String,
     pub references_column: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableDetail {
     pub connection_id: i64,
     pub database: String,
@@ -129,7 +129,7 @@ pub struct TableDetail {
     pub indexes: Vec<IndexDescription>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableDdl {
     pub connection_id: i64,
     pub database: String,
@@ -140,7 +140,7 @@ pub struct TableDdl {
     pub source: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RowCount {
     pub connection_id: i64,
     pub database: String,
@@ -148,7 +148,7 @@ pub struct RowCount {
     pub rows: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RunningQuery {
     pub pid: i64,
     pub user: String,

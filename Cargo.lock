@@ -7086,6 +7086,7 @@ dependencies = [
  "rmcp",
  "rust_decimal",
  "rust_xlsxwriter",
+ "schemars",
  "semver",
  "serde",
  "serde_json",

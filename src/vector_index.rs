@@ -509,7 +509,7 @@ pub async fn search_history(
 }
 
 /// Satu entri history yang mirip, lengkap dengan asal koneksinya.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct HistoryHit {
     pub query_text: String,
     pub connection_id: i64,
@@ -590,7 +590,7 @@ pub struct NoteSyncStats {
 }
 
 /// Potongan catatan hasil pencarian.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct NoteHit {
     pub rel_path: String,
     pub title: String,

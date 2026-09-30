@@ -43,7 +43,7 @@ const REMOTE_DIAGRAM_TIMEOUT: Duration = Duration::from_secs(10);
 const GREP_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Asal diagram yang dibaca.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagramSource {
     /// Cache JSON lokal yang juga dibuka GUI.
@@ -52,7 +52,7 @@ pub enum DiagramSource {
     SharedTable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct VirtualRelationInfo {
     pub child: String,
     pub child_column: String,
@@ -62,7 +62,7 @@ pub struct VirtualRelationInfo {
     pub origin: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct DiagramGroupInfo {
     pub id: String,
     pub title: String,
@@ -76,7 +76,7 @@ pub struct DiagramGroupInfo {
     pub note_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct DiagramNoteInfo {
     pub id: String,
     pub title: String,
@@ -96,7 +96,7 @@ pub struct DiagramNoteInfo {
 }
 
 /// Pemakaian satu tabel oleh sebuah proses bisnis.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FlowTableInfo {
     pub table: String,
     /// Operasi dari langkah (`read`, `insert`, ...). Kosong bila tabel hanya
@@ -106,7 +106,7 @@ pub struct FlowTableInfo {
     pub steps: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FlowStepInfo {
     pub kind: FlowStepKind,
     pub title: String,
@@ -129,7 +129,7 @@ pub struct FlowStepInfo {
 
 /// Satu proses bisnis (flow card di diagram): pemicu, tabel yang disentuh,
 /// dan langkah berurutan hasil generate AI dari kode repository.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct FlowInfo {
     pub id: String,
     /// `http`, `job`, `queue`, `cron`, `event`, atau `cli`.
@@ -156,14 +156,14 @@ pub struct FlowInfo {
     pub partial: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct LinkedDatabaseInfo {
     pub connection_id: Option<i64>,
     pub connection_name: String,
     pub database: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct DiagramDescription {
     pub connection_id: i64,
     pub database: String,
@@ -192,14 +192,14 @@ pub struct DiagramDescription {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct QueryHistoryResult {
     pub results: Vec<crate::vector_index::HistoryHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AnalyzedSource {
     pub table: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,7 +214,7 @@ pub struct AnalyzedSource {
     pub all_columns: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct AnalyzedOutput {
     pub name: String,
     pub expr: String,
@@ -224,7 +224,7 @@ pub struct AnalyzedOutput {
     pub window: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct QueryAnalysis {
     /// SELECT, INSERT, UPDATE, atau DELETE.
     pub statement: String,
@@ -259,7 +259,7 @@ pub struct QueryAnalysis {
     pub schema_resolved: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct UsageHit {
     pub table: String,
     pub refs: usize,
@@ -269,7 +269,7 @@ pub struct UsageHit {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RepoUsage {
     /// Judul group diagram pemilik repository ini.
     pub groups: Vec<String>,
@@ -281,7 +281,7 @@ pub struct RepoUsage {
     pub hits: Vec<UsageHit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct TableUsageReport {
     pub tables: Vec<String>,
     pub repositories: Vec<RepoUsage>,

@@ -7025,6 +7025,7 @@ pub fn auto_arrange(state: &mut DiagramState) {
     auto_layout_host(state);
     let bands = crate::diagram_flow_layout::band_sizes(state);
     compact_and_resolve_overlaps(&mut state.nodes, 20.0, &bands);
+    widen_to_landscape(&mut state.nodes, 20.0, &bands);
 }
 
 /// Aksi menu "Arrange API cards": kembalikan card ke pita otomatis, lalu
@@ -7060,6 +7061,57 @@ pub fn auto_layout_host(state: &mut DiagramState) {
     perform_auto_layout(state);
     state.nodes.extend(linked);
     crate::diagram_links::restack_links(state);
+}
+
+/// Rasio lebar : tinggi minimal hasil auto-arrange (default landscape, cocok
+/// untuk layar lebar).
+pub const LANDSCAPE_ASPECT: f32 = 1.6;
+/// Pengali gravitasi sumbu Y agar simulasi menyebar ke samping, bukan ke bawah.
+const VERTICAL_GRAVITY_BOOST: f32 = 4.0;
+
+/// Kotak pembatas tabel host (tabel link database diabaikan).
+fn host_bounds(nodes: &[DiagramNode]) -> Option<egui::Rect> {
+    nodes
+        .iter()
+        .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+        .map(|n| egui::Rect::from_min_size(n.pos, n.size))
+        .reduce(|a, b| a.union(b))
+}
+
+/// Regangkan posisi pusat tabel host (x membesar, y mengecil) bila kotak
+/// pembatasnya lebih sempit dari `LANDSCAPE_ASPECT`. Mengembalikan `false`
+/// bila sudah landscape. Tumpang tindih yang muncul diselesaikan pemanggil.
+fn stretch_to_landscape(nodes: &mut [DiagramNode]) -> bool {
+    let Some(bounds) = host_bounds(nodes) else {
+        return false;
+    };
+    if bounds.height() <= 0.0 || bounds.width() >= bounds.height() * LANDSCAPE_ASPECT {
+        return false;
+    }
+    let k = (LANDSCAPE_ASPECT * bounds.height() / bounds.width().max(1.0)).sqrt();
+    let c = bounds.center();
+    for n in nodes
+        .iter_mut()
+        .filter(|n| !crate::diagram_links::is_linked_id(&n.id))
+    {
+        let center = n.pos + n.size / 2.0;
+        let moved = egui::pos2(c.x + (center.x - c.x) * k, c.y + (center.y - c.y) / k);
+        n.pos = moved - n.size / 2.0;
+    }
+    true
+}
+
+/// Ulangi regangan + pemisahan tumpang tindih sampai hasil landscape.
+/// Pemisahan cenderung mendorong kembali ke atas/bawah, jadi satu regangan
+/// tidak cukup.
+fn widen_to_landscape(nodes: &mut [DiagramNode], padding: f32, bands: &BandSizes) {
+    for _ in 0..8 {
+        if !stretch_to_landscape(nodes) {
+            break;
+        }
+        compact_groups(nodes, GROUP_MAX_GAP.max(padding));
+        resolve_all_overlaps(nodes, padding, None, bands);
+    }
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
@@ -7182,9 +7234,12 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
                 continue;
             } // Don't move dragged node
 
-            // Weaker center pull
+            // Tarikan ke pusat; sumbu Y lebih kuat agar hasil landscape
             let center_pull = egui::Vec2::ZERO - node.pos.to_vec2();
-            *force += center_pull * center_gravity;
+            *force += egui::vec2(
+                center_pull.x * center_gravity,
+                center_pull.y * center_gravity * VERTICAL_GRAVITY_BOOST,
+            );
 
             // Limit max force to prevent explosion
             let max_force = 1000.0;
@@ -7195,6 +7250,8 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
             node.pos += *force * delta_time;
         }
     }
+
+    stretch_to_landscape(&mut state.nodes);
 
     // STRICT COLLISION RESOLUTION (Post-Process)
     // Pastikan semua tabel terpisah sempurna dengan padding aman; group yang
@@ -8936,5 +8993,66 @@ mod tests {
             }],
         );
         assert!(state.focus_flow.is_none() && state.selected_flow.is_none());
+    }
+
+    /// Tabel mirip kasus nyata: beberapa tabel tinggi, relasi berpusat di
+    /// `users` dan `user_data`.
+    fn landscape_fixture() -> DiagramState {
+        let sizes = [
+            ("alert", 250.0, 280.0),
+            ("users", 220.0, 520.0),
+            ("datalogs", 220.0, 520.0),
+            ("user_data_expireds", 220.0, 140.0),
+            ("user_data", 250.0, 900.0),
+            ("data_alerts", 230.0, 560.0),
+            ("vehicle", 230.0, 300.0),
+        ];
+        let mut state = DiagramState::default();
+        for (i, (id, w, h)) in sizes.iter().enumerate() {
+            let mut n = node(id, &["id"]);
+            n.size = egui::vec2(*w, *h);
+            n.pos = egui::pos2(i as f32 * 3.0, i as f32 * 2.0);
+            state.nodes.push(n);
+        }
+        for (s, t) in [
+            ("alert", "users"),
+            ("datalogs", "user_data"),
+            ("user_data_expireds", "user_data"),
+            ("user_data", "users"),
+            ("data_alerts", "user_data"),
+            ("vehicle", "users"),
+        ] {
+            state.edges.push(crate::models::structs::DiagramEdge {
+                source: s.into(),
+                target: t.into(),
+                label: String::new(),
+            });
+        }
+        state
+    }
+
+    #[test]
+    fn auto_arrange_defaults_to_landscape() {
+        let mut state = landscape_fixture();
+        auto_arrange(&mut state);
+        let bounds = state
+            .nodes
+            .iter()
+            .map(|n| egui::Rect::from_min_size(n.pos, n.size))
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!(
+            bounds.width() >= bounds.height() * LANDSCAPE_ASPECT * 0.95,
+            "layout {:?} tidak landscape",
+            bounds.size()
+        );
+        for (i, a) in state.nodes.iter().enumerate() {
+            for b in &state.nodes[i + 1..] {
+                let ra = egui::Rect::from_min_size(a.pos, a.size);
+                let rb = egui::Rect::from_min_size(b.pos, b.size);
+                let inter = ra.intersect(rb);
+                assert!(inter.width() <= 0.0 || inter.height() <= 0.0);
+            }
+        }
     }
 }

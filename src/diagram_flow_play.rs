@@ -25,6 +25,8 @@ pub const STEP_NO_TARGET_SECS: f64 = 0.5;
 pub const RESPONSE_SECS: f64 = 0.6;
 /// Pilihan kecepatan di bilah kontrol.
 pub const SPEEDS: [f32; 3] = [0.5, 1.0, 2.0];
+/// Kecepatan awal setiap pemutaran baru.
+pub const DEFAULT_SPEED: f32 = 0.5;
 
 /// Satu item timeline: langkah card, atau langkah semu per tabel.
 #[derive(Clone, Debug, PartialEq)]
@@ -138,7 +140,7 @@ pub fn new_playback(card_id: &str) -> FlowPlayback {
         card_id: card_id.to_string(),
         position: 0.0,
         last_tick: None,
-        speed: 1.0,
+        speed: DEFAULT_SPEED,
         playing: true,
     }
 }
@@ -279,10 +281,11 @@ mod tests {
         let items = play_items(&card(vec![db("users")]), &["users"]);
         let total = play_duration(&items);
         let mut p = new_playback("flw_1");
+        assert_eq!(p.speed, DEFAULT_SPEED);
         // Frame pertama hanya mencatat waktu.
         assert!(advance(&mut p, 10.0, total));
         assert_eq!(p.position, 0.0);
-        assert!(advance(&mut p, 10.5, total));
+        assert!(advance(&mut p, 11.0, total));
         assert!((p.position - 0.5).abs() < 1e-9);
         // Jeda: waktu tidak maju walau frame berikutnya jauh kemudian.
         toggle_play(&mut p, total);

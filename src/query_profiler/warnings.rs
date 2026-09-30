@@ -1,7 +1,7 @@
 use super::ExplainNode;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum WarningSeverity {
     Info,
     Medium,
@@ -29,7 +29,7 @@ impl WarningSeverity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum WarningCategory {
     SequentialScan,
     CartesianProduct,
@@ -40,7 +40,7 @@ pub enum WarningCategory {
     MissingIndex,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProfilerWarning {
     pub severity: WarningSeverity,
     pub category: WarningCategory,

@@ -29,7 +29,7 @@ use sqlx::SqlitePool;
 use super::classify::StatementKind;
 
 /// Level akses agent untuk satu koneksi.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessLevel {
     /// Koneksi disembunyikan dari agent; semua panggilan ditolak.
@@ -200,7 +200,7 @@ pub fn digest(text: &str) -> String {
 // ── Penyimpanan ─────────────────────────────────────────────────────────────
 
 /// Pengaturan akses satu koneksi.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 pub struct ConnectionAccess {
     pub level: AccessLevel,
     /// `None` = semua klien boleh; `Some(list)` = hanya klien bernama ini.
@@ -333,7 +333,7 @@ pub async fn save(
 }
 
 /// Klien MCP yang pernah terlihat.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct KnownClient {
     pub name: String,
     pub version: String,
@@ -658,7 +658,7 @@ pub async fn prune_activity(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ActivityRow {
     pub id: i64,
     pub at: String,

@@ -14,7 +14,7 @@ use crate::project_memory::{self, MemoryEntry};
 /// Jumlah maksimum nama file query per project di konteks.
 const MAX_QUERY_FILES: usize = 200;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
@@ -24,7 +24,7 @@ pub struct ProjectSummary {
     pub memory_entries: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct EnvVarInfo {
     pub key: String,
     /// Kosong untuk variabel rahasia.
@@ -32,7 +32,7 @@ pub struct EnvVarInfo {
     pub secret: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ProjectEnvInfo {
     pub name: String,
     /// `production`, `staging`, `development`, `testing`, `local`.
@@ -43,7 +43,7 @@ pub struct ProjectEnvInfo {
     pub connection_ids: Vec<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ProjectConnectionInfo {
     pub id: i64,
     pub name: String,
@@ -51,7 +51,7 @@ pub struct ProjectConnectionInfo {
     pub folder: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ProjectContext {
     pub id: String,
     pub name: String,
@@ -67,7 +67,7 @@ pub struct ProjectContext {
     pub how_to_use: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SavedMemory {
     pub project: String,
     pub name: String,
