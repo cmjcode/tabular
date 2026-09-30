@@ -82,6 +82,24 @@ installed `tabular` executable. The server speaks MCP over stdio; it opens no ne
 | `save_project_memory` | Save a durable fact in a project's memory. The same title replaces the entry. Secret values of the project are redacted automatically. Refused for projects shared with you read-only. |
 | `delete_project_memory` | Remove one memory entry from a project. |
 
+Every tool declares a `title`, behavior annotations and an `outputSchema`:
+
+- `readOnlyHint: true` on every tool except `execute_statement`, `cancel_query`,
+  `refresh_schema_cache`, `save_note`, `save_project_memory` and `delete_project_memory`.
+  `execute_statement`, `cancel_query`, `save_project_memory` and `delete_project_memory` are
+  also `destructiveHint: true`. All tools are `openWorldHint: false`. Clients can use these
+  hints to skip confirmation prompts for read-only tools.
+- A successful call returns `structuredContent` that matches the tool's `outputSchema`, plus
+  the same JSON as text. `structuredContent` is always a JSON object; lists are wrapped
+  (`list_connections` → `{"connections": [...]}`, `list_databases` →
+  `{"connection_id", "databases"}`, `list_projects` → `{"projects"}`,
+  `list_running_queries` → `{"connection_id", "queries"}`, `refresh_schema_cache` →
+  `{"connection_id", "cached_tables"}`, `delete_project_memory` →
+  `{"project", "name", "deleted"}`).
+- Errors the agent can act on (refused statement, unknown connection, bad SQL, cancelled)
+  come back as a result with `isError: true` and a readable message. An unknown tool or
+  invalid arguments is a JSON-RPC error.
+
 ### Where the knowledge comes from
 
 The agent reads what Tabular already stores. Nothing is copied into Markdown files first.
@@ -234,6 +252,26 @@ Prompts, rendered from the live schema: `explain_schema`, `explain_table`,
 `write_migration`, `summarize_query_history`. Each takes `connection_id` plus the arguments
 shown in `prompts/list`.
 
+`resources/list` is paginated (100 per page, follow `nextCursor`); an unknown cursor is
+rejected with `-32602`.
+
+## Protocol support
+
+| Feature | Support |
+|---|---|
+| Protocol versions | 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25 (default) and 2026-07-28, negotiated by the official Rust SDK (`rmcp` 3.4) |
+| Server capabilities | `tools`, `resources` (`subscribe`, `listChanged`), `prompts`, `completions`, `logging` |
+| Completion | `completion/complete` suggests `connection_id` / `id` (matched by id or connection name), `database`, `table` (needs `connection_id` in `context.arguments`) and `project`. At most 100 values, with `total` and `hasMore`. Connections hidden from the client are never suggested. |
+| Progress | While `execute_statement` or `cancel_query` waits for approval, the server sends `notifications/progress` every 5 seconds when the request carries a `progressToken` (`total` = 180 seconds), so clients with a short request timeout keep waiting. |
+| Cancellation | `notifications/cancelled` stops a running read (the query is dropped) and withdraws a pending approval request. A write that has already been sent to the database is not interrupted, because it may already be committed; its real result is returned. Local writes (notes, project memory, schema cache) also finish. Cancelled calls appear as `cancelled` in the activity log. |
+| Logging | Opt-in: after `logging/setLevel` the server sends `notifications/message` (logger `tabular`) for approval requests (`info`), refused or denied statements (`warning`) and tool failures (`error`). Nothing is sent before the client asks. Logging is deprecated from protocol 2026-07-28 on (SEP-2577) and is kept for older clients. |
+| Client identity | Read from `clientInfo` of `initialize`, or from `_meta` on each request for 2026-07-28 clients that skip the handshake. Both are recorded in the **Clients** tab and used for the per-connection allowlist. |
+
+The `outputSchema` of each tool is generated for serialization (optional fields are not
+`required`) and contains no `description` or `format` keywords, so strict validators such as
+Ajv accept it. `cargo test --lib agent::mcp` runs a real MCP client against the server in
+process and validates real results against these schemas.
+
 ## How it works
 
 `tabular mcp` runs the same binary as the desktop app in headless mode
@@ -256,8 +294,18 @@ CI machine with its own connections.
 - The read-only classifier is conservative by design; a stored procedure that only reads is
   still refused by `run_query` because `CALL` may write (use `execute_statement` on a
   connection with a write-capable level).
-- Transport is stdio only. There is no HTTP/SSE endpoint, so there are no tokens, pairing or
-  per-token scopes; access is controlled per connection and per client name as above.
+- Transport is stdio only, by design. Every supported client can start a local stdio server,
+  and stdio opens no port that another program, a browser page (DNS rebinding) or another user
+  could reach. A Streamable HTTP endpoint would need OAuth 2.1 authorization and Origin checks
+  to meet the MCP spec, so there are no tokens, pairing or per-token scopes; access is
+  controlled per connection and per client name as above.
+- `subscriptions/listen` (2026-07-28) checks access with the client name from `initialize`,
+  because the SDK does not pass the request's `_meta` to the subscription. A 2026-07-28 client
+  that skips `initialize` and is limited by a per-connection allowlist receives no schema
+  updates for that connection; use `resources/subscribe` or allow all clients.
+- Approval through the MCP client (elicitation) is only offered to clients that declared the
+  `elicitation` capability in `initialize`. Other clients get a message asking the user to
+  open Tabular.
 - `get_table_ddl` for PostgreSQL and SQL Server is reconstructed from the cache and omits
   defaults, check constraints and storage options.
 - On iOS the server is not compiled (no stdio, not permitted by the App Store).

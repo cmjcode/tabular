@@ -219,8 +219,11 @@ fn run_mcp(rest: &[String]) -> Result<(), String> {
         crate::config::get_data_dir().display()
     );
 
+    // Stack worker 8 MB (bawaan 2 MB): rantai future eksekusi query (driver,
+    // SSH tunnel, profiler) dalam dan besar di build debug.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(8 * 1024 * 1024)
         .build()
         .map_err(|e| format!("failed to start async runtime: {e}"))?;
 

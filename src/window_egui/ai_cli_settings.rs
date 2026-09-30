@@ -564,8 +564,9 @@ impl Tabular {
         hint(
             ui,
             "The agent runs headless with permission prompts disabled, inside an empty working directory \
-             under Tabular's data folder. Database access goes through Tabular's read-only MCP tools; \
-             write statements must still be run by you.",
+             under Tabular's data folder. Database access goes through Tabular's MCP tools and follows \
+             each connection's agent access level (read-only by default, see Settings > Agent Access); \
+             statements that need your approval show a dialog in this window.",
         );
     }
 

@@ -910,22 +910,41 @@ pub fn history_prefix(chat: &[AiChatMessage], max_bytes: usize) -> String {
 pub fn system_prompt_for(cfg: &ChatBackend, schema: &str) -> String {
     let mut s = sql_system_prompt_with_schema(schema);
     if cfg.mcp_available {
+        // Selaraskan dengan daftar tool di `agent::mcp` dan docs/MCP.md.
         s.push_str(
             "\n\n## Database access\n\
-             You have an MCP server named `tabular` with tools: list_connections, list_databases, \
+             You have an MCP server named `tabular`. Use the `connection_id` values given in the \
+             context below. When the answer depends on real data or on schema details that are not \
+             in the context, verify with these tools before answering instead of guessing. Never ask \
+             the user to run a SELECT for you.\n\
+             - Schema: list_connections, list_databases, list_tables, describe_table, get_table_ddl, \
              describe_schema(connection_id, question), schema_diagram(connection_id) for the \
-             foreign-key relationships as a Mermaid erDiagram, run_query(connection_id, sql, database?), \
-             explain_query, check_sql_safety and format_sql. For context beyond the schema: \
-             describe_diagram(connection_id, table?) returns the user's diagram notes, business groups, \
-             virtual relations and business processes (which API endpoint reads or writes which table, \
-             step by step); search_query_history(question) returns queries the user already \
-             ran; analyze_query(sql) explains a statement and flags unindexed join/filter columns \
-             without running it; find_table_usages(connection_id, tables) finds where the linked code \
-             repository uses a table. Queries are read-only and results are \
-             truncated, so add LIMIT. Use the `connection_id` values given in the context below; \
-             when the answer depends on real data or on schema details that are not in the context, \
-             verify with these tools before answering instead of guessing. Never ask the user to run \
-             a SELECT for you.",
+             foreign-key relationships as a Mermaid erDiagram, and refresh_schema_cache when the \
+             cached schema looks stale.\n\
+             - Reading data: run_query(connection_id, sql, database?) runs read-only statements; \
+             sample_rows, count_rows and explain_query (execution plan) help too. Results are \
+             truncated (200 rows, 500 characters per cell), so add LIMIT and select only the \
+             columns you need.\n\
+             - Checking SQL without running it: check_sql_safety classifies statements and flags \
+             UPDATE/DELETE without WHERE; analyze_query(sql) explains a statement and flags \
+             unindexed join/filter columns; format_sql formats it.\n\
+             - Context beyond the schema: describe_diagram(connection_id, table?) returns the user's \
+             diagram notes, business groups, virtual relations (confirmed join paths) and business \
+             processes (which API endpoint reads or writes which table, step by step); \
+             search_query_history(question) returns queries the user already ran; \
+             find_table_usages(connection_id, tables) finds where the linked code repository uses a \
+             table; list_projects and project_context(project) return the user's projects, their \
+             environments and the project memory. save_project_memory(project, title, description, \
+             content) stores a durable fact for the team, never secrets or query results.\n\
+             - Changing data: every connection has an agent access level (read_only, ask, edit or \
+             agent), shown by list_connections and explained by get_agent_permissions. Change data \
+             or schema only when the user asked for it. On read_only connections, give the user the \
+             SQL instead of running it. On the other levels, execute_statement runs it; risky \
+             statements (UPDATE or DELETE without WHERE, DROP, TRUNCATE, anything on a Production \
+             connection) wait for the user's approval in Tabular. If a statement is refused or \
+             denied, do not retry it in another form: show the SQL to the user. \
+             list_running_queries and cancel_query handle stuck statements; cancelling always needs \
+             the user's approval.",
         );
     }
     if cfg.notes_enabled {
@@ -1208,6 +1227,31 @@ mod tests {
 
         let writable = system_prompt_for(&backend(true, true, true), "");
         assert!(writable.contains("save_note(title, content)"));
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn system_prompt_describes_current_mcp_tools_and_access() {
+        let off = system_prompt_for(&backend(false, false, false), "");
+        assert!(!off.contains("## Database access"));
+
+        let on = system_prompt_for(&backend(true, false, false), "");
+        // Setiap tool yang disebut prompt harus benar-benar ada di server MCP.
+        let tools: Vec<String> = crate::agent::mcp::tool_names();
+        for name in [
+            "list_connections",
+            "get_agent_permissions",
+            "describe_schema",
+            "run_query",
+            "execute_statement",
+            "cancel_query",
+            "project_context",
+            "save_project_memory",
+        ] {
+            assert!(on.contains(name), "prompt should mention {name}");
+            assert!(tools.iter().any(|t| t == name), "{name} is not an MCP tool");
+        }
+        assert!(!on.contains("Queries are read-only"));
     }
 
     #[test]

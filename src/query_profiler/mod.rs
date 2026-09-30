@@ -14,7 +14,9 @@ pub use graph::{
 pub use warnings::{ProfilerWarning, WarningCategory, WarningSeverity};
 
 /// Database engine detected for the EXPLAIN output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 pub enum ProfilerEngine {
     #[default]
     PostgreSQL,

@@ -1178,7 +1178,9 @@ pub enum FlowLineMode {
 }
 
 /// Jenis pemicu sebuah flow.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowTriggerKind {
     #[default]
@@ -1281,7 +1283,9 @@ pub enum FlowOp {
 }
 
 /// Jenis langkah di dalam flow.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowStepKind {
     Auth,

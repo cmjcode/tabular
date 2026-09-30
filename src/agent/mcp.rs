@@ -33,19 +33,16 @@ use std::time::{Duration, Instant};
 use rmcp::model::{LoggingLevel, LoggingMessageNotificationParam, SetLevelRequestParams};
 use rmcp::{
     ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt,
-    handler::server::{
-        common::schema_for_output, router::tool::ToolRouter, tool::ToolCallContext,
-        wrapper::Parameters,
-    },
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams,
         CompleteResult, CompletionInfo, ContentBlock, GetPromptRequestParams, GetPromptResponse,
         GetPromptResult, Implementation, JsonObject, ListPromptsResult,
         ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
-        ProgressNotificationParam, PromptMessage, ReadResourceRequestParams,
-        ReadResourceResponse, ReadResourceResult, Reference, ResourceContents,
-        ResourceUpdatedNotificationParam, Role, ServerCapabilities, ServerConfig,
-        SubscribeRequestParams, SubscriptionFilter, UnsubscribeRequestParams,
+        ProgressNotificationParam, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
+        ReadResourceResult, Reference, ResourceContents, ResourceUpdatedNotificationParam, Role,
+        ServerCapabilities, ServerConfig, SubscribeRequestParams, SubscriptionFilter,
+        UnsubscribeRequestParams,
     },
     service::{ElicitationMode, NotificationContext, RequestContext, SubscriptionContext},
     tool, tool_handler, tool_router,
@@ -121,11 +118,15 @@ async fn client_cancelled() {
 }
 
 /// `outputSchema` dari tipe hasil. Kata kunci `description` dibuang: isinya
-/// doc comment internal (Bahasa Indonesia) dan hanya menambah token di
-/// `tools/list`. Nama properti yang kebetulan `description` tetap utuh.
+/// doc comment internal (Bahasa Indonesia) dan hanya menambah ukuran
+/// `tools/list`. `format` juga dibuang: schemars menulis format non-standar
+/// (`uint128`, `uint`, `float`) yang membuat validator ketat seperti Ajv di SDK
+/// klien TypeScript gagal menyusun schema. Nama properti yang kebetulan
+/// `description`/`format` tetap utuh.
 fn out<T: schemars::JsonSchema + 'static>() -> Arc<JsonObject> {
     fn strip_schema(obj: &mut JsonObject) {
         obj.remove("description");
+        obj.remove("format");
         for (key, child) in obj.iter_mut() {
             match (key.as_str(), child) {
                 (
@@ -150,7 +151,19 @@ fn out<T: schemars::JsonSchema + 'static>() -> Arc<JsonObject> {
             }
         }
     }
-    let mut schema = schema_for_output::<T>().as_ref().clone();
+    // Kontrak serialize, bukan bawaan rmcp (deserialize): field dengan
+    // `skip_serializing_if` memang bisa tidak ada di output, jadi tidak boleh
+    // ditandai `required`.
+    let generated = schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<T>();
+    let mut schema = match serde_json::to_value(generated) {
+        Ok(serde_json::Value::Object(obj)) => obj,
+        _ => JsonObject::new(),
+    };
+    schema.remove("$schema");
+    schema.remove("title");
     strip_schema(&mut schema);
     Arc::new(schema)
 }
@@ -746,7 +759,8 @@ impl TabularMcp {
 
     /// Kirim `notifications/progress` bila request membawa `progressToken`.
     async fn notify_progress(&self, progress: f64, total: f64, message: String) {
-        let Ok((peer, token)) = CALL.try_with(|c| (c.ctx.peer.clone(), c.ctx.meta.get_progress_token()))
+        let Ok((peer, token)) =
+            CALL.try_with(|c| (c.ctx.peer.clone(), c.ctx.meta.get_progress_token()))
         else {
             return;
         };
@@ -834,12 +848,14 @@ impl TabularMcp {
     {
         let started = Instant::now();
         let client = self.client_name();
-        let work = async {
+        // Di heap: future eksekusi query sangat besar di build debug dan bisa
+        // meluapkan stack worker tokio (2 MB) bila ditumpuk di sini.
+        let work = Box::pin(async {
             if let Some(id) = connection_id {
                 self.session.ensure_access(&client, id).await?;
             }
             fut.await
-        };
+        });
         // Future yang di-drop membatalkan query di driver (koneksi dilepas).
         let (res, cancelled) = if cancellable {
             tokio::select! {
@@ -944,12 +960,8 @@ impl TabularMcp {
                 } else {
                     "Waiting for the Tabular window to show the approval request"
                 };
-                self.notify_progress(
-                    started.elapsed().as_secs_f64(),
-                    total,
-                    message.to_string(),
-                )
-                .await;
+                self.notify_progress(started.elapsed().as_secs_f64(), total, message.to_string())
+                    .await;
             }
             let cancelled = tokio::select! {
                 _ = tokio::time::sleep(APPROVAL_POLL) => false,
@@ -1953,7 +1965,8 @@ impl ServerHandler for TabularMcp {
     ) -> Result<CallToolResponse, McpError> {
         let scope_ctx = context.clone();
         let tcc = ToolCallContext::new(self, request, context);
-        self.scoped(&scope_ctx, self.tool_router.call(tcc)).await
+        self.scoped(&scope_ctx, Box::pin(self.tool_router.call(tcc)))
+            .await
     }
 
     #[allow(deprecated)]
@@ -2228,6 +2241,16 @@ impl ServerHandler for TabularMcp {
     }
 }
 
+/// Nama semua tool yang diumumkan server, untuk memeriksa teks yang
+/// menyebut tool (mis. system prompt AI Assistant) tetap sesuai.
+pub fn tool_names() -> Vec<String> {
+    TabularMcp::tool_router()
+        .list_all()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect()
+}
+
 /// Layani MCP lewat stdin/stdout sampai client menutup koneksi.
 pub async fn serve_stdio(session: Arc<HeadlessSession>) -> Result<(), String> {
     // Driver plugin dimuat supaya koneksi engine plugin juga bisa dipakai agent.
@@ -2374,7 +2397,10 @@ mod tests {
                 _ => true,
             }
         }
-        assert!(no_keyword(&serde_json::Value::Object(schema.as_ref().clone()), false));
+        assert!(no_keyword(
+            &serde_json::Value::Object(schema.as_ref().clone()),
+            false
+        ));
     }
 
     #[test]
@@ -2460,14 +2486,20 @@ mod tests {
     /// `structuredContent` harus memenuhi `outputSchema` tingkat atas:
     /// semua field wajib ada dan tidak ada field yang tidak diumumkan.
     fn assert_matches_schema(tool: &rmcp::model::Tool, value: &serde_json::Value) {
-        let obj = value.as_object().expect("structuredContent must be an object");
+        let obj = value
+            .as_object()
+            .expect("structuredContent must be an object");
         let schema = tool.output_schema.as_ref().expect("schema");
         let props = schema
             .get("properties")
             .and_then(|p| p.as_object())
             .expect("properties");
         for key in obj.keys() {
-            assert!(props.contains_key(key), "{}: `{key}` not in outputSchema", tool.name);
+            assert!(
+                props.contains_key(key),
+                "{}: `{key}` not in outputSchema",
+                tool.name
+            );
         }
         for req in schema
             .get("required")
@@ -2476,7 +2508,11 @@ mod tests {
             .flatten()
         {
             let req = req.as_str().expect("required name");
-            assert!(obj.contains_key(req), "{}: missing required `{req}`", tool.name);
+            assert!(
+                obj.contains_key(req),
+                "{}: missing required `{req}`",
+                tool.name
+            );
         }
     }
 
@@ -2537,8 +2573,9 @@ mod tests {
         // Kesalahan milik agent menjadi tool error, bukan error protokol.
         let missing = client
             .call_tool(
-                CallToolRequestParams::new("describe_table")
-                    .with_arguments(args(serde_json::json!({ "connection_id": 999, "table": "t" }))),
+                CallToolRequestParams::new("describe_table").with_arguments(args(
+                    serde_json::json!({ "connection_id": 999, "table": "t" }),
+                )),
             )
             .await
             .expect("tool error is not a protocol error");
@@ -2555,7 +2592,11 @@ mod tests {
         // resources/list + resources/read
         let listed = client.list_all_resources().await.expect("resources/list");
         assert!(listed.iter().any(|r| r.uri == "tabular://connections"));
-        assert!(listed.iter().any(|r| r.uri == "tabular://connections/1/schema"));
+        assert!(
+            listed
+                .iter()
+                .any(|r| r.uri == "tabular://connections/1/schema")
+        );
         let read = client
             .read_resource(ReadResourceRequestParams::new("tabular://connections"))
             .await
@@ -2569,9 +2610,9 @@ mod tests {
             "unknown resource must be a protocol error"
         );
         let bad_cursor = client
-            .list_resources(Some(PaginatedRequestParams::default().with_cursor(Some(
-                "not-a-cursor".to_string(),
-            ))))
+            .list_resources(Some(
+                PaginatedRequestParams::default().with_cursor(Some("not-a-cursor".to_string())),
+            ))
             .await;
         assert!(bad_cursor.is_err(), "invalid cursor must be rejected");
 
@@ -2625,6 +2666,358 @@ mod tests {
             .expect("logging/setLevel");
 
         client.cancel().await.expect("shutdown");
+    }
+
+    /// Validator JSON Schema 2020-12 minimal untuk kata kunci yang dihasilkan
+    /// schemars. `oneOf` wajib tepat satu cabang, seperti Ajv di SDK klien.
+    fn validate(
+        root: &serde_json::Value,
+        schema: &serde_json::Value,
+        v: &serde_json::Value,
+        path: &str,
+    ) -> Result<(), String> {
+        use serde_json::Value;
+        let Some(s) = schema.as_object() else {
+            // `true` / `false` sebagai schema.
+            return if schema.as_bool() == Some(false) {
+                Err(format!("{path}: schema false"))
+            } else {
+                Ok(())
+            };
+        };
+        if let Some(r) = s.get("$ref").and_then(Value::as_str) {
+            let target = r
+                .strip_prefix("#/")
+                .and_then(|p| p.split('/').try_fold(root, |acc, seg| acc.get(seg)))
+                .ok_or_else(|| format!("{path}: unresolved $ref {r}"))?;
+            validate(root, target, v, path)?;
+        }
+        if let Some(t) = s.get("type") {
+            let types: Vec<&str> = match t {
+                Value::String(one) => vec![one.as_str()],
+                Value::Array(many) => many.iter().filter_map(Value::as_str).collect(),
+                _ => Vec::new(),
+            };
+            let ok = types.iter().any(|t| match *t {
+                "null" => v.is_null(),
+                "boolean" => v.is_boolean(),
+                "string" => v.is_string(),
+                "array" => v.is_array(),
+                "object" => v.is_object(),
+                "number" => v.is_number(),
+                "integer" => {
+                    v.is_i64() || v.is_u64() || v.as_f64().is_some_and(|f| f.fract() == 0.0)
+                }
+                _ => false,
+            });
+            if !ok {
+                return Err(format!("{path}: {v} is not {types:?}"));
+            }
+        }
+        if let Some(e) = s.get("enum").and_then(Value::as_array)
+            && !e.contains(v)
+        {
+            return Err(format!("{path}: {v} not in enum {e:?}"));
+        }
+        if let Some(c) = s.get("const")
+            && c != v
+        {
+            return Err(format!("{path}: {v} != const {c}"));
+        }
+        for sub in s
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            validate(root, sub, v, path)?;
+        }
+        if let Some(any) = s.get("anyOf").and_then(Value::as_array)
+            && !any.iter().any(|sub| validate(root, sub, v, path).is_ok())
+        {
+            return Err(format!("{path}: no anyOf branch matches {v}"));
+        }
+        if let Some(one) = s.get("oneOf").and_then(Value::as_array) {
+            let n = one
+                .iter()
+                .filter(|sub| validate(root, sub, v, path).is_ok())
+                .count();
+            if n != 1 {
+                return Err(format!("{path}: {n} oneOf branches match {v}"));
+            }
+        }
+        if let Value::Object(obj) = v {
+            let props = s.get("properties").and_then(Value::as_object);
+            for req in s
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let req = req.as_str().unwrap_or_default();
+                if !obj.contains_key(req) {
+                    return Err(format!("{path}: missing required `{req}`"));
+                }
+            }
+            for (k, child) in obj {
+                match props.and_then(|p| p.get(k)) {
+                    Some(sub) => validate(root, sub, child, &format!("{path}.{k}"))?,
+                    None => match s.get("additionalProperties") {
+                        Some(Value::Bool(false)) => {
+                            return Err(format!("{path}: unexpected property `{k}`"));
+                        }
+                        Some(sub @ Value::Object(_)) => {
+                            validate(root, sub, child, &format!("{path}.{k}"))?
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        }
+        if let (Value::Array(items), Some(sub)) = (v, s.get("items")) {
+            for (i, item) in items.iter().enumerate() {
+                validate(root, sub, item, &format!("{path}[{i}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validator_catches_mismatches() {
+        let schema = serde_json::Value::Object(out::<WriteOutcome>().as_ref().clone());
+        let bad = serde_json::json!({ "result": {}, "access": "nope", "approved_by": null, "statements": [] });
+        assert!(validate(&schema, &schema, &bad, "$").is_err());
+        let text = serde_json::to_string(&schema).expect("json");
+        assert!(
+            !text.contains("\"format\""),
+            "format keyword must be stripped: {text}"
+        );
+    }
+
+    /// Cache Tabular lengkap di file sementara + database SQLite sungguhan,
+    /// supaya tool berat (refresh, describe, explain) menghasilkan data nyata.
+    async fn sqlite_fixture() -> (Arc<HeadlessSession>, std::path::PathBuf) {
+        // Seperti saat startup aplikasi: pencarian riwayat butuh sqlite-vec.
+        crate::vector_index::register_sqlite_vec();
+        let dir = std::env::temp_dir().join(format!(
+            "tabular-mcp-sqlite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let target = dir.join("shop.db");
+        let target_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&target)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("target db");
+        for sql in [
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, region TEXT)",
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL \
+             REFERENCES customers(id), total REAL, status TEXT)",
+            "CREATE INDEX idx_orders_customer ON orders(customer_id)",
+            "INSERT INTO customers VALUES (1, 'Ana', 'EU'), (2, 'Budi', 'ID')",
+            "INSERT INTO orders VALUES (1, 1, 9.5, 'paid'), (2, 2, 20.0, 'open')",
+        ] {
+            sqlx::query(sql)
+                .execute(&target_pool)
+                .await
+                .expect("target setup");
+        }
+        target_pool.close().await;
+
+        let cache = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(dir.join("connections.db"))
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("cache db");
+        let conns = "CREATE TABLE connections (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            name TEXT NOT NULL, host TEXT NOT NULL DEFAULT '', port TEXT NOT NULL DEFAULT '', \
+            username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '', \
+            database_name TEXT NOT NULL, connection_type TEXT NOT NULL, folder TEXT DEFAULT NULL, \
+            ssh_enabled INTEGER NOT NULL DEFAULT 0, ssh_host TEXT NOT NULL DEFAULT '', \
+            ssh_port TEXT NOT NULL DEFAULT '22', ssh_username TEXT NOT NULL DEFAULT '', \
+            ssh_auth_method TEXT NOT NULL DEFAULT 'key', ssh_private_key TEXT NOT NULL DEFAULT '', \
+            ssh_password TEXT NOT NULL DEFAULT '', \
+            ssh_accept_unknown_host_keys INTEGER NOT NULL DEFAULT 0, \
+            ssh_jump_host TEXT NOT NULL DEFAULT '', ssl_enabled INTEGER NOT NULL DEFAULT 0, \
+            ssl_ca_cert TEXT NOT NULL DEFAULT '', ssl_client_cert TEXT NOT NULL DEFAULT '', \
+            ssl_client_key TEXT NOT NULL DEFAULT '', ssl_key_passphrase TEXT NOT NULL DEFAULT '', \
+            ssl_verify_server INTEGER NOT NULL DEFAULT 1, custom_views TEXT NOT NULL DEFAULT '[]', \
+            replication_master_id INTEGER DEFAULT NULL, plugin_options TEXT NOT NULL DEFAULT '{}')";
+        // DDL cache sama dengan `connection::crud` (pemulihan cache).
+        for sql in [
+            conns,
+            "CREATE TABLE database_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name))",
+            "CREATE TABLE table_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, table_type TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name, table_type))",
+            "CREATE TABLE column_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, column_name TEXT NOT NULL, data_type TEXT NOT NULL, ordinal_position INTEGER NOT NULL, is_primary_key INTEGER NOT NULL DEFAULT 0, is_indexed INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name, column_name))",
+            "CREATE TABLE row_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, headers_json TEXT NOT NULL, rows_json TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name))",
+            "CREATE TABLE index_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, index_name TEXT NOT NULL, method TEXT NULL, is_unique INTEGER NOT NULL DEFAULT 0, columns_json TEXT NOT NULL DEFAULT '[]', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name, index_name))",
+            "CREATE TABLE partition_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, partition_name TEXT NOT NULL, partition_type TEXT NULL, partition_expression TEXT NULL, subpartition_type TEXT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name, partition_name))",
+            "CREATE TABLE foreign_key_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, table_name TEXT NOT NULL, column_name TEXT NOT NULL, referenced_table_name TEXT NOT NULL, referenced_column_name TEXT NOT NULL, constraint_name TEXT NOT NULL DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(connection_id, database_name, table_name, column_name, referenced_table_name, referenced_column_name))",
+            "CREATE TABLE connection_sync_cache (connection_id INTEGER PRIMARY KEY, last_synced_at DATETIME NOT NULL)",
+            "CREATE TABLE query_history (id INTEGER PRIMARY KEY AUTOINCREMENT, query_text TEXT NOT NULL, connection_id INTEGER NOT NULL, connection_name TEXT NOT NULL, executed_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        ] {
+            sqlx::query(sql).execute(&cache).await.expect("cache setup");
+        }
+        sqlx::query(
+            "INSERT INTO connections (id, name, database_name, connection_type) VALUES (1, 'shop', ?, 'SQLite')",
+        )
+        .bind(target.to_string_lossy().to_string())
+        .execute(&cache)
+        .await
+        .expect("connection row");
+        access::ensure_tables(&cache).await.expect("agent tables");
+        (
+            Arc::new(HeadlessSession::new(cache).with_app_dir(&dir)),
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn real_results_match_their_output_schema() {
+        let (session, dir) = sqlite_fixture().await;
+        let client = connect(session).await;
+        let tools = client.list_all_tools().await.expect("tools/list");
+        let call = |name: &'static str, arguments: serde_json::Value| {
+            let client = &client;
+            async move {
+                client
+                    .call_tool(
+                        CallToolRequestParams::new(name)
+                            .with_arguments(arguments.as_object().cloned().expect("args")),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("{name}: {e}"))
+            }
+        };
+        let q = "SELECT c.name, SUM(o.total) FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY c.name";
+        // (tool, argumen, wajib berhasil)
+        let cases = [
+            (
+                "refresh_schema_cache",
+                serde_json::json!({ "connection_id": 1 }),
+                true,
+            ),
+            (
+                "list_databases",
+                serde_json::json!({ "connection_id": 1 }),
+                true,
+            ),
+            (
+                "list_tables",
+                serde_json::json!({ "connection_id": 1 }),
+                true,
+            ),
+            (
+                "describe_table",
+                serde_json::json!({ "connection_id": 1, "table": "orders" }),
+                true,
+            ),
+            (
+                "get_table_ddl",
+                serde_json::json!({ "connection_id": 1, "table": "orders" }),
+                true,
+            ),
+            (
+                "sample_rows",
+                serde_json::json!({ "connection_id": 1, "table": "orders" }),
+                true,
+            ),
+            (
+                "count_rows",
+                serde_json::json!({ "connection_id": 1, "table": "orders" }),
+                true,
+            ),
+            (
+                "describe_schema",
+                serde_json::json!({ "connection_id": 1, "question": "revenue per customer" }),
+                true,
+            ),
+            (
+                "schema_diagram",
+                serde_json::json!({ "connection_id": 1 }),
+                true,
+            ),
+            (
+                "run_query",
+                serde_json::json!({ "connection_id": 1, "sql": q }),
+                true,
+            ),
+            (
+                "explain_query",
+                serde_json::json!({ "connection_id": 1, "sql": q }),
+                true,
+            ),
+            (
+                "analyze_query",
+                serde_json::json!({ "connection_id": 1, "sql": q }),
+                true,
+            ),
+            (
+                "check_sql_safety",
+                serde_json::json!({ "connection_id": 1, "sql": "UPDATE orders SET total = 0" }),
+                true,
+            ),
+            ("get_agent_permissions", serde_json::json!({}), true),
+            ("list_connections", serde_json::json!({}), true),
+            (
+                "describe_diagram",
+                serde_json::json!({ "connection_id": 1 }),
+                false,
+            ),
+            (
+                "search_query_history",
+                serde_json::json!({ "question": "orders" }),
+                false,
+            ),
+            (
+                "list_running_queries",
+                serde_json::json!({ "connection_id": 1 }),
+                false,
+            ),
+            ("list_projects", serde_json::json!({}), true),
+        ];
+        for (name, arguments, must_succeed) in cases {
+            let result = call(name, arguments).await;
+            if result.is_error == Some(true) {
+                assert!(!must_succeed, "{name} failed: {:?}", result.content);
+                continue;
+            }
+            let tool = tools.iter().find(|t| t.name == name).expect("tool");
+            let schema = serde_json::Value::Object(
+                tool.output_schema
+                    .as_ref()
+                    .expect("schema")
+                    .as_ref()
+                    .clone(),
+            );
+            let value = result.structured_content.expect("structuredContent");
+            if let Err(e) = validate(&schema, &schema, &value, "$") {
+                panic!("{name}: result does not match outputSchema: {e}\n{value}");
+            }
+        }
+
+        // Koneksi read_only: tulis ditolak sebagai tool error.
+        let write = call(
+            "execute_statement",
+            serde_json::json!({ "connection_id": 1, "sql": "DELETE FROM orders WHERE id = 1" }),
+        )
+        .await;
+        assert_eq!(write.is_error, Some(true));
+
+        client.cancel().await.expect("shutdown");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

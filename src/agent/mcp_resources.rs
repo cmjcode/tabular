@@ -12,6 +12,7 @@
 //! | `tabular://connections/{id}/tables/{table}/ddl{?database}` | DDL tabel |
 //! | `tabular://connections/{id}/history{?limit}` | query terbaru (password disamarkan) |
 //! | `tabular://connections/{id}/diagram{?database}` | diagram Tabular |
+//! | `tabular://projects/{project}` | konteks project |
 //!
 //! Prompt dirender dari skema live (cache Tabular) supaya model langsung
 //! punya konteks yang benar. Semua pembacaan melewati gerbang akses yang sama
