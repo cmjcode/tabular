@@ -13,6 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -514,66 +515,16 @@ fn run_git(args: &[&str], cancel: &AtomicBool) -> Result<(), String> {
     run_git_output(args, cancel).map(|_| ())
 }
 
-/// Seperti [`run_git`], tetapi mengembalikan stdout.
+/// Seperti [`run_git`], tetapi mengembalikan stdout. Implementasinya ada di
+/// [`crate::git::cli`]; pesan error dipetakan ke format lama modul ini.
 fn run_git_output(args: &[&str], cancel: &AtomicBool) -> Result<Vec<u8>, String> {
-    let git = harness::resolve_binary("git").ok_or_else(|| GIT_MISSING.to_string())?;
-    let mut child = Command::new(git)
-        .args(args)
-        .env("PATH", harness::augmented_path())
-        // Repo privat tanpa kredensial tersimpan harus gagal, bukan menunggu input.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("cannot start git: {e}"))?;
-    // Baca stdout/stderr di thread lain supaya pipe penuh tidak membuat git macet.
-    let stdout_reader = child.stdout.take().map(|mut out| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut out, &mut buf);
-            buf
-        })
-    });
-    let stderr_reader = child.stderr.take().map(|mut err| {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = std::io::Read::read_to_string(&mut err, &mut buf);
-            buf
-        })
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if cancel.load(Ordering::SeqCst) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("cancelled".to_string());
-                }
-                if start.elapsed() > GIT_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("timed out after {}s", GIT_TIMEOUT.as_secs()));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("wait failed: {e}")),
-        }
-    };
-    let stderr = stderr_reader
-        .and_then(|h| h.join().ok())
-        .unwrap_or_default();
-    let stdout = stdout_reader
-        .and_then(|h| h.join().ok())
-        .unwrap_or_default();
-    if status.success() {
-        Ok(stdout)
-    } else {
-        Err(format!("{status}: {}", stderr.trim()))
-    }
+    use crate::git::GitError;
+    crate::git::cli::run(None, args, cancel, GIT_TIMEOUT).map_err(|e| match e {
+        GitError::GitMissing => GIT_MISSING.to_string(),
+        GitError::Cancelled => "cancelled".to_string(),
+        GitError::Command { detail, .. } | GitError::Auth { detail, .. } => detail,
+        other => other.to_string(),
+    })
 }
 
 // ─── Pencarian teks ──────────────────────────────────────────────────────────

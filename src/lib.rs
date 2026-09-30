@@ -68,6 +68,7 @@ pub mod editor_state_adapter;
 pub mod export;
 pub mod export_import_all;
 pub mod geo_map;
+pub mod git;
 pub mod http_ai;
 pub mod http_client;
 pub mod http_client_widgets;
