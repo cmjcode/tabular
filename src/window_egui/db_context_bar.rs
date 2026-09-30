@@ -20,7 +20,7 @@ const CARD_OPACITY: f32 = 0.92;
 fn tab_uses_db_context(t: &Tabular) -> bool {
     t.query_tabs
         .get(t.active_tab_index)
-        .is_some_and(|tab| tab.http_client_state.is_none())
+        .is_some_and(|tab| tab.http_client_state.is_none() && tab.git_state.is_none())
 }
 
 /// Render kartu melayang di pojok kanan atas `content_rect`.

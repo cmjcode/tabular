@@ -143,12 +143,23 @@ pub fn parse_patch(patch: &str) -> Vec<DiffRow> {
 
 /// Diff working tree terhadap index untuk `path`.
 pub fn worktree(repo: &Path, path: &str) -> Result<String, GitError> {
-    cli::run_text(repo, &["diff", "--no-color", "--no-ext-diff", "-M", "--", path])
+    cli::run_text(
+        repo,
+        &["diff", "--no-color", "--no-ext-diff", "-M", "--", path],
+    )
 }
 
 /// Diff index terhadap HEAD untuk `path` (termasuk path lama bila rename).
 pub fn staged(repo: &Path, path: &str, orig: Option<&str>) -> Result<String, GitError> {
-    let mut args = vec!["diff", "--cached", "--no-color", "--no-ext-diff", "-M", "--", path];
+    let mut args = vec![
+        "diff",
+        "--cached",
+        "--no-color",
+        "--no-ext-diff",
+        "-M",
+        "--",
+        path,
+    ];
     if let Some(o) = orig {
         args.push(o);
     }
@@ -157,7 +168,10 @@ pub fn staged(repo: &Path, path: &str, orig: Option<&str>) -> Result<String, Git
 
 /// Seluruh staged diff (untuk pesan commit buatan AI).
 pub fn staged_all(repo: &Path) -> Result<String, GitError> {
-    cli::run_text(repo, &["diff", "--cached", "--no-color", "--no-ext-diff", "-M"])
+    cli::run_text(
+        repo,
+        &["diff", "--cached", "--no-color", "--no-ext-diff", "-M"],
+    )
 }
 
 /// Diff satu file di commit `hash` terhadap parent pertama (atau commit akar).
@@ -169,8 +183,25 @@ pub fn commit_file(
     orig: Option<&str>,
 ) -> Result<String, GitError> {
     let mut args: Vec<&str> = match parent {
-        Some(p) => vec!["diff", "--no-color", "--no-ext-diff", "-M", p, hash, "--", path],
-        None => vec!["show", "--no-color", "--no-ext-diff", "--format=", hash, "--", path],
+        Some(p) => vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-M",
+            p,
+            hash,
+            "--",
+            path,
+        ],
+        None => vec![
+            "show",
+            "--no-color",
+            "--no-ext-diff",
+            "--format=",
+            hash,
+            "--",
+            path,
+        ],
     };
     if let Some(o) = orig {
         args.push(o);
@@ -198,7 +229,10 @@ pub fn untracked(repo: &Path, path: &str) -> Result<String, GitError> {
     }
     let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<&str> = text.lines().collect();
-    let mut out = format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n", lines.len());
+    let mut out = format!(
+        "--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+        lines.len()
+    );
     for l in lines {
         out.push('+');
         out.push_str(l);
@@ -237,7 +271,9 @@ mod tests {
     #[test]
     fn counts_and_binary() {
         assert_eq!(count_lines(PATCH), (3, 3));
-        assert!(is_binary_patch("diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"));
+        assert!(is_binary_patch(
+            "diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"
+        ));
         assert!(!is_binary_patch(PATCH));
     }
 

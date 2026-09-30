@@ -78,16 +78,31 @@ pub fn parse(raw: &str) -> Vec<CommitInfo> {
 
 /// Pesan commit lengkap.
 pub fn message(repo: &Path, hash: &str) -> Result<String, GitError> {
-    cli::run_text(repo, &["show", "-s", "--format=%B", hash, "--"]).map(|s| s.trim_end().to_string())
+    cli::run_text(repo, &["show", "-s", "--format=%B", hash, "--"])
+        .map(|s| s.trim_end().to_string())
 }
 
 /// File yang berubah di commit `hash` dibanding parent pertama.
-pub fn commit_files(repo: &Path, hash: &str, first_parent: Option<&str>) -> Result<Vec<FileChange>, GitError> {
+pub fn commit_files(
+    repo: &Path,
+    hash: &str,
+    first_parent: Option<&str>,
+) -> Result<Vec<FileChange>, GitError> {
     let out = match first_parent {
         Some(p) => cli::run_text(repo, &["diff", "-M", "--name-status", "-z", p, hash, "--"])?,
         None => cli::run_text(
             repo,
-            &["diff-tree", "--root", "-r", "-M", "--no-commit-id", "--name-status", "-z", hash, "--"],
+            &[
+                "diff-tree",
+                "--root",
+                "-r",
+                "-M",
+                "--no-commit-id",
+                "--name-status",
+                "-z",
+                hash,
+                "--",
+            ],
         )?,
     };
     Ok(parse_name_status(&out))

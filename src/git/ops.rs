@@ -81,7 +81,9 @@ pub fn checkout(repo: &Path, branch: &str) -> Result<(), GitError> {
 
 /// Checkout branch remote `origin/x` sebagai branch lokal `x` yang tracking.
 pub fn checkout_remote(repo: &Path, remote_branch: &str) -> Result<(), GitError> {
-    let local = remote_branch.split_once('/').map_or(remote_branch, |(_, b)| b);
+    let local = remote_branch
+        .split_once('/')
+        .map_or(remote_branch, |(_, b)| b);
     run(repo, &["switch", "-c", local, "--track", remote_branch]).map(|_| ())
 }
 
@@ -100,7 +102,13 @@ pub fn remove_branch(repo: &Path, name: &str, force: bool) -> Result<(), GitErro
 }
 
 pub fn fetch(repo: &Path, cancel: &AtomicBool) -> Result<(), GitError> {
-    cli::run(Some(repo), &["fetch", "--all", "--prune"], cancel, cli::DEFAULT_TIMEOUT).map(|_| ())
+    cli::run(
+        Some(repo),
+        &["fetch", "--all", "--prune"],
+        cancel,
+        cli::DEFAULT_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 /// Pull tanpa membuat merge commit diam-diam; `rebase` memakai `--rebase`.
@@ -229,9 +237,16 @@ mod tests {
         assert!(is_valid_branch_name(r, "feat/x"));
         assert!(!is_valid_branch_name(r, "bad..name"));
         create_branch(r, "feat/x", true).expect("branch");
-        assert_eq!(status::read(r).expect("status").branch.as_deref(), Some("feat/x"));
+        assert_eq!(
+            status::read(r).expect("status").branch.as_deref(),
+            Some("feat/x")
+        );
         checkout(r, &main).expect("checkout");
-        let names: Vec<String> = branch::list(r).expect("branches").into_iter().map(|b| b.name).collect();
+        let names: Vec<String> = branch::list(r)
+            .expect("branches")
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
         assert!(names.contains(&"feat/x".to_string()), "{names:?}");
         remove_branch(r, "feat/x", false).expect("remove");
 
@@ -241,14 +256,27 @@ mod tests {
         let commits = log::page(r, None, 0, 10).expect("log");
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "second");
-        let files = log::commit_files(r, &commits[0].hash, commits[0].parents.first().map(String::as_str))
-            .expect("files");
+        let files = log::commit_files(
+            r,
+            &commits[0].hash,
+            commits[0].parents.first().map(String::as_str),
+        )
+        .expect("files");
         assert_eq!(files.len(), 1);
         let root_files = log::commit_files(r, &commits[1].hash, None).expect("root files");
         assert_eq!(root_files.len(), 2);
-        let p = crate::git::diff::commit_file(r, &commits[0].hash, Some(&commits[1].hash), "a.txt", None)
-            .expect("commit diff");
+        let p = crate::git::diff::commit_file(
+            r,
+            &commits[0].hash,
+            Some(&commits[1].hash),
+            "a.txt",
+            None,
+        )
+        .expect("commit diff");
         assert!(p.contains("+three"));
-        assert_eq!(discover_root(&r.join(".")).expect("root").file_name(), r.file_name());
+        assert_eq!(
+            discover_root(&r.join(".")).expect("root").file_name(),
+            r.file_name()
+        );
     }
 }

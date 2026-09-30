@@ -1561,6 +1561,8 @@ pub struct QueryTab {
     pub dba_monitor_state: Option<DbaMonitorState>,
     // User & Privileges Manager state
     pub user_manager_state: Option<crate::user_manager::UserManagerState>,
+    /// Tab Git (diff file, detail commit, merge request).
+    pub git_state: Option<crate::window_egui::git_jobs::GitTabState>,
 
     // Manual-commit (transaction) mode — see connection/session.rs
     pub tx_mode: bool,
@@ -2792,6 +2794,7 @@ mod tests {
             redis_browser_state: None,
             dba_monitor_state: None,
             user_manager_state: None,
+            git_state: None,
             tx_mode: false,
             tx_active: false,
             session: None,

@@ -17,6 +17,12 @@ pub mod connection_mgr;
 pub mod db_context_bar;
 pub mod device_profile;
 pub mod diagram;
+pub mod git_diff_view;
+pub mod git_jobs;
+pub(crate) mod git_prefs;
+pub mod git_review_view;
+pub mod git_sidebar;
+pub mod git_view;
 pub mod init;
 pub mod notifications;
 pub mod pagination;
@@ -750,6 +756,8 @@ pub struct Tabular {
     )>,
     // Centralized, non-blocking toast/notification surface (see notifications.rs)
     pub toasts: notifications::ToastManager,
+    /// State tab Git (repository, status, job latar, Merge Review).
+    pub git: git_jobs::GitUiState,
     /// State integrasi platform: deep link, Handoff, environment koneksi, Touch ID.
     pub platform_ui: platform_ui::PlatformUiState,
     // Visual data filter state for table browsing
@@ -1019,6 +1027,7 @@ pub enum PrefTab {
     AiAssistant,
     Sync,
     Privacy,
+    Git,
     Plugins,
 }
 

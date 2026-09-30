@@ -78,7 +78,10 @@ fn api(base: &str, path: &str) -> String {
     format!("{}/api/v4{path}", base.trim_end_matches('/'))
 }
 
-fn with_token(req: reqwest::blocking::RequestBuilder, token: &str) -> reqwest::blocking::RequestBuilder {
+fn with_token(
+    req: reqwest::blocking::RequestBuilder,
+    token: &str,
+) -> reqwest::blocking::RequestBuilder {
     req.header("PRIVATE-TOKEN", token)
 }
 
@@ -96,7 +99,10 @@ fn project_ref(mr: &MergeRequest) -> String {
 pub fn assigned_mrs(token: &str, base: &str) -> Result<Vec<MergeRequest>, GitError> {
     let assigned: Vec<GlMergeRequest> = get(
         token,
-        &api(base, "/merge_requests?scope=assigned_to_me&state=opened&per_page=100"),
+        &api(
+            base,
+            "/merge_requests?scope=assigned_to_me&state=opened&per_page=100",
+        ),
     )?;
     let mut all = assigned;
     match get::<GlUser>(token, &api(base, "/user")) {
@@ -112,7 +118,10 @@ pub fn assigned_mrs(token: &str, base: &str) -> Result<Vec<MergeRequest>, GitErr
                 Ok(r) => all.extend(r),
                 Err(e) => log::warn!("[GIT] GitLab reviewer query failed: {e}"),
             }
-            let url = api(base, "/merge_requests?scope=created_by_me&state=opened&per_page=100");
+            let url = api(
+                base,
+                "/merge_requests?scope=created_by_me&state=opened&per_page=100",
+            );
             match get::<Vec<GlMergeRequest>>(token, &url) {
                 Ok(r) => all.extend(r),
                 Err(e) => log::warn!("[GIT] GitLab created_by_me query failed: {e}"),
@@ -132,7 +141,12 @@ pub fn assigned_mrs(token: &str, base: &str) -> Result<Vec<MergeRequest>, GitErr
 }
 
 /// MR milik satu project (`group/sub/name`).
-pub fn project_mrs(token: &str, base: &str, full_name: &str, include_closed: bool) -> Result<Vec<MergeRequest>, GitError> {
+pub fn project_mrs(
+    token: &str,
+    base: &str,
+    full_name: &str,
+    include_closed: bool,
+) -> Result<Vec<MergeRequest>, GitError> {
     let state = if include_closed { "" } else { "&state=opened" };
     let url = api(
         base,
@@ -147,13 +161,20 @@ pub fn project_mrs(token: &str, base: &str, full_name: &str, include_closed: boo
 
 /// File berubah di MR. Memakai endpoint `/diffs` (GitLab 15.7+) dengan
 /// cadangan `/changes` untuk server lama.
-pub fn mr_changes(token: &str, base: &str, mr: &MergeRequest) -> Result<Vec<ChangedFile>, GitError> {
+pub fn mr_changes(
+    token: &str,
+    base: &str,
+    mr: &MergeRequest,
+) -> Result<Vec<ChangedFile>, GitError> {
     let project = project_ref(mr);
     let mut diffs: Vec<GlDiff> = Vec::new();
     for page in 1..=MAX_DIFF_PAGES {
         let url = api(
             base,
-            &format!("/projects/{project}/merge_requests/{}/diffs?per_page=100&page={page}", mr.number),
+            &format!(
+                "/projects/{project}/merge_requests/{}/diffs?per_page=100&page={page}",
+                mr.number
+            ),
         );
         match get::<Vec<GlDiff>>(token, &url) {
             Ok(batch) => {
@@ -164,7 +185,10 @@ pub fn mr_changes(token: &str, base: &str, mr: &MergeRequest) -> Result<Vec<Chan
                 }
             }
             Err(GitError::Http { status: 404, .. }) if page == 1 => {
-                let url = api(base, &format!("/projects/{project}/merge_requests/{}/changes", mr.number));
+                let url = api(
+                    base,
+                    &format!("/projects/{project}/merge_requests/{}/changes", mr.number),
+                );
                 diffs = get::<GlChanges>(token, &url)?.changes;
                 break;
             }
@@ -174,14 +198,31 @@ pub fn mr_changes(token: &str, base: &str, mr: &MergeRequest) -> Result<Vec<Chan
     Ok(diffs.into_iter().map(map_diff).collect())
 }
 
-pub fn merge_mr(token: &str, base: &str, mr: &MergeRequest, method: MergeMethod, message: &str) -> Result<(), GitError> {
-    let url = api(base, &format!("/projects/{}/merge_requests/{}/merge", project_ref(mr), mr.number));
+pub fn merge_mr(
+    token: &str,
+    base: &str,
+    mr: &MergeRequest,
+    method: MergeMethod,
+    message: &str,
+) -> Result<(), GitError> {
+    let url = api(
+        base,
+        &format!(
+            "/projects/{}/merge_requests/{}/merge",
+            project_ref(mr),
+            mr.number
+        ),
+    );
     let mut body = serde_json::json!({
         "should_remove_source_branch": false,
         "squash": method == MergeMethod::Squash,
     });
     if !message.trim().is_empty() {
-        let key = if method == MergeMethod::Squash { "squash_commit_message" } else { "merge_commit_message" };
+        let key = if method == MergeMethod::Squash {
+            "squash_commit_message"
+        } else {
+            "merge_commit_message"
+        };
         body[key] = serde_json::Value::String(message.to_string());
     }
     if let Some(sha) = &mr.head_sha {
@@ -191,13 +232,23 @@ pub fn merge_mr(token: &str, base: &str, mr: &MergeRequest, method: MergeMethod,
 }
 
 pub fn close_mr(token: &str, base: &str, mr: &MergeRequest) -> Result<(), GitError> {
-    let url = api(base, &format!("/projects/{}/merge_requests/{}", project_ref(mr), mr.number));
+    let url = api(
+        base,
+        &format!("/projects/{}/merge_requests/{}", project_ref(mr), mr.number),
+    );
     let body = serde_json::json!({ "state_event": "close" });
     send_text(with_token(client()?.put(url), token).json(&body)).map(|_| ())
 }
 
 pub fn post_note(token: &str, base: &str, mr: &MergeRequest, text: &str) -> Result<(), GitError> {
-    let url = api(base, &format!("/projects/{}/merge_requests/{}/notes", project_ref(mr), mr.number));
+    let url = api(
+        base,
+        &format!(
+            "/projects/{}/merge_requests/{}/notes",
+            project_ref(mr),
+            mr.number
+        ),
+    );
     let body = serde_json::json!({ "body": text });
     send_text(with_token(client()?.post(url), token).json(&body)).map(|_| ())
 }
@@ -206,7 +257,11 @@ pub fn post_note(token: &str, base: &str, mr: &MergeRequest, text: &str) -> Resu
 fn full_name_from_web_url(web_url: &str) -> String {
     let rest = web_url.split_once("://").map_or(web_url, |(_, r)| r);
     let path = rest.split_once('/').map_or("", |(_, p)| p);
-    path.split("/-/").next().unwrap_or(path).trim_matches('/').to_string()
+    path.split("/-/")
+        .next()
+        .unwrap_or(path)
+        .trim_matches('/')
+        .to_string()
 }
 
 fn map_mr(mr: GlMergeRequest) -> MergeRequest {
@@ -278,7 +333,10 @@ mod tests {
         assert_eq!(mr.gitlab_project_id, Some(42));
         assert_eq!(project_ref(&mr), "42");
         assert!(mr.is_draft);
-        assert_eq!(api("https://git.acme.io/", "/user"), "https://git.acme.io/api/v4/user");
+        assert_eq!(
+            api("https://git.acme.io/", "/user"),
+            "https://git.acme.io/api/v4/user"
+        );
     }
 
     #[test]

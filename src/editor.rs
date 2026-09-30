@@ -79,6 +79,7 @@ pub(crate) fn create_new_tab(
         redis_browser_state: None,
         dba_monitor_state: None,
         user_manager_state: None,
+        git_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,

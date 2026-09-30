@@ -130,6 +130,10 @@ pub const USER_INITIATED: &[(&str, &str)] = &[
         "Requests you send from the HTTP client tab, to the URLs you type.",
     ),
     (
+        "Git client",
+        "git fetch / pull / push / clone to your remotes, and GitHub or GitLab API calls for Merge Review once you add a token.",
+    ),
+    (
         "External CLI agents",
         "claude / gemini / agy run as separate programs with their own network access.",
     ),

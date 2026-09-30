@@ -27,6 +27,50 @@ pub struct ManualRepo {
     pub path: String,
 }
 
+/// Pengaturan tab Git. Personal (tidak ikut sync); token ada di keychain.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitSettings {
+    /// URL GitLab (self-hosted atau gitlab.com).
+    #[serde(default = "default_gitlab_url")]
+    pub gitlab_url: String,
+    /// Bahasa jawaban review AI.
+    #[serde(default = "default_language")]
+    pub review_language: String,
+    /// Interval refresh daftar merge request (menit); 0 = mati.
+    #[serde(default = "default_refresh_min")]
+    pub auto_refresh_min: u32,
+    /// Tampilkan juga MR yang sudah merged/closed (mode repository aktif).
+    #[serde(default)]
+    pub show_closed: bool,
+    /// Pull memakai `--rebase` alih-alih `--ff-only`.
+    #[serde(default)]
+    pub pull_rebase: bool,
+}
+
+fn default_gitlab_url() -> String {
+    crate::git::review::DEFAULT_GITLAB_URL.to_string()
+}
+
+fn default_language() -> String {
+    "English".to_string()
+}
+
+fn default_refresh_min() -> u32 {
+    5
+}
+
+impl Default for GitSettings {
+    fn default() -> Self {
+        Self {
+            gitlab_url: default_gitlab_url(),
+            review_language: default_language(),
+            auto_refresh_min: default_refresh_min(),
+            show_closed: false,
+            pull_rebase: false,
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FileBody {
     #[serde(default)]
@@ -34,6 +78,8 @@ struct FileBody {
     /// Kunci repository yang terakhir dipilih.
     #[serde(default)]
     active: Option<String>,
+    #[serde(default)]
+    settings: GitSettings,
 }
 
 /// Repository yang ditambahkan langsung di tab Git.
@@ -42,6 +88,7 @@ pub struct GitRepoStore {
     file: PathBuf,
     pub repos: Vec<ManualRepo>,
     pub active: Option<String>,
+    pub settings: GitSettings,
 }
 
 impl GitRepoStore {
@@ -58,6 +105,7 @@ impl GitRepoStore {
             file,
             repos: body.repos,
             active: body.active,
+            settings: body.settings,
         }
     }
 
@@ -72,6 +120,7 @@ impl GitRepoStore {
         let body = FileBody {
             repos: self.repos.clone(),
             active: self.active.clone(),
+            settings: self.settings.clone(),
         };
         let json = serde_json::to_vec_pretty(&body).map_err(std::io::Error::other)?;
         std::fs::write(&self.file, json)
@@ -162,7 +211,10 @@ impl RepoEntry {
 
 /// Gabungkan sumber menjadi daftar repository. `remote_of` membaca URL remote
 /// sebuah folder (di produksi [`crate::repo_scan::git_remote_url`]).
-pub fn merge(sources: &[LinkSource], remote_of: impl Fn(&Path) -> Option<String>) -> Vec<RepoEntry> {
+pub fn merge(
+    sources: &[LinkSource],
+    remote_of: impl Fn(&Path) -> Option<String>,
+) -> Vec<RepoEntry> {
     let mut by_key: BTreeMap<String, RepoEntry> = BTreeMap::new();
     for src in sources {
         let dir = src
@@ -206,7 +258,8 @@ pub fn merge(sources: &[LinkSource], remote_of: impl Fn(&Path) -> Option<String>
     let mut out: Vec<RepoEntry> = by_key
         .into_values()
         .map(|mut e| {
-            e.links.sort_by(|a, b| (a.kind, &a.label).cmp(&(b.kind, &b.label)));
+            e.links
+                .sort_by(|a, b| (a.kind, &a.label).cmp(&(b.kind, &b.label)));
             e.name = display_name(&e);
             e
         })
@@ -234,7 +287,9 @@ pub fn assign_folder(entry: &RepoEntry, path: &Path) -> Result<usize, String> {
     let mut n = 0;
     for link in entry.links_without_folder() {
         match link.kind {
-            LinkKind::Diagram => crate::diagram_repo_paths::set_local_repo_path(&link.id, Some(&path_s))?,
+            LinkKind::Diagram => {
+                crate::diagram_repo_paths::set_local_repo_path(&link.id, Some(&path_s))?
+            }
             LinkKind::HttpFolder => {
                 crate::diagram_repo_paths::set_http_folder_repo_path(&link.id, Some(&path_s))?
             }
@@ -265,7 +320,8 @@ mod tests {
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tabular-git-repos-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("tabular-git-repos-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).expect("mkdir");
         d
     }
@@ -284,10 +340,25 @@ mod tests {
     fn merges_by_repo_key_across_sources() {
         let dir = tmp("merge");
         let sources = vec![
-            src(LinkKind::Diagram, "g1", Some("git@github.com:Org/App.git"), None),
-            src(LinkKind::HttpFolder, "f1", Some("https://github.com/org/app"), Some(&dir)),
+            src(
+                LinkKind::Diagram,
+                "g1",
+                Some("git@github.com:Org/App.git"),
+                None,
+            ),
+            src(
+                LinkKind::HttpFolder,
+                "f1",
+                Some("https://github.com/org/app"),
+                Some(&dir),
+            ),
             src(LinkKind::Manual, "m", None, Some(&dir)),
-            src(LinkKind::Project, "p", Some("https://gitlab.com/x/other"), None),
+            src(
+                LinkKind::Project,
+                "p",
+                Some("https://gitlab.com/x/other"),
+                None,
+            ),
             src(LinkKind::Diagram, "empty", None, None),
         ];
         // Folder manual tidak punya `.git`; remote dibaca lewat closure.
@@ -324,6 +395,7 @@ mod tests {
         s.active = Some("k".into());
         s.save().expect("save");
         let s2 = GitRepoStore::load(file.clone());
+        assert_eq!(s2.settings, GitSettings::default());
         assert_eq!(s2.repos.len(), 1);
         assert_eq!(s2.active.as_deref(), Some("k"));
         std::fs::write(&file, "{broken").expect("write");

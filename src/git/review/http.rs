@@ -19,18 +19,20 @@ pub fn client() -> Result<reqwest::blocking::Client, GitError> {
 }
 
 /// Kirim request dan parse JSON; status non-2xx menjadi [`GitError::Http`].
-pub fn send_json<T: DeserializeOwned>(req: reqwest::blocking::RequestBuilder) -> Result<T, GitError> {
+pub fn send_json<T: DeserializeOwned>(
+    req: reqwest::blocking::RequestBuilder,
+) -> Result<T, GitError> {
     let text = send_text(req)?;
     serde_json::from_str(&text).map_err(|e| GitError::Parse(e.to_string()))
 }
 
 /// Kirim request, kembalikan body teks bila sukses.
 pub fn send_text(req: reqwest::blocking::RequestBuilder) -> Result<String, GitError> {
-    let resp = req
-        .send()
-        .map_err(|e| GitError::Network(without_url(&e)))?;
+    let resp = req.send().map_err(|e| GitError::Network(without_url(&e)))?;
     let status = resp.status();
-    let body = resp.text().map_err(|e| GitError::Network(without_url(&e)))?;
+    let body = resp
+        .text()
+        .map_err(|e| GitError::Network(without_url(&e)))?;
     if status.is_success() {
         return Ok(body);
     }
@@ -45,9 +47,11 @@ fn error_message(body: &str) -> String {
     let msg = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| {
-            v.get("message")
-                .or_else(|| v.get("error"))
-                .map(|m| m.as_str().map(str::to_string).unwrap_or_else(|| m.to_string()))
+            v.get("message").or_else(|| v.get("error")).map(|m| {
+                m.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| m.to_string())
+            })
         })
         .unwrap_or_else(|| body.trim().to_string());
     let mut end = msg.len().min(MAX_ERROR_BODY);
@@ -79,7 +83,10 @@ mod tests {
 
     #[test]
     fn error_body_uses_message_field() {
-        assert_eq!(error_message(r#"{"message":"Bad credentials"}"#), "Bad credentials");
+        assert_eq!(
+            error_message(r#"{"message":"Bad credentials"}"#),
+            "Bad credentials"
+        );
         assert_eq!(error_message(r#"{"message":["x"]}"#), r#"["x"]"#);
         assert_eq!(error_message("plain"), "plain");
         assert_eq!(error_message(&"é".repeat(400)).len(), 300);

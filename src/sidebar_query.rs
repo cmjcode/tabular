@@ -560,6 +560,7 @@ pub(crate) fn open_query_file(
         redis_browser_state: None,
         dba_monitor_state: None,
         user_manager_state: None,
+        git_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,

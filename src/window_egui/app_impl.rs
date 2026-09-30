@@ -1100,11 +1100,12 @@ impl Tabular {
                             |ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 let btn_avail_width = ui.available_width();
-                                let button_width = (btn_avail_width / 3.0).max(40.0);
+                                let button_width = (btn_avail_width / 4.0).max(40.0);
                                 let button_height = top_bar_height;
 
+                                // Key internal tetap "Database"/"Collaborations"; hanya label yang berubah.
                                 let is_db_active = self.selected_menu == "Database";
-                                if style::render_custom_tab(ui, "Database", is_db_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "Databases", is_db_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Database".to_string();
                                 }
 
@@ -1113,8 +1114,16 @@ impl Tabular {
                                     self.selected_menu = "APIs".to_string();
                                 }
 
+                                let is_git_active = self.selected_menu == "Git";
+                                if style::render_custom_tab(ui, "Git", is_git_active, egui::vec2(button_width, button_height)).clicked() {
+                                    if !is_git_active && self.git.repos_loaded {
+                                        crate::window_egui::git_jobs::refresh_status(self);
+                                    }
+                                    self.selected_menu = "Git".to_string();
+                                }
+
                                 let is_collab_active = self.selected_menu == "Collaborations";
-                                if style::render_custom_tab(ui, "Collaborations", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "Collabs", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Collaborations".to_string();
                                 }
                             },
@@ -1390,6 +1399,9 @@ impl Tabular {
                                         _ => {}
                                     }
                                 }
+                                "Git" => {
+                                    crate::window_egui::git_sidebar::render_git_sidebar(self, ui);
+                                }
                                 _ => {}
                             }
 
@@ -1447,6 +1459,12 @@ impl Tabular {
                                             }
                                             _ => {}
                                         }
+                                    }
+                                    "Git" => {
+                                        ui.menu_button(
+                                            egui::RichText::new("➕").color(egui::Color32::WHITE),
+                                            |ui| crate::window_egui::git_sidebar::repo_menu(self, ui),
+                                        ).response.on_hover_text("Add repository");
                                     }
                                     "APIs" => {
                                         ui.menu_button(
@@ -2941,6 +2959,7 @@ impl Tabular {
                         let mut rendered_redis_browser = false;
                         let mut rendered_dba_monitor = false;
                         let mut rendered_user_manager = false;
+                        let mut rendered_git = false;
                         let mut diagram_to_save = None;
                         let mut diagram_action = None;
                         let mut redis_action = None;
@@ -3626,7 +3645,17 @@ impl Tabular {
                         }
                     }
                     
-                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager {
+                        // Tab Git: diff file, detail commit, atau merge request.
+                        if self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .is_some_and(|t| t.git_state.is_some())
+                        {
+                            crate::window_egui::git_view::render_active_git_tab(self, ui);
+                            rendered_git = true;
+                        }
+
+                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager && !rendered_git {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
                     
@@ -5460,6 +5489,7 @@ impl App for Tabular {
         crate::session_restore::render_close_tab_dialog(self, ctx);
         crate::session_restore::render_quit_dialog(self, ctx);
         crate::session_restore::tick(self, ctx);
+        crate::window_egui::git_jobs::poll(self, ctx);
 
         self.render_query_insights(ctx);
         #[cfg(not(target_os = "ios"))]

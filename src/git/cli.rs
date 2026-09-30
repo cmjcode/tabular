@@ -166,7 +166,9 @@ mod tests {
         assert!(is_auth_failure(
             "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
         ));
-        assert!(is_auth_failure("git@github.com: Permission denied (publickey)."));
+        assert!(is_auth_failure(
+            "git@github.com: Permission denied (publickey)."
+        ));
         assert!(!is_auth_failure("fatal: not a git repository"));
     }
 
@@ -178,9 +180,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tabular-git-cli-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         // GIT_CEILING_DIRECTORIES tidak bisa diset lewat helper; cukup pastikan error bertipe.
-        let res = run(Some(&dir), &["rev-parse", "--show-toplevel"], &NEVER, DEFAULT_TIMEOUT);
+        let res = run(
+            Some(&dir),
+            &["rev-parse", "--show-toplevel"],
+            &NEVER,
+            DEFAULT_TIMEOUT,
+        );
         if let Err(e) = res {
-            assert!(matches!(e, GitError::NotARepo(_) | GitError::Command { .. }), "{e}");
+            assert!(
+                matches!(e, GitError::NotARepo(_) | GitError::Command { .. }),
+                "{e}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

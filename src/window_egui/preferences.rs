@@ -32,6 +32,7 @@ impl PrefTab {
             PrefTab::AiAssistant,
             PrefTab::Sync,
             PrefTab::Privacy,
+            PrefTab::Git,
             PrefTab::Plugins,
         ]);
         tabs
@@ -47,6 +48,7 @@ impl PrefTab {
             PrefTab::AiAssistant => "AI Assistant",
             PrefTab::Sync => "Cloud Sync",
             PrefTab::Privacy => "Privacy",
+            PrefTab::Git => "Git",
             PrefTab::Plugins => "Plugins",
         })
     }
@@ -62,6 +64,7 @@ impl PrefTab {
             PrefTab::AiAssistant => i::ICON_AUTO_AWESOME.codepoint,
             PrefTab::Sync => i::ICON_CLOUD_SYNC.codepoint,
             PrefTab::Privacy => i::ICON_PRIVACY_TIP.codepoint,
+            PrefTab::Git => i::ICON_SOURCE_BRANCH.codepoint,
             PrefTab::Plugins => i::MDI_PUZZLE.codepoint,
         }
     }
@@ -695,6 +698,7 @@ impl Tabular {
             PrefTab::AiAssistant => self.render_pref_ai(ui),
             PrefTab::Sync => crate::sync::ui_login::render_sync_panel(self, ui),
             PrefTab::Privacy => self.render_pref_privacy(ui),
+            PrefTab::Git => super::git_prefs::render(self, ui),
             PrefTab::Plugins => {}
         }
     }

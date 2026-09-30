@@ -188,7 +188,9 @@ fn push_xy(st: &mut RepoStatus, xy: &str, path: &str, orig: Option<String>) {
     if let Some(kind) = ChangeKind::from_code(x) {
         st.staged.push(FileChange {
             path: path.to_string(),
-            orig_path: orig.clone().filter(|_| matches!(kind, ChangeKind::Renamed | ChangeKind::Copied)),
+            orig_path: orig
+                .clone()
+                .filter(|_| matches!(kind, ChangeKind::Renamed | ChangeKind::Copied)),
             kind,
         });
     }

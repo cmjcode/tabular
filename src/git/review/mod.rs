@@ -54,8 +54,14 @@ impl ProviderAccess {
 
     pub fn token(&self, provider: Provider) -> Result<&str, GitError> {
         match provider {
-            Provider::GitHub => self.github_token.as_deref().ok_or(GitError::TokenMissing("GitHub")),
-            Provider::GitLab => self.gitlab_token.as_deref().ok_or(GitError::TokenMissing("GitLab")),
+            Provider::GitHub => self
+                .github_token
+                .as_deref()
+                .ok_or(GitError::TokenMissing("GitHub")),
+            Provider::GitLab => self
+                .gitlab_token
+                .as_deref()
+                .ok_or(GitError::TokenMissing("GitLab")),
         }
     }
 
@@ -118,22 +124,34 @@ pub fn list_mine(access: &ProviderAccess) -> Vec<(Provider, Result<Vec<MergeRequ
         out.push((Provider::GitHub, github::assigned_prs(t)));
     }
     if let Some(t) = &access.gitlab_token {
-        out.push((Provider::GitLab, gitlab::assigned_mrs(t, &access.gitlab_url)));
+        out.push((
+            Provider::GitLab,
+            gitlab::assigned_mrs(t, &access.gitlab_url),
+        ));
     }
     out
 }
 
 /// Semua MR/PR terbuka milik satu repository.
-pub fn list_repo(access: &ProviderAccess, repo: &RemoteRepo, include_closed: bool) -> Result<Vec<MergeRequest>, GitError> {
+pub fn list_repo(
+    access: &ProviderAccess,
+    repo: &RemoteRepo,
+    include_closed: bool,
+) -> Result<Vec<MergeRequest>, GitError> {
     let token = access.token(repo.provider)?;
     match repo.provider {
         Provider::GitHub => github::repo_prs(token, &repo.full_name, include_closed),
-        Provider::GitLab => gitlab::project_mrs(token, &access.gitlab_url, &repo.full_name, include_closed),
+        Provider::GitLab => {
+            gitlab::project_mrs(token, &access.gitlab_url, &repo.full_name, include_closed)
+        }
     }
 }
 
 /// Lengkapi detail (branch, statistik) dan ambil daftar file berubah.
-pub fn load_details(access: &ProviderAccess, mr: &MergeRequest) -> Result<(MergeRequest, Vec<ChangedFile>), GitError> {
+pub fn load_details(
+    access: &ProviderAccess,
+    mr: &MergeRequest,
+) -> Result<(MergeRequest, Vec<ChangedFile>), GitError> {
     let token = access.token(mr.provider)?;
     match mr.provider {
         Provider::GitHub => {
@@ -152,7 +170,12 @@ pub fn load_details(access: &ProviderAccess, mr: &MergeRequest) -> Result<(Merge
     }
 }
 
-pub fn merge(access: &ProviderAccess, mr: &MergeRequest, method: MergeMethod, message: &str) -> Result<(), GitError> {
+pub fn merge(
+    access: &ProviderAccess,
+    mr: &MergeRequest,
+    method: MergeMethod,
+    message: &str,
+) -> Result<(), GitError> {
     let token = access.token(mr.provider)?;
     match mr.provider {
         Provider::GitHub => github::merge_pr(token, mr, method, message),
@@ -185,7 +208,8 @@ mod tests {
         let gh = remote_from_key("github.com/org/app", "gitlab.example.com").expect("gh");
         assert_eq!(gh.provider, Provider::GitHub);
         assert_eq!(gh.full_name, "org/app");
-        let gl = remote_from_key("gitlab.example.com/grp/sub/app", "gitlab.example.com").expect("gl");
+        let gl =
+            remote_from_key("gitlab.example.com/grp/sub/app", "gitlab.example.com").expect("gl");
         assert_eq!(gl.provider, Provider::GitLab);
         assert_eq!(gl.full_name, "grp/sub/app");
         assert!(remote_from_key("bitbucket.org/a/b", "gitlab.com").is_none());
@@ -203,6 +227,9 @@ mod tests {
         };
         assert_eq!(a.gitlab_host(), "git.acme.io");
         assert!(!format!("{a:?}").contains("ghp_secret"));
-        assert!(matches!(a.token(Provider::GitLab), Err(GitError::TokenMissing("GitLab"))));
+        assert!(matches!(
+            a.token(Provider::GitLab),
+            Err(GitError::TokenMissing("GitLab"))
+        ));
     }
 }

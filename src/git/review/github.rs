@@ -123,7 +123,10 @@ fn get(token: &str, url: &str) -> Result<reqwest::blocking::RequestBuilder, GitE
     Ok(with_headers(client()?.get(url), token))
 }
 
-fn with_headers(req: reqwest::blocking::RequestBuilder, token: &str) -> reqwest::blocking::RequestBuilder {
+fn with_headers(
+    req: reqwest::blocking::RequestBuilder,
+    token: &str,
+) -> reqwest::blocking::RequestBuilder {
     req.bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
@@ -158,7 +161,10 @@ pub fn assigned_prs(token: &str) -> Result<Vec<MergeRequest>, GitError> {
         match get(token, &url).and_then(send_json::<GhSearch>) {
             Ok(res) => {
                 any_ok = true;
-                log::debug!("[GIT] GitHub search \"{q}\" returned {} item(s)", res.items.len());
+                log::debug!(
+                    "[GIT] GitHub search \"{q}\" returned {} item(s)",
+                    res.items.len()
+                );
                 for issue in res.items {
                     if issue.pull_request.is_none() || !seen.insert(issue.id) {
                         continue;
@@ -182,7 +188,11 @@ pub fn assigned_prs(token: &str) -> Result<Vec<MergeRequest>, GitError> {
 }
 
 /// PR milik satu repository.
-pub fn repo_prs(token: &str, full_name: &str, include_closed: bool) -> Result<Vec<MergeRequest>, GitError> {
+pub fn repo_prs(
+    token: &str,
+    full_name: &str,
+    include_closed: bool,
+) -> Result<Vec<MergeRequest>, GitError> {
     let state = if include_closed { "all" } else { "open" };
     let url = format!(
         "{BASE}/repos/{}/pulls?state={state}&per_page=50&sort=updated&direction=desc",
@@ -194,7 +204,11 @@ pub fn repo_prs(token: &str, full_name: &str, include_closed: bool) -> Result<Ve
 
 /// Detail lengkap satu PR (branch, statistik, reviewer).
 pub fn pr_details(token: &str, mr: &MergeRequest) -> Result<MergeRequest, GitError> {
-    let url = format!("{BASE}/repos/{}/pulls/{}", repo_path(&mr.repo_full_name), mr.number);
+    let url = format!(
+        "{BASE}/repos/{}/pulls/{}",
+        repo_path(&mr.repo_full_name),
+        mr.number
+    );
     let pr: GhPullRequest = send_json(get(token, &url)?)?;
     Ok(map_pr(pr, &mr.repo_full_name))
 }
@@ -223,8 +237,17 @@ pub fn pr_files(token: &str, full_name: &str, number: u64) -> Result<Vec<Changed
     Ok(out)
 }
 
-pub fn merge_pr(token: &str, mr: &MergeRequest, method: MergeMethod, message: &str) -> Result<(), GitError> {
-    let url = format!("{BASE}/repos/{}/pulls/{}/merge", repo_path(&mr.repo_full_name), mr.number);
+pub fn merge_pr(
+    token: &str,
+    mr: &MergeRequest,
+    method: MergeMethod,
+    message: &str,
+) -> Result<(), GitError> {
+    let url = format!(
+        "{BASE}/repos/{}/pulls/{}/merge",
+        repo_path(&mr.repo_full_name),
+        mr.number
+    );
     let mut body = serde_json::json!({
         "merge_method": match method {
             MergeMethod::Merge => "merge",
@@ -243,7 +266,11 @@ pub fn merge_pr(token: &str, mr: &MergeRequest, method: MergeMethod, message: &s
 }
 
 pub fn close_pr(token: &str, mr: &MergeRequest) -> Result<(), GitError> {
-    let url = format!("{BASE}/repos/{}/pulls/{}", repo_path(&mr.repo_full_name), mr.number);
+    let url = format!(
+        "{BASE}/repos/{}/pulls/{}",
+        repo_path(&mr.repo_full_name),
+        mr.number
+    );
     let body = serde_json::json!({ "state": "closed" });
     send_text(with_headers(client()?.patch(url), token).json(&body)).map(|_| ())
 }
@@ -314,7 +341,11 @@ fn map_pr(pr: GhPullRequest, full_name: &str) -> MergeRequest {
         provider: Provider::GitHub,
         repo_full_name: full_name.to_string(),
         labels: pr.labels.into_iter().map(|l| l.name).collect(),
-        reviewers: pr.requested_reviewers.into_iter().map(|u| u.login).collect(),
+        reviewers: pr
+            .requested_reviewers
+            .into_iter()
+            .map(|u| u.login)
+            .collect(),
         comment_count: pr.comments.unwrap_or(0),
         additions: pr.additions.unwrap_or(0),
         deletions: pr.deletions.unwrap_or(0),

@@ -668,6 +668,7 @@ impl super::Tabular {
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
+            git: crate::window_egui::git_jobs::GitUiState::new(),
             visual_filter: crate::models::structs::VisualFilterState::default(),
             cell_inspector: crate::data_table::CellInspectorState::default(),
             grid_ext: crate::data_table::GridExtState::default(),

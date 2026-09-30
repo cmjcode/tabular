@@ -68,6 +68,7 @@ fn is_plain_query_tab(tab: &crate::models::structs::QueryTab) -> bool {
         && tab.user_manager_state.is_none()
         && tab.redis_browser_state.is_none()
         && tab.diagram_state.is_none()
+        && tab.git_state.is_none()
         && !tab.is_table_browse_mode
 }
 

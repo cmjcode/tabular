@@ -62,7 +62,10 @@ pub struct MergeRequest {
 impl MergeRequest {
     /// Kunci unik lintas provider.
     pub fn key(&self) -> String {
-        format!("{:?}:{}#{}", self.provider, self.repo_full_name, self.number)
+        format!(
+            "{:?}:{}#{}",
+            self.provider, self.repo_full_name, self.number
+        )
     }
 
     pub fn display_number(&self) -> String {
@@ -140,7 +143,8 @@ pub enum MergeMethod {
 }
 
 impl MergeMethod {
-    pub const ALL: [MergeMethod; 3] = [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
+    pub const ALL: [MergeMethod; 3] =
+        [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
 
     pub fn label(self) -> &'static str {
         match self {
