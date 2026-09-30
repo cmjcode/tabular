@@ -293,19 +293,6 @@ pub fn draw_playback(
     let outside = entry - egui::vec2(OUTSIDE_PX, 0.0);
 
     match phase {
-        PlayPhase::Request(t) => {
-            painter.line_segment(
-                [outside, entry],
-                egui::Stroke::new(1.5 * s, REQUEST_COLOR.linear_multiply(0.5)),
-            );
-            particle(painter, &|t| outside.lerp(entry, t), t, REQUEST_COLOR, s);
-            painter.rect_stroke(
-                cr.expand(2.0 * s),
-                6.0 * scale,
-                egui::Stroke::new(2.0 * s, REQUEST_COLOR.linear_multiply(k * t.max(0.3))),
-                egui::StrokeKind::Outside,
-            );
-        }
         PlayPhase::Response(t) => {
             painter.line_segment(
                 [entry, outside],
@@ -513,7 +500,6 @@ pub fn render_play_controls(ui: &mut egui::Ui, state: &mut DiagramState, card: O
         new.speed = p.speed;
     }
     let pos_label = match play::play_phase(&items, p.position) {
-        PlayPhase::Request(_) => "Request".to_string(),
         PlayPhase::Step { index, .. } => format!("Step {}/{}", index + 1, items.len()),
         PlayPhase::Response(_) => "Response".to_string(),
         PlayPhase::Done => "Done".to_string(),

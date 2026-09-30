@@ -1,7 +1,7 @@
 //! Timeline pemutaran animasi flow card (double-click card).
 //!
-//! Murni: tanpa egui dan tanpa `Tabular`. Timeline terdiri atas fase
-//! request, satu item per langkah (atau satu langkah semu per tabel untuk
+//! Murni: tanpa egui dan tanpa `Tabular`. Timeline langsung dimulai dari
+//! langkah pertama: satu item per langkah (atau satu langkah semu per tabel untuk
 //! card yang belum punya langkah), lalu respons. Gambar ada di
 //! `crate::diagram_flow_play_view`.
 
@@ -10,8 +10,6 @@ use crate::models::structs::{FlowCard, FlowPlayback};
 /// Fase pemutaran pada satu posisi waktu.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlayPhase {
-    /// Request masuk ke card. `t` 0..1.
-    Request(f32),
     /// Item ke-`index` sedang berjalan. `t` 0..1.
     Step {
         index: usize,
@@ -22,7 +20,6 @@ pub enum PlayPhase {
     Done,
 }
 
-pub const REQUEST_SECS: f64 = 0.6;
 pub const STEP_SECS: f64 = 1.2;
 pub const STEP_NO_TARGET_SECS: f64 = 0.5;
 pub const RESPONSE_SECS: f64 = 0.6;
@@ -76,26 +73,22 @@ pub fn play_items<S: AsRef<str>>(card: &FlowCard, tables: &[S]) -> Vec<PlayItem>
 
 /// Durasi total timeline (detik, kecepatan 1×).
 pub fn play_duration(items: &[PlayItem]) -> f64 {
-    REQUEST_SECS + items.iter().map(PlayItem::secs).sum::<f64>() + RESPONSE_SECS
+    items.iter().map(PlayItem::secs).sum::<f64>() + RESPONSE_SECS
 }
 
 /// Waktu mulai item ke-`index`; di luar batas = awal fase respons.
 pub fn step_start(items: &[PlayItem], index: usize) -> f64 {
-    REQUEST_SECS
-        + items
-            .iter()
-            .take(index.min(items.len()))
-            .map(PlayItem::secs)
-            .sum::<f64>()
+    items
+        .iter()
+        .take(index.min(items.len()))
+        .map(PlayItem::secs)
+        .sum::<f64>()
 }
 
 /// Fase pada posisi waktu `position` (detik).
 pub fn play_phase(items: &[PlayItem], position: f64) -> PlayPhase {
     let position = position.max(0.0);
-    if position < REQUEST_SECS {
-        return PlayPhase::Request((position / REQUEST_SECS) as f32);
-    }
-    let mut start = REQUEST_SECS;
+    let mut start = 0.0;
     for (index, item) in items.iter().enumerate() {
         let d = item.secs();
         if position < start + d {
@@ -113,10 +106,9 @@ pub fn play_phase(items: &[PlayItem], position: f64) -> PlayPhase {
 }
 
 /// Item yang sedang berjalan pada `position`, atau item terakhir bila sudah
-/// lewat semua. `None` selama fase request.
+/// lewat semua. `None` bila tidak ada item.
 pub fn current_item(items: &[PlayItem], position: f64) -> Option<usize> {
     match play_phase(items, position) {
-        PlayPhase::Request(_) => None,
         PlayPhase::Step { index, .. } => Some(index),
         PlayPhase::Response(_) | PlayPhase::Done => items.len().checked_sub(1),
     }
@@ -135,7 +127,6 @@ pub fn previous_item(items: &[PlayItem], position: f64) -> usize {
 /// Item tujuan tombol Next; `items.len()` = fase respons.
 pub fn next_item(items: &[PlayItem], position: f64) -> usize {
     match play_phase(items, position) {
-        PlayPhase::Request(_) => 0,
         PlayPhase::Step { index, .. } => index + 1,
         PlayPhase::Response(_) | PlayPhase::Done => items.len(),
     }
@@ -236,21 +227,18 @@ mod tests {
     fn phase_boundaries_and_step_start() {
         let items = play_items(&card(vec![db("users"), logic()]), &["users"]);
         assert_eq!(items.len(), 2);
-        let total = REQUEST_SECS + STEP_SECS + STEP_NO_TARGET_SECS + RESPONSE_SECS;
+        let total = STEP_SECS + STEP_NO_TARGET_SECS + RESPONSE_SECS;
         assert!((play_duration(&items) - total).abs() < 1e-9);
-        assert_eq!(play_phase(&items, 0.0), PlayPhase::Request(0.0));
-        assert_eq!(step_start(&items, 0), REQUEST_SECS);
-        assert_eq!(step_start(&items, 1), REQUEST_SECS + STEP_SECS);
+        // Tanpa fase request: posisi 0 langsung di langkah pertama.
         assert_eq!(
-            step_start(&items, 99),
-            REQUEST_SECS + STEP_SECS + STEP_NO_TARGET_SECS
+            play_phase(&items, 0.0),
+            PlayPhase::Step { index: 0, t: 0.0 }
         );
+        assert_eq!(step_start(&items, 0), 0.0);
+        assert_eq!(step_start(&items, 1), STEP_SECS);
+        assert_eq!(step_start(&items, 99), STEP_SECS + STEP_NO_TARGET_SECS);
         assert!(matches!(
-            play_phase(&items, REQUEST_SECS),
-            PlayPhase::Step { index: 0, .. }
-        ));
-        assert!(matches!(
-            play_phase(&items, REQUEST_SECS + STEP_SECS + 0.1),
+            play_phase(&items, STEP_SECS + 0.1),
             PlayPhase::Step { index: 1, .. }
         ));
         assert!(matches!(
@@ -259,7 +247,8 @@ mod tests {
         ));
         assert_eq!(play_phase(&items, total), PlayPhase::Done);
         assert_eq!(current_item(&items, total), Some(1));
-        assert_eq!(current_item(&items, 0.1), None);
+        assert_eq!(current_item(&items, 0.1), Some(0));
+        assert_eq!(current_item(&[], 0.0), None);
     }
 
     #[test]
@@ -281,11 +270,8 @@ mod tests {
         );
         let none: [&str; 0] = [];
         assert!(play_items(&c, &none).is_empty());
-        assert_eq!(play_duration(&[]), REQUEST_SECS + RESPONSE_SECS);
-        assert!(matches!(
-            play_phase(&[], REQUEST_SECS + 0.1),
-            PlayPhase::Response(_)
-        ));
+        assert_eq!(play_duration(&[]), RESPONSE_SECS);
+        assert!(matches!(play_phase(&[], 0.1), PlayPhase::Response(_)));
     }
 
     #[test]
@@ -335,7 +321,7 @@ mod tests {
         // Di tengah item 2: Previous kembali ke awal item 2.
         assert_eq!(previous_item(&items, p.position + 0.6), 2);
         assert_eq!(previous_item(&items, 0.1), 0);
-        assert_eq!(next_item(&items, 0.1), 0);
+        assert_eq!(next_item(&items, 0.1), 1);
         assert_eq!(next_item(&items, play_duration(&items)), 3);
     }
 
