@@ -23,13 +23,25 @@ pub fn resolve_key_for_folder<'a>(
     resource_type: &str,
     folder_path: &str,
 ) -> Option<&'a SymKey> {
+    // Folder yang dibagikan juga mencakup subfoldernya; share terdalam menang.
     match shared_folders
         .iter()
-        .find(|f| f.resource_type == resource_type && f.folder_path == folder_path)
+        .filter(|f| f.resource_type == resource_type && folder_covers(&f.folder_path, folder_path))
+        .max_by_key(|f| f.folder_path.len())
     {
         Some(folder) => team_keys.get(&folder.team_id),
         None => Some(account_key),
     }
+}
+
+/// Folder bersama `shared` mencakup `path`: sama persis atau subfoldernya.
+/// Share `/` hanya mencakup `/` (sama seperti server).
+pub fn folder_covers(shared: &str, path: &str) -> bool {
+    path == shared
+        || (shared != "/"
+            && path
+                .strip_prefix(shared)
+                .is_some_and(|r| r.starts_with('/')))
 }
 
 /// Unseal this user's key envelope for every Team they belong to, building

@@ -1034,7 +1034,11 @@ pub fn build_chat_prompts(
         editor_context.chars().take(4_000).collect::<String>()
     );
     let schema = build_schema_context_for_prompt(tabular, &retrieval_query, 30);
-    let system = system_prompt_for(cfg, &schema);
+    let mut system = system_prompt_for(cfg, &schema);
+    system.push_str(&crate::window_egui::project_ui::prompt_section(
+        tabular,
+        cfg.mcp_available,
+    ));
 
     let mut user = String::new();
     if !has_native_session {

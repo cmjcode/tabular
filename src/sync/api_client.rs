@@ -367,6 +367,70 @@ impl ApiClient {
         Ok(())
     }
 
+    // ── Projects ─────────────────────────────────────────────────────────────
+
+    pub async fn list_projects(&self, token: &str) -> anyhow::Result<Vec<RemoteProject>> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/projects"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteProject>>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Buat atau timpa project milik sendiri (upsert berdasarkan nama).
+    pub async fn upsert_project(
+        &self,
+        token: &str,
+        req: &UpsertProjectReq,
+    ) -> anyhow::Result<RemoteProject> {
+        let resp = self
+            .http
+            .post(self.url("/api/v1/projects"))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteProject>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Perbarui project (juga milik orang lain bila akses `editor`).
+    pub async fn update_project(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateProjectReq,
+    ) -> anyhow::Result<RemoteProject> {
+        let resp = self
+            .http
+            .put(self.url(&format!("/api/v1/projects/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteProject>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_project(&self, token: &str, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/projects/{}", id)))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     // ── Collab Rooms ─────────────────────────────────────────────────────────
 
     pub async fn list_rooms(&self, token: &str) -> anyhow::Result<Vec<super::CollabRoom>> {
@@ -1009,6 +1073,9 @@ pub struct RemoteSavedQuery {
     #[serde(default)]
     pub crypto_version: i32,
     pub updated_at: String,
+    /// `owner`, `editor`, atau `viewer` (server lama tidak mengirimnya).
+    #[serde(default)]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1165,6 +1232,43 @@ pub struct RemoteSharedFolder {
     pub resource_type: String,
     pub folder_path: String,
     pub created_at: String,
+}
+
+/// Project di server. `payload` adalah manifest terenkripsi
+/// ([`crate::sync::sync_projects::SharedProject`]).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteProject {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub payload: String,
+    #[serde(default)]
+    pub client_checksum: Option<String>,
+    #[serde(default)]
+    pub crypto_version: i32,
+    #[serde(default)]
+    pub updated_at: String,
+    /// `owner`, `editor`, atau `viewer`.
+    #[serde(default)]
+    pub access: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpsertProjectReq {
+    pub name: String,
+    pub payload: String,
+    pub client_checksum: Option<String>,
+    pub crypto_version: i32,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct UpdateProjectReq {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_checksum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crypto_version: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]

@@ -90,6 +90,8 @@ pub mod platform_macos;
 pub mod platform_prefs;
 pub mod plugin_runtime;
 pub mod privacy;
+pub mod project;
+pub mod project_memory;
 pub mod query_diagram;
 pub mod query_profiler;
 pub mod query_stats;

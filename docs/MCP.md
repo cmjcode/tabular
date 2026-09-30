@@ -77,6 +77,10 @@ installed `tabular` executable. The server speaks MCP over stdio; it opens no ne
 | `search_notes` | Search your Obsidian vault for notes about tables, business rules and conventions. |
 | `read_note` | Read one whole vault note, with its tags and `[[wikilinks]]`. |
 | `save_note` | Create a new note in the vault's `Tabular Memory` folder. Only works when you allow it in Settings. |
+| `list_projects` | Your projects: name, description, environments, active environment and number of memory entries. |
+| `project_context` | One project: environments with variable keys, non-secret values and the connection ids each environment uses, its connections, saved query files, HTTP workspace and the project memory. Secret values are never returned, and connections blocked for this client are left out. |
+| `save_project_memory` | Save a durable fact in a project's memory. The same title replaces the entry. Secret values of the project are redacted automatically. Refused for projects shared with you read-only. |
+| `delete_project_memory` | Remove one memory entry from a project. |
 
 ### Where the knowledge comes from
 
@@ -89,6 +93,7 @@ The agent reads what Tabular already stores. Nothing is copied into Markdown fil
 | Repository per group | Git URL in the diagram, local folder in `diagram_repo_paths.json` | `describe_diagram`, `find_table_usages` |
 | Query history | `connections.db` | `search_query_history` |
 | Your own notes | Obsidian vault | `search_notes`, `read_note`, `save_note` |
+| Projects and project memory | `<data dir>/projects/<id>/project.json` and `<data dir>/projects/<id>/memory/*.md` | `list_projects`, `project_context`, `save_project_memory` |
 
 `find_table_usages` reads only the local folder you picked for a group, or a clone Tabular
 already made when you ran "Suggest tables". It never runs git and never reads other folders.
@@ -178,6 +183,7 @@ Resources (read-only JSON; the same access rules as tools):
 | `tabular://connections/{id}/tables/{table}/ddl{?database}` | `CREATE` statement |
 | `tabular://connections/{id}/history{?limit}` | Recent queries, passwords masked |
 | `tabular://connections/{id}/diagram{?database}` | Your diagram: groups, virtual relations, notes |
+| `tabular://projects/{project}` | One project: environments, connections, query files, memory |
 
 Table names in URIs are percent-encoded. Subscriptions: a client can subscribe to a `schema`
 resource (legacy `resources/subscribe` or the newer `subscriptions/listen`). The server checks

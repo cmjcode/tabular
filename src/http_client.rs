@@ -2391,7 +2391,7 @@ fn execute_request(state: &mut HttpClientState) {
     let (tx, rx) = mpsc::channel::<HttpClientResponse>();
     state.response_receiver = Some(Arc::new(Mutex::new(rx)));
 
-    let spec = crate::http_send::RequestSpec::from_state(state);
+    let spec = crate::http_send::RequestSpec::from_state(state).with_vars(&state.env_vars);
     std::thread::spawn(move || {
         let _ = tx.send(crate::http_send::send_blocking(spec));
     });

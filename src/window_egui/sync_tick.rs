@@ -23,6 +23,9 @@ impl super::Tabular {
         crate::sync::ui_teams::render_report_dialog(self, ctx);
         crate::sync::ui_teams::render_block_user_dialog(self, ctx);
 
+        // ── Project: dialog, share, dan sync manifest ─────────────────────────
+        crate::window_egui::project_ui::tick(self, ctx);
+
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);
 

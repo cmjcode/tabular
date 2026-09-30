@@ -1122,6 +1122,10 @@ impl Tabular {
 
                         // Middle section with scrollable content
                         egui::ScrollArea::vertical().show(ui, |ui| {
+                            // Project switcher: sama untuk Database dan APIs.
+                            if matches!(self.selected_menu.as_str(), "Database" | "APIs") {
+                                crate::window_egui::project_ui::render_switcher(self, ui);
+                            }
                             match self.selected_menu.as_str() {
                                 "Database" => {
                                     // ── Sub-tabs: Connections / Queries / History ──────────
@@ -1181,13 +1185,17 @@ impl Tabular {
                                     ui.add_space(4.0);
 
                                     let is_searching_queries = !self.database_search_text.trim().is_empty();
-                                    let mut queries_tree = if is_searching_queries {
+                                    let queries_tree = if is_searching_queries {
                                         std::mem::take(&mut self.filtered_queries_tree)
                                     } else {
                                         std::mem::take(&mut self.queries_tree)
                                     };
 
+                                    let (mut queries_tree, hidden_query_roots) =
+                                        crate::window_egui::project_ui::split_query_roots(self, queries_tree);
                                     let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
+                                    let queries_tree =
+                                        crate::window_egui::project_ui::merge_roots(queries_tree, hidden_query_roots);
 
                                     if is_searching_queries {
                                         self.filtered_queries_tree = queries_tree;
@@ -1349,6 +1357,7 @@ impl Tabular {
                                     let segments = [
                                         style::NavSegment { key: "Teams", icon: egui_icons::icons::ICON_GROUPS.codepoint, label: "Teams" },
                                         style::NavSegment { key: "Collaboration", icon: egui_icons::icons::ICON_CLOUD.codepoint, label: "Collaboration" },
+                                        style::NavSegment { key: "Projects", icon: egui_icons::icons::ICON_WORKSPACES.codepoint, label: "Projects" },
                                     ];
                                     let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
                                     if let Some(key) = style::render_segmented_nav(
@@ -1365,6 +1374,9 @@ impl Tabular {
                                                 crate::sync::ui_teams::refresh_teams(self);
                                             } else if key == "Collaboration" {
                                                 crate::sync::ui_collab::refresh_rooms(self);
+                                            } else if key == "Projects" {
+                                                crate::sync::ui_teams::refresh_teams(self);
+                                                crate::sync::ui_teams::refresh_all_shared_folders(self);
                                             }
                                         }
                                     }
@@ -1375,6 +1387,9 @@ impl Tabular {
                                         }
                                         "Collaboration" => {
                                             crate::sync::ui_collab::render_collab_content(self, ui);
+                                        }
+                                        "Projects" => {
+                                            crate::window_egui::project_ui::render_collab_projects(self, ui);
                                         }
                                         _ => {}
                                     }
@@ -3138,6 +3153,16 @@ impl Tabular {
                             Err(String::new())
                         };
 
+                        // Variabel environment project untuk tab HTTP aktif.
+                        let http_env_vars = {
+                            let ws_id = self
+                                .query_tabs
+                                .get(self.active_tab_index)
+                                .and_then(|t| t.http_client_state.as_ref())
+                                .and_then(|s| s.saved_workspace_id.clone());
+                            crate::window_egui::project_ui::http_vars_for_workspace(self, ws_id.as_deref())
+                        };
+
                         // Check for HTTP client tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && tab.http_client_state.is_some()
@@ -3148,6 +3173,7 @@ impl Tabular {
                             let mut saved_folder_id = None;
                             let mut workspaces_saved = false;
                             if let Some(state) = &mut tab.http_client_state {
+                                state.env_vars = http_env_vars;
                                 workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id, &http_ai_backend);
                                 if workspaces_saved {
                                     saved_ws_id = state.saved_workspace_id.clone();

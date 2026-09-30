@@ -74,6 +74,29 @@ impl RequestSpec {
         }
     }
 
+    /// Ganti `{{KEY}}` yang dikenal di semua bagian request dengan nilai dari
+    /// environment project. Placeholder yang tidak dikenal dibiarkan.
+    pub fn with_vars(mut self, vars: &std::collections::HashMap<String, String>) -> Self {
+        if vars.is_empty() {
+            return self;
+        }
+        let sub = |s: &str| crate::http_tests::substitute(s, vars);
+        let rows = |r: &[(String, String)]| -> Vec<(String, String)> {
+            r.iter().map(|(k, v)| (sub(k), sub(v))).collect()
+        };
+        self.url = sub(&self.url);
+        self.body_text = sub(&self.body_text);
+        self.form_data = rows(&self.form_data);
+        self.params = rows(&self.params);
+        self.headers = rows(&self.headers);
+        self.bearer_token = sub(&self.bearer_token);
+        self.basic_user = sub(&self.basic_user);
+        self.basic_pass = sub(&self.basic_pass);
+        self.api_key_name = sub(&self.api_key_name);
+        self.api_key_value = sub(&self.api_key_value);
+        self
+    }
+
     /// URL lengkap dengan query param (dan API key bila dikirim lewat query).
     pub fn full_url(&self) -> String {
         let mut full_url = self.url.clone();
@@ -215,6 +238,26 @@ pub fn send_blocking(spec: RequestSpec) -> HttpClientResponse {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn with_vars_substitutes_all_parts() {
+        let state = HttpClientState {
+            url: "{{BASE_URL}}/users".into(),
+            headers: vec![("Authorization".into(), "Bearer {{TOKEN}}".into(), true)],
+            ..Default::default()
+        };
+        let vars: std::collections::HashMap<String, String> = [
+            ("BASE_URL".to_string(), "https://api.dev".to_string()),
+            ("TOKEN".to_string(), "t0k".to_string()),
+        ]
+        .into();
+        let spec = RequestSpec::from_state(&state).with_vars(&vars);
+        assert_eq!(spec.url, "https://api.dev/users");
+        assert_eq!(spec.headers[0].1, "Bearer t0k");
+        let untouched = RequestSpec::from_state(&state).with_vars(&Default::default());
+        assert_eq!(untouched.url, "{{BASE_URL}}/users");
+    }
+
     use super::*;
 
     #[test]

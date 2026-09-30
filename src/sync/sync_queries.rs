@@ -83,6 +83,28 @@ pub fn push_queries_to_server(
                 continue;
             }
 
+            // Versi lama menyinkronkan semua file sebagai folder `/`. Baris
+            // lama dengan isi sama dipindah ke folder yang benar, bukan
+            // diduplikasi.
+            if folder_path != "/"
+                && let Some(legacy) = remote_queries.iter().find(|q| {
+                    q.name == name
+                        && q.folder_path == "/"
+                        && q.client_checksum.as_deref() == Some(&cs)
+                        && q.access.as_deref().is_none_or(|a| a == "owner")
+                })
+            {
+                let update = UpdateQueryReq {
+                    folder_path: Some(folder_path.clone()),
+                    ..Default::default()
+                };
+                match client.update_saved_query(&token, &legacy.id, &update).await {
+                    Ok(_) => pushed += 1,
+                    Err(e) => warn!("❌ [sync_queries] Failed to move '{}': {}", name, e),
+                }
+                continue;
+            }
+
             let key = match vault_sync::resolve_key_for_folder(
                 &account_key,
                 &team_keys,
@@ -177,7 +199,7 @@ pub fn reencrypt_folder_to_server(
         let query_dir = directory::get_query_dir();
         let files: Vec<(String, String, String)> = collect_sql_files(&query_dir)
             .into_iter()
-            .filter(|(_, folder, _)| *folder == folder_path)
+            .filter(|(_, folder, _)| vault_sync::folder_covers(&folder_path, folder))
             .collect();
         if files.is_empty() {
             return;
@@ -359,33 +381,38 @@ pub fn pull_queries_from_server(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Recursively collect all .sql files.
-/// Returns (absolute_path, folder_path, name_without_ext)
+/// Recursively collect all .sql files as `(file_path, folder_path, name)`.
+/// `folder_path` selalu relatif terhadap root direktori query (`/`, `/A`,
+/// `/A/B`), sama seperti cara pull menaruh file.
 fn collect_sql_files(dir: &Path) -> Vec<(String, String, String)> {
     let mut results = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let subdir_results = collect_sql_files(&path);
-                results.extend(subdir_results);
-            } else if path.extension().map(|e| e == "sql").unwrap_or(false) {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let folder = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(dir).ok())
-                    .and_then(|p| p.to_str())
-                    .map(|s| format!("/{}", s))
-                    .unwrap_or_else(|| "/".to_string());
-                results.push((path.to_string_lossy().to_string(), folder, name));
-            }
+    collect_sql_files_under(dir, dir, &mut results);
+    results
+}
+
+fn collect_sql_files_under(root: &Path, dir: &Path, results: &mut Vec<(String, String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sql_files_under(root, &path, results);
+        } else if path.extension().map(|e| e == "sql").unwrap_or(false) {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let folder = path
+                .parent()
+                .and_then(|p| p.strip_prefix(root).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .map(|s| format!("/{}", s.trim_start_matches('/')))
+                .unwrap_or_else(|| "/".to_string());
+            results.push((path.to_string_lossy().to_string(), folder, name));
         }
     }
-    results
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -398,4 +425,36 @@ fn sanitize_filename(name: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_folder_paths_relative_to_root() {
+        let root = std::env::temp_dir().join(format!(
+            "tabular-sync-queries-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("Shop/reports")).unwrap();
+        std::fs::write(root.join("top.sql"), "select 1").unwrap();
+        std::fs::write(root.join("Shop/a.sql"), "select 2").unwrap();
+        std::fs::write(root.join("Shop/reports/b.sql"), "select 3").unwrap();
+        let mut got: Vec<(String, String)> = collect_sql_files(&root)
+            .into_iter()
+            .map(|(_, folder, name)| (folder, name))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("/".to_string(), "top".to_string()),
+                ("/Shop".to_string(), "a".to_string()),
+                ("/Shop/reports".to_string(), "b".to_string()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

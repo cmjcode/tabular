@@ -616,6 +616,7 @@ impl super::Tabular {
             new_subfolder_name: String::new(),
             subfolder_parent_path: String::new(),
             connection_folders: Vec::new(),
+            projects: Default::default(),
             // AI Assistant
             show_ai_panel: false,
             ai_panel_width: 350.0,

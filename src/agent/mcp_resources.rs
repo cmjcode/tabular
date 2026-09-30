@@ -59,12 +59,16 @@ pub enum ResourceUri {
         id: i64,
         database: Option<String>,
     },
+    /// Konteks project (environment, koneksi, file query, memory agent).
+    Project {
+        project: String,
+    },
 }
 
 impl ResourceUri {
     pub fn connection_id(&self) -> Option<i64> {
         match self {
-            ResourceUri::Connections => None,
+            ResourceUri::Connections | ResourceUri::Project { .. } => None,
             ResourceUri::Databases { id }
             | ResourceUri::Schema { id, .. }
             | ResourceUri::Tables { id, .. }
@@ -86,6 +90,7 @@ impl ResourceUri {
             ResourceUri::TableDdl { .. } => "ddl",
             ResourceUri::History { .. } => "history",
             ResourceUri::Diagram { .. } => "diagram",
+            ResourceUri::Project { .. } => "project",
         }
     }
 }
@@ -169,6 +174,9 @@ pub fn parse_uri(uri: &str) -> Option<ResourceUri> {
                 _ => None,
             }
         }
+        ["projects", project] => Some(ResourceUri::Project {
+            project: percent_decode(project)?,
+        }),
         _ => None,
     }
 }
@@ -228,6 +236,11 @@ pub fn templates() -> Vec<ResourceTemplate> {
             "diagram",
             "The user's Tabular diagram: groups, virtual relations and sticky notes.",
         ),
+        t(
+            "tabular://projects/{project}",
+            "project",
+            "A Tabular project: environments, connections per environment, query files and the team's project memory.",
+        ),
     ]
 }
 
@@ -261,6 +274,16 @@ pub async fn list(session: &HeadlessSession, client: &str) -> Result<Vec<Resourc
             format!("{SCHEME}connections/{id}/history"),
             format!("{name}: history"),
             format!("Recent queries on {name}."),
+        ));
+    }
+    for p in session.list_projects().await? {
+        out.push(resource(
+            format!("{SCHEME}projects/{}", percent_encode(&p.id)),
+            format!("project {}", p.name),
+            format!(
+                "Project {}: environments, connections, query files and team memory.",
+                p.name
+            ),
         ));
     }
     Ok(out)
@@ -344,6 +367,9 @@ pub async fn read(
                 .describe_diagram(*id, database.as_deref(), None, None)
                 .await?,
         ),
+        ResourceUri::Project { project } => {
+            to_json(&session.project_context(client, project).await?)
+        }
     }
 }
 
@@ -702,6 +728,24 @@ pub async fn render_prompt(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn parses_project_uri() {
+        assert_eq!(
+            parse_uri("tabular://projects/prj_1_2"),
+            Some(ResourceUri::Project {
+                project: "prj_1_2".into()
+            })
+        );
+        assert_eq!(
+            parse_uri("tabular://projects/My%20Shop"),
+            Some(ResourceUri::Project {
+                project: "My Shop".into()
+            })
+        );
+        assert_eq!(parse_uri("tabular://projects/a/b"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -775,7 +819,7 @@ mod tests {
                 p.name
             );
         }
-        assert_eq!(templates().len(), 7);
+        assert_eq!(templates().len(), 8);
     }
 
     #[test]

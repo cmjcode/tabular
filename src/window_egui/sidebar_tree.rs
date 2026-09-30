@@ -2053,6 +2053,17 @@ impl super::Tabular {
             self.pending_rename_query_folder = Some((rel_path, folder_name.clone(), folder_name));
         }
 
+        // Handle "Convert to Project" context menu request
+        let convert_req: Option<(String, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new("project_convert_req")));
+        if let Some((kind, path)) = convert_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(String, String)>(egui::Id::new("project_convert_req"));
+            });
+            crate::window_egui::project_ui::convert_folder(self, &kind, &path);
+        }
+
         // Handle "Share to Team" context menu request
         let share_req: Option<(String, String)> = ui
             .ctx()
@@ -2878,6 +2889,19 @@ impl super::Tabular {
                             ui.close();
                         }
 
+                        let is_root_query_folder = node
+                            .file_path
+                            .as_deref()
+                            .map(std::path::Path::new)
+                            .and_then(|p| p.parent())
+                            .is_some_and(|parent| parent == directory::get_query_dir());
+                        if is_root_query_folder && ui.button("Convert to Project…").clicked() {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("project_convert_req"), ("query".to_string(), node.name.clone()));
+                            });
+                            ui.close();
+                        }
+
                         if ui.button("✏️ Rename Folder").clicked() {
                             let relative_path = if let Some(full_path) = &node.file_path {
                                 let query_dir = directory::get_query_dir();
@@ -2961,6 +2985,12 @@ impl super::Tabular {
                         if ui.button("🤝 Share to Team…").clicked() {
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(egui::Id::new("share_folder_req"), ("connection".to_string(), folder_path.clone()));
+                            });
+                            ui.close();
+                        }
+                        if !folder_path.contains('/') && node.name != "Default" && ui.button("Convert to Project…").clicked() {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("project_convert_req"), ("connection".to_string(), folder_path.clone()));
                             });
                             ui.close();
                         }
@@ -4534,9 +4564,14 @@ impl super::Tabular {
         } else {
             // Show normal tree
             // Use slice to avoid borrowing issues
-            let mut items_tree = std::mem::take(&mut self.items_tree);
+            let items_tree = std::mem::take(&mut self.items_tree);
+            // Filter "Show only this project": root lain disembunyikan lalu
+            // digabung lagi dengan urutan semula.
+            let (mut items_tree, hidden_roots) =
+                crate::window_egui::project_ui::split_connection_roots(self, items_tree);
 
             let query_files_to_open = self.render_tree(ui, &mut items_tree, false);
+            let items_tree = crate::window_egui::project_ui::merge_roots(items_tree, hidden_roots);
 
             for (filename, content, file_path, context_connection_id) in query_files_to_open {
                 if file_path.is_empty() {

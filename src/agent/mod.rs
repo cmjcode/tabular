@@ -11,6 +11,7 @@
 //! - [`cli`]: parsing argumen baris perintah sebelum GUI dijalankan.
 //! - [`harness`]: arah sebaliknya — Tabular menjalankan CLI agent (`agy`,
 //!   `claude`, `gemini`) sebagai backend panel AI Assistant.
+//! - [`projects`]: konteks project (environment, koneksi, memory agent).
 //! - [`live_edit`]: protokol blok `sql tabular:tab=…` yang ditulis agent
 //!   langsung ke tab editor.
 //!
@@ -26,6 +27,7 @@ pub mod harness;
 pub mod knowledge;
 pub mod live_edit;
 pub mod ops;
+pub mod projects;
 
 #[cfg(not(target_os = "ios"))]
 pub mod cli;

@@ -963,11 +963,12 @@ pub fn share_folder_action(
                     .connections
                     .iter()
                     .filter(|c| {
-                        c.folder
+                        let folder = c
+                            .folder
                             .clone()
                             .filter(|f| !f.trim().is_empty())
-                            .unwrap_or_else(|| "/".to_string())
-                            == folder_path
+                            .unwrap_or_else(|| "/".to_string());
+                        super::vault_sync::folder_covers(folder_path, &folder)
                     })
                     .cloned()
                     .collect()

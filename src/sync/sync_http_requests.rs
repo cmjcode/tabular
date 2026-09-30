@@ -194,7 +194,7 @@ pub fn reencrypt_folder_to_server(
         let workspaces = load_workspaces();
         let flat_requests: Vec<FlatLocalRequest> = collect_flat_requests(&workspaces)
             .into_iter()
-            .filter(|f| f.folder_path == folder_path)
+            .filter(|f| vault_sync::folder_covers(&folder_path, &f.folder_path))
             .collect();
         if flat_requests.is_empty() {
             return;

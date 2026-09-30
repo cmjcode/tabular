@@ -133,6 +133,11 @@ pub(crate) fn prepare_query_job(
         .cloned()
         .ok_or(QueryPreparationError::ConnectionNotFound)?;
 
+    // `{{KEY}}` diisi dari environment aktif project pemilik koneksi (hanya
+    // variabel non-secret, karena teks query masuk riwayat).
+    let project_vars = crate::window_egui::project_ui::sql_vars_for_connection(tabular, &connection);
+    let query = crate::project::substitute(&query, &project_vars);
+
     let selected_database = tabular
         .query_tabs
         .get(tabular.active_tab_index)

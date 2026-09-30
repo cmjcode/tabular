@@ -100,6 +100,12 @@ pub fn reencrypt_folder_to_server(
 
         let mut migrated = 0usize;
         for conn in connections {
+            // Folder tiap koneksi (bisa subfolder dari folder yang dibagikan).
+            let conn_folder = conn
+                .folder
+                .clone()
+                .filter(|f| !f.trim().is_empty())
+                .unwrap_or_else(|| "/".to_string());
             let encrypted = match vault_crypto::encrypt_json(&key, &conn) {
                 Ok(e) => e,
                 Err(e) => {
@@ -113,7 +119,7 @@ pub fn reencrypt_folder_to_server(
 
             let existing = remote
                 .iter()
-                .find(|r| r.name == conn.name && r.folder_path == folder_path);
+                .find(|r| r.name == conn.name && r.folder_path == conn_folder);
             let result = match existing {
                 Some(r) => {
                     let body =
@@ -129,7 +135,7 @@ pub fn reencrypt_folder_to_server(
                         db_type: conn.connection_type.as_db_str().into_owned(),
                         encrypted_config: encrypted,
                         color_tag: None,
-                        folder_path: Some(folder_path.clone()),
+                        folder_path: Some(conn_folder.clone()),
                         crypto_version: 1,
                     };
                     client.create_connection(&token, &req).await.map(|_| ())

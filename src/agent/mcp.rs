@@ -97,7 +97,17 @@ which is more compact than describe_schema when you need the relationships. \
 Obsidian renders ```mermaid blocks, so when a note explains relationships or a \
 flow (joins, ETL steps, status transitions), include a Mermaid block \
 (erDiagram, flowchart, stateDiagram-v2, sequenceDiagram) in save_note content. \
-Schema notes saved from Tabular's diagram live in \"Tabular Memory/Schemas\".";
+Schema notes saved from Tabular's diagram live in \"Tabular Memory/Schemas\".
+
+Projects: the user groups connections, saved queries and HTTP requests into \
+projects with environments (Development, Staging, Production, ...). \
+list_projects shows them; project_context(project) returns the environments \
+(variable keys, non-secret values, connection ids per environment), connections, \
+query files and the project's memory. Prefer the connections of the active \
+environment. Project memory is shared with the user's team: store durable facts \
+about the project (meaning of codes, join rules, conventions) with \
+save_project_memory(project, title, description, content), one topic per entry, \
+never secrets or query results.";
 
 /// Interval pemeriksaan perubahan untuk subscription.
 const WATCH_INTERVAL: Duration = Duration::from_secs(20);
@@ -273,6 +283,34 @@ pub struct FormatSqlArgs {
     /// Keyword casing: "upper" (default), "lower", or "preserve".
     #[serde(default)]
     pub keyword_case: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProjectArgs {
+    /// Project name or id (from list_projects).
+    pub project: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SaveProjectMemoryArgs {
+    /// Project name or id (from list_projects).
+    pub project: String,
+    /// Short, specific title; becomes the entry name. Saving the same title
+    /// again replaces the entry.
+    pub title: String,
+    /// One line that says when this entry is relevant.
+    #[serde(default)]
+    pub description: String,
+    /// The fact in Markdown. One topic per entry, no secrets.
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteProjectMemoryArgs {
+    /// Project name or id (from list_projects).
+    pub project: String,
+    /// Entry name as returned by project_context.
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1226,6 +1264,64 @@ impl TabularMcp {
         .await
     }
 
+    #[tool(
+        description = "List the user's Tabular projects. A project groups a connection folder, a saved-query folder and an HTTP workspace, with environments (Development, Staging, Production, ...) and a shared memory."
+    )]
+    async fn list_projects(&self) -> Result<CallToolResult, McpError> {
+        self.guard("list_projects", None, None, self.session.list_projects())
+            .await
+    }
+
+    #[tool(
+        description = "Describe one project: its environments with variable keys, non-secret values and the connection ids each environment uses, the active environment, its connections, saved query files, HTTP workspace, and the project memory (durable facts the team saved). Secret values are never returned."
+    )]
+    async fn project_context(
+        &self,
+        Parameters(p): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = self.client_name();
+        self.guard(
+            "project_context",
+            None,
+            None,
+            self.session.project_context(&client, &p.project),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Save a durable fact in a project's memory (shared with the user's team): meaning of a code, a join rule, a naming convention, how environments differ. Saving the same title again replaces that entry. Never store secrets, credentials or query results; secret values of the project are redacted automatically."
+    )]
+    async fn save_project_memory(
+        &self,
+        Parameters(p): Parameters<SaveProjectMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.guard(
+            "save_project_memory",
+            None,
+            None,
+            self.session
+                .save_project_memory(&p.project, &p.title, &p.description, &p.content),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Delete one entry from a project's memory, e.g. when it turned out to be wrong. Returns false when no such entry exists."
+    )]
+    async fn delete_project_memory(
+        &self,
+        Parameters(p): Parameters<DeleteProjectMemoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.guard(
+            "delete_project_memory",
+            None,
+            None,
+            self.session.delete_project_memory(&p.project, &p.name),
+        )
+        .await
+    }
+
     #[tool(description = "Format SQL with Tabular's formatter (indentation and keyword casing).")]
     async fn format_sql(
         &self,
@@ -1541,6 +1637,7 @@ mod tests {
                 "cancel_query",
                 "check_sql_safety",
                 "count_rows",
+                "delete_project_memory",
                 "describe_diagram",
                 "describe_schema",
                 "describe_table",
@@ -1552,13 +1649,16 @@ mod tests {
                 "get_table_ddl",
                 "list_connections",
                 "list_databases",
+                "list_projects",
                 "list_running_queries",
                 "list_tables",
+                "project_context",
                 "read_note",
                 "refresh_schema_cache",
                 "run_query",
                 "sample_rows",
                 "save_note",
+                "save_project_memory",
                 "schema_diagram",
                 "search_notes",
                 "search_query_history",

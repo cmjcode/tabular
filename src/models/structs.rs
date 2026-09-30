@@ -194,6 +194,10 @@ pub struct HttpClientState {
     /// Bantuan AI (prompt, jawaban tertunda, penjelasan). Tidak disimpan.
     #[serde(skip)]
     pub ai: crate::http_ai::HttpAiState,
+    /// Variabel `{{KEY}}` dari environment project aktif; diisi ulang setiap
+    /// frame dan dipakai saat request dikirim. Tidak disimpan.
+    #[serde(skip)]
+    pub env_vars: std::collections::HashMap<String, String>,
 
     /// Channel receiver from background HTTP thread (Arc so Clone works).
     /// Skipped during serialization — recreated at runtime.
@@ -266,6 +270,7 @@ impl Default for HttpClientState {
             response_search: String::new(),
             request_started: None,
             ai: Default::default(),
+            env_vars: Default::default(),
             response_receiver: None,
             workspaces: Vec::new(),
             collection_panel: crate::http_collection::CollectionPanelState::default(),

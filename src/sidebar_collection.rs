@@ -225,12 +225,18 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     let is_dnd_active = active_dnd_source.is_some();
 
     // Collect workspace ids to avoid borrow issues
-    let ws_ids: Vec<String> = app.yaak_workspaces.iter().map(|w| w.id.clone()).collect();
+    let ws_ids: Vec<String> = app
+        .yaak_workspaces
+        .iter()
+        .filter(|w| crate::window_egui::project_ui::http_workspace_visible(app, &w.id))
+        .map(|w| w.id.clone())
+        .collect();
 
     // Track actions requested from top-level and folder requests
     let mut req_action: Option<(SavedRequest, RequestAction)> = None;
     let mut ws_to_delete: Option<String> = None;
     let mut ws_to_rename: Option<(String, String)> = None;
+    let mut ws_to_convert: Option<String> = None;
     let mut folder_to_delete: Option<(String, String, String)> = None;
     let mut folder_to_create: Option<(String, Option<String>, String)> = None;
     let mut folder_to_rename: Option<(String, String, String)> = None;
@@ -253,8 +259,14 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
 
         let is_just_saved = app.collection_just_saved_workspace.as_deref() == Some(ws_id.as_str());
 
+        let ws_icon = if crate::window_egui::project_ui::project_of_workspace(app, ws_id).is_some()
+        {
+            egui_icons::icons::ICON_WORKSPACES.codepoint
+        } else {
+            "📁"
+        };
         let mut ws_header = egui::CollapsingHeader::new(
-            egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
+            egui::RichText::new(format!("{}  {}  ({})", ws_icon, ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
         .default_open(true);
@@ -393,6 +405,10 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 ws_to_rename = Some((ws_id.clone(), ws_name.clone()));
                 ui.close();
             }
+            if ui.button("Convert to Project…").clicked() {
+                ws_to_convert = Some(ws_id.clone());
+                ui.close();
+            }
             crate::http_repo::workspace_menu_items(ui);
             ui.separator();
             if ui.button("🗑 Delete Workspace").clicked() {
@@ -404,6 +420,10 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
 
     app.collection_expanded_folders = expanded_folders;
     app.collection_just_saved_workspace = None;
+
+    if let Some(ws_id) = ws_to_convert {
+        crate::window_egui::project_ui::convert_folder(app, "http", &ws_id);
+    }
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {

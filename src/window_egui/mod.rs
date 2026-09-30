@@ -19,6 +19,7 @@ pub mod diagram;
 pub mod init;
 pub mod notifications;
 pub mod pagination;
+pub mod project_ui;
 pub mod platform_ui;
 pub(crate) mod plugin_connection_form;
 pub(crate) mod plugin_tree;
@@ -660,6 +661,8 @@ pub struct Tabular {
     pub subfolder_parent_path: String,
     // Standalone (empty) connection folder paths
     pub connection_folders: Vec<String>,
+    /// Project (root folder Connections/Queries/HTTP + environment + memory agent).
+    pub projects: project_ui::ProjectsState,
 
     // --- AI Assistant ---
     pub show_ai_panel: bool,
