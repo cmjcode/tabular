@@ -979,6 +979,16 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
             "",
         ),
         (
+            "DBA: Server Dashboard",
+            "Real-time QPS, connections, buffer hit ratio and slowest statements",
+            "",
+        ),
+        (
+            "Query: Insights (Most Run / Slowest)",
+            "Most-run, slowest and increasingly slow queries, plus table load history",
+            "",
+        ),
+        (
             "DBA: Deadlock & Lock Tree",
             "Inspect active lock dependencies and blocking hierarchy",
             "",

@@ -34,6 +34,14 @@ impl super::Tabular {
         }
         self.jobs.active.remove(&message.job_id);
 
+        // Statistik eksekusi untuk Query Insights (job ber-callback adalah
+        // operasi internal, tidak dicatat) dan notifikasi OS query panjang.
+        if !self.jobs.callbacks.contains_key(&message.job_id) {
+            let paginated = self.jobs.paginated.contains(&message.job_id);
+            self.record_query_stats(&message, paginated);
+        }
+        self.notify_long_query(&message);
+
         // Job ber-callback (structure editor, simpan spreadsheet, wizard, …)
         // menangani hasilnya sendiri, bukan lewat panel hasil tab.
         if let Some(callback) = self.jobs.callbacks.remove(&message.job_id) {

@@ -93,6 +93,7 @@ pub(crate) fn render_pagination_bar(tabular: &mut window_egui::Tabular, ui: &mut
                     if let Some(ms) = exec_ms {
                         ui.separator();
                         crate::window_egui::style::render_execution_pill(ui, ms, tabular.total_rows);
+                        crate::window_egui::query_stats_ui::render_timing_badge(tabular, ui);
                     }
 
                     // Grid Summary Bar (Sum, Avg, Count, Min, Max for selected cells)
@@ -260,6 +261,7 @@ fn render_compact_footer_bar(
                     });
                     if let Some(ms) = display_ms {
                         crate::window_egui::style::render_execution_pill(ui, ms, 0);
+                        crate::window_egui::query_stats_ui::render_timing_badge(tabular, ui);
                     }
 
                     if let Some(affected) = tabular.last_affected_rows {

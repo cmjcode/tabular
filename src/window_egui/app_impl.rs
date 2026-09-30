@@ -933,6 +933,41 @@ impl Tabular {
             ctx.request_repaint();
         }
 
+        while let Ok((tab_index, result)) = self.server_metrics_receiver.try_recv() {
+            let now = std::time::Instant::now();
+            if let Some(state) = self
+                .query_tabs
+                .get_mut(tab_index)
+                .and_then(|t| t.dba_monitor_state.as_mut())
+            {
+                match result {
+                    crate::server_metrics::MetricsResult::Counters(res) => {
+                        state.is_loading = false;
+                        state.last_refreshed = Some(now);
+                        match res {
+                            Ok(counters) => state.dashboard.push_counters(now, counters),
+                            Err(e) => {
+                                log::debug!("[DBA-METRICS] counters failed: {e}");
+                                state.dashboard.error = Some(e);
+                            }
+                        }
+                    }
+                    crate::server_metrics::MetricsResult::Slow(res) => {
+                        state.dashboard.slow_loading = false;
+                        state.dashboard.slow_loaded_at = Some(now);
+                        match res {
+                            Ok(rows) => {
+                                state.dashboard.slow = rows;
+                                state.dashboard.slow_error = None;
+                            }
+                            Err(e) => state.dashboard.slow_error = Some(e),
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+
         while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
             log::debug!("[USER-MGR] UI received result for tab_index={}", tab_index);
             if let Some(tab) = self.query_tabs.get_mut(tab_index) {
@@ -2579,6 +2614,11 @@ impl Tabular {
                                                 self.show_settings_menu = false;
                                             }
 
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_MONITORING.codepoint, "Query Insights", None) {
+                                                self.open_query_insights();
+                                                self.show_settings_menu = false;
+                                            }
+
                                             if draw_menu_item(ui, egui_icons::icons::ICON_KEYBOARD.codepoint, "Keyboard Shortcuts", None) {
                                                 self.show_shortcuts_window = true;
                                                 self.show_settings_menu = false;
@@ -3282,6 +3322,62 @@ impl Tabular {
                             let rt_opt = self.runtime.clone();
 
                             match action {
+                                crate::dba_monitor::DbaAction::Refresh
+                                    if self
+                                        .query_tabs
+                                        .get(active_tab)
+                                        .and_then(|t| t.dba_monitor_state.as_ref())
+                                        .is_some_and(|s| s.selected_tab == models::enums::DbaMonitorTab::Dashboard) =>
+                                {
+                                    // Tab Dashboard: baca counter server, dan slow statement bila sudah waktunya.
+                                    let mut fetch_slow = false;
+                                    if let Some(state) = self.query_tabs.get_mut(active_tab).and_then(|t| t.dba_monitor_state.as_mut()) {
+                                        state.is_loading = true;
+                                        fetch_slow = state.dashboard.slow_due(std::time::Instant::now());
+                                        state.dashboard.slow_loading |= fetch_slow;
+                                    }
+                                    if let Some(rt) = rt_opt {
+                                        let sender = self.server_metrics_sender.clone();
+                                        let ctx = ui.ctx().clone();
+                                        rt.spawn(async move {
+                                            use crate::server_metrics::{fetch_counters, fetch_slow_statements, MetricsResult};
+                                            match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
+                                                Ok(pool) => {
+                                                    let counters = fetch_counters(&pool, &db_type).await;
+                                                    let _ = sender.send((active_tab, MetricsResult::Counters(counters)));
+                                                    if fetch_slow {
+                                                        let slow = fetch_slow_statements(&pool, &db_type).await;
+                                                        let _ = sender.send((active_tab, MetricsResult::Slow(slow)));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, MetricsResult::Counters(Err(e.clone()))));
+                                                    if fetch_slow {
+                                                        let _ = sender.send((active_tab, MetricsResult::Slow(Err(e))));
+                                                    }
+                                                }
+                                            }
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::dba_monitor::DbaAction::RefreshSlowStatements => {
+                                    if let Some(state) = self.query_tabs.get_mut(active_tab).and_then(|t| t.dba_monitor_state.as_mut()) {
+                                        state.dashboard.slow_loading = true;
+                                    }
+                                    if let Some(rt) = rt_opt {
+                                        let sender = self.server_metrics_sender.clone();
+                                        let ctx = ui.ctx().clone();
+                                        rt.spawn(async move {
+                                            let slow = match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
+                                                Ok(pool) => crate::server_metrics::fetch_slow_statements(&pool, &db_type).await,
+                                                Err(e) => Err(e),
+                                            };
+                                            let _ = sender.send((active_tab, crate::server_metrics::MetricsResult::Slow(slow)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
                                 crate::dba_monitor::DbaAction::Refresh => {
                                     if let Some(tab) = self.query_tabs.get_mut(active_tab) {
                                         if let Some(state) = &mut tab.dba_monitor_state {
@@ -4115,6 +4211,8 @@ impl Tabular {
                     restore_session: self.restore_session,
                     show_system_objects: self.show_system_objects,
                     ai_panel_width: self.ai_panel_width,
+                    notify_long_queries: self.notify_long_queries,
+                    notify_threshold_secs: self.notify_threshold_secs,
                 };
                 rt.block_on(store.save(&prefs));
                 log::debug!(
@@ -4141,6 +4239,7 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
+        self.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
 
         // Track user interaction for idle detection (> 3 min)
         let has_user_input = ctx.input(|i| {
@@ -5438,6 +5537,8 @@ impl App for Tabular {
         crate::session_restore::render_close_tab_dialog(self, ctx);
         crate::session_restore::render_quit_dialog(self, ctx);
         crate::session_restore::tick(self, ctx);
+
+        self.render_query_insights(ctx);
 
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.

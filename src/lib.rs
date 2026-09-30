@@ -69,6 +69,7 @@ pub mod managed_policy;
 pub mod models;
 pub mod modules;
 pub mod obsidian;
+pub mod os_notify;
 #[cfg(target_os = "ios")]
 pub mod platform_ios;
 #[cfg(target_os = "macos")]
@@ -78,6 +79,7 @@ pub mod plugin_runtime;
 pub mod privacy;
 pub mod query_diagram;
 pub mod query_profiler;
+pub mod query_stats;
 pub mod query_tools;
 pub mod quick_open;
 pub mod repo_scan;
@@ -89,6 +91,7 @@ pub mod sample_data;
 pub mod search_match;
 pub mod secrets;
 pub mod self_update;
+pub mod server_metrics;
 pub mod session_restore;
 pub mod sidebar_collection;
 pub mod sidebar_database;

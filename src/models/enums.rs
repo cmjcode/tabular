@@ -122,6 +122,8 @@ pub enum ProcessStateFilter {
 pub enum DbaMonitorTab {
     Processlist,
     LockTree,
+    /// Metrik server real-time + slow statement (checklist I3).
+    Dashboard,
 }
 
 #[derive(Debug, Clone)]

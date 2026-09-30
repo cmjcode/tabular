@@ -22,6 +22,7 @@ pub(crate) mod plugin_tree;
 pub(crate) mod preferences;
 pub mod query_insight;
 pub mod query_jobs;
+pub mod query_stats_ui;
 pub mod render_dialogs;
 pub mod schema_actions;
 pub mod schema_menus;
@@ -192,6 +193,9 @@ pub struct Tabular {
     pub dba_result_receiver: Receiver<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>,
     pub user_manager_result_sender: Sender<(usize, crate::user_manager::UserManagerResult)>,
     pub user_manager_result_receiver: Receiver<(usize, crate::user_manager::UserManagerResult)>,
+    /// Hasil metrik server untuk dashboard DBA monitor (kunci: indeks tab).
+    pub server_metrics_sender: Sender<(usize, crate::server_metrics::MetricsResult)>,
+    pub server_metrics_receiver: Receiver<(usize, crate::server_metrics::MetricsResult)>,
     /// Registry shortcut keyboard (bisa diubah user, lihat keymap.rs).
     pub keymap: crate::keymap::Keymap,
     pub show_shortcuts_window: bool,
@@ -541,6 +545,17 @@ pub struct Tabular {
     pub query_timeout_secs: u32,
     /// Jumlah baris maksimum yang disimpan dari satu result set tanpa paginasi.
     pub max_result_rows: u32,
+    /// Notifikasi OS saat query panjang selesai dan jendela tidak fokus (I4).
+    pub notify_long_queries: bool,
+    /// Ambang durasi (detik) untuk notifikasi OS.
+    pub notify_threshold_secs: u32,
+    /// Jendela aplikasi sedang fokus; diperbarui tiap frame.
+    pub window_focused: bool,
+    /// Rincian waktu eksekusi terakhir per tab (kunci: `QueryTab::id`).
+    pub query_timings_by_tab:
+        std::collections::HashMap<usize, crate::connection::timing::QueryTiming>,
+    /// Jendela Query Insights dan popup riwayat load tabel (I1, I2).
+    pub query_stats_view: query_stats_ui::InsightsState,
     /// Buka kembali tab dari sesi sebelumnya saat startup.
     pub restore_session: bool,
     /// Tampilkan database/schema sistem di sidebar (lihat `schema_objects::show_system_objects`).

@@ -1054,6 +1054,33 @@ impl Tabular {
                     }
                 },
             );
+            divider(ui);
+            if toggle_row(
+                ui,
+                &mut self.notify_long_queries,
+                "Notify when long queries finish",
+                Some(
+                    "Show a system notification when a query runs longer than the threshold and Tabular is not the focused window.",
+                ),
+            ) {
+                self.save_prefs_now();
+            }
+            if self.notify_long_queries {
+                row(ui, "Notification threshold", None, |ui| {
+                    let mut secs = self.notify_threshold_secs.max(1) as i64;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut secs)
+                                .range(1..=86_400)
+                                .suffix(" s"),
+                        )
+                        .changed()
+                    {
+                        self.notify_threshold_secs = secs.max(1) as u32;
+                        self.save_prefs_now();
+                    }
+                });
+            }
         });
 
         section(ui, "Redis Browser", |ui| {

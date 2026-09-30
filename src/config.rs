@@ -521,6 +521,16 @@ pub struct AppPreferences {
     /// Lebar panel AI Assistant di sebelah kanan (pixel).
     #[serde(default = "default_ai_panel_width")]
     pub ai_panel_width: f32,
+    /// Notifikasi OS saat query panjang selesai dan jendela tidak fokus.
+    #[serde(default = "default_true")]
+    pub notify_long_queries: bool,
+    /// Ambang durasi (detik) untuk notifikasi OS.
+    #[serde(default = "default_notify_threshold_secs")]
+    pub notify_threshold_secs: u32,
+}
+
+fn default_notify_threshold_secs() -> u32 {
+    crate::os_notify::DEFAULT_THRESHOLD_SECS
 }
 
 fn default_ai_panel_width() -> f32 {
@@ -573,6 +583,8 @@ impl Default for AppPreferences {
             restore_session: true,
             show_system_objects: false,
             ai_panel_width: default_ai_panel_width(),
+            notify_long_queries: true,
+            notify_threshold_secs: default_notify_threshold_secs(),
         }
     }
 }
@@ -673,6 +685,10 @@ pub(crate) fn apply_kv_pair(
         "max_result_rows" => prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS),
         "restore_session" => prefs.restore_session = v == "1",
         "show_system_objects" => prefs.show_system_objects = v == "1",
+        "notify_long_queries" => prefs.notify_long_queries = v == "1",
+        "notify_threshold_secs" => {
+            prefs.notify_threshold_secs = v.parse().unwrap_or(default_notify_threshold_secs())
+        }
         "ai_panel_width" => {
             prefs.ai_panel_width = v
                 .parse()
@@ -833,6 +849,8 @@ impl ConfigStore {
                 restore_session: true,
                 show_system_objects: false,
                 ai_panel_width: default_ai_panel_width(),
+                notify_long_queries: true,
+                notify_threshold_secs: default_notify_threshold_secs(),
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -947,7 +965,8 @@ impl ConfigStore {
                 }
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
-            let entries: [(&str, &str); 28] = [
+            let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
+            let entries: [(&str, &str); 30] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1027,6 +1046,11 @@ impl ConfigStore {
                     if prefs.show_system_objects { "1" } else { "0" },
                 ),
                 ("ai_panel_width", &ai_panel_width_str),
+                (
+                    "notify_long_queries",
+                    if prefs.notify_long_queries { "1" } else { "0" },
+                ),
+                ("notify_threshold_secs", &notify_threshold_secs),
             ];
 
             for (k, v) in entries.iter() {

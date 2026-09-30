@@ -12,6 +12,8 @@ pub enum DbaAction {
     CancelQuery(i64),
     KillProcess(i64),
     OpenInSqlTab(String),
+    /// Muat ulang daftar slow statement di tab Dashboard.
+    RefreshSlowStatements,
 }
 
 /// Fetch processlist asynchronously directly from the connection pool
@@ -561,11 +563,16 @@ pub fn render_dba_monitor(
                 DbaMonitorTab::LockTree => {
                     render_lock_tree_view(ui, state, to_execute);
                 }
+                DbaMonitorTab::Dashboard => {
+                    render_dashboard(ui, state, db_type, to_execute);
+                }
             });
 
         // --- 4. Bottom Panel: Executed SQL Query & Diagnostics ---
-        ui.add_space(4.0);
-        render_executed_query_panel(ui, state, db_type, to_execute);
+        if state.selected_tab != DbaMonitorTab::Dashboard {
+            ui.add_space(4.0);
+            render_executed_query_panel(ui, state, db_type, to_execute);
+        }
 
         // --- 5. Confirmation Modal for Kill / Cancel ---
         render_confirm_modal(ui, state, to_execute);
@@ -895,6 +902,19 @@ fn render_navigation_and_filters(
             .clicked()
         {
             state.selected_tab = DbaMonitorTab::LockTree;
+        }
+
+        if ui
+            .selectable_label(
+                state.selected_tab == DbaMonitorTab::Dashboard,
+                format!("{} Dashboard", egui_icons::icons::ICON_MONITORING.codepoint),
+            )
+            .clicked()
+            && state.selected_tab != DbaMonitorTab::Dashboard
+        {
+            state.selected_tab = DbaMonitorTab::Dashboard;
+            // Ambil counter segera; sampel pertama menjadi acuan laju.
+            state.last_refreshed = None;
         }
 
         ui.separator();
@@ -1409,6 +1429,226 @@ fn render_tree_node(
     for child in &node.children {
         render_tree_node(ui, child, depth + 1, state);
     }
+}
+
+/// Tab Dashboard: metrik server real-time dan statement paling lambat (I3).
+fn render_dashboard(
+    ui: &mut egui::Ui,
+    state: &mut DbaMonitorState,
+    db_type: Option<&DatabaseType>,
+    to_execute: &mut Option<DbaAction>,
+) {
+    use crate::server_metrics::{format_rate_bytes, is_supported, statements_label};
+    use egui_plot::{Legend, Line, Plot, PlotPoints};
+
+    let Some(db_type) = db_type.filter(|t| is_supported(t)) else {
+        ui.label("The server dashboard is available for PostgreSQL, MySQL/MariaDB and SQL Server connections.");
+        return;
+    };
+    let dash = &state.dashboard;
+    if let Some(err) = &dash.error {
+        ui.colored_label(
+            egui::Color32::from_rgb(240, 80, 80),
+            format!("Cannot read server metrics: {err}"),
+        );
+    }
+    let latest = dash.samples.back().copied();
+    let counters = dash.latest_counters().cloned().unwrap_or_default();
+    let dim = egui::Color32::from_rgb(120, 120, 120);
+
+    ui.horizontal_wrapped(|ui| {
+        let rate = latest
+            .and_then(|s| s.statements_per_sec)
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_else(|| "…".into());
+        metric_card(
+            ui,
+            statements_label(db_type),
+            &rate,
+            egui::Color32::from_rgb(90, 140, 230),
+        );
+        let conns = match (counters.connections, counters.max_connections) {
+            (Some(c), Some(m)) if m > 0.0 => format!("{c:.0} / {m:.0} ({:.0}%)", c / m * 100.0),
+            (Some(c), _) => format!("{c:.0}"),
+            _ => "—".into(),
+        };
+        metric_card(
+            ui,
+            "Connections",
+            &conns,
+            egui::Color32::from_rgb(140, 160, 220),
+        );
+        metric_card(
+            ui,
+            "Running",
+            &counters
+                .active
+                .map(|v| format!("{v:.0}"))
+                .unwrap_or_else(|| "—".into()),
+            egui::Color32::from_rgb(80, 200, 120),
+        );
+        let hit = latest.and_then(|s| s.cache_hit_pct);
+        metric_card(
+            ui,
+            "Buffer cache hit",
+            &hit.map(|v| format!("{v:.1}%"))
+                .unwrap_or_else(|| "—".into()),
+            match hit {
+                Some(v) if v < 90.0 => egui::Color32::from_rgb(240, 160, 50),
+                Some(_) => egui::Color32::from_rgb(80, 200, 120),
+                None => dim,
+            },
+        );
+        if let Some(s) = latest
+            && let (Some(i), Some(o)) = (s.bytes_in_per_sec, s.bytes_out_per_sec)
+        {
+            metric_card(
+                ui,
+                "Network in / out",
+                &format!("{} / {}", format_rate_bytes(i), format_rate_bytes(o)),
+                egui::Color32::from_rgb(180, 140, 220),
+            );
+        }
+    });
+    ui.add_space(4.0);
+
+    let series = |f: fn(&crate::server_metrics::MetricsSample) -> Option<f64>| -> Vec<[f64; 2]> {
+        state
+            .dashboard
+            .samples
+            .iter()
+            .filter_map(|s| f(s).map(|v| [s.t_secs, v]))
+            .collect()
+    };
+    let stmt = series(|s| s.statements_per_sec);
+    let conns = series(|s| s.connections);
+    let active = series(|s| s.active);
+    let hit = series(|s| s.cache_hit_pct);
+
+    if stmt.is_empty() && conns.is_empty() {
+        ui.label(
+            egui::RichText::new(if state.auto_refresh {
+                "Collecting samples… rates appear after the second refresh."
+            } else {
+                "Polling is paused. Press Refresh Now or resume polling to collect samples."
+            })
+            .color(dim),
+        );
+    } else {
+        let plot_h = 150.0;
+        ui.columns(2, |cols| {
+            cols[0].label(
+                egui::RichText::new(statements_label(db_type))
+                    .strong()
+                    .size(12.0),
+            );
+            Plot::new("dba_dash_statements")
+                .height(plot_h)
+                .allow_zoom(false)
+                .allow_drag(false)
+                .allow_scroll(false)
+                .include_y(0.0)
+                .show(&mut cols[0], |p| {
+                    p.line(Line::new(
+                        statements_label(db_type),
+                        PlotPoints::from(stmt.clone()),
+                    ));
+                });
+            cols[1].label(egui::RichText::new("Connections").strong().size(12.0));
+            Plot::new("dba_dash_connections")
+                .height(plot_h)
+                .allow_zoom(false)
+                .allow_drag(false)
+                .allow_scroll(false)
+                .include_y(0.0)
+                .legend(Legend::default())
+                .show(&mut cols[1], |p| {
+                    p.line(Line::new("Open", PlotPoints::from(conns.clone())));
+                    p.line(Line::new("Running", PlotPoints::from(active.clone())));
+                });
+        });
+        if !hit.is_empty() {
+            ui.label(
+                egui::RichText::new("Buffer cache hit %")
+                    .strong()
+                    .size(12.0),
+            );
+            Plot::new("dba_dash_hit")
+                .height(110.0)
+                .allow_zoom(false)
+                .allow_drag(false)
+                .allow_scroll(false)
+                .include_y(100.0)
+                .show(ui, |p| {
+                    p.line(Line::new("Hit %", PlotPoints::from(hit)));
+                });
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Slowest statements (server statistics)").strong());
+        if state.dashboard.slow_loading {
+            ui.spinner();
+        } else if ui.small_button("Reload").clicked() {
+            *to_execute = Some(DbaAction::RefreshSlowStatements);
+        }
+        ui.label(
+            egui::RichText::new(match db_type {
+                DatabaseType::PostgreSQL => "pg_stat_statements, current database",
+                DatabaseType::MySQL => "performance_schema digests",
+                _ => "sys.dm_exec_query_stats (plan cache)",
+            })
+            .size(11.0)
+            .color(dim),
+        );
+    });
+    if let Some(err) = &state.dashboard.slow_error {
+        ui.colored_label(egui::Color32::from_rgb(220, 150, 50), err);
+        return;
+    }
+    if state.dashboard.slow.is_empty() {
+        ui.label(egui::RichText::new("No statement statistics yet.").color(dim));
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("dba_dash_slow")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Grid::new("dba_dash_slow_grid")
+                .striped(true)
+                .spacing([14.0, 4.0])
+                .show(ui, |ui| {
+                    for h in ["Statement", "Calls", "Avg", "Total", ""] {
+                        ui.label(egui::RichText::new(h).strong());
+                    }
+                    ui.end_row();
+                    for s in &state.dashboard.slow {
+                        let short: String = if s.query.chars().count() > 90 {
+                            s.query
+                                .chars()
+                                .take(89)
+                                .chain(std::iter::once('…'))
+                                .collect()
+                        } else {
+                            s.query.clone()
+                        };
+                        ui.label(
+                            egui::RichText::new(short)
+                                .family(egui::FontFamily::Monospace)
+                                .size(12.0),
+                        )
+                        .on_hover_text(&s.query);
+                        ui.label(format!("{:.0}", s.calls));
+                        ui.label(crate::query_stats::format_ms(s.avg_ms));
+                        ui.label(crate::query_stats::format_ms(s.total_ms));
+                        if ui.small_button("Open").clicked() {
+                            *to_execute = Some(DbaAction::OpenInSqlTab(s.query.clone()));
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 fn render_confirm_modal(

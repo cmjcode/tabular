@@ -209,13 +209,32 @@ Semua perubahan menampilkan SQL dulu (Execute / Open in Editor).
 
 ## I. Query history, insight, monitoring
 
-- [ ] **I1. Query Insights: most-run, slowest, increasingly slow** · P2 · M · Sebagian
-  Data `query_history` + `src/autocomplete/usage.rs` sudah menyimpan hitungan; tambah durasi dan panel.
-- [ ] **I2. Table load history 7 hari + query time breakdown (server/first row/transfer)** · P3 · S · Belum
-- [ ] **I3. Server dashboard: metrik real-time (QPS, koneksi, buffer) + slow query** · P3 · M · Sebagian
-  DBA monitor sudah processlist, lock tree, kill.
-- [ ] **I4. Notifikasi OS untuk operasi panjang dengan threshold** · P3 · S · Sebagian
-  Toast in-app ada (`src/window_egui/notifications.rs`).
+Status 2026-09-30: diverifikasi dengan unit test + clippy; belum diuji manual terhadap server
+sungguhan maupun notifikasi OS di tiap platform.
+
+- [x] **I1. Query Insights: most-run, slowest, increasingly slow** · P2 · M · Selesai
+  Tabel `query_stats` di `connections.db` (satu baris per run, retensi 30 hari / 50.000 baris),
+  fingerprint dari SQL ternormalisasi (literal jadi `?`). Jendela "Query Insights" (menu
+  Settings atau palet perintah): Most Run, Slowest (avg/p95/max), Getting Slower (median paruh
+  baru >= 1.5x dan +20 ms, minimal 6 run), filter koneksi/rentang/teks, Open/Copy, Clear.
+  `src/query_stats.rs`, `src/window_egui/query_stats_ui.rs`.
+- [x] **I2. Table load history 7 hari + query time breakdown (server/first row/transfer)** · P3 · S · Selesai
+  Halaman browse tabel dicatat sebagai `table_load`; tab "Table Loads" + jendela riwayat 7 hari
+  (bar per hari, daftar load dengan breakdown). Breakdown tunggu koneksi / server sampai baris
+  pertama / transfer / proses klien lewat probe task-local (`src/connection/timing.rs`), tampil
+  di badge ⏱ bar hasil. Hanya statement yang mengembalikan baris di PostgreSQL, MySQL, SQLite;
+  SQL Server, MongoDB, Redis, plugin: durasi total saja.
+- [x] **I3. Server dashboard: metrik real-time (QPS, koneksi, buffer) + slow query** · P3 · M · Selesai
+  Tab "Dashboard" di DBA monitor (juga "DBA: Server Dashboard" di palet): statements/s, koneksi
+  vs max, running, buffer cache hit %, network in/out (MySQL), grafik 5 menit, slow statement
+  (refresh 30 dtk). PostgreSQL (`pg_stat_database`, `pg_stat_statements` bila terpasang), MySQL
+  (`SHOW GLOBAL STATUS`, performance_schema digest), SQL Server (`dm_os_performance_counters`,
+  `dm_exec_query_stats`). `src/server_metrics.rs`.
+- [x] **I4. Notifikasi OS untuk operasi panjang dengan threshold** · P3 · S · Selesai
+  Preferences > Query Execution: toggle + ambang (default 10 dtk). Dikirim hanya bila jendela
+  tidak fokus. macOS `osascript`, Linux `notify-send`, Windows toast PowerShell; tanpa
+  dependensi baru. `src/os_notify.rs`. Cakupan: job query (tiap statement dalam batch dinilai
+  sendiri); backup/export belum.
 
 ## J. Saved queries & kolaborasi
 

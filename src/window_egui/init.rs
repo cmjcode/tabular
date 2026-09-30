@@ -65,6 +65,8 @@ impl super::Tabular {
         crate::app_logging::set_verbose(prefs.enable_debug_logging);
         self.query_timeout_secs = prefs.query_timeout_secs;
         self.max_result_rows = prefs.max_result_rows.max(1);
+        self.notify_long_queries = prefs.notify_long_queries;
+        self.notify_threshold_secs = prefs.notify_threshold_secs;
         self.restore_session = prefs.restore_session;
         self.show_system_objects = prefs.show_system_objects;
         crate::schema_objects::set_show_system_objects(prefs.show_system_objects);
@@ -195,6 +197,8 @@ impl super::Tabular {
             mpsc::channel::<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>();
         let (user_manager_result_sender, user_manager_result_receiver) =
             mpsc::channel::<(usize, crate::user_manager::UserManagerResult)>();
+        let (server_metrics_sender, server_metrics_receiver) =
+            mpsc::channel::<(usize, crate::server_metrics::MetricsResult)>();
         let (autocomplete_warm_sender, autocomplete_warm_receiver) =
             mpsc::channel::<crate::window_egui::AutocompleteWarmResult>();
 
@@ -286,6 +290,8 @@ impl super::Tabular {
             dba_result_receiver,
             user_manager_result_sender,
             user_manager_result_receiver,
+            server_metrics_sender,
+            server_metrics_receiver,
             jobs: Default::default(),
             last_error_location: None,
             keymap: crate::keymap::Keymap::load(),
@@ -526,6 +532,11 @@ impl super::Tabular {
             enable_debug_logging: false, // Default to false
             query_timeout_secs: 0,
             max_result_rows: crate::config::DEFAULT_MAX_RESULT_ROWS,
+            notify_long_queries: true,
+            notify_threshold_secs: crate::os_notify::DEFAULT_THRESHOLD_SECS,
+            window_focused: true,
+            query_timings_by_tab: std::collections::HashMap::new(),
+            query_stats_view: Default::default(),
             restore_session: true,
             show_system_objects: false,
             pending_tab_close: None,

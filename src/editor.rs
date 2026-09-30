@@ -8909,6 +8909,17 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                 );
             }
         }
+        "Query: Insights (Most Run / Slowest)" => {
+            tabular.open_query_insights();
+        }
+        "DBA: Server Dashboard" => {
+            if let Some(conn_id) = tabular
+                .current_connection_id
+                .or_else(|| tabular.connections.first().and_then(|c| c.id))
+            {
+                open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::Dashboard);
+            }
+        }
         "DBA: Deadlock & Lock Tree" => {
             if let Some(conn_id) = tabular.current_connection_id {
                 open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::LockTree);

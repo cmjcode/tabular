@@ -1609,6 +1609,8 @@ pub struct DbaMonitorState {
     pub selected_pid: Option<i64>,
     pub confirm_action: Option<(i64, bool)>, // (pid, is_cancel_only)
     pub status_message: Option<(String, bool)>, // (message, is_error)
+    /// Metrik server untuk tab Dashboard.
+    pub dashboard: crate::server_metrics::DashboardState,
 }
 
 impl Default for DbaMonitorState {
@@ -1625,6 +1627,7 @@ impl Default for DbaMonitorState {
             selected_pid: None,
             confirm_action: None,
             status_message: None,
+            dashboard: Default::default(),
         }
     }
 }
