@@ -438,8 +438,9 @@ fn link_to_diagrams(app: &mut Tabular, key: &str, endpoints: &[EndpointTables]) 
             continue;
         }
         let stats = crate::repo_links::apply_endpoint_links(state, Some(key), endpoints);
+        let synced = crate::diagram_flow::sync_cards_from_links(state);
         report.add(stats);
-        if stats.changed() {
+        if stats.changed() || synced {
             to_save.push((conn, db, state.clone()));
         }
     }
@@ -466,8 +467,9 @@ fn link_to_diagrams(app: &mut Tabular, key: &str, endpoints: &[EndpointTables]) 
             continue;
         }
         let stats = crate::repo_links::apply_endpoint_links(&mut state, Some(key), endpoints);
+        let synced = crate::diagram_flow::sync_cards_from_links(&mut state);
         report.add(stats);
-        if !stats.changed() {
+        if !stats.changed() && !synced {
             continue;
         }
         let written = serde_json::to_vec_pretty(&state)

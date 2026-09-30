@@ -32,6 +32,7 @@ pub mod deeplink;
 pub mod data_table;
 pub mod dba_monitor;
 pub mod diagram_endpoints_view;
+pub mod diagram_flow;
 pub mod diagram_links;
 pub mod diagram_lod;
 pub mod diagram_mermaid;

@@ -166,6 +166,11 @@ pub fn prepare_stored_state(state: &mut DiagramState, conn_id: i64, db_name: &st
         state.save_requested = true;
         log::info!("[DIAGRAM_LINK] migrated {migrated} legacy database(s) in '{db_name}' to links");
     }
+    // Diagram lama belum punya flow card: dibuat dari `endpoint_links` dan
+    // disimpan supaya id card stabil.
+    if crate::diagram_flow::sync_cards_from_links(state) {
+        state.save_requested = true;
+    }
 }
 
 fn table_prefix(name: &str) -> &str {
@@ -312,6 +317,7 @@ pub fn merge_schema(
     // tabel link database dibiarkan sampai link-nya selesai dimuat.
     crate::diagram_links::prune_virtual_relations(state);
     crate::repo_links::prune_endpoint_links(state);
+    crate::diagram_flow::prune_flow_cards(state);
 
     if is_init && !state.nodes.is_empty() {
         crate::diagram_view::perform_auto_layout(state);
@@ -348,6 +354,10 @@ pub fn layout_fingerprint(state: &DiagramState) -> u64 {
         l.link_id.hash(&mut h);
         l.offset.x.to_bits().hash(&mut h);
         l.offset.y.to_bits().hash(&mut h);
+    }
+    for c in &state.flow_cards {
+        c.id.hash(&mut h);
+        c.pos.map(|[x, y]| (x.to_bits(), y.to_bits())).hash(&mut h);
     }
     h.finish()
 }

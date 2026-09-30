@@ -603,6 +603,17 @@ fn subset_with_relations(
         .filter(|l| keep.contains(l.table.as_str()))
         .cloned()
         .collect();
+    // Langkah ke tabel di luar subset tetap tersimpan, hanya tanpa garis.
+    let flow_cards = source
+        .flow_cards
+        .iter()
+        .filter(|c| {
+            crate::diagram_flow::tables_of(source, c)
+                .iter()
+                .any(|t| keep.contains(t.as_str()))
+        })
+        .cloned()
+        .collect();
     DiagramState {
         nodes,
         edges,
@@ -610,7 +621,10 @@ fn subset_with_relations(
         linked_relations,
         notes,
         endpoint_links,
+        flow_cards,
         show_endpoints: source.show_endpoints,
+        endpoint_display: source.endpoint_display,
+        flow_lines: source.flow_lines,
         show_notes: source.show_notes,
         show_grid: source.show_grid,
         prevent_overlap: source.prevent_overlap,

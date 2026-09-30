@@ -333,7 +333,7 @@ pub fn render_endpoints_panel(
     }
 
     if let Some(l) = unlink {
-        state.endpoint_links.retain(|x| !x.same_endpoint(&l));
+        crate::diagram_flow::unlink_endpoint(state, &l);
         state.save_requested = true;
     }
     if close {

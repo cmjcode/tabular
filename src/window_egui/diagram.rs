@@ -692,6 +692,10 @@ impl super::Tabular {
                     current_state.show_notes = loaded_state.show_notes;
                     current_state.endpoint_links = loaded_state.endpoint_links;
                     current_state.show_endpoints = loaded_state.show_endpoints;
+                    current_state.flow_cards = loaded_state.flow_cards;
+                    current_state.endpoint_display = loaded_state.endpoint_display;
+                    current_state.flow_lines = loaded_state.flow_lines;
+                    crate::diagram_flow::sync_cards_from_links(current_state);
                     current_state.pan = loaded_state.pan;
                     current_state.zoom = loaded_state.zoom;
                     current_state.show_grid = loaded_state.show_grid;

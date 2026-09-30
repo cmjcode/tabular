@@ -682,12 +682,16 @@ Tiap fase diakhiri `cargo clippy --all-targets -- -D warnings`,
 
 ### Fase 1: Model dan logika murni
 
-- [ ] Tipe di `src/models/structs.rs` + field `DiagramState` + `Default`.
-- [ ] `src/diagram_flow.rs` dengan fungsi di bagian 5.
-- [ ] `prune_flow_cards` dipanggil di `src/diagram_schema.rs:314`; `layout_fingerprint` diperluas.
-- [ ] `subset_with_relations` menyalin card.
-- [ ] `sync_cards_from_links` dipanggil saat diagram dimuat dan setelah `apply_endpoint_links`.
-- Validasi: `cargo test --lib diagram_flow::` dan test serde file lama.
+- [x] Tipe di `src/models/structs.rs` + field `DiagramState` + `Default`. `flow_gen` /
+  `FlowGenWindow` ditunda ke Fase 5 bersama jendela progress.
+- [x] `src/diagram_flow.rs` dengan fungsi di bagian 5, plus `unlink_endpoint` dan
+  `drop_orphan_cards` (dipakai tombol unlink di panel endpoint dan `prune_flow_cards`).
+- [x] `prune_flow_cards` dipanggil setelah `prune_endpoint_links` di `merge_schema`;
+  `layout_fingerprint` diperluas.
+- [x] `subset_with_relations` menyalin card.
+- [x] `sync_cards_from_links` dipanggil di `prepare_stored_state`, di
+  `load_diagram_from_db_and_apply`, dan setelah `apply_endpoint_links` di `http_repo.rs`.
+- Validasi: `cargo test --lib diagram_flow::` (15 test) dan test serde file lama.
 
 ### Fase 2: Generator AI
 

@@ -1073,6 +1073,26 @@ pub struct DiagramState {
     pub endpoints_panel: Option<String>,
     #[serde(skip)]
     pub endpoints_panel_query: String,
+    /// Proses bisnis (flow card) beserta langkahnya. Card HTTP tanpa langkah
+    /// dibuat dari `endpoint_links` oleh `diagram_flow::sync_cards_from_links`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow_cards: Vec<FlowCard>,
+    /// Cara endpoint ditampilkan; `show_endpoints` tetap saklar tampil/sembunyi.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub endpoint_display: EndpointDisplay,
+    /// Garis proses mana yang digambar.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub flow_lines: FlowLineMode,
+    /// Flow card terpilih.
+    #[serde(skip)]
+    pub selected_flow: Option<String>,
+    /// Flow card yang sedang difokuskan (meredupkan lainnya). Tidak pernah
+    /// aktif bersamaan dengan `focus_table` atau `focus_group`.
+    #[serde(skip)]
+    pub focus_flow: Option<String>,
+    /// Pemutaran animasi langkah flow card.
+    #[serde(skip)]
+    pub flow_play: Option<FlowPlayback>,
 }
 
 /// Endpoint HTTP API yang membaca/menulis sebuah tabel diagram.
@@ -1105,6 +1125,245 @@ impl EndpointLink {
             && self.method.eq_ignore_ascii_case(&other.method)
             && self.path == other.path
     }
+}
+
+/// Cara endpoint HTTP ditampilkan di kanvas diagram.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointDisplay {
+    /// Flow card di lane samping tabel.
+    #[default]
+    Cards,
+    /// Badge "API n" di header tabel.
+    Badges,
+    Both,
+}
+
+impl EndpointDisplay {
+    pub fn shows_cards(self) -> bool {
+        matches!(self, Self::Cards | Self::Both)
+    }
+
+    pub fn shows_badges(self) -> bool {
+        matches!(self, Self::Badges | Self::Both)
+    }
+}
+
+/// Garis proses flow card mana yang digambar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowLineMode {
+    /// Hanya card terpilih, di-hover, atau yang sedang diputar.
+    #[default]
+    Selected,
+    All,
+}
+
+/// Jenis pemicu sebuah flow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowTriggerKind {
+    #[default]
+    Http,
+    Job,
+    Queue,
+    Cron,
+    Event,
+    Cli,
+    /// Jenis dari versi Tabular yang lebih baru.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Pemicu flow: endpoint HTTP, job, topik queue, jadwal cron, dan lain-lain.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowTrigger {
+    #[serde(default)]
+    pub kind: FlowTriggerKind,
+    /// Method HTTP huruf besar; kosong untuk trigger non-HTTP.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    /// Path route (`/users/{id}`), nama job, topik queue, atau ekspresi cron.
+    #[serde(default)]
+    pub target: String,
+}
+
+/// Resource yang disentuh sebuah langkah. Ditulis sebagai
+/// `{"kind": "table", "id": "users"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum FlowTarget {
+    /// Id node tabel di diagram.
+    Table(String),
+    /// Layanan luar, mis. "Stripe API".
+    External(String),
+    Queue(String),
+    Cache(String),
+    /// Id `FlowCard` lain (proses bersambung).
+    Flow(String),
+    /// Jenis target dari versi Tabular yang lebih baru.
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for FlowTarget {
+    /// `#[serde(other)]` menolak target asing yang membawa `id`, jadi jenis
+    /// yang tidak dikenal ditangkap lewat varian untagged.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+        enum Known {
+            Table(String),
+            External(String),
+            Queue(String),
+            Cache(String),
+            Flow(String),
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Known(Known),
+            Other(serde::de::IgnoredAny),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Known(Known::Table(id)) => FlowTarget::Table(id),
+            Raw::Known(Known::External(id)) => FlowTarget::External(id),
+            Raw::Known(Known::Queue(id)) => FlowTarget::Queue(id),
+            Raw::Known(Known::Cache(id)) => FlowTarget::Cache(id),
+            Raw::Known(Known::Flow(id)) => FlowTarget::Flow(id),
+            Raw::Other(_) => FlowTarget::Unknown,
+        })
+    }
+}
+
+impl FlowTarget {
+    /// Id tabel bila target ini tabel diagram.
+    pub fn table(&self) -> Option<&str> {
+        match self {
+            FlowTarget::Table(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// Operasi sebuah langkah terhadap targetnya.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowOp {
+    Read,
+    Insert,
+    Update,
+    Delete,
+    Upsert,
+    Call,
+    Publish,
+    Consume,
+    /// Operasi dari versi Tabular yang lebih baru.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Jenis langkah di dalam flow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowStepKind {
+    Auth,
+    Validate,
+    Db,
+    External,
+    Queue,
+    Cache,
+    #[default]
+    Logic,
+    Branch,
+    Respond,
+    /// Jenis dari versi Tabular yang lebih baru.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Satu langkah di dalam flow.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlowStep {
+    #[serde(default)]
+    pub kind: FlowStepKind,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<FlowTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<FlowOp>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
+    /// `path/file:line` di repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Syarat langkah ini dijalankan, mis. "if coupon present".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+/// Asal-usul alur hasil generate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowMeta {
+    /// Commit HEAD saat generate (informasi saja).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// RFC 3339.
+    #[serde(default)]
+    pub generated_at: String,
+    #[serde(default)]
+    pub backend: String,
+    /// AI hanya melihat cuplikan, bukan seluruh repository.
+    #[serde(default)]
+    pub partial: bool,
+    /// File yang dibaca AI untuk alur ini (relatif ke root repository).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_files: Vec<String>,
+    /// md5 gabungan isi `source_files`; beda berarti alur perlu di-generate ulang.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_hash: String,
+}
+
+/// Satu proses bisnis yang tampil sebagai card di kanvas diagram.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlowCard {
+    /// Id stabil (`flw_<n>`), lihat `diagram_flow::new_flow_id`.
+    pub id: String,
+    #[serde(default)]
+    pub trigger: FlowTrigger,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Kunci repository asal (lihat `repo_scan::repo_key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_key: Option<String>,
+    /// Lokasi definisi route di repository (`path/file:line`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Id `SavedRequest`; hanya ada di komputer yang punya collection-nya.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Posisi pojok kiri atas (koordinat diagram). `None` = ditata otomatis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 2]>,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<FlowStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<FlowMeta>,
+}
+
+/// Pemutaran animasi langkah sebuah flow card (runtime saja).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowPlayback {
+    pub card_id: String,
+    /// Posisi waktu di timeline (detik), sudah memperhitungkan kecepatan.
+    pub position: f64,
+    /// `egui::InputState::time` pada frame terakhir; `None` saat jeda.
+    pub last_tick: Option<f64>,
+    pub speed: f32,
 }
 
 /// Draft modal edit relasi virtual: tabel tetap, kolom kedua ujung bisa diganti.
@@ -1347,6 +1606,12 @@ impl Default for DiagramState {
             show_endpoints: true,
             endpoints_panel: None,
             endpoints_panel_query: String::new(),
+            flow_cards: Vec::new(),
+            endpoint_display: EndpointDisplay::default(),
+            flow_lines: FlowLineMode::default(),
+            selected_flow: None,
+            focus_flow: None,
+            flow_play: None,
         }
     }
 }
@@ -1825,6 +2090,12 @@ pub struct ConnectionConfig {
     /// secret disimpan di secret store, bukan di sini saat persist.
     #[serde(default)]
     pub plugin_options: std::collections::BTreeMap<String, String>,
+}
+
+/// Nilai bawaan tidak ditulis, supaya file diagram tanpa flow card tetap
+/// sama seperti sebelum field baru ada.
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
 }
 
 fn default_true() -> bool {
