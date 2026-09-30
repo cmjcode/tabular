@@ -1103,9 +1103,9 @@ impl Tabular {
                                 let button_width = (btn_avail_width / 4.0).max(40.0);
                                 let button_height = top_bar_height;
 
-                                // Key internal tetap "Database"/"Collaborations"; hanya label yang berubah.
+                                // Key internal tetap "Database"/"Collaborations"; label dibuat pendek agar sidebar ramping.
                                 let is_db_active = self.selected_menu == "Database";
-                                if style::render_custom_tab(ui, "Databases", is_db_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "DBs", is_db_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Database".to_string();
                                 }
 
@@ -1123,7 +1123,7 @@ impl Tabular {
                                 }
 
                                 let is_collab_active = self.selected_menu == "Collaborations";
-                                if style::render_custom_tab(ui, "Collabs", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "Team", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Collaborations".to_string();
                                 }
                             },
