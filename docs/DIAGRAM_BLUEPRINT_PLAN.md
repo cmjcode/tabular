@@ -1,0 +1,772 @@
+# Rencana: Diagram sebagai Blueprint Arsitektur (Business Process per Endpoint)
+
+Status: **DRAFT, menunggu persetujuan.** Belum ada kode yang ditulis.
+Tanggal: 2026-09-30 · Branch saat diskusi: `main`
+
+Tujuan: diagram ERD menjadi blueprint arsitektur software. Tiap proses bisnis tampil sebagai
+**card** di kanvas, dengan garis ke tabel dan resource yang disentuhnya, urutan langkahnya, dan
+animasi pergerakan data saat card di-double-click. Alur di-generate AI dari kode di repository
+git. Versi pertama hanya menangani proses yang dipicu **endpoint HTTP**; modelnya sudah umum
+supaya job, queue consumer, cron dan event bisa menyusul tanpa mengubah format file.
+
+---
+
+## 1. Keputusan
+
+| # | Keputusan | Pilihan | Status |
+|---|---|---|---|
+| 1 | Akar model | **Flow** (proses) dengan **trigger**; endpoint HTTP adalah salah satu jenis trigger | Disetujui |
+| 2 | Implementasi pertama | Hanya trigger HTTP, karena pemindai route dan `endpoint_links` sudah ada | Disetujui |
+| 3 | Sumber kebenaran "endpoint menyentuh tabel" | `endpoint_links` tetap, formatnya tidak diubah; card dan langkah di field baru | Rekomendasi |
+| 4 | Generate alur | Job AI terpisah dari dokumentasi endpoint, batch 6 endpoint | Rekomendasi |
+| 5 | Deteksi alur basi | Hash isi file sumber per flow, bukan `git diff` (clone cache ber-depth 1) | Rekomendasi |
+| 6 | Garis proses | Hanya untuk card terpilih, di-hover atau diputar; opsi "All" tersedia | Rekomendasi |
+| 7 | Resource non-tabel (API eksternal, queue, cache) | Disimpan sebagai target bertipe; v1 digambar sebagai baris di card, node kanvas di fase B1 | Perlu konfirmasi |
+| 8 | Badge "API n" di header tabel | Dipertahankan sebagai opsi tampilan; bawaan berpindah ke Cards | Perlu konfirmasi |
+| 9 | Urutan | Fase 1–5 dulu, Fase 6 (MCP, Mermaid, docs) menyusul | Perlu konfirmasi |
+
+---
+
+## 2. Konsep
+
+Tiga lapis dalam satu kanvas:
+
+| Lapis | Objek | Asal |
+|---|---|---|
+| Service | Group diagram yang punya repository | Sudah ada (`DiagramGroup.repo_url`) |
+| Proses | **Flow card**: trigger + langkah berurutan | Baru |
+| Data | Tabel, kolom, relasi (ERD) | Sudah ada |
+
+Istilah:
+
+- **Flow**: satu proses bisnis, dari pemicu sampai respons.
+- **Trigger**: pemicu flow. Jenis: `http`, `job`, `queue`, `cron`, `event`, `cli`. V1 hanya `http`.
+- **Step**: satu langkah di dalam flow (auth, validasi, akses database, panggilan eksternal, …).
+- **Target**: resource yang disentuh sebuah step: tabel, API eksternal, queue, cache, atau flow lain.
+
+---
+
+## 3. Kode yang dipakai ulang
+
+| Kebutuhan | Yang sudah ada | Lokasi |
+|---|---|---|
+| Relasi endpoint ke tabel | `EndpointLink`, `apply_endpoint_links`, `prune_endpoint_links` | `src/models/structs.rs:1080`, `src/repo_links.rs:275` |
+| Pemindai route deterministik | `scan_routes`, `RouteHit`, `route_key` | `src/repo_endpoints.rs:896`, `:329` |
+| Job AI per batch, paralel, bisa dibatalkan | `run_pool`, `acquire_ai_slot`, `batches`, `batch_snippets` | `src/repo_endpoints.rs:1351`–`1575` |
+| Menyiapkan repository | `choose_source`, `resolve_repo`, `ResolvedRepo` | `src/repo_scan.rs:232`, `:400` |
+| Mode AI (baca repo read-only atau cuplikan) | `ai_workspace`, `ask_ai_with_offset`, `PromptMode` | `src/repo_scan.rs:1429`, `:1516` |
+| Event job | `RepoJobEvent<T>`, `step(...)`, `RepoScanError` | `src/repo_scan.rs:1214`, `:1265` |
+| Card melayang dan garis ke tabel | `render_note_cards`, `draw_note_links`, `last_card_rects` | `src/diagram_notes_view.rs:495`, `:282` |
+| Partikel di kurva bezier | `draw_flow_animation`, `column_curve`, `sample_curve` | `src/diagram_view.rs:4239` |
+| Fokus dan peredupan | `focus_table`, `focus_set`, `DIM_OPACITY`, `dim_node` | `src/diagram_view.rs:1106`, `:3953` |
+| Tween viewport | `animate_view_to`, `sample_view_anim` | `src/diagram_view.rs:377` |
+| LOD dan culling | `lod_for_zoom`, `curve_visible`, `quantize_font` | `src/diagram_lod.rs` |
+| Job diagram di app | `DiagramRepoScanJob`, `start_group_table_scan`, `poll_diagram_repo_scan_jobs` | `src/window_egui/diagram.rs:23`, `:346`, `:449` |
+| Jendela progress AI | `render_job_progress` | `src/diagram_repo.rs:1115` |
+| Warna method HTTP | `method_color` (privat, dijadikan `pub(crate)`), `method_chip` | `src/http_repo.rs:999` |
+| Test render tanpa jendela | `render_frame` | `src/diagram_view.rs:8066` |
+
+Penamaan: animasi partikel relasi tabel yang sudah ada bernama `flow_anim` /
+`DiagramFlowAnimation`. Supaya tidak rancu, semua yang baru memakai awalan `flow_card` atau
+`FlowCard`/`FlowPlayback`, dan komentar `flow_anim` diperjelas sebagai "aliran relasi tabel".
+
+---
+
+## 4. Model data
+
+Tipe baru ditaruh di `src/models/structs.rs` di dekat `EndpointLink`, karena direferensikan
+`DiagramState` seperti `DiagramNote`.
+
+```rust
+/// Jenis pemicu sebuah flow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowTriggerKind {
+    #[default]
+    Http,
+    Job,
+    Queue,
+    Cron,
+    Event,
+    Cli,
+    /// Jenis dari versi Tabular yang lebih baru.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowTrigger {
+    #[serde(default)]
+    pub kind: FlowTriggerKind,
+    /// Method HTTP huruf besar; kosong untuk trigger non-HTTP.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    /// Path route (`/users/{id}`), nama job, topik queue, atau ekspresi cron.
+    pub target: String,
+}
+
+/// Resource yang disentuh sebuah langkah.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum FlowTarget {
+    /// Id node tabel di diagram.
+    Table(String),
+    /// Layanan luar, mis. "Stripe API".
+    External(String),
+    Queue(String),
+    Cache(String),
+    /// Id `FlowCard` lain (proses bersambung).
+    Flow(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowOp { Read, Insert, Update, Delete, Upsert, Call, Publish, Consume }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowStepKind {
+    Auth, Validate, Db, External, Queue, Cache,
+    #[default]
+    Logic,
+    Branch, Respond,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlowStep {
+    #[serde(default)]
+    pub kind: FlowStepKind,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<FlowTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<FlowOp>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
+    /// `path/file:line` di repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Syarat langkah ini dijalankan, mis. "if coupon present".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+/// Asal-usul alur hasil generate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowMeta {
+    /// Commit HEAD saat generate (informasi saja).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// RFC 3339.
+    pub generated_at: String,
+    pub backend: String,
+    /// AI hanya melihat cuplikan, bukan seluruh repository.
+    #[serde(default)]
+    pub partial: bool,
+    /// File yang dibaca AI untuk alur ini (relatif ke root repository).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_files: Vec<String>,
+    /// md5 gabungan isi `source_files`; beda berarti alur perlu di-generate ulang.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_hash: String,
+}
+
+/// Satu proses bisnis yang tampil sebagai card di kanvas.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlowCard {
+    /// Id stabil (`flw_<n>`), dibuat seperti `diagram_notes::new_note_id`.
+    pub id: String,
+    pub trigger: FlowTrigger,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Id `SavedRequest`; hanya ada di komputer yang punya collection-nya.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Posisi pojok kiri atas (koordinat diagram). `None` = ditata otomatis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[f32; 2]>,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<FlowStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<FlowMeta>,
+}
+```
+
+Field baru di `DiagramState`:
+
+| Field | Tipe | Serde | Guna |
+|---|---|---|---|
+| `flow_cards` | `Vec<FlowCard>` | `default`, skip bila kosong | Card dan langkahnya |
+| `endpoint_display` | `EndpointDisplay` (`Cards`, `Badges`, `Both`) | `default` = `Cards` | Cara endpoint ditampilkan; `show_endpoints` yang lama tetap menjadi saklar tampil/sembunyi |
+| `flow_lines` | `FlowLineMode` (`Selected`, `All`) | `default` = `Selected` | Garis mana yang digambar |
+| `selected_flow` | `Option<String>` | `skip` | Card terpilih |
+| `focus_flow` | `Option<String>` | `skip` | Card yang sedang difokuskan (meredupkan lainnya) |
+| `flow_play` | `Option<FlowPlayback>` | `skip` | Pemutaran animasi |
+| `flow_gen` | `Option<FlowGenWindow>` | `skip` | Jendela progress generate |
+
+```rust
+/// Pemutaran animasi langkah sebuah flow card (runtime saja).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowPlayback {
+    pub card_id: String,
+    /// Posisi waktu di timeline (detik), sudah memperhitungkan kecepatan.
+    pub position: f64,
+    /// `egui::InputState::time` pada frame terakhir; `None` saat jeda.
+    pub last_tick: Option<f64>,
+    pub speed: f32,
+}
+```
+
+### Aturan konsistensi dengan `endpoint_links`
+
+- Identitas logis card HTTP: `(repo_key, method, path)`; pembanding path memakai
+  `repo_endpoints::route_key`, yang menyamakan huruf besar-kecil dan nama parameter.
+- `sync_cards_from_links(state) -> bool`: untuk tiap kelompok link yang belum punya card, buat
+  card tanpa langkah. Ini yang memigrasikan diagram lama saat dibuka.
+- `links_from_steps(state, card)`: langkah bertarget `Table` yang belum punya link menambah
+  `EndpointLink` lewat `apply_endpoint_links`.
+- Tabel sebuah card = gabungan tabel dari link dan dari langkah (`tables_of`).
+- Unlink terakhir dari sebuah card tanpa langkah menghapus card itu. Card yang punya langkah
+  tetap ada.
+- `prune_flow_cards(state)`: target `Table` yang tabelnya sudah hilang diubah menjadi `None`
+  (langkahnya tetap, teksnya masih berguna); dipanggil setelah `prune_endpoint_links` di
+  `src/diagram_schema.rs:314`. Tidak memangkas bila `nodes` masih kosong, sama seperti
+  `prune_endpoint_links`.
+
+### Batas ukuran
+
+| Batas | Nilai |
+|---|---|
+| Langkah per flow | 25 |
+| `title` | 80 karakter |
+| `detail` | 300 karakter |
+| `columns` per langkah | 12 |
+| `source_files` per flow | 20 |
+
+Dipotong di parser dengan `repo_scan::truncate_chars`.
+
+### Kompatibilitas
+
+- File lama terbaca karena semua field baru ber-`#[serde(default)]`.
+- Versi lama mengabaikan field baru saat membaca. **Bila versi lama menyimpan diagram,
+  `flow_cards` hilang** dari file itu. Card tanpa langkah akan dibuat ulang dari
+  `endpoint_links`; langkah hasil AI harus di-generate ulang. Lihat Risiko.
+- `layout_fingerprint` (`src/diagram_schema.rs:323`) ikut meng-hash `id` dan `pos` tiap card,
+  supaya layout bersama dari `diagram_by_tabular` tidak menimpa card yang baru digeser user.
+
+---
+
+## 5. Modul baru
+
+| File | Isi | Bergantung egui |
+|---|---|---|
+| `src/diagram_flow.rs` | Logika murni: `new_flow_id`, `sync_cards_from_links`, `links_from_steps`, `tables_of`, `prune_flow_cards`, `card_for_endpoint`, `op_direction` | Tidak |
+| `src/diagram_flow_gen.rs` | Generator AI: prompt, parser, hash sumber, job background | Tidak |
+| `src/diagram_flow_layout.rs` | Geometri: ukuran card per LOD, anchor langkah, penataan lane, timeline pemutaran | Hanya tipe `egui::Rect`/`Pos2` |
+| `src/diagram_flow_view.rs` | Gambar card, garis, menu, panel, kontrol pemutaran | Ya |
+
+Semua didaftarkan di `src/lib.rs`. `diagram_flow_gen.rs` tidak boleh menyentuh `window_egui`.
+
+---
+
+## 6. Generator AI (`src/diagram_flow_gen.rs`)
+
+### Antarmuka
+
+```rust
+pub struct FlowScanInput {
+    pub repo_path: Option<String>,
+    pub repo_url: Option<String>,
+    /// Judul group atau folder, untuk prompt dan log.
+    pub scope_name: String,
+    pub cards: Vec<FlowSeed>,
+    /// Nama tabel diagram (tanpa tabel link database).
+    pub tables: Vec<String>,
+    pub backend: Option<ChatBackend>,
+    pub backend_label: String,
+    pub cache_root: PathBuf,
+    pub parallel: usize,
+    /// `false` = lewati card yang `source_hash`-nya masih sama.
+    pub force: bool,
+}
+
+/// Bahan satu flow untuk AI.
+pub struct FlowSeed {
+    pub card_id: String,
+    pub method: String,
+    pub path: String,
+    pub source: Option<String>,
+    pub known_tables: Vec<String>,
+    pub previous: Option<FlowMeta>,
+}
+
+pub struct GeneratedFlow {
+    pub card_id: String,
+    pub summary: String,
+    pub steps: Vec<FlowStep>,
+    pub meta: FlowMeta,
+}
+
+pub struct FlowScanOutcome {
+    pub flows: Vec<GeneratedFlow>,
+    pub skipped_fresh: usize,
+    /// (card_id, pesan)
+    pub failed: Vec<(String, String)>,
+    pub note: Option<String>,
+}
+
+pub type FlowEvent = RepoJobEvent<FlowScanOutcome>;
+pub struct FlowScanHandle { pub rx: mpsc::Receiver<FlowEvent>, cancel: Arc<AtomicBool> }
+pub fn spawn_flow_scan(input: FlowScanInput) -> FlowScanHandle;
+```
+
+Bentuknya mengikuti `spawn_endpoint_scan` (`src/repo_endpoints.rs:1514`): thread sendiri, hasil
+`RepoJobEvent::Finished(Result<_, String>)`, "Cancelled" untuk pembatalan. Log memakai tag
+`[DIAGRAM_FLOW]`.
+
+### Alur job
+
+| Langkah | Nomor progress | Isi |
+|---|---|---|
+| 1 | 1 | `choose_source` + `resolve_repo` ("Cloning or updating repository" / "Opening local folder") |
+| 2 | 2 | Tentukan card yang perlu di-generate: tanpa `meta`, `partial`, hash berubah, atau `force` |
+| 3 | 3 | `ai_workspace` menentukan `PromptMode` dan `ChatWorkspace` |
+| 4 | 4.. | Batch 6 card, dikelompokkan per file sumber; `run_pool` + `acquire_ai_slot`; tiap batch memakai `ask_ai_with_offset` dengan offset berbeda |
+| 5 | terakhir | Gabungkan hasil, hitung `source_hash`, isi `FlowMeta` |
+
+Agar batas 6 giliran AI tetap satu untuk semua job, `run_pool`, `acquire_ai_slot`,
+`MAX_GLOBAL_AI_TURNS` dan `batch_snippets` di `src/repo_endpoints.rs` dijadikan `pub(crate)`.
+
+Satu batch gagal tidak menggagalkan job: card di batch itu masuk `failed`, sisanya tetap
+dikembalikan. `RepoScanError::Cancelled` menghentikan semuanya.
+
+### Deteksi alur basi
+
+- Setelah generate, `source_hash` = md5 (crate `md5` sudah dipakai di `repo_scan.rs`) dari isi
+  `source_files` yang diurutkan, masing-masing dibatasi `MAX_FILE_BYTES`.
+- Pada generate berikutnya, hash dihitung ulang dari repository yang sudah disiapkan. Sama berarti
+  dilewati (`skipped_fresh`).
+- `git diff <commit>..HEAD` tidak dipakai: clone di cache ber-depth 1, jadi commit lama belum tentu
+  ada, dan folder lokal bisa bukan repository git.
+- `commit` diisi dari `crate::git::cli::run_text(root, &["rev-parse", "HEAD"])` bila berhasil,
+  hanya untuk ditampilkan ("Generated from a1b2c3d").
+- Label `outdated` di card hanya dihitung saat generate atau saat user menekan
+  **Check for changes**, bukan tiap frame.
+
+### Prompt
+
+System prompt (bahasa Inggris, seperti prompt lain):
+
+```text
+You trace what each HTTP endpoint does, step by step, from its server source code, so an
+architect can see the business process. Follow the handler into middleware, services,
+repositories, ORM models, raw SQL, queue publishers and HTTP clients.
+<repo_location(mode, root)>
+Rules:
+- List steps in execution order, at most 25 per endpoint. Merge trivial lines into one step.
+- `kind` is auth, validate, db, external, queue, cache, logic, branch or respond.
+- A db step names exactly one table in `table`, with `op` read, insert, update, delete or
+  upsert, and the columns it filters or writes in `columns`.
+- external, queue and cache steps put the service, topic or key pattern in `resource`, with
+  `op` call, publish or consume.
+- `condition` says when a step runs if it is not always executed.
+- `source` is `path/to/file:line` of the code for that step.
+- `files` lists every file you read for this endpoint.
+- Use table names from this list when they match: <tables>
+- Never include secrets, tokens or personal data. Never create, modify or remove files.
+Reply with ONLY one JSON object, no prose and no markdown fence, shaped like this example:
+{"flows":[{"id":"flw_3","summary":"Creates an order and reserves stock","files":["src/routes/orders.ts","src/services/order.ts"],"steps":[{"kind":"auth","title":"Verify bearer token","source":"src/middleware/auth.ts:12"},{"kind":"db","op":"read","table":"users","columns":["id","status"],"title":"Load the customer","source":"src/services/order.ts:40"},{"kind":"db","op":"insert","table":"orders","columns":["user_id","total"],"title":"Create the order","source":"src/services/order.ts:58"},{"kind":"queue","op":"publish","resource":"order.created","title":"Publish order.created","source":"src/services/order.ts:71"},{"kind":"respond","title":"Return 201 with the order"}]}]}
+```
+
+User prompt: nama scope, lalu per card `- <id>: <METHOD> <path> (<source>) known tables: a, b`,
+lalu cuplikan kode pada mode `Snippets`.
+
+### Parser (`parse_flows_reply`)
+
+- Ambil objek JSON dengan `repo_scan::slice_between(text, '{', '}')`, toleran terhadap pagar
+  markdown, seperti `parse_endpoints_reply`.
+- `id` yang tidak ada di batch dibuang.
+- `table` dicocokkan dengan `repo_endpoints::filter_tables`. Tidak cocok: target menjadi `None`
+  dan nama aslinya ditambahkan ke `detail`.
+- `resource` menjadi `FlowTarget::External`, `Queue` atau `Cache` menurut `kind`.
+- `kind` atau `op` tak dikenal jatuh ke `Logic` / `None`.
+- Semua batas ukuran di bagian 4 diterapkan di sini.
+- Flow tanpa langkah dianggap gagal untuk card itu.
+
+### Tanpa AI atau mode cuplikan
+
+- Tanpa backend AI: tidak ada job. Card tetap tampil dengan garis ke tabel dari `endpoint_links`,
+  operasi tidak diketahui, dan teks "No business process yet".
+- Mode `Snippets` (backend API): AI hanya menerima file route, maksimal 60 KB per batch, setelah
+  `redact_code_secrets`. `meta.partial = true`, dan card menampilkan label "partial".
+- Build tanpa proses eksternal (Mac App Store, iOS): menu generate disembunyikan dengan syarat
+  yang sama dengan pemindai repository (`#[cfg(not(target_os = "ios"))]`).
+
+---
+
+## 7. Tata letak dan gambar
+
+### Ukuran (koordinat diagram, zoom 1.0)
+
+| Konstanta | Nilai | Guna |
+|---|---|---|
+| `CARD_WIDTH` | 300 | Lebar card |
+| `CARD_HEADER_H` | 34 | Chip method + path |
+| `CARD_SUMMARY_H` | 22 | Satu baris ringkasan |
+| `STEP_ROW_H` | 22 | Satu langkah |
+| `CARD_MAX_STEPS_SHOWN` | 8 | Sisanya "+n more"; semua tampil saat card dipilih |
+| `LANE_GAP_X` | 140 | Jarak lane ke tabel terkiri |
+| `LANE_GAP_Y` | 18 | Jarak antar card |
+
+### LOD
+
+| LOD (`lod_for_zoom`) | Tampilan card |
+|---|---|
+| `Detail` | Header, ringkasan, daftar langkah bernomor dengan ikon jenis |
+| Menengah | Pil method + path, jumlah langkah |
+| `Overview` | Titik berwarna method; tanpa teks |
+
+### Penataan otomatis (`arrange_lane`)
+
+1. Card dikelompokkan per `repo_key`, lalu dipasangkan dengan group diagram yang kunci
+   repository-nya sama.
+2. Tiap kelompok mendapat satu lane vertikal di kiri bounding box tabel-tabelnya
+   (`LANE_GAP_X` dari tepi kiri). Card tanpa tabel di diagram masuk lane di kiri seluruh diagram.
+3. Urutan dalam lane: path, lalu `repo_links::method_rank`.
+4. Lane yang lebih tinggi dari 1.400 (sama dengan `MAX_COLUMN_HEIGHT` tata letak fokus) membuka
+   kolom baru ke kiri.
+5. Hanya card dengan `pos == None` yang ditata; card yang sudah digeser user tidak dipindah.
+   Menu **Arrange API cards** menata ulang semuanya.
+
+Card tidak ikut `resolve_node_overlaps`, `compact_groups` atau `perform_auto_layout`, jadi tata
+letak tabel tidak berubah.
+
+### Garis proses
+
+- Satu kurva per pasangan (card, target tabel), dari tepi card ke tepi tabel terdekat; bila
+  `columns` terisi dan LOD `Detail`, ujungnya di baris kolom pertama (`column_anchor_y`).
+- Warna mengikuti operasi:
+
+  | Operasi | Warna | Arah panah |
+  |---|---|---|
+  | `read` | biru (80, 200, 255) | tabel → card |
+  | `insert`, `update`, `upsert` | hijau (80, 220, 140) | card → tabel |
+  | `delete` | merah (239, 83, 80) | card → tabel |
+  | tidak diketahui | abu-abu | tanpa panah |
+
+  Satu tabel dengan beberapa operasi memakai warna operasi tulis dan panah dua arah.
+- Chip nomor langkah di tengah kurva (`draw_chip_label` di `src/diagram_view.rs:5068`, dijadikan
+  `pub(crate)`).
+- Mode `Selected`: garis hanya untuk card terpilih, di-hover, atau yang sedang diputar. Card lain
+  tidak menggambar garis.
+- Mode `All`: semua garis, opacity `DENSE_OPACITY` kecuali yang aktif. Di atas `DASH_BUDGET`
+  garis, yang tidak aktif tidak digambar.
+- Culling dengan `curve_visible`; card di luar `clip` tidak digambar sama sekali.
+
+### Interaksi card
+
+| Aksi | Hasil |
+|---|---|
+| Klik | Pilih card, garisnya tampil, panel "Process" terbuka |
+| Drag header | Pindah card; `pos` disimpan saat dilepas (`save_requested`) |
+| Double-click | Fokus + putar animasi (bagian 8) |
+| Klik baris langkah | Sorot tabel targetnya; tooltip `detail` dan `source` |
+| Klik kanan | Menu card |
+| `Esc` / klik kanvas kosong | Lepas pilihan, fokus dan pemutaran |
+| Mode Hand Tool | Card tidak interaktif, seperti note (`interactive = false`) |
+| Tab subset (`scoped_to`) | Read-only: tidak ada drag, generate atau unlink |
+
+### Titik integrasi di `render_diagram` (`src/diagram_view.rs`)
+
+| Lokasi sekarang | Perubahan |
+|---|---|
+| `:912` menu tampilan | "Show API endpoints" tetap; ditambah `API endpoints as: Cards / Badges / Both` dan `Process lines: Selected / All` |
+| `:952` `note_card_rects` | Tambah rect card yang bisa di-scroll, supaya scroll tidak men-zoom kanvas |
+| `:1062` validasi `focus_table` | Validasi `focus_flow` dan `selected_flow` (card sudah tidak ada → `None`) |
+| `:1109` `focus_set` | Lengan ketiga: `focus_flow` → `diagram_flow::tables_of(card)` |
+| `:1126` `endpoint_counts` | Hanya dihitung bila `endpoint_display` menyertakan badge |
+| `:1770` setelah `draw_note_links` | `diagram_flow_view::draw_flow_lines(ui, state, &to_screen, clip, hover_pos)` |
+| `:2632` double-click tabel | Tidak berubah; double-click card ditangani di view card |
+| `:2733` sebelum `render_note_cards` | `diagram_flow_view::render_flow_cards(...) -> FlowCardsOutcome` |
+| `:3474` panel endpoint | Baris panel badge mendapat tombol "Show card" |
+| `:3487` panel | `render_flow_panel` dan `render_flow_gen_window` |
+
+`subset_with_relations` (`:566`) menyalin card yang punya minimal satu tabel di subset; langkah
+ke tabel di luar subset tetap tersimpan tetapi tanpa garis.
+
+Pencarian (`src/diagram_search.rs:148`): `SearchTarget::Endpoint` mendapat `card: Option<String>`;
+pada mode Cards hasilnya melompat ke card, bukan ke tabel.
+
+### Ikon
+
+Hanya `egui_icons::icons::ICON_*`; tidak ada glyph Unicode mentah. Sebelum dipakai, tiap konstanta
+dicek keberadaannya di crate, lalu dipastikan terender lewat screenshot. Jenis langkah yang tidak
+punya ikon yang pas digambar dengan painter (lingkaran bernomor).
+
+---
+
+## 8. Animasi double-click
+
+### Timeline (murni, di `diagram_flow_layout.rs`)
+
+```rust
+pub enum PlayPhase {
+    /// Request masuk ke card. `t` 0..1.
+    Request(f32),
+    /// Langkah ke-`index` sedang berjalan. `t` 0..1.
+    Step { index: usize, t: f32 },
+    /// Respons keluar dari card.
+    Response(f32),
+    Done,
+}
+
+pub const REQUEST_SECS: f64 = 0.6;
+pub const STEP_SECS: f64 = 1.2;
+pub const STEP_NO_TARGET_SECS: f64 = 0.5;
+pub const RESPONSE_SECS: f64 = 0.6;
+
+pub fn play_phase(card: &FlowCard, position: f64) -> PlayPhase;
+pub fn play_duration(card: &FlowCard) -> f64;
+pub fn step_start(card: &FlowCard, index: usize) -> f64;
+```
+
+Langkah tanpa target tabel memakai durasi pendek. Card tanpa langkah memutar satu langkah semu per
+tabel dari `endpoint_links`.
+
+### Urutan saat double-click
+
+1. `selected_flow = focus_flow = Some(id)`; `focus_table` dan `focus_group` dikosongkan.
+2. Viewport di-tween ke bounding box card + semua tabelnya: zoom yang memuat kotak itu dengan
+   margin 60 px, dibatasi `DETAIL_MIN_ZOOM..=FOCUS_ZOOM`, lewat `animate_view_to`.
+3. `flow_play = Some(FlowPlayback { position: 0.0, last_tick: None, speed: 1.0, .. })`.
+4. Tiap frame: `position += (now - last_tick) * speed`, lalu `play_phase` menentukan gambar.
+
+### Yang digambar per fase
+
+| Fase | Gambar |
+|---|---|
+| `Request` | Partikel masuk dari kiri ke header card; header berdenyut |
+| `Step` dengan target tabel | Baris langkah di card menyala; partikel berekor di kurva sesuai arah operasi; header tabel dan baris `columns` berdenyut dengan warna operasi; caption langkah di kurva |
+| `Step` tanpa target | Baris langkah menyala; ikon jenis berdenyut |
+| `Response` | Partikel keluar ke kiri card |
+| `Done` | Semua garis card tetap tampil, tanpa partikel; fokus tetap sampai user keluar |
+
+Gambar partikel memakai ulang teknik `draw_flow_animation` (ekor 4 titik, `bezier.sample`).
+
+### Kontrol pemutaran
+
+Bilah melayang di bawah card: Play/Pause, Previous step, Next step, kecepatan (0.5×, 1×, 2×),
+Replay, Close. Previous/Next memindahkan `position` ke `step_start`. Spasi = Play/Pause bila tidak
+ada field teks yang fokus.
+
+### Repaint
+
+- Sedang berjalan dan terlihat: `request_repaint_after(33 ms)`.
+- Jeda atau `Done`: tidak meminta repaint.
+- LOD bukan `Detail`: partikel tetap digambar di kurva, sorotan kolom dilewati.
+- Animasi berhenti sendiri di `Done`; tidak ada loop otomatis.
+
+### Panel "Process"
+
+Panel kanan, terbuka saat card dipilih:
+
+- Header: chip method, path, ringkasan, "Generated from `<commit 7 huruf>` · `<waktu>`", label
+  "partial" bila perlu.
+- **Tables involved**: tiap tabel dengan lencana R / C / U / D dan nomor langkahnya; klik = lompat
+  ke tabel.
+- **Steps**: daftar lengkap dengan `detail`, `condition` dan `source`; klik langkah = pindah
+  pemutaran ke langkah itu.
+- Tombol: Play, Open Request, Regenerate.
+
+---
+
+## 9. Aksi, menu dan teks UI
+
+`DiagramAction` baru (`src/diagram_view.rs:67`):
+
+```rust
+/// Generate alur bisnis untuk card ini (kosong = semua card repository group).
+GenerateFlows { group_id: Option<String>, card_ids: Vec<String>, force: bool },
+/// Hentikan job generate alur yang berjalan.
+CancelFlowGeneration,
+```
+
+`GenerateFlows` masuk daftar `modifies_source` di `handle_diagram_action`
+(`src/window_egui/diagram.rs:237`), jadi ditolak di tab subset.
+
+Teks UI (bahasa Inggris):
+
+| Tempat | Teks |
+|---|---|
+| Menu group | `Generate Business Process (AI)` |
+| Menu card | `Play Process`, `Open Request`, `Generate Business Process (AI)` / `Regenerate`, `Collapse` / `Expand`, `Reset Position`, `Remove Card` |
+| Menu tampilan | `API endpoints as: Cards / Badges / Both`, `Process lines: Selected / All`, `Arrange API cards` |
+| Card kosong | `No business process yet` |
+| Label | `partial`, `outdated` |
+| Jendela Generate Endpoints | checkbox `Also generate business process` |
+| Toast | `Business process generated for {n} endpoint(s); {m} unchanged, {k} failed` |
+
+---
+
+## 10. Job di aplikasi
+
+Mengikuti `DiagramRepoScanJob`:
+
+```rust
+/// Generate alur bisnis untuk card sebuah diagram.
+pub struct DiagramFlowGenJob {
+    conn_id: Option<i64>,
+    db_name: Option<String>,
+    handle: crate::diagram_flow_gen::FlowScanHandle,
+}
+```
+
+| File | Perubahan |
+|---|---|
+| `src/window_egui/diagram.rs` | `DiagramFlowGenJob`, `start_flow_generation`, `poll_diagram_flow_jobs`, penanganan `GenerateFlows` |
+| `src/window_egui/mod.rs` (dekat `:801`) | Field `diagram_flow_jobs: Vec<diagram::DiagramFlowGenJob>` |
+| `src/window_egui/init.rs` (dekat `:690`) | Inisialisasi `Vec::new()` |
+| `src/window_egui/app_impl.rs` (dekat `:5161`) | Panggil `poll_diagram_flow_jobs(ctx)` |
+
+`start_flow_generation`:
+
+1. Backend AI dari `effective_chat_target` + `backend_ready_for`, seperti `start_group_table_scan`.
+   Tanpa backend: toast error, tidak ada job.
+2. Repository dari group (`local_repo_path`, `repo_url`). Card yang `repo_key`-nya tidak cocok
+   dengan group mana pun memakai repository folder HTTP API lewat `RepoIndex`
+   (`src/repo_links.rs:50`).
+3. Satu job per diagram; permintaan baru untuk diagram yang sama membatalkan yang lama.
+4. `state.flow_gen` diisi untuk jendela progress.
+
+`poll_diagram_flow_jobs` menerapkan hasil:
+
+1. Untuk tiap `GeneratedFlow`: isi `summary`, `steps`, `meta` pada card dengan `id` yang sama.
+2. `links_from_steps` untuk menambah link tabel baru.
+3. `save_requested = true`.
+4. Tab ditutup saat job berjalan: job dibatalkan, seperti pemindai repository.
+
+Dari jendela **Generate Endpoints** (`add_endpoints`, `src/http_repo.rs:1755`): bila checkbox
+dicentang, setelah `link_to_diagrams` selesai, generate alur dimulai untuk diagram yang sedang
+terbuka. Diagram yang tidak terbuka hanya mendapat link; alurnya di-generate lewat menu setelah
+diagram dibuka.
+
+---
+
+## 11. Simpan dan sinkronisasi
+
+Tidak ada jalur baru. `flow_cards` ikut `DiagramState`, jadi tersimpan ke file lokal,
+`diagram_by_tabular`, vault dan cloud sync.
+
+- `diagram_links::persistable` tidak perlu diubah: card milik diagram host, bukan link database.
+- `request_id` dan folder project tetap lokal; yang dibagikan hanya `repo_key`, path dan langkah.
+- Tidak ada secret: prompt melarangnya, cuplikan diredaksi, dan parser memotong teks panjang.
+  `ConnectionConfig` tidak pernah masuk prompt.
+
+---
+
+## 12. Fase implementasi
+
+Tiap fase diakhiri `cargo clippy --all-targets -- -D warnings`,
+`cargo clippy --all-targets --features collab -- -D warnings` dan `cargo test`. Format dengan
+`rustfmt` per file yang disentuh.
+
+### Fase 1: Model dan logika murni
+
+- [ ] Tipe di `src/models/structs.rs` + field `DiagramState` + `Default`.
+- [ ] `src/diagram_flow.rs` dengan fungsi di bagian 5.
+- [ ] `prune_flow_cards` dipanggil di `src/diagram_schema.rs:314`; `layout_fingerprint` diperluas.
+- [ ] `subset_with_relations` menyalin card.
+- [ ] `sync_cards_from_links` dipanggil saat diagram dimuat dan setelah `apply_endpoint_links`.
+- Validasi: `cargo test --lib diagram_flow::` dan test serde file lama.
+
+### Fase 2: Generator AI
+
+- [ ] `pub(crate)` untuk helper di `src/repo_endpoints.rs`.
+- [ ] `src/diagram_flow_gen.rs`: prompt, parser, hash, job.
+- [ ] Test parser, batas ukuran, pemilihan card basi, pembatalan.
+- [ ] Test nyata ber-`#[ignore]` terhadap repository kecil, seperti `real_claude_scan_reads_repo`.
+- Validasi: `cargo test --lib diagram_flow_gen::`.
+
+### Fase 3: Card dan garis di kanvas
+
+- [ ] `src/diagram_flow_layout.rs`: ukuran, anchor, `arrange_lane`.
+- [ ] `src/diagram_flow_view.rs`: `render_flow_cards`, `draw_flow_lines`, menu card.
+- [ ] Integrasi di `render_diagram` sesuai tabel bagian 7.
+- [ ] Menu tampilan dan pencarian.
+- [ ] Cek visual: example sementara + `ViewportCommand::Screenshot`.
+- Validasi: test `render_frame` (culling, LOD), screenshot.
+
+### Fase 4: Animasi dan panel
+
+- [ ] `play_phase` dan kawan-kawan + test murni.
+- [ ] Gambar partikel, sorotan, caption; kontrol pemutaran; panel "Process".
+- [ ] `focus_flow` di `focus_set`.
+- Validasi: test animasi berhenti sendiri dan tidak meminta repaint saat jeda.
+
+### Fase 5: Job, menu dan jendela progress
+
+- [ ] `DiagramFlowGenJob`, poll, `DiagramAction::GenerateFlows`.
+- [ ] Jendela progress dengan `render_job_progress`.
+- [ ] Checkbox di jendela Generate Endpoints.
+- Validasi: uji manual dengan Claude Code dan satu backend API (mode cuplikan).
+
+### Fase 6: Pelengkap
+
+- [ ] `src/agent/knowledge.rs`: `FlowInfo` (trigger, langkah, tabel) untuk MCP, data polos saja.
+- [ ] `src/diagram_mermaid.rs`: ekspor `flowchart` per flow.
+- [ ] `docs/HTTP_API_REPOSITORY.md`, `docs/DIAGRAM_GROUP_REPOSITORY.md`, `docs/MCP.md`.
+
+Total: 10–10,5 hari kerja. Fase 1 dan 3 saja sudah menampilkan card dan garis dari data yang ada.
+
+---
+
+## 13. Pengujian
+
+| Jenis | Cakupan |
+|---|---|
+| Unit, `diagram_flow` | `sync_cards_from_links` tidak menduplikasi; unlink terakhir menghapus card kosong; `prune_flow_cards` mempertahankan langkah; `tables_of` menggabungkan link dan langkah |
+| Unit, serde | File lama tanpa `flow_cards` terbaca; state tanpa card tidak menulis field baru; jenis tak dikenal menjadi `Unknown` |
+| Unit, parser | JSON berpagar, id asing, tabel tak dikenal, lebih dari 25 langkah, teks terlalu panjang, flow kosong |
+| Unit, hash | File berubah → basi; file hilang → basi; urutan `source_files` tidak memengaruhi hash |
+| Unit, layout | Lane di kiri tabel; kolom baru saat terlalu tinggi; card ber-`pos` tidak dipindah |
+| Unit, timeline | Batas fase, `step_start`, card tanpa langkah |
+| Render (`render_frame`) | Card di luar layar tanpa geometri; Overview lebih ringan dari Detail; double-click mengisi `focus_flow`; pemutaran berakhir di `Done` |
+| Bench | Varian `bench_large_diagram` dengan 300 card: waktu frame tidak naik lebih dari 10% pada mode `Selected` |
+| Manual | Repository Express, Laravel dan satu monorepo; backend Claude Code, Gemini CLI, satu API |
+
+---
+
+## 14. Risiko
+
+| Tingkat | Risiko | Mitigasi |
+|---|---|---|
+| Tinggi | Diagram penuh garis pada API besar | Mode `Selected` bawaan; anggaran garis; lane terpisah dari tabel |
+| Tinggi | AI keliru menebak alur atau tabel | `source` per langkah; tabel difilter ke daftar diagram; label `partial`; regenerate per card |
+| Sedang | Versi lama menyimpan diagram dan membuang `flow_cards` | Card dibuat ulang dari link; langkah bisa di-generate ulang; dicatat di docs dan catatan rilis |
+| Sedang | `diagram_view.rs` 8.252 baris bertambah rumit | Kode baru di empat modul; `render_diagram` hanya memanggil |
+| Sedang | Agent lain sedang mengubah `src/window_egui/mod.rs` dan `src/git/` | Edit sekecil mungkin di `mod.rs`, `init.rs`, `app_impl.rs`; tidak memakai `git stash`; hanya memanggil `git::cli::run_text` |
+| Sedang | Biaya AI | Batch 6, hash untuk melewati yang tidak berubah, slot global 6, bisa dibatalkan |
+| Sedang | Payload sync membesar | Batas ukuran bagian 4; perkiraan 1–2 KB per flow |
+| Rendah | Mode cuplikan menghasilkan alur dangkal | Label `partial`; docs menyarankan CLI agent |
+| Rendah | Ikon menjadi kotak kosong | Hanya `ICON_*`, dicek lewat screenshot |
+
+---
+
+## 15. Setelah v1: menuju blueprint penuh
+
+| Fase | Isi | Prasyarat di model |
+|---|---|---|
+| B1 | Node kanvas untuk resource non-tabel (eksternal, queue, cache), dipakai bersama antar flow | `FlowTarget::External/Queue/Cache` sudah ada |
+| B2 | Sambungan antar flow: endpoint → queue → consumer, service A memanggil service B | `FlowTarget::Flow` sudah ada |
+| B3 | Pemindai trigger lain: job, consumer, cron, event, CLI | `FlowTriggerKind` sudah ada |
+| B4 | Tampilan level service saat zoom jauh: satu kotak per group dengan jumlah flow dan garis antar service | Group ber-repository sudah ada |

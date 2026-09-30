@@ -1095,8 +1095,12 @@ fn render_detail(
     ui.separator();
 
     let avail = ui.available_size();
-    let meta_w = (avail.x * 0.30).clamp(220.0, 460.0);
-    let files_w = (avail.x * 0.24).clamp(200.0, 380.0);
+    // Proporsi kolom meta & file (sisanya diff), diingat antar sesi.
+    let split_id = egui::Id::new("git_graph_detail_split");
+    let [meta_f, files_f] = ui
+        .ctx()
+        .data_mut(|m| *m.get_persisted_mut_or(split_id, DETAIL_SPLIT));
+    let (meta_w, files_w) = detail_widths(avail.x, meta_f, files_f);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(meta_w, avail.y),
@@ -1121,7 +1125,7 @@ fn render_detail(
                     });
             },
         );
-        ui.separator();
+        let dx = splitter(ui, avail.y);
         ui.allocate_ui_with_layout(
             egui::vec2(files_w, avail.y),
             egui::Layout::top_down(egui::Align::Min),
@@ -1130,13 +1134,58 @@ fn render_detail(
                 render_files(t, ui, tab_id, &key, d, acts);
             },
         );
-        ui.separator();
+        let dx2 = splitter(ui, avail.y);
+        if dx != 0.0 || dx2 != 0.0 {
+            // Seret pemisah pertama menggeser batas meta|file; yang kedua
+            // mengubah lebar kolom file saja (diff menyesuaikan).
+            let (m, f) = detail_widths(avail.x, meta_f, files_f);
+            let m2 = m + dx;
+            let f2 = f - dx + dx2;
+            ui.ctx().data_mut(|mem| {
+                mem.insert_persisted(split_id, [m2 / avail.x, f2 / avail.x]);
+            });
+        }
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), avail.y),
             egui::Layout::top_down(egui::Align::Min),
             |ui| render_file_diff(ui, tab_id, d, muted, acts),
         );
     });
+}
+
+/// Proporsi default kolom meta dan file di panel detail; diff mendapat sisanya.
+const DETAIL_SPLIT: [f32; 2] = [0.20, 0.18];
+const DETAIL_MIN_COL: f32 = 140.0;
+const DETAIL_MIN_DIFF: f32 = 260.0;
+
+/// Lebar kolom meta dan file dari proporsi, dijaga agar diff tetap terlihat.
+fn detail_widths(total: f32, meta_f: f32, files_f: f32) -> (f32, f32) {
+    let max_side = (total - DETAIL_MIN_DIFF).max(2.0 * DETAIL_MIN_COL);
+    let meta = (total * meta_f).clamp(DETAIL_MIN_COL, max_side - DETAIL_MIN_COL);
+    let files = (total * files_f).clamp(DETAIL_MIN_COL, (max_side - meta).max(DETAIL_MIN_COL));
+    (meta, files)
+}
+
+/// Pemisah kolom yang bisa diseret; mengembalikan pergeseran horizontal.
+fn splitter(ui: &mut egui::Ui, height: f32) -> f32 {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(9.0, height), egui::Sense::drag());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    let active = resp.hovered() || resp.dragged();
+    let color = if active {
+        style::theme_info(ui.ctx())
+    } else {
+        ui.visuals().widgets.noninteractive.bg_stroke.color
+    };
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        egui::Stroke::new(if active { 2.0 } else { 1.0 }, color),
+    );
+    if resp.dragged() {
+        resp.drag_delta().x
+    } else {
+        0.0
+    }
 }
 
 fn render_file_diff(
