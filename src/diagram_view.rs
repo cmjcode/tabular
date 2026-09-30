@@ -949,7 +949,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // Pointer benar-benar di atas kanvas (bukan di jendela/popup yang menutupinya).
     let pointer_over_canvas = ui.rect_contains_pointer(rect);
     // Scroll di atas kartu note menggulung isinya, bukan zoom diagram.
-    let note_card_rects = crate::diagram_notes_view::last_card_rects(ui);
+    let mut note_card_rects = crate::diagram_notes_view::last_card_rects(ui);
+    // Begitu juga kartu endpoint yang daftarnya bisa di-scroll.
+    note_card_rects.extend(crate::diagram_endpoints_view::last_scroll_rect(ui));
 
     // Zoom & Shortcut Input Handling
     ui.input_mut(|i| {

@@ -1198,6 +1198,9 @@ impl HttpRepoUi {
         let mut rescan = false;
         let mut cancel = false;
         let mut parallel = self.parallel();
+        // Tinggi dikunci (hanya lebar yang bisa diubah) supaya jendela tidak memanjang
+        // sampai setinggi layar; tetap muat di layar kecil.
+        let height = (ctx.content_rect().height() - 120.0).clamp(240.0, 580.0);
         egui::Window::new(format!("Generate Endpoints · {}", win.folder_name))
             .id(egui::Id::new((
                 "http_repo_endpoints_window",
@@ -1205,8 +1208,10 @@ impl HttpRepoUi {
             )))
             .open(&mut open)
             .collapsible(true)
-            .resizable(true)
-            .default_size(egui::vec2(780.0, 580.0))
+            .resizable([true, false])
+            .default_size(egui::vec2(780.0, height))
+            .min_height(height)
+            .max_height(height)
             .show(ctx, |ui| {
                 if win.progress.running {
                     small_weak(
@@ -1617,116 +1622,132 @@ fn endpoints_results(
     });
     ui.separator();
     let filter = win.filter.to_lowercase();
-    let detail_h = if win.selected.is_some() { 190.0 } else { 0.0 };
-    let list_h = (ui.available_height() - 44.0 - detail_h).max(120.0);
     let accent = style::theme_accent(ui.ctx());
-    egui::ScrollArea::vertical()
-        .id_salt("http_repo_ep_list")
-        .max_height(list_h)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if win.rows.is_empty() {
-                small_weak(ui, "No endpoints were found.");
+    // Footer & detail digambar dari bawah lebih dulu, lalu daftar mengisi sisa ruang persis.
+    // Menebak tinggi footer membuat konten sedikit meluap tiap frame sehingga jendela
+    // resizable terus memanjang sampai setinggi layar.
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.horizontal(|ui| {
+            let n = win.rows.iter().filter(|r| r.checked).count();
+            if ui.button("Rescan").clicked() {
+                *rescan = true;
             }
-            for (i, row) in win.rows.iter_mut().enumerate() {
-                let ep = &row.endpoint;
-                if !filter.is_empty()
-                    && !ep.path.to_lowercase().contains(&filter)
-                    && !ep.name.to_lowercase().contains(&filter)
-                    && !ep.method.to_lowercase().contains(&filter)
-                    && !ep.tables.iter().any(|t| t.to_lowercase().contains(&filter))
+            parallel_control(ui, parallel);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        n > 0 && !win.base_url.trim().is_empty(),
+                        crate::diagram_repo::accent_button(ui, format!("Add {n} endpoint(s)")),
+                    )
+                    .clicked()
                 {
-                    continue;
+                    *add = true;
                 }
-                let resp = ui
-                    .horizontal(|ui| {
-                        ui.checkbox(&mut row.checked, "");
-                        method_chip(ui, &ep.method);
-                        ui.label(
-                            egui::RichText::new(&ep.path)
-                                .family(egui::FontFamily::Monospace)
-                                .size(12.0),
-                        );
-                        if !ep.name.is_empty() {
-                            small_weak(ui, &ep.name);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let (tag, color) = if ep.from_ai {
-                                ("AI", ui.visuals().hyperlink_color)
-                            } else {
-                                ("TEXT", ui.visuals().weak_text_color())
-                            };
-                            ui.label(egui::RichText::new(tag).small().strong().color(color));
-                            if row.exists {
-                                ui.label(
-                                    egui::RichText::new("exists")
-                                        .small()
-                                        .color(ui.visuals().warn_fg_color),
-                                )
-                                .on_hover_text(
-                                    "Checked rows that already exist are updated in place",
-                                );
-                            }
-                            if !ep.tables.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} {}",
-                                        egui_icons::icons::ICON_TABLE.codepoint,
-                                        ep.tables.join(", ")
-                                    ))
-                                    .small()
-                                    .weak(),
-                                );
-                            }
-                        });
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                if resp.clicked() {
-                    win.selected = if win.selected == Some(i) {
-                        None
-                    } else {
-                        Some(i)
-                    };
-                }
-                if win.selected == Some(i) {
-                    ui.painter().rect_stroke(
-                        resp.rect.expand(1.0),
-                        3.0,
-                        egui::Stroke::new(1.0, accent),
-                        egui::StrokeKind::Outside,
-                    );
-                }
-            }
+            });
         });
-    if let Some(ep) = win
-        .selected
-        .and_then(|i| win.rows.get(i))
-        .map(|r| &r.endpoint)
-    {
         ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("http_repo_ep_detail")
-            .max_height(detail_h - 10.0)
-            .show(ui, |ui| endpoint_details(ui, ep));
-    }
-    ui.separator();
-    ui.horizontal(|ui| {
-        let n = win.rows.iter().filter(|r| r.checked).count();
-        if ui.button("Rescan").clicked() {
-            *rescan = true;
+        if let Some(ep) = win
+            .selected
+            .and_then(|i| win.rows.get(i))
+            .map(|r| &r.endpoint)
+        {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 180.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("http_repo_ep_detail")
+                        .max_height(180.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| endpoint_details(ui, ep));
+                },
+            );
+            ui.separator();
         }
-        parallel_control(ui, parallel);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled(
-                    n > 0 && !win.base_url.trim().is_empty(),
-                    crate::diagram_repo::accent_button(ui, format!("Add {n} endpoint(s)")),
-                )
-                .clicked()
-            {
-                *add = true;
-            }
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("http_repo_ep_list")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if win.rows.is_empty() {
+                        small_weak(ui, "No endpoints were found.");
+                    }
+                    for (i, row) in win.rows.iter_mut().enumerate() {
+                        let ep = &row.endpoint;
+                        if !filter.is_empty()
+                            && !ep.path.to_lowercase().contains(&filter)
+                            && !ep.name.to_lowercase().contains(&filter)
+                            && !ep.method.to_lowercase().contains(&filter)
+                            && !ep.tables.iter().any(|t| t.to_lowercase().contains(&filter))
+                        {
+                            continue;
+                        }
+                        let resp = ui
+                            .horizontal(|ui| {
+                                ui.checkbox(&mut row.checked, "");
+                                method_chip(ui, &ep.method);
+                                ui.label(
+                                    egui::RichText::new(&ep.path)
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(12.0),
+                                );
+                                if !ep.name.is_empty() {
+                                    small_weak(ui, &ep.name);
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let (tag, color) = if ep.from_ai {
+                                            ("AI", ui.visuals().hyperlink_color)
+                                        } else {
+                                            ("TEXT", ui.visuals().weak_text_color())
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(tag).small().strong().color(color),
+                                        );
+                                        if row.exists {
+                                            ui.label(
+                                            egui::RichText::new("exists")
+                                                .small()
+                                                .color(ui.visuals().warn_fg_color),
+                                        )
+                                        .on_hover_text(
+                                            "Checked rows that already exist are updated in place",
+                                        );
+                                        }
+                                        if !ep.tables.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} {}",
+                                                    egui_icons::icons::ICON_TABLE.codepoint,
+                                                    ep.tables.join(", ")
+                                                ))
+                                                .small()
+                                                .weak(),
+                                            );
+                                        }
+                                    },
+                                );
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if resp.clicked() {
+                            win.selected = if win.selected == Some(i) {
+                                None
+                            } else {
+                                Some(i)
+                            };
+                        }
+                        if win.selected == Some(i) {
+                            ui.painter().rect_stroke(
+                                resp.rect.expand(1.0),
+                                3.0,
+                                egui::Stroke::new(1.0, accent),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                    }
+                });
         });
     });
 }
