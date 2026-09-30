@@ -8,10 +8,15 @@
 pub mod branch;
 pub mod cli;
 pub mod diff;
+pub mod graph;
+pub mod history;
+pub mod history_ops;
 pub mod log;
 pub mod ops;
+pub mod refs;
 pub mod repos;
 pub mod review;
+pub mod stash;
 pub mod status;
 
 /// Error domain git client.

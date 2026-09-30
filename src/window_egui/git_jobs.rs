@@ -1,11 +1,17 @@
 //! State tab Git di `Tabular`, job latar (git CLI & API GitHub/GitLab), dan
 //! polling hasilnya per frame.
 //!
+//! Sidebar menampilkan banyak repository sekaligus (seperti Source Control VS
+//! Code), jadi state per repository ada di [`RepoUi`] dengan kunci repository
+//! ([`RepoEntry::key`]); setiap job membawa kunci itu dan hasilnya dirutekan ke
+//! repository yang benar. Satu repository hanya menjalankan satu operasi yang
+//! mengubah isi pada satu waktu, tetapi repository berbeda bisa paralel.
+//!
 //! Semua operasi git/jaringan berjalan di thread terpisah dan mengirim
 //! [`JobResult`] lewat satu channel; UI tidak pernah menunggu proses git.
 //! State tab tengah ([`GitTabState`]) hanya berisi data polos karena
 //! `QueryTab` harus `Clone`; hal runtime (stream AI, handle pembatalan, cache
-//! markdown) disimpan di [`GitUiState::reviews`] per id tab.
+//! markdown, data Git Graph) disimpan di [`GitUiState`] per id tab.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,20 +21,27 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use super::git_graph_jobs::{self, GraphJob, GraphState};
 use crate::agent::harness::{AgentEvent, CancelHandle};
 use crate::git::branch::BranchInfo;
 use crate::git::diff::DiffRow;
+use crate::git::graph::GraphRow;
+use crate::git::history::DiffRange;
+use crate::git::history_ops::RepoState;
 use crate::git::log::CommitInfo;
-use crate::git::repos::{GitRepoStore, LinkKind, LinkSource, RepoEntry};
+use crate::git::repos::{GitRepoStore, LinkKind, LinkSource, RepoEntry, RepoPrefs};
 use crate::git::review::{
     self, ChangedFile, MergeMethod, MergeRequest, Provider, ProviderAccess, Recommendation,
 };
 use crate::git::status::{FileChange, RepoStatus};
-use crate::git::{GitError, diff, log as gitlog, ops, status};
+use crate::git::{GitError, diff, history, log as gitlog, ops, status};
 use crate::window_egui::Tabular;
 
 /// Batas baris diff yang dirender sebelum user meminta "Show all".
 pub const MAX_DIFF_ROWS: usize = 20_000;
+
+/// Status semua repository hanya dimuat otomatis bila jumlahnya tidak lebih dari ini.
+const MAX_AUTO_STATUS: usize = 24;
 
 // ─── State tab tengah ────────────────────────────────────────────────────────
 
@@ -45,6 +58,7 @@ pub enum DiffSource {
 #[derive(Debug, Clone)]
 pub enum GitView {
     FileDiff {
+        key: String,
         repo: PathBuf,
         path: String,
         orig: Option<String>,
@@ -56,6 +70,17 @@ pub enum GitView {
     },
     MergeRequest {
         mr: MergeRequest,
+    },
+    /// Git Graph satu repository; datanya di [`GitUiState::graphs`].
+    Graph {
+        key: String,
+        repo: PathBuf,
+    },
+    /// Diff satu file pada rentang revisi (dibuka dari Git Graph).
+    RangeDiff {
+        repo: PathBuf,
+        range: DiffRange,
+        change: FileChange,
     },
 }
 
@@ -118,7 +143,7 @@ impl GitTabState {
         }
     }
 
-    fn set_patch(&mut self, patch: &str) {
+    pub(crate) fn set_patch(&mut self, patch: &str) {
         self.binary = diff::is_binary_patch(patch);
         self.rows = if self.binary {
             Vec::new()
@@ -173,7 +198,8 @@ pub enum SidebarConfirm {
         name: String,
         remote: bool,
     },
-    RemoveRepo(String),
+    RemoveRepo,
+    AbortOperation(RepoState),
 }
 
 /// Dialog clone repository.
@@ -204,11 +230,90 @@ impl ReviewRun {
     }
 }
 
+/// State sidebar satu repository.
+pub struct RepoUi {
+    pub sub: GitSubMenu,
+    pub expanded: bool,
+    pub status: Option<RepoStatus>,
+    pub status_error: Option<String>,
+    pub status_loading: bool,
+    /// Merge/rebase/cherry-pick yang sedang berhenti.
+    pub repo_state: RepoState,
+    pub branches: Vec<BranchInfo>,
+    pub commits: Vec<CommitInfo>,
+    /// Tata letak graf mini untuk `commits`.
+    pub commit_rows: Vec<GraphRow>,
+    pub commits_done: bool,
+    pub commits_loading: bool,
+    pub commit_message: String,
+    pub amend: bool,
+    pub new_branch: String,
+    pub branch_filter: String,
+    pub history_filter: String,
+    /// Operasi yang mengubah repository sedang berjalan.
+    pub busy: Option<String>,
+    pub cancel: Arc<AtomicBool>,
+    pub last_error: Option<String>,
+    pub commit_ai_busy: bool,
+    /// Merge request repository ini.
+    pub mrs: Vec<MergeRequest>,
+    pub mr_errors: Vec<String>,
+    pub mrs_loading: bool,
+    pub mrs_loaded_at: Option<Instant>,
+    /// Review menampilkan MR "Assigned to me" dari semua repository.
+    pub mrs_mine: bool,
+}
+
+impl RepoUi {
+    fn new(prefs: Option<&RepoPrefs>) -> Self {
+        Self {
+            sub: prefs.map_or(GitSubMenu::Changes, |p| GitSubMenu::from_key(&p.sub)),
+            expanded: prefs.is_some_and(|p| p.expanded),
+            status: None,
+            status_error: None,
+            status_loading: false,
+            repo_state: RepoState::Clean,
+            branches: Vec::new(),
+            commits: Vec::new(),
+            commit_rows: Vec::new(),
+            commits_done: false,
+            commits_loading: false,
+            commit_message: String::new(),
+            amend: false,
+            new_branch: String::new(),
+            branch_filter: String::new(),
+            history_filter: String::new(),
+            busy: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            last_error: None,
+            commit_ai_busy: false,
+            mrs: Vec::new(),
+            mr_errors: Vec::new(),
+            mrs_loading: false,
+            mrs_loaded_at: None,
+            mrs_mine: false,
+        }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.is_some()
+    }
+
+    fn set_commits(&mut self, commits: Vec<CommitInfo>) {
+        self.commit_rows = crate::git::graph::layout(
+            commits
+                .iter()
+                .map(|c| (c.hash.as_str(), c.parents.as_slice())),
+        );
+        self.commits = commits;
+    }
+}
+
 /// Hasil job latar.
 pub enum JobResult {
     Status {
         key: String,
-        res: Result<RepoStatus, GitError>,
+        res: Result<(RepoStatus, RepoState), GitError>,
     },
     Branches {
         key: String,
@@ -221,15 +326,19 @@ pub enum JobResult {
     },
     /// Operasi yang mengubah repository selesai.
     Op {
+        key: String,
         label: String,
         res: Result<String, GitError>,
     },
     Cloned {
         entry_key: Option<String>,
+        project: Option<String>,
         dest: PathBuf,
         res: Result<(), GitError>,
     },
+    /// Daftar MR; `key` = repository, `None` = "Assigned to me".
     Mrs {
+        key: Option<String>,
         results: Vec<(Option<Provider>, Result<Vec<MergeRequest>, GitError>)>,
     },
     MrDetails {
@@ -253,42 +362,36 @@ pub enum JobResult {
         tab_id: usize,
         res: Result<(String, Vec<FileChange>), GitError>,
     },
-    CommitMessage(Result<String, String>),
+    CommitMessage {
+        key: String,
+        res: Result<String, String>,
+    },
+    Graph(GraphJob),
 }
 
 pub struct GitUiState {
     pub store: GitRepoStore,
-    pub sub: GitSubMenu,
     pub repos: Vec<RepoEntry>,
     pub repos_loaded: bool,
-    pub status: Option<RepoStatus>,
-    pub status_error: Option<String>,
-    pub status_loading: bool,
-    pub branches: Vec<BranchInfo>,
-    pub commits: Vec<CommitInfo>,
-    pub commits_done: bool,
-    pub commits_loading: bool,
-    pub commit_message: String,
-    pub amend: bool,
-    pub new_branch: String,
-    pub branch_filter: String,
-    pub history_filter: String,
-    /// Operasi yang mengubah repository sedang berjalan.
-    pub busy: Option<String>,
-    pub cancel: Arc<AtomicBool>,
-    pub confirm: Option<SidebarConfirm>,
+    pub repo_ui: HashMap<String, RepoUi>,
+    /// Konfirmasi yang menunggu: (kunci repository, aksi).
+    pub confirm: Option<(String, SidebarConfirm)>,
     pub clone_dialog: Option<CloneDialog>,
-    pub last_error: Option<String>,
-    // Merge Review
+    /// Clone sedang berjalan (bukan milik repository mana pun).
+    pub clone_busy: bool,
+    pub clone_cancel: Arc<AtomicBool>,
+    /// Section "Other repositories" di luar project aktif terbuka.
+    pub show_other_repos: bool,
+    // Merge Review "Assigned to me"
     pub mrs: Vec<MergeRequest>,
     pub mr_errors: Vec<String>,
     pub mrs_loading: bool,
     pub mrs_loaded_at: Option<Instant>,
-    /// Hanya MR repository aktif (bukan semua yang relevan untuk user).
-    pub mrs_active_repo: bool,
     pub mr_filter: String,
-    pub commit_ai_busy: bool,
     pub reviews: HashMap<usize, ReviewRun>,
+    /// Git Graph per id tab.
+    pub graphs: HashMap<usize, GraphState>,
+    pub avatars: super::git_avatar::AvatarCache,
     /// Cache markdown untuk deskripsi MR dan preview komentar.
     pub md_cache: egui_commonmark::CommonMarkCache,
     /// Draft token di Preferences (tidak pernah dirender ulang dari keychain).
@@ -296,7 +399,7 @@ pub struct GitUiState {
     pub gitlab_token_draft: String,
     /// Token & URL provider yang sudah dibaca dari keychain; `None` = baca ulang.
     access_cache: Option<ProviderAccess>,
-    tx: mpsc::Sender<JobResult>,
+    pub(crate) tx: mpsc::Sender<JobResult>,
     rx: mpsc::Receiver<JobResult>,
     pending: usize,
     was_focused: bool,
@@ -313,34 +416,22 @@ impl GitUiState {
         let (tx, rx) = mpsc::channel();
         Self {
             store: GitRepoStore::load(GitRepoStore::default_file()),
-            sub: GitSubMenu::Changes,
             repos: Vec::new(),
             repos_loaded: false,
-            status: None,
-            status_error: None,
-            status_loading: false,
-            branches: Vec::new(),
-            commits: Vec::new(),
-            commits_done: false,
-            commits_loading: false,
-            commit_message: String::new(),
-            amend: false,
-            new_branch: String::new(),
-            branch_filter: String::new(),
-            history_filter: String::new(),
-            busy: None,
-            cancel: Arc::new(AtomicBool::new(false)),
+            repo_ui: HashMap::new(),
             confirm: None,
             clone_dialog: None,
-            last_error: None,
+            clone_busy: false,
+            clone_cancel: Arc::new(AtomicBool::new(false)),
+            show_other_repos: false,
             mrs: Vec::new(),
             mr_errors: Vec::new(),
             mrs_loading: false,
             mrs_loaded_at: None,
-            mrs_active_repo: false,
             mr_filter: String::new(),
-            commit_ai_busy: false,
             reviews: HashMap::new(),
+            graphs: HashMap::new(),
+            avatars: Default::default(),
             md_cache: Default::default(),
             github_token_draft: String::new(),
             gitlab_token_draft: String::new(),
@@ -352,29 +443,45 @@ impl GitUiState {
         }
     }
 
-    pub fn active(&self) -> Option<&RepoEntry> {
-        let key = self.store.active.as_deref()?;
+    pub fn entry(&self, key: &str) -> Option<&RepoEntry> {
         self.repos.iter().find(|r| r.key == key)
     }
 
-    pub fn active_key(&self) -> Option<String> {
-        self.active().map(|r| r.key.clone())
+    /// Working tree repository `key`, bila ada di komputer ini.
+    pub fn path_of(&self, key: &str) -> Option<PathBuf> {
+        self.entry(key).and_then(|r| r.path.clone())
     }
 
-    /// Working tree repository aktif, bila ada di komputer ini.
-    pub fn active_path(&self) -> Option<PathBuf> {
-        self.active().and_then(|r| r.path.clone())
+    /// Kunci repository yang working tree-nya `path`.
+    pub fn key_for_path(&self, path: &Path) -> Option<String> {
+        self.repos
+            .iter()
+            .find(|r| r.path.as_deref() == Some(path))
+            .map(|r| r.key.clone())
     }
 
-    pub fn is_busy(&self) -> bool {
-        self.busy.is_some()
+    /// State sidebar repository `key` (dibuat bila belum ada).
+    pub fn ui_mut(&mut self, key: &str) -> &mut RepoUi {
+        if !self.repo_ui.contains_key(key) {
+            let ui = RepoUi::new(self.store.prefs.get(key));
+            self.repo_ui.insert(key.to_string(), ui);
+        }
+        self.repo_ui.get_mut(key).expect("repo ui inserted above")
+    }
+
+    pub fn ui(&self, key: &str) -> Option<&RepoUi> {
+        self.repo_ui.get(key)
+    }
+
+    pub fn is_busy(&self, key: &str) -> bool {
+        self.ui(key).is_some_and(RepoUi::is_busy)
     }
 
     pub fn has_pending(&self) -> bool {
         self.pending > 0 || self.reviews.values().any(ReviewRun::is_running)
     }
 
-    fn spawn(&mut self, job: impl FnOnce() -> JobResult + Send + 'static) {
+    pub(crate) fn spawn(&mut self, job: impl FnOnce() -> JobResult + Send + 'static) {
         self.pending += 1;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -387,6 +494,21 @@ impl GitUiState {
             log::warn!("[GIT] cannot save {}: {e}", crate::git::repos::FILE_NAME);
             format!("Cannot save Git settings: {e}")
         })
+    }
+
+    /// Simpan sub-tab dan status buka/tutup repository `key`.
+    pub fn remember_ui(&mut self, key: &str) {
+        let Some(ui) = self.repo_ui.get(key) else {
+            return;
+        };
+        let (sub, expanded) = (ui.sub.key().to_string(), ui.expanded);
+        let p = self.store.prefs.entry(key.to_string()).or_default();
+        if p.sub == sub && p.expanded == expanded {
+            return;
+        }
+        p.sub = sub;
+        p.expanded = expanded;
+        let _ = self.save_store();
     }
 
     /// Akses provider (token dari keychain), di-cache supaya keychain tidak
@@ -409,6 +531,7 @@ impl GitUiState {
 fn collect_http_folders(
     folders: &[crate::http_collection::HttpFolder],
     workspace: &str,
+    project: Option<&str>,
     out: &mut Vec<LinkSource>,
 ) {
     for f in folders {
@@ -419,48 +542,66 @@ fn collect_http_folders(
                 label: format!("{workspace} / {}", f.name),
                 url: f.shared_repo_url().map(str::to_string),
                 path: f.local_repo_path(),
+                project: project.map(str::to_string),
             });
         }
-        collect_http_folders(&f.children, workspace, out);
+        collect_http_folders(&f.children, workspace, project, out);
     }
+}
+
+/// Project pemilik koneksi `conn_id`.
+fn project_of_connection(t: &Tabular, conn_id: i64) -> Option<String> {
+    t.connections
+        .iter()
+        .find(|c| c.id == Some(conn_id))
+        .and_then(|c| super::project_ui::project_for_connection(t, c))
+        .map(|p| p.id.clone())
 }
 
 /// Kumpulkan semua pemakai repository: group diagram (tab terbuka dan file
 /// tersimpan), folder HTTP API, project, dan folder yang ditambahkan di Git.
+/// Setiap sumber membawa project pemiliknya untuk tampilan per project.
 pub fn collect_sources(t: &Tabular) -> Vec<LinkSource> {
     let mut out = Vec::new();
     let mut seen_groups = std::collections::HashSet::new();
-    let mut add_state =
-        |db: &str, state: &crate::models::structs::DiagramState, out: &mut Vec<LinkSource>| {
-            for g in &state.groups {
-                if !g.has_repository() || !seen_groups.insert(g.id.clone()) {
-                    continue;
-                }
-                out.push(LinkSource {
-                    kind: LinkKind::Diagram,
-                    id: g.id.clone(),
-                    label: format!("{} ({db})", g.title),
-                    url: g.shared_repo_url().map(str::to_string),
-                    path: g.local_repo_path(),
-                });
+    let mut add_state = |db: &str,
+                         project: Option<String>,
+                         state: &crate::models::structs::DiagramState,
+                         out: &mut Vec<LinkSource>| {
+        for g in &state.groups {
+            if !g.has_repository() || !seen_groups.insert(g.id.clone()) {
+                continue;
             }
-        };
+            out.push(LinkSource {
+                kind: LinkKind::Diagram,
+                id: g.id.clone(),
+                label: format!("{} ({db})", g.title),
+                url: g.shared_repo_url().map(str::to_string),
+                path: g.local_repo_path(),
+                project: project.clone(),
+            });
+        }
+    };
     for tab in &t.query_tabs {
         if let (Some(db), Some(state)) = (tab.database_name.as_deref(), tab.diagram_state.as_ref())
         {
-            add_state(db, state, &mut out);
+            let project = tab
+                .connection_id
+                .and_then(|id| project_of_connection(t, id));
+            add_state(db, project, state, &mut out);
         }
     }
     if let Some(dir) = t
         .get_diagram_path(0, "_")
         .and_then(|p| p.parent().map(Path::to_path_buf))
     {
-        for (_, db, _, state) in crate::repo_links::load_diagram_files(&dir) {
-            add_state(&db, &state, &mut out);
+        for (conn_id, db, _, state) in crate::repo_links::load_diagram_files(&dir) {
+            add_state(&db, project_of_connection(t, conn_id), &state, &mut out);
         }
     }
     for ws in &t.yaak_workspaces {
-        collect_http_folders(&ws.folders, &ws.name, &mut out);
+        let project = super::project_ui::project_of_workspace(t, &ws.id).map(|p| p.id.clone());
+        collect_http_folders(&ws.folders, &ws.name, project.as_deref(), &mut out);
     }
     for p in &t.projects.list {
         if let Some(url) = p.repo_url.as_deref().filter(|u| !u.trim().is_empty()) {
@@ -470,6 +611,7 @@ pub fn collect_sources(t: &Tabular) -> Vec<LinkSource> {
                 label: p.name.clone(),
                 url: Some(url.to_string()),
                 path: None,
+                project: Some(p.id.clone()),
             });
         }
     }
@@ -480,12 +622,27 @@ pub fn collect_sources(t: &Tabular) -> Vec<LinkSource> {
             label: m.path.clone(),
             url: None,
             path: Some(m.path.clone()),
+            project: m.project_id.clone(),
         });
     }
     out
 }
 
-/// Susun ulang daftar repository dan pilih repository aktif.
+/// Project yang dipilih di switcher (id, nama).
+pub fn active_project(t: &Tabular) -> Option<(String, String)> {
+    super::project_ui::active(t).map(|p| (p.id.clone(), p.name.clone()))
+}
+
+/// Repository yang tampil: (milik project aktif, lainnya). Tanpa project aktif
+/// semua masuk daftar pertama.
+pub fn visible_repos(t: &Tabular) -> (Vec<RepoEntry>, Vec<RepoEntry>) {
+    match active_project(t) {
+        Some((id, _)) => t.git.repos.iter().cloned().partition(|r| r.in_project(&id)),
+        None => (t.git.repos.clone(), Vec::new()),
+    }
+}
+
+/// Susun ulang daftar repository dan muat status repository yang tampil.
 pub fn reload_repos(t: &mut Tabular) {
     let sources = collect_sources(t);
     let repos = crate::git::repos::merge(&sources, crate::repo_scan::git_remote_url);
@@ -498,17 +655,30 @@ pub fn reload_repos(t: &mut Tabular) {
         .as_deref()
         .is_some_and(|k| git.repos.iter().any(|r| r.key == k));
     if !active_ok {
-        let first = git
+        git.store.active = git
             .repos
             .iter()
             .find(|r| r.path.is_some())
             .map(|r| r.key.clone());
-        git.store.active = first;
     }
-    refresh_all(t);
+    let (mine, _) = visible_repos(t);
+    // Repository satu-satunya langsung dibuka seperti VS Code.
+    if mine.len() == 1 && !t.git.store.prefs.contains_key(&mine[0].key) {
+        t.git.ui_mut(&mine[0].key).expanded = true;
+    }
+    let few = mine.len() <= MAX_AUTO_STATUS;
+    for r in mine.iter().filter(|r| r.path.is_some()) {
+        let expanded = t.git.ui_mut(&r.key).expanded;
+        if expanded {
+            refresh_all(t, &r.key);
+        } else if few {
+            refresh_status_of(t, &r.key);
+        }
+    }
 }
 
-pub fn select_repo(t: &mut Tabular, key: &str) {
+/// Jadikan `key` repository terfokus (dipakai sebagai default aksi global).
+pub fn focus_repo(t: &mut Tabular, key: &str) {
     if t.git.store.active.as_deref() == Some(key) {
         return;
     }
@@ -516,22 +686,48 @@ pub fn select_repo(t: &mut Tabular, key: &str) {
     if let Err(e) = t.git.save_store() {
         t.toasts.error(e);
     }
-    let git = &mut t.git;
-    git.status = None;
-    git.status_error = None;
-    git.branches.clear();
-    git.commits.clear();
-    git.commits_done = false;
-    git.commit_message.clear();
-    git.amend = false;
-    if git.mrs_active_repo {
-        git.mrs.clear();
-        git.mrs_loaded_at = None;
-    }
-    refresh_all(t);
 }
 
-/// Tambah folder lokal (harus berada di dalam repository git).
+/// Buka/tutup section repository; saat dibuka muat semua datanya.
+pub fn set_expanded(t: &mut Tabular, key: &str, expanded: bool) {
+    let ui = t.git.ui_mut(key);
+    if ui.expanded == expanded {
+        return;
+    }
+    ui.expanded = expanded;
+    t.git.remember_ui(key);
+    if expanded {
+        focus_repo(t, key);
+        refresh_all(t, key);
+        if t.git.ui_mut(key).sub == GitSubMenu::Review {
+            load_mrs(t, Some(key.to_string()));
+        }
+    }
+}
+
+/// Ganti sub-tab repository `key`.
+pub fn set_sub(t: &mut Tabular, key: &str, sub: GitSubMenu) {
+    let ui = t.git.ui_mut(key);
+    if ui.sub == sub {
+        return;
+    }
+    ui.sub = sub;
+    let (needs_log, needs_mrs) = (
+        ui.commits.is_empty(),
+        ui.mrs_loaded_at.is_none() && !ui.mrs_mine,
+    );
+    t.git.remember_ui(key);
+    focus_repo(t, key);
+    match sub {
+        GitSubMenu::Review if needs_mrs => load_mrs(t, Some(key.to_string())),
+        GitSubMenu::History if needs_log => refresh_log(t, key, true),
+        GitSubMenu::Changes => refresh_status_of(t, key),
+        _ => {}
+    }
+}
+
+/// Tambah folder lokal (harus berada di dalam repository git). Bila sebuah
+/// project sedang dipilih, folder dicatat sebagai milik project itu.
 pub fn add_folder(t: &mut Tabular, dir: &Path) {
     let root = match ops::discover_root(dir) {
         Ok(r) => r,
@@ -547,8 +743,12 @@ pub fn add_folder(t: &mut Tabular, dir: &Path) {
             return;
         }
     };
+    let project = active_project(t).map(|(id, _)| id);
     let root_s = root.to_string_lossy().to_string();
-    t.git.store.add(&root_s);
+    t.git.store.add_to_project(&root_s, project.as_deref());
+    if let Err(e) = t.git.save_store() {
+        t.toasts.error(e);
+    }
     reload_repos(t);
     let key = t
         .git
@@ -557,10 +757,8 @@ pub fn add_folder(t: &mut Tabular, dir: &Path) {
         .find(|r| r.path.as_ref().is_some_and(|p| same_dir(p, &root)))
         .map(|r| r.key.clone());
     if let Some(k) = key {
-        select_repo(t, &k);
-    }
-    if let Err(e) = t.git.save_store() {
-        t.toasts.error(e);
+        set_expanded(t, &k, true);
+        focus_repo(t, &k);
     }
 }
 
@@ -583,7 +781,7 @@ pub fn init_repo(t: &mut Tabular, dir: PathBuf) {
 }
 
 pub fn remove_repo(t: &mut Tabular, key: &str) {
-    let Some(entry) = t.git.repos.iter().find(|r| r.key == key).cloned() else {
+    let Some(entry) = t.git.entry(key).cloned() else {
         return;
     };
     for link in entry.links.iter().filter(|l| l.kind == LinkKind::Manual) {
@@ -592,16 +790,42 @@ pub fn remove_repo(t: &mut Tabular, key: &str) {
     if t.git.store.active.as_deref() == Some(key) {
         t.git.store.active = None;
     }
+    t.git.store.prefs.remove(key);
+    t.git.repo_ui.remove(key);
     if let Err(e) = t.git.save_store() {
         t.toasts.error(e);
     }
     reload_repos(t);
 }
 
+/// Catat repository `key` sebagai milik project aktif (folder manual).
+pub fn add_to_active_project(t: &mut Tabular, key: &str) {
+    let (Some((pid, pname)), Some(path)) = (active_project(t), t.git.path_of(key)) else {
+        return;
+    };
+    let path_s = path.to_string_lossy().to_string();
+    if !t.git.store.add_to_project(&path_s, Some(&pid))
+        && let Some(r) = t
+            .git
+            .store
+            .repos
+            .iter_mut()
+            .find(|r| same_dir(Path::new(&r.path), &path))
+    {
+        r.project_id = Some(pid);
+    }
+    if let Err(e) = t.git.save_store() {
+        t.toasts.error(e);
+        return;
+    }
+    t.toasts.success(format!("Added to project {pname}"));
+    reload_repos(t);
+}
+
 /// Pakai folder repository ini untuk group diagram / folder API tertaut yang
 /// belum punya folder di komputer ini.
 pub fn link_folder_to_items(t: &mut Tabular, key: &str) {
-    let Some(entry) = t.git.repos.iter().find(|r| r.key == key).cloned() else {
+    let Some(entry) = t.git.entry(key).cloned() else {
         return;
     };
     let Some(path) = entry.path.clone() else {
@@ -620,47 +844,74 @@ pub fn link_folder_to_items(t: &mut Tabular, key: &str) {
 
 // ─── Refresh status/branch/log ──────────────────────────────────────────────
 
-pub fn refresh_all(t: &mut Tabular) {
-    refresh_status(t);
-    refresh_branches(t);
-    refresh_log(t, true);
+pub fn refresh_all(t: &mut Tabular, key: &str) {
+    refresh_status_of(t, key);
+    refresh_branches(t, key);
+    let ui = t.git.ui_mut(key);
+    if ui.sub == GitSubMenu::History || !ui.commits.is_empty() {
+        refresh_log(t, key, true);
+    }
 }
 
+/// Refresh status semua repository yang sedang dibuka (dipanggil saat tab Git
+/// dipilih lagi).
 pub fn refresh_status(t: &mut Tabular) {
-    let git = &mut t.git;
-    let (Some(key), Some(path)) = (git.active_key(), git.active_path()) else {
-        git.status = None;
+    let keys: Vec<String> = t
+        .git
+        .repo_ui
+        .iter()
+        .filter(|(_, u)| u.expanded && !u.is_busy())
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in keys {
+        refresh_status_of(t, &k);
+    }
+}
+
+pub fn refresh_status_of(t: &mut Tabular, key: &str) {
+    let Some(path) = t.git.path_of(key) else {
         return;
     };
-    git.status_loading = true;
+    let git = &mut t.git;
+    let ui = git.ui_mut(key);
+    if ui.status_loading {
+        return;
+    }
+    ui.status_loading = true;
+    let key = key.to_string();
     git.spawn(move || JobResult::Status {
         key,
-        res: status::read(&path),
+        res: status::read(&path).map(|s| {
+            let st = crate::git::history_ops::state(&path).unwrap_or_default();
+            (s, st)
+        }),
     });
 }
 
-pub fn refresh_branches(t: &mut Tabular) {
-    let git = &mut t.git;
-    let (Some(key), Some(path)) = (git.active_key(), git.active_path()) else {
+pub fn refresh_branches(t: &mut Tabular, key: &str) {
+    let Some(path) = t.git.path_of(key) else {
         return;
     };
-    git.spawn(move || JobResult::Branches {
+    let key = key.to_string();
+    t.git.spawn(move || JobResult::Branches {
         key,
         res: crate::git::branch::list(&path),
     });
 }
 
-/// Muat riwayat; `reset` memulai dari commit terbaru.
-pub fn refresh_log(t: &mut Tabular, reset: bool) {
-    let git = &mut t.git;
-    let (Some(key), Some(path)) = (git.active_key(), git.active_path()) else {
+/// Muat riwayat branch aktif; `reset` memulai dari commit terbaru.
+pub fn refresh_log(t: &mut Tabular, key: &str, reset: bool) {
+    let Some(path) = t.git.path_of(key) else {
         return;
     };
-    if git.commits_loading {
+    let git = &mut t.git;
+    let ui = git.ui_mut(key);
+    if ui.commits_loading {
         return;
     }
-    let skip = if reset { 0 } else { git.commits.len() };
-    git.commits_loading = true;
+    let skip = if reset { 0 } else { ui.commits.len() };
+    ui.commits_loading = true;
+    let key = key.to_string();
     git.spawn(move || JobResult::Log {
         key,
         skip,
@@ -670,65 +921,78 @@ pub fn refresh_log(t: &mut Tabular, reset: bool) {
 
 // ─── Operasi yang mengubah repository ───────────────────────────────────────
 
-/// Jalankan operasi di repository aktif. Hanya satu operasi pada satu waktu.
+/// Jalankan operasi di repository `key`. Hanya satu operasi per repository
+/// pada satu waktu; repository lain tetap bisa dipakai.
 pub fn run_op(
     t: &mut Tabular,
+    key: &str,
     label: &str,
     op: impl FnOnce(&Path, &AtomicBool) -> Result<String, GitError> + Send + 'static,
 ) {
-    let git = &mut t.git;
-    let Some(path) = git.active_path() else {
+    let Some(path) = t.git.path_of(key) else {
         t.toasts
-            .error("Select a repository with a local folder first");
+            .error("This repository has no local folder on this computer");
         return;
     };
-    if git.is_busy() {
-        t.toasts.info("Another git operation is still running");
+    let git = &mut t.git;
+    let ui = git.ui_mut(key);
+    if ui.is_busy() {
+        t.toasts
+            .info("Another git operation is still running in this repository");
         return;
     }
-    git.busy = Some(label.to_string());
-    git.last_error = None;
-    git.cancel.store(false, Ordering::SeqCst);
-    let cancel = git.cancel.clone();
+    ui.busy = Some(label.to_string());
+    ui.last_error = None;
+    ui.cancel.store(false, Ordering::SeqCst);
+    let cancel = ui.cancel.clone();
     let label = label.to_string();
+    let key = key.to_string();
     log::info!("[GIT] {label} in {}", path.display());
     git.spawn(move || JobResult::Op {
         res: op(&path, &cancel),
+        key,
         label,
     });
 }
 
-pub fn cancel_op(t: &mut Tabular) {
-    t.git.cancel.store(true, Ordering::SeqCst);
+pub fn cancel_op(t: &mut Tabular, key: &str) {
+    if let Some(ui) = t.git.repo_ui.get(key) {
+        ui.cancel.store(true, Ordering::SeqCst);
+    }
 }
 
-pub fn stage(t: &mut Tabular, paths: Vec<String>) {
-    run_op(t, "Stage", move |p, _| {
+pub fn stage(t: &mut Tabular, key: &str, paths: Vec<String>) {
+    run_op(t, key, "Stage", move |p, _| {
         ops::stage(p, &paths).map(|_| String::new())
     });
 }
 
-pub fn unstage(t: &mut Tabular, paths: Vec<String>) {
-    let has_head = t.git.status.as_ref().is_some_and(|s| s.head_oid.is_some());
-    run_op(t, "Unstage", move |p, _| {
+pub fn unstage(t: &mut Tabular, key: &str, paths: Vec<String>) {
+    let has_head = t
+        .git
+        .ui(key)
+        .and_then(|u| u.status.as_ref())
+        .is_some_and(|s| s.head_oid.is_some());
+    run_op(t, key, "Unstage", move |p, _| {
         ops::unstage(p, &paths, has_head).map(|_| String::new())
     });
 }
 
-pub fn commit(t: &mut Tabular) {
-    let msg = t.git.commit_message.trim().to_string();
-    let amend = t.git.amend;
+pub fn commit(t: &mut Tabular, key: &str) {
+    let ui = t.git.ui_mut(key);
+    let msg = ui.commit_message.trim().to_string();
+    let amend = ui.amend;
+    let st = ui.status.clone().unwrap_or_default();
     if msg.is_empty() && !amend {
         t.toasts.error("Enter a commit message");
         return;
     }
-    let st = t.git.status.clone().unwrap_or_default();
     let stage_all = st.staged.is_empty() && !amend;
     if stage_all && st.unstaged.is_empty() && st.untracked.is_empty() {
         t.toasts.info("Nothing to commit");
         return;
     }
-    run_op(t, "Commit", move |p, _| {
+    run_op(t, key, "Commit", move |p, _| {
         if stage_all {
             // Seperti VS Code: tanpa file staged, commit semua perubahan.
             ops::stage_all(p)?;
@@ -742,19 +1006,33 @@ pub fn commit(t: &mut Tabular) {
     });
 }
 
-pub fn fetch(t: &mut Tabular) {
-    run_op(t, "Fetch", |p, c| ops::fetch(p, c).map(|_| String::new()));
+pub fn fetch(t: &mut Tabular, key: &str) {
+    let s = &t.git.store.settings;
+    let (prune, prune_tags) = (s.fetch_prune, s.fetch_prune_tags);
+    run_op(t, key, "Fetch", move |p, c| {
+        crate::git::history_ops::fetch(p, None, prune, prune_tags, c).map(|_| String::new())
+    });
 }
 
-pub fn pull(t: &mut Tabular) {
+/// Fetch semua repository yang tampil dan punya folder lokal.
+pub fn fetch_all(t: &mut Tabular) {
+    let (mine, _) = visible_repos(t);
+    for r in mine.iter().filter(|r| r.path.is_some()) {
+        if !t.git.is_busy(&r.key) {
+            fetch(t, &r.key);
+        }
+    }
+}
+
+pub fn pull(t: &mut Tabular, key: &str) {
     let rebase = t.git.store.settings.pull_rebase;
-    run_op(t, "Pull", move |p, c| {
+    run_op(t, key, "Pull", move |p, c| {
         ops::pull(p, rebase, c).map(|_| String::new())
     });
 }
 
-pub fn push(t: &mut Tabular) {
-    let Some(st) = t.git.status.clone() else {
+pub fn push(t: &mut Tabular, key: &str) {
+    let Some(st) = t.git.ui(key).and_then(|u| u.status.clone()) else {
         return;
     };
     let Some(branch) = st.branch.clone() else {
@@ -762,13 +1040,13 @@ pub fn push(t: &mut Tabular) {
         return;
     };
     let has_upstream = st.upstream.is_some();
-    run_op(t, "Push", move |p, c| {
+    run_op(t, key, "Push", move |p, c| {
         ops::push(p, &branch, has_upstream, c).map(|_| String::new())
     });
 }
 
-pub fn checkout(t: &mut Tabular, name: String, remote: bool) {
-    run_op(t, "Checkout", move |p, _| {
+pub fn checkout(t: &mut Tabular, key: &str, name: String, remote: bool) {
+    run_op(t, key, "Checkout", move |p, _| {
         if remote {
             ops::checkout_remote(p, &name)
         } else {
@@ -778,37 +1056,50 @@ pub fn checkout(t: &mut Tabular, name: String, remote: bool) {
     });
 }
 
-pub fn create_branch(t: &mut Tabular) {
-    let name = t.git.new_branch.trim().to_string();
-    let Some(path) = t.git.active_path() else {
+pub fn create_branch(t: &mut Tabular, key: &str) {
+    let Some(path) = t.git.path_of(key) else {
         return;
     };
+    let name = t.git.ui_mut(key).new_branch.trim().to_string();
     if !ops::is_valid_branch_name(&path, &name) {
         t.toasts
             .error(format!("\"{name}\" is not a valid branch name"));
         return;
     }
-    t.git.new_branch.clear();
-    run_op(t, "Create branch", move |p, _| {
+    t.git.ui_mut(key).new_branch.clear();
+    run_op(t, key, "Create branch", move |p, _| {
         ops::create_branch(p, &name, true).map(|_| String::new())
     });
 }
 
-pub fn confirm_sidebar(t: &mut Tabular, c: SidebarConfirm) {
+/// Lanjutkan merge/rebase/cherry-pick yang berhenti.
+pub fn continue_operation(t: &mut Tabular, key: &str) {
+    let st = t.git.ui_mut(key).repo_state;
+    run_op(t, key, "Continue", move |p, _| {
+        crate::git::history_ops::continue_op(p, st).map(|_| String::new())
+    });
+}
+
+pub fn confirm_sidebar(t: &mut Tabular, key: &str, c: SidebarConfirm) {
     match c {
-        SidebarConfirm::DiscardTracked(paths) => run_op(t, "Discard changes", move |p, _| {
+        SidebarConfirm::DiscardTracked(paths) => run_op(t, key, "Discard changes", move |p, _| {
             ops::discard_tracked(p, &paths).map(|_| String::new())
         }),
         SidebarConfirm::DiscardUntracked(paths) => {
-            run_op(t, "Discard untracked files", move |p, _| {
+            run_op(t, key, "Discard untracked files", move |p, _| {
                 ops::discard_untracked(p, &paths).map(|_| String::new())
             })
         }
-        SidebarConfirm::RemoveBranch { name, force } => run_op(t, "Remove branch", move |p, _| {
-            ops::remove_branch(p, &name, force).map(|_| String::new())
+        SidebarConfirm::RemoveBranch { name, force } => {
+            run_op(t, key, "Remove branch", move |p, _| {
+                ops::remove_branch(p, &name, force).map(|_| String::new())
+            })
+        }
+        SidebarConfirm::Checkout { name, remote } => checkout(t, key, name, remote),
+        SidebarConfirm::RemoveRepo => remove_repo(t, key),
+        SidebarConfirm::AbortOperation(st) => run_op(t, key, "Abort", move |p, _| {
+            crate::git::history_ops::abort_op(p, st).map(|_| String::new())
         }),
-        SidebarConfirm::Checkout { name, remote } => checkout(t, name, remote),
-        SidebarConfirm::RemoveRepo(key) => remove_repo(t, &key),
     }
 }
 
@@ -826,14 +1117,15 @@ pub fn start_clone(t: &mut Tabular, dlg: CloneDialog) {
         );
         return;
     }
-    let git = &mut t.git;
-    if git.is_busy() {
-        t.toasts.info("Another git operation is still running");
+    if t.git.clone_busy {
+        t.toasts.info("A clone is still running");
         return;
     }
-    git.busy = Some("Clone".to_string());
-    git.cancel.store(false, Ordering::SeqCst);
-    let cancel = git.cancel.clone();
+    let project = active_project(t).map(|(id, _)| id);
+    let git = &mut t.git;
+    git.clone_busy = true;
+    git.clone_cancel.store(false, Ordering::SeqCst);
+    let cancel = git.clone_cancel.clone();
     let entry_key = dlg.entry_key.clone();
     log::info!(
         "[GIT] clone {} into {}",
@@ -843,14 +1135,15 @@ pub fn start_clone(t: &mut Tabular, dlg: CloneDialog) {
     git.spawn(move || JobResult::Cloned {
         res: ops::clone(&url, &dest, &cancel),
         entry_key,
+        project,
         dest,
     });
 }
 
 // ─── AI pesan commit ────────────────────────────────────────────────────────
 
-pub fn generate_commit_message(t: &mut Tabular) {
-    let Some(path) = t.git.active_path() else {
+pub fn generate_commit_message(t: &mut Tabular, key: &str) {
+    let Some(path) = t.git.path_of(key) else {
         return;
     };
     let target = t.effective_default_target();
@@ -859,8 +1152,10 @@ pub fn generate_commit_message(t: &mut Tabular) {
         return;
     }
     let cfg = crate::ai_assistant::chat_backend_for(t, target);
-    let branch = t.git.status.as_ref().and_then(|s| s.branch.clone());
-    t.git.commit_ai_busy = true;
+    let ui = t.git.ui_mut(key);
+    let branch = ui.status.as_ref().and_then(|s| s.branch.clone());
+    ui.commit_ai_busy = true;
+    let key = key.to_string();
     t.git.spawn(move || {
         let res = (|| {
             let mut staged = diff::staged_all(&path).map_err(|e| e.to_string())?;
@@ -884,13 +1179,13 @@ pub fn generate_commit_message(t: &mut Tabular) {
                 .map_err(|_| "AI backend stopped without a reply".to_string())?
                 .map(|m| review::prompt::clean_commit_message(&m))
         })();
-        JobResult::CommitMessage(res)
+        JobResult::CommitMessage { key, res }
     });
 }
 
 // ─── Tab tengah ─────────────────────────────────────────────────────────────
 
-fn find_tab(t: &Tabular, pred: impl Fn(&GitTabState) -> bool) -> Option<usize> {
+pub(crate) fn find_tab(t: &Tabular, pred: impl Fn(&GitTabState) -> bool) -> Option<usize> {
     t.query_tabs
         .iter()
         .position(|tab| tab.git_state.as_ref().is_some_and(&pred))
@@ -904,7 +1199,12 @@ fn tab_by_id(t: &mut Tabular, tab_id: usize) -> Option<&mut GitTabState> {
 }
 
 /// Buka tab Git baru (atau pakai ulang tab `reuse`) dan kembalikan id-nya.
-fn open_tab(t: &mut Tabular, reuse: Option<usize>, title: String, state: GitTabState) -> usize {
+pub(crate) fn open_tab(
+    t: &mut Tabular,
+    reuse: Option<usize>,
+    title: String,
+    state: GitTabState,
+) -> usize {
     if let Some(idx) = reuse {
         crate::editor::switch_to_tab(t, idx);
         if let Some(tab) = t.query_tabs.get_mut(idx) {
@@ -925,13 +1225,13 @@ fn open_tab(t: &mut Tabular, reuse: Option<usize>, title: String, state: GitTabS
     }
 }
 
-fn file_name(path: &str) -> &str {
+pub(crate) fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Buka diff file lokal. Satu tab "preview" dipakai ulang seperti VS Code.
-pub fn open_file_diff(t: &mut Tabular, change: &FileChange, source: DiffSource) {
-    let Some(repo) = t.git.active_path() else {
+pub fn open_file_diff(t: &mut Tabular, key: &str, change: &FileChange, source: DiffSource) {
+    let Some(repo) = t.git.path_of(key) else {
         return;
     };
     let reuse = find_tab(t, |s| matches!(s.view, GitView::FileDiff { .. }));
@@ -947,6 +1247,7 @@ pub fn open_file_diff(t: &mut Tabular, change: &FileChange, source: DiffSource) 
         file_name(&change.path)
     );
     let view = GitView::FileDiff {
+        key: key.to_string(),
         repo: repo.clone(),
         path: change.path.clone(),
         orig: change.orig_path.clone(),
@@ -965,9 +1266,29 @@ pub fn open_file_diff(t: &mut Tabular, change: &FileChange, source: DiffSource) 
     });
 }
 
+/// Buka diff satu file pada rentang revisi (tab preview dipakai ulang).
+pub fn open_range_diff(t: &mut Tabular, repo: PathBuf, range: DiffRange, change: FileChange) {
+    let reuse = find_tab(t, |s| matches!(s.view, GitView::RangeDiff { .. }));
+    let title = format!(
+        "{} {}",
+        egui_icons::icons::ICON_DIFFERENCE.codepoint,
+        file_name(&change.path)
+    );
+    let view = GitView::RangeDiff {
+        repo: repo.clone(),
+        range: range.clone(),
+        change: change.clone(),
+    };
+    let tab_id = open_tab(t, reuse, title, GitTabState::new(view));
+    t.git.spawn(move || JobResult::Patch {
+        tab_id,
+        res: history::range_file_patch(&repo, &range, &change),
+    });
+}
+
 /// Buka detail commit (pesan + daftar file) di tab tengah.
-pub fn open_commit(t: &mut Tabular, commit: &CommitInfo) {
-    let Some(repo) = t.git.active_path() else {
+pub fn open_commit(t: &mut Tabular, key: &str, commit: &CommitInfo) {
+    let Some(repo) = t.git.path_of(key) else {
         return;
     };
     let reuse = find_tab(t, |s| matches!(s.view, GitView::Commit { .. }));
@@ -1096,7 +1417,7 @@ pub fn with_tab_state(
     }
 }
 
-fn short_title(s: &str, max: usize) -> String {
+pub(crate) fn short_title(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -1158,44 +1479,55 @@ pub fn post_comment(t: &mut Tabular, tab_id: usize, st: &mut GitTabState, body: 
 
 // ─── Merge Review: daftar & AI ──────────────────────────────────────────────
 
-/// Muat daftar MR sesuai mode (semua yang relevan untuk user, atau repository aktif).
-pub fn load_mrs(t: &mut Tabular) {
+/// Muat daftar MR: milik repository `key`, atau semua yang relevan untuk user
+/// ("Assigned to me") bila `None`.
+pub fn load_mrs(t: &mut Tabular, key: Option<String>) {
     let access = t.git.provider_access();
+    let include_closed = t.git.store.settings.show_closed;
+    let no_token = access.github_token.is_none() && access.gitlab_token.is_none();
     let git = &mut t.git;
-    if git.mrs_loading {
-        return;
-    }
-    if access.github_token.is_none() && access.gitlab_token.is_none() {
-        git.mrs.clear();
-        git.mr_errors.clear();
-        git.mrs_loaded_at = Some(Instant::now());
-        return;
-    }
-    let include_closed = git.store.settings.show_closed;
-    let remote = if git.mrs_active_repo {
-        match git.active() {
-            Some(entry) => {
-                match review::remote_from_key(&entry.key, &access.gitlab_host()) {
-                    Some(r) => Some(r),
-                    None => {
-                        git.mrs.clear();
-                        git.mr_errors =
-                        vec!["The active repository is not hosted on GitHub or the configured GitLab.".to_string()];
-                        git.mrs_loaded_at = Some(Instant::now());
-                        return;
-                    }
-                }
-            }
-            None => {
-                git.mrs.clear();
-                git.mr_errors = vec!["Select a repository first.".to_string()];
+    let remote = match &key {
+        Some(k) => {
+            let ui = git.ui_mut(k);
+            if ui.mrs_loading {
                 return;
             }
+            if no_token {
+                ui.mrs.clear();
+                ui.mr_errors.clear();
+                ui.mrs_loaded_at = Some(Instant::now());
+                return;
+            }
+            match review::remote_from_key(k, &access.gitlab_host()) {
+                Some(r) => {
+                    ui.mrs_loading = true;
+                    Some(r)
+                }
+                None => {
+                    ui.mrs.clear();
+                    ui.mr_errors = vec![
+                        "This repository is not hosted on GitHub or the configured GitLab."
+                            .to_string(),
+                    ];
+                    ui.mrs_loaded_at = Some(Instant::now());
+                    return;
+                }
+            }
         }
-    } else {
-        None
+        None => {
+            if git.mrs_loading {
+                return;
+            }
+            if no_token {
+                git.mrs.clear();
+                git.mr_errors.clear();
+                git.mrs_loaded_at = Some(Instant::now());
+                return;
+            }
+            git.mrs_loading = true;
+            None
+        }
     };
-    git.mrs_loading = true;
     git.spawn(move || {
         let results = match remote {
             Some(r) => vec![(
@@ -1207,7 +1539,7 @@ pub fn load_mrs(t: &mut Tabular) {
                 .map(|(p, r)| (Some(p), r))
                 .collect(),
         };
-        JobResult::Mrs { results }
+        JobResult::Mrs { key, results }
     });
 }
 
@@ -1325,7 +1657,7 @@ fn poll_reviews(git: &mut GitUiState) {
 
 // ─── Polling per frame ──────────────────────────────────────────────────────
 
-fn describe(e: &GitError) -> String {
+pub(crate) fn describe(e: &GitError) -> String {
     match e {
         GitError::Auth { action, detail } => format!(
             "git {action} needs credentials. Configure a credential helper or SSH key in a terminal, then try again.\n{detail}"
@@ -1342,11 +1674,12 @@ pub fn poll(t: &mut Tabular, ctx: &egui::Context) {
         results.push(r);
     }
     for r in results {
-        apply(t, r);
+        apply(t, r, ctx);
     }
     poll_reviews(&mut t.git);
+    t.git.avatars.poll(ctx);
 
-    // Hentikan review milik tab yang sudah ditutup.
+    // Hentikan review dan buang Git Graph milik tab yang sudah ditutup.
     let live: std::collections::HashSet<usize> = t.query_tabs.iter().map(|q| q.id).collect();
     t.git.reviews.retain(|id, run| {
         let keep = live.contains(id);
@@ -1355,90 +1688,92 @@ pub fn poll(t: &mut Tabular, ctx: &egui::Context) {
         }
         keep
     });
+    t.git.graphs.retain(|id, _| live.contains(id));
 
     // Refresh status saat jendela kembali fokus (file mungkin diubah di luar).
     let focused = ctx.input(|i| i.focused);
-    if focused && !t.git.was_focused && t.selected_menu == "Git" && !t.git.is_busy() {
-        refresh_status(t);
+    if focused && !t.git.was_focused {
+        if t.selected_menu == "Git" {
+            refresh_status(t);
+        }
+        git_graph_jobs::refresh_open_graphs(t);
     }
     t.git.was_focused = focused;
 
-    // Auto-refresh daftar MR setelah tab Git pernah dibuka.
+    // Auto-refresh daftar MR yang pernah dimuat.
     let minutes = t.git.store.settings.auto_refresh_min;
-    if minutes > 0
-        && t.git.repos_loaded
-        && !t.git.mrs_loading
-        && t.git
-            .mrs_loaded_at
-            .is_some_and(|at| at.elapsed() >= Duration::from_secs(u64::from(minutes) * 60))
-    {
-        load_mrs(t);
+    if minutes > 0 && t.git.repos_loaded {
+        let due = |at: Option<Instant>| {
+            at.is_some_and(|at| at.elapsed() >= Duration::from_secs(u64::from(minutes) * 60))
+        };
+        if !t.git.mrs_loading && due(t.git.mrs_loaded_at) {
+            load_mrs(t, None);
+        }
+        let keys: Vec<String> = t
+            .git
+            .repo_ui
+            .iter()
+            .filter(|(_, u)| u.expanded && !u.mrs_loading && due(u.mrs_loaded_at))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            load_mrs(t, Some(k));
+        }
     }
 
-    if t.git.has_pending() {
+    if t.git.has_pending() || t.git.avatars.is_loading() {
         ctx.request_repaint_after(Duration::from_millis(100));
     }
 }
 
-fn apply(t: &mut Tabular, r: JobResult) {
-    let active = t.git.active_key();
+fn apply(t: &mut Tabular, r: JobResult, ctx: &egui::Context) {
     match r {
         JobResult::Status { key, res } => {
-            if active.as_deref() != Some(&key) {
-                return;
-            }
-            let git = &mut t.git;
-            git.status_loading = false;
+            let ui = t.git.ui_mut(&key);
+            ui.status_loading = false;
             match res {
-                Ok(s) => {
-                    git.status = Some(s);
-                    git.status_error = None;
+                Ok((s, st)) => {
+                    ui.status = Some(s);
+                    ui.repo_state = st;
+                    ui.status_error = None;
                 }
                 Err(e) => {
-                    git.status = None;
-                    git.status_error = Some(describe(&e));
+                    ui.status = None;
+                    ui.status_error = Some(describe(&e));
                 }
             }
         }
-        JobResult::Branches { key, res } => {
-            if active.as_deref() != Some(&key) {
-                return;
-            }
-            match res {
-                Ok(b) => t.git.branches = b,
-                Err(e) => log::warn!("[GIT] branch list failed: {e}"),
-            }
-        }
+        JobResult::Branches { key, res } => match res {
+            Ok(b) => t.git.ui_mut(&key).branches = b,
+            Err(e) => log::warn!("[GIT] branch list failed: {e}"),
+        },
         JobResult::Log { key, skip, res } => {
-            t.git.commits_loading = false;
-            if active.as_deref() != Some(&key) {
-                return;
-            }
+            let ui = t.git.ui_mut(&key);
+            ui.commits_loading = false;
             match res {
                 Ok(page) => {
-                    let git = &mut t.git;
-                    git.commits_done = page.len() < gitlog::PAGE_SIZE;
-                    if skip == 0 {
-                        git.commits = page;
+                    ui.commits_done = page.len() < gitlog::PAGE_SIZE;
+                    let mut all = if skip == 0 {
+                        Vec::new()
                     } else {
-                        git.commits.extend(page);
-                    }
+                        std::mem::take(&mut ui.commits)
+                    };
+                    all.extend(page);
+                    ui.set_commits(all);
                 }
                 Err(e) => log::warn!("[GIT] log failed: {e}"),
             }
         }
-        JobResult::Op { label, res } => {
-            t.git.busy = None;
+        JobResult::Op { key, label, res } => {
+            let ui = t.git.ui_mut(&key);
+            ui.busy = None;
             match res {
                 Ok(_) => {
                     if label == "Commit" {
-                        t.git.commit_message.clear();
-                        t.git.amend = false;
+                        ui.commit_message.clear();
+                        ui.amend = false;
                     }
-                    if matches!(
-                        label.as_str(),
-                        "Push" | "Pull" | "Fetch" | "Commit" | "Checkout"
-                    ) {
+                    if !matches!(label.as_str(), "Stage" | "Unstage") {
                         t.toasts.success(format!("{label} completed"));
                     }
                 }
@@ -1446,22 +1781,26 @@ fn apply(t: &mut Tabular, r: JobResult) {
                 Err(e) => {
                     let msg = describe(&e);
                     log::warn!("[GIT] {label} failed: {msg}");
-                    t.git.last_error = Some(msg.clone());
+                    ui.last_error = Some(msg.clone());
                     t.toasts.error(format!("{label} failed: {msg}"));
                 }
             }
-            refresh_all(t);
+            refresh_all(t, &key);
+            git_graph_jobs::on_repo_changed(t, &key);
         }
         JobResult::Cloned {
             entry_key,
+            project,
             dest,
             res,
         } => {
-            t.git.busy = None;
+            t.git.clone_busy = false;
             match res {
                 Ok(()) => {
                     t.toasts.success(format!("Cloned into {}", dest.display()));
-                    t.git.store.add(&dest.to_string_lossy());
+                    t.git
+                        .store
+                        .add_to_project(&dest.to_string_lossy(), project.as_deref());
                     if let Err(e) = t.git.save_store() {
                         t.toasts.error(e);
                     }
@@ -1476,27 +1815,40 @@ fn apply(t: &mut Tabular, r: JobResult) {
                     });
                     if let Some(k) = key {
                         link_folder_to_items(t, &k);
-                        select_repo(t, &k);
+                        set_expanded(t, &k, true);
                     }
                 }
                 Err(GitError::Cancelled) => t.toasts.info("Clone cancelled"),
                 Err(e) => t.toasts.error(format!("Clone failed: {}", describe(&e))),
             }
         }
-        JobResult::Mrs { results } => {
-            let git = &mut t.git;
-            git.mrs_loading = false;
-            git.mrs_loaded_at = Some(Instant::now());
-            git.mrs.clear();
-            git.mr_errors.clear();
+        JobResult::Mrs { key, results } => {
+            let mut list = Vec::new();
+            let mut errors = Vec::new();
             for (provider, res) in results {
                 match res {
-                    Ok(list) => git.mrs.extend(list),
+                    Ok(l) => list.extend(l),
                     Err(e) => {
                         let label = provider.map(Provider::label).unwrap_or("Review");
                         log::warn!("[GIT] {label} merge requests failed: {e}");
-                        git.mr_errors.push(format!("{label}: {e}"));
+                        errors.push(format!("{label}: {e}"));
                     }
+                }
+            }
+            match key {
+                Some(k) => {
+                    let ui = t.git.ui_mut(&k);
+                    ui.mrs_loading = false;
+                    ui.mrs_loaded_at = Some(Instant::now());
+                    ui.mrs = list;
+                    ui.mr_errors = errors;
+                }
+                None => {
+                    let git = &mut t.git;
+                    git.mrs_loading = false;
+                    git.mrs_loaded_at = Some(Instant::now());
+                    git.mrs = list;
+                    git.mr_errors = errors;
                 }
             }
         }
@@ -1547,7 +1899,19 @@ fn apply(t: &mut Tabular, r: JobResult) {
                 Err(e) => t.toasts.error(format!("Action failed: {e}")),
             }
             if ok {
-                load_mrs(t);
+                if t.git.mrs_loaded_at.is_some() {
+                    load_mrs(t, None);
+                }
+                let keys: Vec<String> = t
+                    .git
+                    .repo_ui
+                    .iter()
+                    .filter(|(_, u)| u.mrs_loaded_at.is_some())
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in keys {
+                    load_mrs(t, Some(k));
+                }
             }
         }
         JobResult::Comment { tab_id, res } => {
@@ -1594,13 +1958,15 @@ fn apply(t: &mut Tabular, r: JobResult) {
                 load_commit_file(t, tab_id, 0);
             }
         }
-        JobResult::CommitMessage(res) => {
-            t.git.commit_ai_busy = false;
+        JobResult::CommitMessage { key, res } => {
+            let ui = t.git.ui_mut(&key);
+            ui.commit_ai_busy = false;
             match res {
-                Ok(m) if !m.is_empty() => t.git.commit_message = m,
+                Ok(m) if !m.is_empty() => ui.commit_message = m,
                 Ok(_) => t.toasts.info("AI returned an empty commit message"),
                 Err(e) => t.toasts.error(format!("Commit message: {e}")),
             }
         }
+        JobResult::Graph(job) => git_graph_jobs::apply(t, job, ctx),
     }
 }

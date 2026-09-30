@@ -1,16 +1,26 @@
-//! Sidebar tab "Git": pemilih repository (gabungan folder dari Diagram, HTTP
-//! API, Project, dan folder yang ditambahkan di Git), header branch dengan
-//! Fetch/Pull/Push, serta sub-tab Changes / Branches / History / Review.
+//! Sidebar tab "Git" bergaya Source Control VS Code: semua repository milik
+//! project Tabular yang dipilih tampil sebagai section yang bisa dilipat.
+//! Setiap section punya header (branch, ahead/behind, jumlah perubahan, aksi
+//! cepat) dan sub-tab sendiri: Changes / Branches / History / Review.
+//!
+//! Repository dikumpulkan dari folder Diagram, HTTP API, Project, dan folder
+//! yang ditambahkan di Git (lihat [`git_jobs::collect_sources`]); repository di
+//! luar project aktif ada di section "Other repositories".
 
 use eframe::egui;
 use egui_icons::icons as i;
 
+use super::git_graph_paint::{self as paint, Geometry, NodeKind};
 use super::git_jobs::{self, CloneDialog, DiffSource, GitSubMenu, SidebarConfirm};
 use super::git_view::{self, ConfirmOutcome};
+use crate::git::history_ops::RepoState;
 use crate::git::repos::{LinkKind, RepoEntry};
 use crate::git::review::{MergeRequest, Provider};
 use crate::git::status::FileChange;
 use crate::window_egui::{PrefTab, Tabular, style};
+
+/// Tinggi maksimum daftar di dalam satu section (sisanya di-scroll).
+const LIST_MAX_H: f32 = 340.0;
 
 fn muted(ui: &egui::Ui) -> egui::Color32 {
     style::theme_muted_text(ui.ctx())
@@ -30,63 +40,110 @@ pub fn render_git_sidebar(t: &mut Tabular, ui: &mut egui::Ui) {
     if !t.git.repos_loaded {
         git_jobs::reload_repos(t);
     }
-    render_repo_picker(t, ui);
+    render_header(t, ui);
     ui.add_space(4.0);
-
-    let segments = [
-        style::NavSegment {
-            key: "Changes",
-            icon: i::ICON_SOURCE_COMMIT.codepoint,
-            label: "Changes",
-        },
-        style::NavSegment {
-            key: "Branches",
-            icon: i::ICON_SOURCE_BRANCH.codepoint,
-            label: "Branches",
-        },
-        style::NavSegment {
-            key: "History",
-            icon: i::ICON_HISTORY.codepoint,
-            label: "History",
-        },
-        style::NavSegment {
-            key: "Review",
-            icon: i::ICON_SOURCE_PULL.codepoint,
-            label: "Review",
-        },
-    ];
-    if let Some(key) =
-        style::render_segmented_nav(ui, "git_sub_nav", &segments, t.git.sub.key(), 32.0)
-    {
-        let next = GitSubMenu::from_key(key);
-        if next != t.git.sub {
-            t.git.sub = next;
-            match next {
-                GitSubMenu::Review if t.git.mrs_loaded_at.is_none() => git_jobs::load_mrs(t),
-                GitSubMenu::History if t.git.commits.is_empty() => git_jobs::refresh_log(t, true),
-                GitSubMenu::Changes => git_jobs::refresh_status(t),
-                _ => {}
+    let (mine, others) = git_jobs::visible_repos(t);
+    let project = git_jobs::active_project(t);
+    egui::ScrollArea::vertical()
+        .id_salt("git_sidebar_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if t.git.clone_busy {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(egui::RichText::new("Cloning…").size(11.5));
+                    if ui.small_button("Cancel").clicked() {
+                        t.git
+                            .clone_cancel
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
             }
-        }
-    }
-    ui.add_space(4.0);
-
-    if t.git.sub == GitSubMenu::Review {
-        render_review(t, ui);
-    } else if t.git.active().is_some_and(|r| r.path.is_some()) {
-        render_branch_header(t, ui);
-        ui.add_space(2.0);
-        match t.git.sub {
-            GitSubMenu::Changes => render_changes(t, ui),
-            GitSubMenu::Branches => render_branches(t, ui),
-            GitSubMenu::History => render_history(t, ui),
-            GitSubMenu::Review => {}
-        }
-    }
+            if mine.is_empty() {
+                ui.add_space(6.0);
+                let msg = match &project {
+                    Some((_, name)) => format!(
+                        "No repositories in project \"{name}\" yet. Add a local folder or clone one with the + button, or set a repository URL on the project, a diagram group, or an HTTP API folder."
+                    ),
+                    None => "Add a local folder, clone a repository, or set a repository on a diagram group or an HTTP API folder. They all show up here.".to_string(),
+                };
+                ui.label(egui::RichText::new(msg).color(muted(ui)));
+            }
+            for r in &mine {
+                repo_section(t, ui, r, project.is_some());
+            }
+            if !others.is_empty() {
+                ui.add_space(6.0);
+                let open = t.git.show_other_repos;
+                let chevron = if open {
+                    i::ICON_EXPAND_MORE.codepoint
+                } else {
+                    i::ICON_CHEVRON_RIGHT.codepoint
+                };
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!(
+                                "{chevron} Other repositories  {}",
+                                others.len()
+                            ))
+                            .size(12.0)
+                            .color(muted(ui)),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("Repositories that are not linked to the selected project")
+                    .clicked()
+                {
+                    t.git.show_other_repos = !open;
+                }
+                if open {
+                    for r in &others {
+                        repo_section(t, ui, r, project.is_some());
+                    }
+                }
+            }
+        });
     render_dialogs(t, ui.ctx());
 }
 
-// ─── Repository ─────────────────────────────────────────────────────────────
+fn render_header(t: &mut Tabular, ui: &mut egui::Ui) {
+    let title = git_jobs::active_project(t)
+        .map(|(_, n)| n)
+        .unwrap_or_else(|| "All repositories".to_string());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(i::ICON_WORK.codepoint).size(15.0));
+        // Tombol kanan dulu; judul mengisi sisa lebar (rata kiri, terpotong).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button(
+                egui::RichText::new(i::ICON_ADD.codepoint).size(15.0),
+                |ui| repo_menu(t, ui),
+            );
+            if icon_button(
+                ui,
+                i::ICON_REFRESH.codepoint,
+                "Reload repositories and status",
+                true,
+            ) {
+                git_jobs::reload_repos(t);
+            }
+            if icon_button(
+                ui,
+                i::ICON_SYNC.codepoint,
+                "Fetch all repositories of this project",
+                true,
+            ) {
+                git_jobs::fetch_all(t);
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&title).strong().size(13.0)).truncate(),
+                )
+                .on_hover_text("Repositories of the project selected in the project switcher");
+            });
+        });
+    });
+}
 
 fn link_summary(entry: &RepoEntry) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -104,142 +161,16 @@ fn link_summary(entry: &RepoEntry) -> String {
     parts.join(" · ")
 }
 
-fn render_repo_picker(t: &mut Tabular, ui: &mut egui::Ui) {
-    let active_label = t
-        .git
-        .active()
-        .map(|r| r.name.clone())
-        .unwrap_or_else(|| "Select repository".to_string());
-    let mut pick: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(i::ICON_SOURCE_REPOSITORY.codepoint).size(16.0));
-        // Tombol kanan dulu, lalu combo mengisi sisa lebar. Menghitung lebar
-        // combo dari konstanta membuat panel sidebar melebar tiap frame.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button(
-                egui::RichText::new(i::ICON_ADD.codepoint).size(15.0),
-                |ui| {
-                    repo_menu(t, ui);
-                },
-            );
-            if icon_button(
-                ui,
-                i::ICON_REFRESH.codepoint,
-                "Reload repositories and status",
-                !t.git.is_busy(),
-            ) {
-                git_jobs::reload_repos(t);
-            }
-            let combo_w = (ui.available_width() - 12.0).max(60.0);
-            egui::ComboBox::from_id_salt("git_repo_picker")
-                .width(combo_w)
-                .selected_text(egui::RichText::new(&active_label).strong())
-                .show_ui(ui, |ui| {
-                    ui.set_min_width(260.0);
-                    if t.git.repos.is_empty() {
-                        ui.label(egui::RichText::new("No repositories yet").color(muted(ui)));
-                    }
-                    for r in &t.git.repos {
-                        let selected = t.git.store.active.as_deref() == Some(r.key.as_str());
-                        let mut text = r.name.clone();
-                        if r.path.is_none() {
-                            text.push_str("  (not on this computer)");
-                        }
-                        let hover = match (&r.path, &r.url) {
-                            (Some(p), Some(u)) => {
-                                format!("{}\n{}\n{}", p.display(), u, link_summary(r))
-                            }
-                            (Some(p), None) => format!("{}\n{}", p.display(), link_summary(r)),
-                            (None, Some(u)) => format!("{u}\n{}", link_summary(r)),
-                            (None, None) => r.key.clone(),
-                        };
-                        if ui
-                            .selectable_label(selected, text)
-                            .on_hover_text(hover.trim())
-                            .clicked()
-                        {
-                            pick = Some(r.key.clone());
-                        }
-                    }
-                });
-        });
-    });
-    if let Some(k) = pick {
-        git_jobs::select_repo(t, &k);
-    }
-
-    let Some(entry) = t.git.active().cloned() else {
-        if t.git.repos.is_empty() {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(
-                    "Add a local folder, clone a repository, or set a repository on a diagram group or an HTTP API folder. They all show up here.",
-                )
-                .color(muted(ui)),
-            );
-        }
-        return;
-    };
-    let summary = link_summary(&entry);
-    if !summary.is_empty() {
-        ui.label(
-            egui::RichText::new(format!("Linked to {summary}"))
-                .size(10.5)
-                .color(muted(ui)),
-        )
-        .on_hover_text("Diagram groups, HTTP API folders and projects that use this repository");
-    }
-    match &entry.path {
-        None => {
-            ui.add_space(4.0);
-            style::theme_alert_frame(ui.ctx(), false).show(ui, |ui| {
-                ui.label("This repository is not on this computer yet.");
-                ui.horizontal(|ui| {
-                    if let Some(url) = entry.url.clone()
-                        && ui.button("Clone…").clicked()
-                    {
-                        t.git.clone_dialog = Some(CloneDialog {
-                            dest: crate::git::repos::default_clone_dir(&url)
-                                .to_string_lossy()
-                                .to_string(),
-                            url,
-                            entry_key: Some(entry.key.clone()),
-                        });
-                    }
-                    if ui.button("Choose folder…").clicked()
-                        && let Some(dir) = crate::rfd::FileDialog::new()
-                            .set_title("Select the local clone")
-                            .pick_folder()
-                    {
-                        git_jobs::add_folder(t, &dir);
-                        git_jobs::link_folder_to_items(t, &entry.key);
-                    }
-                });
-            });
-        }
-        Some(_) => {
-            let missing = entry.links_without_folder().count();
-            if missing > 0 {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{missing} linked item(s) have no local folder."
-                        ))
-                        .size(10.5)
-                        .color(style::theme_warning(ui.ctx())),
-                    );
-                    if ui.small_button("Use this folder").clicked() {
-                        git_jobs::link_folder_to_items(t, &entry.key);
-                    }
-                });
-            }
-        }
-    }
-}
-
 /// Menu tambah repository (dipakai juga oleh tombol ➕ di bawah sidebar).
 pub fn repo_menu(t: &mut Tabular, ui: &mut egui::Ui) {
-    ui.set_min_width(200.0);
+    ui.set_min_width(220.0);
+    if let Some((_, name)) = git_jobs::active_project(t) {
+        ui.label(
+            egui::RichText::new(format!("Adds to project \"{name}\""))
+                .size(11.0)
+                .color(muted(ui)),
+        );
+    }
     if ui
         .button(format!(
             "{} Add local folder…",
@@ -274,26 +205,6 @@ pub fn repo_menu(t: &mut Tabular, ui: &mut egui::Ui) {
             git_jobs::init_repo(t, dir);
         }
     }
-    let manual = t
-        .git
-        .active()
-        .filter(|r| r.links.iter().any(|l| l.kind == LinkKind::Manual))
-        .map(|r| r.key.clone());
-    if let Some(key) = manual {
-        ui.separator();
-        if ui.button("Remove from list").clicked() {
-            ui.close();
-            t.git.confirm = Some(SidebarConfirm::RemoveRepo(key));
-        }
-    }
-    if let Some(path) = t.git.active_path()
-        && ui.button("Reveal in file manager").clicked()
-    {
-        ui.close();
-        if let Err(e) = crate::url_opener::open_folder(&path) {
-            t.toasts.error(e);
-        }
-    }
     ui.separator();
     if ui.button("Git settings…").clicked() {
         ui.close();
@@ -302,80 +213,403 @@ pub fn repo_menu(t: &mut Tabular, ui: &mut egui::Ui) {
     }
 }
 
-// ─── Header branch ──────────────────────────────────────────────────────────
+// ─── Section repository ─────────────────────────────────────────────────────
 
-fn render_branch_header(t: &mut Tabular, ui: &mut egui::Ui) {
-    let busy = t.git.busy.clone();
-    let st = t.git.status.clone();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(i::ICON_SOURCE_BRANCH.codepoint).size(15.0));
-        let head = st
-            .as_ref()
-            .map(|s| s.head_label())
-            .unwrap_or_else(|| "…".to_string());
-        ui.label(egui::RichText::new(head).strong());
-        if let Some(s) = &st {
-            if s.ahead > 0 {
-                ui.label(
-                    egui::RichText::new(format!("{}{}", i::ICON_ARROW_UPWARD.codepoint, s.ahead))
-                        .size(11.5),
-                )
-                .on_hover_text(format!("{} commit(s) to push", s.ahead));
+fn repo_section(t: &mut Tabular, ui: &mut egui::Ui, entry: &RepoEntry, has_project: bool) {
+    let key = entry.key.clone();
+    render_repo_header(t, ui, entry, has_project);
+    if !t.git.ui_mut(&key).expanded {
+        return;
+    }
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 2,
+            top: 2,
+            bottom: 8,
+        })
+        .show(ui, |ui| {
+            if entry.path.is_none() {
+                render_missing_folder(t, ui, entry);
+                return;
             }
-            if s.behind > 0 {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}{}",
-                        i::ICON_ARROW_DOWNWARD.codepoint,
-                        s.behind
-                    ))
-                    .size(11.5),
+            let summary = link_summary(entry);
+            if !summary.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("Linked to {summary}"))
+                            .size(10.5)
+                            .color(muted(ui)),
+                    )
+                    .truncate(),
                 )
-                .on_hover_text(format!("{} commit(s) to pull", s.behind));
+                .on_hover_text(summary);
             }
-            if s.upstream.is_none() && s.branch.is_some() {
-                ui.label(
-                    egui::RichText::new("no upstream")
+            let missing = entry.links_without_folder().count();
+            if missing > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{missing} linked item(s) have no local folder."
+                        ))
                         .size(10.5)
-                        .color(muted(ui)),
-                );
+                        .color(style::theme_warning(ui.ctx())),
+                    );
+                    if ui.small_button("Use this folder").clicked() {
+                        git_jobs::link_folder_to_items(t, &key);
+                    }
+                });
             }
+            render_sub_nav(t, ui, &key);
+            render_status_lines(t, ui, &key);
+            match t.git.ui_mut(&key).sub {
+                GitSubMenu::Changes => render_changes(t, ui, &key),
+                GitSubMenu::Branches => render_branches(t, ui, &key),
+                GitSubMenu::History => render_history(t, ui, &key),
+                GitSubMenu::Review => render_review(t, ui, &key),
+            }
+        });
+}
+
+fn render_repo_header(t: &mut Tabular, ui: &mut egui::Ui, entry: &RepoEntry, has_project: bool) {
+    let key = entry.key.clone();
+    let (expanded, status, busy) = {
+        let u = t.git.ui_mut(&key);
+        (u.expanded, u.status.clone(), u.busy.clone())
+    };
+    let ctx = ui.ctx().clone();
+    let h = 26.0;
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, style::nav_track(&ctx));
+    }
+    let painter = ui.painter();
+    let strong = style::nav_text_strong(&ctx);
+    let weak = style::nav_text_muted(&ctx);
+    let chevron = if expanded {
+        i::ICON_EXPAND_MORE.codepoint
+    } else {
+        i::ICON_CHEVRON_RIGHT.codepoint
+    };
+    let mut x = rect.left() + 2.0;
+    painter.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        chevron,
+        egui::FontId::proportional(15.0),
+        weak,
+    );
+    x += 18.0;
+    painter.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        i::ICON_SOURCE_REPOSITORY.codepoint,
+        egui::FontId::proportional(14.0),
+        if entry.path.is_some() { strong } else { weak },
+    );
+    x += 20.0;
+
+    // Tombol kanan (dari kanan ke kiri).
+    let mut bx = rect.right() - 2.0;
+    let mut button = |ui: &mut egui::Ui, icon: &str, tip: &str, enabled: bool| -> bool {
+        let r = egui::Rect::from_min_size(
+            egui::pos2(bx - 22.0, rect.top() + 2.0),
+            egui::vec2(22.0, h - 4.0),
+        );
+        bx -= 22.0;
+        ui.put(
+            r,
+            egui::Button::new(egui::RichText::new(icon).size(14.0)).frame(false),
+        )
+        .on_hover_text(tip)
+        .clicked()
+            && enabled
+    };
+    let has_path = entry.path.is_some();
+    let idle = busy.is_none();
+    if has_path {
+        if button(ui, i::ICON_ACCOUNT_TREE.codepoint, "Open Git Graph", true) {
+            super::git_graph_jobs::open_graph(t, &key);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let idle = busy.is_none();
-            if icon_button(
-                ui,
-                i::ICON_UPLOAD.codepoint,
-                "Push",
-                idle && st.as_ref().is_some_and(|s| s.branch.is_some()),
-            ) {
-                git_jobs::push(t);
+        if button(ui, i::ICON_SYNC.codepoint, "Fetch", idle) {
+            git_jobs::fetch(t, &key);
+        }
+    }
+    let right_edge = bx - 4.0;
+
+    // Badge: jumlah perubahan, ahead/behind.
+    let painter = ui.painter();
+    let mut rx = right_edge;
+    if let Some(label) = &busy {
+        let g = painter.layout_no_wrap(format!("{label}…"), egui::FontId::proportional(10.5), weak);
+        rx -= g.size().x;
+        painter.galley(egui::pos2(rx, rect.center().y - g.size().y / 2.0), g, weak);
+        rx -= 6.0;
+    } else if let Some(s) = &status {
+        let n = s.change_count();
+        if n > 0 {
+            let g = painter.layout_no_wrap(
+                n.to_string(),
+                egui::FontId::proportional(10.5),
+                egui::Color32::WHITE,
+            );
+            let w = g.size().x + 10.0;
+            let br = egui::Rect::from_center_size(
+                egui::pos2(rx - w / 2.0, rect.center().y),
+                egui::vec2(w, 16.0),
+            );
+            painter.rect_filled(br, 8.0, style::theme_info(&ctx));
+            painter.galley(
+                egui::pos2(
+                    br.center().x - g.size().x / 2.0,
+                    br.center().y - g.size().y / 2.0,
+                ),
+                g,
+                egui::Color32::WHITE,
+            );
+            rx = br.left() - 6.0;
+        }
+        let mut sync = String::new();
+        if s.behind > 0 {
+            sync.push_str(&format!(
+                "{}{} ",
+                i::ICON_ARROW_DOWNWARD.codepoint,
+                s.behind
+            ));
+        }
+        if s.ahead > 0 {
+            sync.push_str(&format!("{}{}", i::ICON_ARROW_UPWARD.codepoint, s.ahead));
+        }
+        if !sync.is_empty() {
+            let g = painter.layout_no_wrap(
+                sync.trim().to_string(),
+                egui::FontId::proportional(11.0),
+                weak,
+            );
+            rx -= g.size().x;
+            painter.galley(egui::pos2(rx, rect.center().y - g.size().y / 2.0), g, weak);
+            rx -= 6.0;
+        }
+    }
+
+    // Nama + branch, dipotong sebelum badge.
+    let clip = egui::Rect::from_x_y_ranges(x..=rx.max(x), rect.y_range());
+    let p = ui.painter().with_clip_rect(clip);
+    let name_g = p.layout_no_wrap(
+        entry.name.clone(),
+        egui::FontId::proportional(13.0),
+        if has_path { strong } else { weak },
+    );
+    let nw = name_g.size().x;
+    p.galley(
+        egui::pos2(x, rect.center().y - name_g.size().y / 2.0),
+        name_g,
+        strong,
+    );
+    let branch = match (&status, has_path) {
+        (Some(s), _) => s.head_label(),
+        (None, false) => "not on this computer".to_string(),
+        (None, true) => String::new(),
+    };
+    if !branch.is_empty() {
+        p.text(
+            egui::pos2(x + nw + 8.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{} {branch}", i::MDI_SOURCE_BRANCH.codepoint),
+            egui::FontId::proportional(11.0),
+            weak,
+        );
+    }
+
+    let hover = match (&entry.path, &entry.url) {
+        (Some(p), Some(u)) => format!("{}\n{u}", p.display()),
+        (Some(p), None) => p.display().to_string(),
+        (None, Some(u)) => u.clone(),
+        (None, None) => entry.key.clone(),
+    };
+    let resp = resp.on_hover_text(hover);
+    if resp.clicked() {
+        git_jobs::set_expanded(t, &key, !expanded);
+    }
+    resp.context_menu(|ui| repo_context_menu(t, ui, entry, has_project, status.as_ref()));
+}
+
+fn repo_context_menu(
+    t: &mut Tabular,
+    ui: &mut egui::Ui,
+    entry: &RepoEntry,
+    has_project: bool,
+    status: Option<&crate::git::status::RepoStatus>,
+) {
+    ui.set_min_width(220.0);
+    let key = entry.key.clone();
+    let idle = !t.git.is_busy(&key);
+    if let Some(path) = entry.path.clone() {
+        if ui.button("Open Git Graph").clicked() {
+            super::git_graph_jobs::open_graph(t, &key);
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(idle, egui::Button::new("Fetch")).clicked() {
+            git_jobs::fetch(t, &key);
+            ui.close();
+        }
+        let can_pull = status.is_some_and(|s| s.upstream.is_some());
+        if ui
+            .add_enabled(idle && can_pull, egui::Button::new("Pull"))
+            .clicked()
+        {
+            git_jobs::pull(t, &key);
+            ui.close();
+        }
+        let can_push = status.is_some_and(|s| s.branch.is_some());
+        if ui
+            .add_enabled(idle && can_push, egui::Button::new("Push"))
+            .clicked()
+        {
+            git_jobs::push(t, &key);
+            ui.close();
+        }
+        ui.separator();
+        if has_project
+            && let Some((pid, pname)) = git_jobs::active_project(t)
+            && !entry.in_project(&pid)
+            && ui.button(format!("Add to project \"{pname}\"")).clicked()
+        {
+            git_jobs::add_to_active_project(t, &key);
+            ui.close();
+        }
+        if entry.links_without_folder().count() > 0
+            && ui.button("Use this folder for linked items").clicked()
+        {
+            git_jobs::link_folder_to_items(t, &key);
+            ui.close();
+        }
+        if ui.button("Reveal in file manager").clicked() {
+            if let Err(e) = crate::url_opener::open_folder(&path) {
+                t.toasts.error(e);
             }
-            if icon_button(
-                ui,
-                i::ICON_DOWNLOAD.codepoint,
-                "Pull",
-                idle && st.as_ref().is_some_and(|s| s.upstream.is_some()),
-            ) {
-                git_jobs::pull(t);
+            ui.close();
+        }
+        if ui.button("Copy path").clicked() {
+            ui.ctx().copy_text(path.display().to_string());
+            ui.close();
+        }
+    } else if let Some(url) = entry.url.clone()
+        && ui.button("Clone…").clicked()
+    {
+        t.git.clone_dialog = Some(CloneDialog {
+            dest: crate::git::repos::default_clone_dir(&url)
+                .to_string_lossy()
+                .to_string(),
+            url,
+            entry_key: Some(key.clone()),
+        });
+        ui.close();
+    }
+    if entry.links.iter().any(|l| l.kind == LinkKind::Manual) {
+        ui.separator();
+        if ui.button("Remove from list…").clicked() {
+            t.git.confirm = Some((key.clone(), SidebarConfirm::RemoveRepo));
+            ui.close();
+        }
+    }
+}
+
+fn render_missing_folder(t: &mut Tabular, ui: &mut egui::Ui, entry: &RepoEntry) {
+    style::theme_alert_frame(ui.ctx(), false).show(ui, |ui| {
+        ui.label("This repository is not on this computer yet.");
+        ui.horizontal(|ui| {
+            if let Some(url) = entry.url.clone()
+                && ui.button("Clone…").clicked()
+            {
+                t.git.clone_dialog = Some(CloneDialog {
+                    dest: crate::git::repos::default_clone_dir(&url)
+                        .to_string_lossy()
+                        .to_string(),
+                    url,
+                    entry_key: Some(entry.key.clone()),
+                });
             }
-            if icon_button(ui, i::ICON_SYNC.codepoint, "Fetch all remotes", idle) {
-                git_jobs::fetch(t);
+            if ui.button("Choose folder…").clicked()
+                && let Some(dir) = crate::rfd::FileDialog::new()
+                    .set_title("Select the local clone")
+                    .pick_folder()
+            {
+                git_jobs::add_folder(t, &dir);
+                git_jobs::link_folder_to_items(t, &entry.key);
             }
         });
     });
+}
+
+fn render_sub_nav(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
+    let segments = [
+        style::NavSegment {
+            key: "Changes",
+            icon: i::ICON_SOURCE_COMMIT.codepoint,
+            label: "Changes",
+        },
+        style::NavSegment {
+            key: "Branches",
+            icon: i::ICON_SOURCE_BRANCH.codepoint,
+            label: "Branches",
+        },
+        style::NavSegment {
+            key: "History",
+            icon: i::ICON_HISTORY.codepoint,
+            label: "History",
+        },
+        style::NavSegment {
+            key: "Review",
+            icon: i::ICON_SOURCE_PULL.codepoint,
+            label: "Review",
+        },
+    ];
+    let current = t.git.ui_mut(key).sub;
+    let id = format!("git_sub_nav_{key}");
+    if let Some(k) = style::render_segmented_nav(ui, &id, &segments, current.key(), 30.0) {
+        git_jobs::set_sub(t, key, GitSubMenu::from_key(k));
+    }
+    ui.add_space(4.0);
+}
+
+/// Operasi berjalan, state merge/rebase, dan error repository.
+fn render_status_lines(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
+    let (busy, state, err) = {
+        let u = t.git.ui_mut(key);
+        (u.busy.clone(), u.repo_state, u.status_error.clone())
+    };
     if let Some(label) = busy {
         ui.horizontal(|ui| {
             ui.spinner();
             ui.label(egui::RichText::new(format!("{label}…")).size(11.5));
-            if matches!(label.as_str(), "Fetch" | "Pull" | "Push" | "Clone")
+            if matches!(label.as_str(), "Fetch" | "Pull" | "Push")
                 && ui.small_button("Cancel").clicked()
             {
-                git_jobs::cancel_op(t);
+                git_jobs::cancel_op(t, key);
             }
         });
     }
-    if let Some(e) = t.git.status_error.clone() {
+    if state != RepoState::Clean {
+        style::theme_alert_frame(ui.ctx(), false).show(ui, |ui| {
+            ui.label(egui::RichText::new(state.label()).strong());
+            ui.label(
+                egui::RichText::new("Resolve the conflicts, stage the files, then continue.")
+                    .size(11.5),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Continue").clicked() {
+                    git_jobs::continue_operation(t, key);
+                }
+                if ui.button("Abort…").clicked() {
+                    t.git.confirm = Some((key.to_string(), SidebarConfirm::AbortOperation(state)));
+                }
+            });
+        });
+    }
+    if let Some(e) = err {
         ui.colored_label(style::theme_danger(ui.ctx()), e);
     }
 }
@@ -389,8 +623,10 @@ enum RowAction {
     Confirm(SidebarConfirm),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn change_section(
     ui: &mut egui::Ui,
+    key: &str,
     id: &str,
     title: &str,
     files: &[FileChange],
@@ -407,7 +643,7 @@ fn change_section(
             .strong()
             .size(12.0),
     )
-    .id_salt(id)
+    .id_salt((id, key))
     .default_open(true);
     let resp = header.show(ui, |ui| {
         for f in files {
@@ -513,30 +749,40 @@ fn change_section(
     });
 }
 
-fn render_changes(t: &mut Tabular, ui: &mut egui::Ui) {
-    let busy = t.git.is_busy();
-    let st = t.git.status.clone().unwrap_or_default();
+fn render_changes(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
+    let busy = t.git.is_busy(key);
+    let (st, has_status, ai_busy) = {
+        let u = t.git.ui_mut(key);
+        (
+            u.status.clone().unwrap_or_default(),
+            u.status.is_some(),
+            u.commit_ai_busy,
+        )
+    };
 
     // Kotak pesan commit.
-    let edit_id = egui::Id::new("git_commit_message");
     let hint_color = style::nav_text_muted(ui.ctx());
-    let resp = ui.add_sized(
-        [ui.available_width(), 64.0],
-        egui::TextEdit::multiline(&mut t.git.commit_message)
-            .id(edit_id)
-            .hint_text(egui::RichText::new("Message (Ctrl+Enter to commit)").color(hint_color)),
-    );
-    let submit =
-        resp.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+    let (submit, amend) = {
+        let u = t.git.ui_mut(key);
+        let resp = ui.add_sized(
+            [ui.available_width(), 58.0],
+            egui::TextEdit::multiline(&mut u.commit_message)
+                .id(egui::Id::new(("git_commit_message", key)))
+                .hint_text(egui::RichText::new("Message (Ctrl+Enter to commit)").color(hint_color)),
+        );
+        let submit = resp.has_focus()
+            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+        (submit, u.amend)
+    };
     ui.horizontal(|ui| {
-        let label = if t.git.amend {
+        let label = if amend {
             "Amend commit"
         } else if st.staged.is_empty() {
             "Commit all"
         } else {
             "Commit"
         };
-        let has_changes = !st.is_clean() || t.git.amend;
+        let has_changes = !st.is_clean() || amend;
         let tip = if st.staged.is_empty() {
             "Nothing staged: all changes will be committed"
         } else {
@@ -551,11 +797,11 @@ fn render_changes(t: &mut Tabular, ui: &mut egui::Ui) {
             .clicked()
             || (submit && !busy && has_changes)
         {
-            git_jobs::commit(t);
+            git_jobs::commit(t, key);
         }
-        ui.checkbox(&mut t.git.amend, "Amend");
+        ui.checkbox(&mut t.git.ui_mut(key).amend, "Amend");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if t.git.commit_ai_busy {
+            if ai_busy {
                 ui.spinner();
             } else if icon_button(
                 ui,
@@ -563,88 +809,80 @@ fn render_changes(t: &mut Tabular, ui: &mut egui::Ui) {
                 "Generate commit message with AI",
                 !st.is_clean(),
             ) {
-                git_jobs::generate_commit_message(t);
+                git_jobs::generate_commit_message(t, key);
             }
         });
     });
     ui.add_space(4.0);
 
-    if st.is_clean() && t.git.status.is_some() {
+    if st.is_clean() && has_status {
         ui.label(egui::RichText::new("No changes. Working tree clean.").color(muted(ui)));
         return;
     }
     let mut actions = Vec::new();
     egui::ScrollArea::vertical()
-        .id_salt("git_changes_scroll")
+        .id_salt(("git_changes_scroll", key))
+        .max_height(LIST_MAX_H)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            change_section(
-                ui,
-                "git_sec_conflicts",
-                "Merge Conflicts",
-                &st.conflicted,
-                DiffSource::Conflict,
-                &mut actions,
-                busy,
-            );
-            change_section(
-                ui,
-                "git_sec_staged",
-                "Staged Changes",
-                &st.staged,
-                DiffSource::Staged,
-                &mut actions,
-                busy,
-            );
-            change_section(
-                ui,
-                "git_sec_changes",
-                "Changes",
-                &st.unstaged,
-                DiffSource::Worktree,
-                &mut actions,
-                busy,
-            );
-            change_section(
-                ui,
-                "git_sec_untracked",
-                "Untracked",
-                &st.untracked,
-                DiffSource::Untracked,
-                &mut actions,
-                busy,
-            );
+            for (id, title, files, source) in [
+                (
+                    "git_sec_conflicts",
+                    "Merge Conflicts",
+                    &st.conflicted,
+                    DiffSource::Conflict,
+                ),
+                (
+                    "git_sec_staged",
+                    "Staged Changes",
+                    &st.staged,
+                    DiffSource::Staged,
+                ),
+                (
+                    "git_sec_changes",
+                    "Changes",
+                    &st.unstaged,
+                    DiffSource::Worktree,
+                ),
+                (
+                    "git_sec_untracked",
+                    "Untracked",
+                    &st.untracked,
+                    DiffSource::Untracked,
+                ),
+            ] {
+                change_section(ui, key, id, title, files, source, &mut actions, busy);
+            }
         });
     for a in actions {
         match a {
-            RowAction::Open(f, src) => git_jobs::open_file_diff(t, &f, src),
-            RowAction::Stage(p) => git_jobs::stage(t, p),
-            RowAction::Unstage(p) => git_jobs::unstage(t, p),
-            RowAction::Confirm(c) => t.git.confirm = Some(c),
+            RowAction::Open(f, src) => git_jobs::open_file_diff(t, key, &f, src),
+            RowAction::Stage(p) => git_jobs::stage(t, key, p),
+            RowAction::Unstage(p) => git_jobs::unstage(t, key, p),
+            RowAction::Confirm(c) => t.git.confirm = Some((key.to_string(), c)),
         }
     }
 }
 
 // ─── Branches ───────────────────────────────────────────────────────────────
 
-fn render_branches(t: &mut Tabular, ui: &mut egui::Ui) {
-    let busy = t.git.is_busy();
+fn render_branches(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
+    let busy = t.git.is_busy(key);
+    let can_create = !t.git.ui_mut(key).new_branch.trim().is_empty();
+    let mut create = false;
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add_enabled(
-                    !busy && !t.git.new_branch.trim().is_empty(),
-                    egui::Button::new("Create"),
-                )
+                .add_enabled(!busy && can_create, egui::Button::new("Create"))
                 .on_hover_text("Create the branch from HEAD and switch to it")
                 .clicked()
             {
-                git_jobs::create_branch(t);
+                create = true;
             }
             let w = (ui.available_width() - 4.0).max(60.0);
             style::render_text_field(
                 ui,
-                egui::TextEdit::singleline(&mut t.git.new_branch).hint_text(
+                egui::TextEdit::singleline(&mut t.git.ui_mut(key).new_branch).hint_text(
                     egui::RichText::new("new-branch-name").color(style::nav_text_muted(ui.ctx())),
                 ),
                 w,
@@ -652,17 +890,24 @@ fn render_branches(t: &mut Tabular, ui: &mut egui::Ui) {
             );
         });
     });
-    git_view::filter_field(ui, &mut t.git.branch_filter, "Filter branches");
-    let q = t.git.branch_filter.trim().to_lowercase();
-    let dirty = t
-        .git
-        .status
-        .as_ref()
-        .is_some_and(|s| !s.staged.is_empty() || !s.unstaged.is_empty());
-    let branches = t.git.branches.clone();
+    if create {
+        git_jobs::create_branch(t, key);
+    }
+    git_view::filter_field(ui, &mut t.git.ui_mut(key).branch_filter, "Filter branches");
+    let (q, dirty, branches) = {
+        let u = t.git.ui_mut(key);
+        (
+            u.branch_filter.trim().to_lowercase(),
+            u.status
+                .as_ref()
+                .is_some_and(|s| !s.staged.is_empty() || !s.unstaged.is_empty()),
+            u.branches.clone(),
+        )
+    };
     let mut action: Option<SidebarConfirm> = None;
     egui::ScrollArea::vertical()
-        .id_salt("git_branches_scroll")
+        .id_salt(("git_branches_scroll", key))
+        .max_height(LIST_MAX_H)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for remote in [false, true] {
@@ -685,7 +930,7 @@ fn render_branches(t: &mut Tabular, ui: &mut egui::Ui) {
                     .strong()
                     .size(12.0),
                 )
-                .id_salt(("git_branch_sec", remote))
+                .id_salt(("git_branch_sec", remote, key))
                 .default_open(!remote)
                 .show(ui, |ui| {
                     for b in list {
@@ -797,32 +1042,62 @@ fn render_branches(t: &mut Tabular, ui: &mut egui::Ui) {
     match action {
         // Checkout langsung bila working tree bersih; konfirmasi bila tidak.
         Some(SidebarConfirm::Checkout { name, remote }) if !dirty => {
-            git_jobs::checkout(t, name, remote)
+            git_jobs::checkout(t, key, name, remote)
         }
-        Some(c) => t.git.confirm = Some(c),
+        Some(c) => t.git.confirm = Some((key.to_string(), c)),
         None => {}
     }
 }
 
 // ─── History ────────────────────────────────────────────────────────────────
 
-fn render_history(t: &mut Tabular, ui: &mut egui::Ui) {
-    git_view::filter_field(ui, &mut t.git.history_filter, "Filter loaded commits");
-    let q = t.git.history_filter.trim().to_lowercase();
+fn render_history(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
+    ui.horizontal(|ui| {
+        if ui
+            .button(format!("{} Open Git Graph", i::ICON_ACCOUNT_TREE.codepoint))
+            .on_hover_text("All branches with graph, details, compare and actions")
+            .clicked()
+        {
+            super::git_graph_jobs::open_graph(t, key);
+        }
+    });
+    git_view::filter_field(
+        ui,
+        &mut t.git.ui_mut(key).history_filter,
+        "Filter loaded commits",
+    );
+    let style_kind = t.git.store.settings.graph_style;
+    let (q, commits, rows, done, loading) = {
+        let u = t.git.ui_mut(key);
+        (
+            u.history_filter.trim().to_lowercase(),
+            u.commits.clone(),
+            u.commit_rows.clone(),
+            u.commits_done,
+            u.commits_loading,
+        )
+    };
+    let max_lanes = rows.iter().map(|r| r.width).max().unwrap_or(1).min(6);
+    let lane_w = 10.0;
+    let graph_w = Geometry::width(max_lanes, lane_w);
     let mut open = None;
     let mut more = false;
     egui::ScrollArea::vertical()
-        .id_salt("git_history_scroll")
+        .id_salt(("git_history_scroll", key))
+        .max_height(LIST_MAX_H + 60.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            if t.git.commits.is_empty() {
-                if t.git.commits_loading {
+            if commits.is_empty() {
+                if loading {
                     ui.spinner();
                 } else {
                     ui.label(egui::RichText::new("No commits yet.").color(muted(ui)));
                 }
             }
-            for c in &t.git.commits {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let ctx = ui.ctx().clone();
+            let bg = ui.visuals().panel_fill;
+            for (idx, c) in commits.iter().enumerate() {
                 if !q.is_empty()
                     && !c.subject.to_lowercase().contains(&q)
                     && !c.author.to_lowercase().contains(&q)
@@ -830,50 +1105,76 @@ fn render_history(t: &mut Tabular, ui: &mut egui::Ui) {
                 {
                     continue;
                 }
-                let resp = ui
-                    .vertical(|ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&c.subject).strong().size(12.5))
-                                .truncate(),
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 36.0),
+                    egui::Sense::click(),
+                );
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, 3.0, style::nav_track(&ctx));
+                }
+                // Graf mini hanya berarti tanpa filter.
+                let text_x = if q.is_empty() {
+                    if let Some(row) = rows.get(idx) {
+                        let geo = Geometry {
+                            left: rect.left(),
+                            lane_w,
+                            style: style_kind,
+                        };
+                        let clip =
+                            egui::Rect::from_min_size(rect.min, egui::vec2(graph_w, rect.height()));
+                        paint::paint_row(
+                            &ui.painter().with_clip_rect(clip),
+                            rect,
+                            &geo,
+                            row,
+                            if idx == 0 {
+                                NodeKind::Head
+                            } else {
+                                NodeKind::Commit
+                            },
+                            bg,
                         );
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&c.short)
-                                    .family(egui::FontFamily::Monospace)
-                                    .size(11.0)
-                                    .color(style::theme_info(ui.ctx())),
-                            );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!(
-                                        "{} · {}",
-                                        c.author,
-                                        git_view::relative_time(c.time)
-                                    ))
-                                    .size(11.0)
-                                    .color(muted(ui)),
-                                )
-                                .truncate(),
-                            );
-                        });
-                        if !c.refs.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&c.refs)
-                                        .size(10.5)
-                                        .color(style::theme_success(ui.ctx())),
-                                )
-                                .truncate(),
-                            );
-                        }
-                    })
-                    .response
-                    .interact(egui::Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    }
+                    rect.left() + graph_w + 2.0
+                } else {
+                    rect.left() + 4.0
+                };
+                let clip = egui::Rect::from_x_y_ranges(text_x..=rect.right() - 2.0, rect.y_range());
+                let p = ui.painter().with_clip_rect(clip);
+                p.text(
+                    egui::pos2(text_x, rect.top() + 10.0),
+                    egui::Align2::LEFT_CENTER,
+                    super::git_graph_text::plain_line(&c.subject),
+                    egui::FontId::proportional(12.5),
+                    style::nav_text_strong(&ctx),
+                );
+                let mut meta = format!(
+                    "{}  {} · {}",
+                    c.short,
+                    c.author,
+                    git_view::relative_time(c.time)
+                );
+                if !c.refs.is_empty() {
+                    meta.push_str(&format!("  ({})", c.refs));
+                }
+                p.text(
+                    egui::pos2(text_x, rect.top() + 26.0),
+                    egui::Align2::LEFT_CENTER,
+                    meta,
+                    egui::FontId::proportional(10.5),
+                    style::nav_text_muted(&ctx),
+                );
+                let resp = resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("{}\n{} <{}>", c.subject, c.author, c.email));
                 if resp.clicked() {
                     open = Some(c.clone());
                 }
                 resp.context_menu(|ui| {
+                    if ui.button("Open in Git Graph").clicked() {
+                        super::git_graph_jobs::open_graph(t, key);
+                        ui.close();
+                    }
                     if ui.button("Copy hash").clicked() {
                         ui.ctx().copy_text(c.hash.clone());
                         ui.close();
@@ -883,10 +1184,10 @@ fn render_history(t: &mut Tabular, ui: &mut egui::Ui) {
                         ui.close();
                     }
                 });
-                ui.add_space(3.0);
             }
-            if !t.git.commits_done && !t.git.commits.is_empty() {
-                if t.git.commits_loading {
+            if !done && !commits.is_empty() {
+                ui.add_space(4.0);
+                if loading {
                     ui.spinner();
                 } else if ui.button("Load more").clicked() {
                     more = true;
@@ -894,21 +1195,23 @@ fn render_history(t: &mut Tabular, ui: &mut egui::Ui) {
             }
         });
     if let Some(c) = open {
-        git_jobs::open_commit(t, &c);
+        git_jobs::open_commit(t, key, &c);
     }
     if more {
-        git_jobs::refresh_log(t, false);
+        git_jobs::refresh_log(t, key, false);
     }
 }
 
 // ─── Review ─────────────────────────────────────────────────────────────────
 
-fn render_review(t: &mut Tabular, ui: &mut egui::Ui) {
+fn render_review(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
     let access = t.git.provider_access();
     if access.github_token.is_none() && access.gitlab_token.is_none() {
         style::theme_alert_frame(ui.ctx(), false).show(ui, |ui| {
             ui.label(egui::RichText::new("Merge Review").strong());
-            ui.label("Add a GitHub or GitLab access token to list pull requests and merge requests assigned to you.");
+            ui.label(
+                "Add a GitHub or GitLab access token to list pull requests and merge requests.",
+            );
             if ui.button("Set tokens…").clicked() {
                 t.settings_active_pref_tab = PrefTab::Git;
                 t.show_settings_window = true;
@@ -916,67 +1219,77 @@ fn render_review(t: &mut Tabular, ui: &mut egui::Ui) {
         });
         return;
     }
+    let mine = t.git.ui_mut(key).mrs_mine;
     let mut reload = false;
     ui.horizontal(|ui| {
-        if ui
-            .selectable_label(!t.git.mrs_active_repo, "Assigned to me")
-            .clicked()
-            && t.git.mrs_active_repo
-        {
-            t.git.mrs_active_repo = false;
-            reload = true;
+        if ui.selectable_label(!mine, "This repository").clicked() && mine {
+            t.git.ui_mut(key).mrs_mine = false;
+            reload = t.git.ui_mut(key).mrs_loaded_at.is_none();
         }
-        if ui
-            .add_enabled(
-                t.git.active().is_some(),
-                egui::Button::selectable(t.git.mrs_active_repo, "This repository"),
-            )
-            .clicked()
-            && !t.git.mrs_active_repo
-        {
-            t.git.mrs_active_repo = true;
-            reload = true;
+        if ui.selectable_label(mine, "Assigned to me").clicked() && !mine {
+            t.git.ui_mut(key).mrs_mine = true;
+            reload = t.git.mrs_loaded_at.is_none();
         }
+        let loading = if t.git.ui_mut(key).mrs_mine {
+            t.git.mrs_loading
+        } else {
+            t.git.ui_mut(key).mrs_loading
+        };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if t.git.mrs_loading {
+            if loading {
                 ui.spinner();
             } else if icon_button(ui, i::ICON_REFRESH.codepoint, "Refresh", true) {
                 reload = true;
             }
         });
     });
+    let mine = t.git.ui_mut(key).mrs_mine;
     if reload {
-        git_jobs::load_mrs(t);
+        git_jobs::load_mrs(t, if mine { None } else { Some(key.to_string()) });
     }
     git_view::filter_field(ui, &mut t.git.mr_filter, "Filter by title, repo, author");
-    for e in &t.git.mr_errors {
+    let (list_src, errors, loaded, loading) = if mine {
+        (
+            t.git.mrs.clone(),
+            t.git.mr_errors.clone(),
+            t.git.mrs_loaded_at.is_some(),
+            t.git.mrs_loading,
+        )
+    } else {
+        let u = t.git.ui_mut(key);
+        (
+            u.mrs.clone(),
+            u.mr_errors.clone(),
+            u.mrs_loaded_at.is_some(),
+            u.mrs_loading,
+        )
+    };
+    for e in &errors {
         ui.colored_label(style::theme_danger(ui.ctx()), e);
     }
     let q = t.git.mr_filter.trim().to_lowercase();
-    let list: Vec<MergeRequest> = t
-        .git
-        .mrs
-        .iter()
+    let list: Vec<MergeRequest> = list_src
+        .into_iter()
         .filter(|m| {
             q.is_empty()
                 || m.title.to_lowercase().contains(&q)
                 || m.repo_full_name.to_lowercase().contains(&q)
                 || m.author.to_lowercase().contains(&q)
         })
-        .cloned()
         .collect();
-    if list.is_empty() && !t.git.mrs_loading && t.git.mrs_loaded_at.is_some() {
+    if list.is_empty() && !loading && loaded {
         ui.label(egui::RichText::new("No open merge requests.").color(muted(ui)));
     }
     let mut open = None;
     egui::ScrollArea::vertical()
-        .id_salt("git_review_scroll")
+        .id_salt(("git_review_scroll", key))
+        .max_height(LIST_MAX_H)
         .auto_shrink([false, true])
         .show(ui, |ui| {
             for provider in [Provider::GitHub, Provider::GitLab] {
-                let mine: Vec<&MergeRequest> =
+                let of: Vec<&MergeRequest> =
                     list.iter().filter(|m| m.provider == provider).collect();
-                if mine.is_empty() {
+                if of.is_empty() {
                     continue;
                 }
                 let icon = match provider {
@@ -984,27 +1297,29 @@ fn render_review(t: &mut Tabular, ui: &mut egui::Ui) {
                     Provider::GitLab => i::ICON_GITLAB.codepoint,
                 };
                 egui::CollapsingHeader::new(
-                    egui::RichText::new(format!("{icon} {}  {}", provider.label(), mine.len()))
+                    egui::RichText::new(format!("{icon} {}  {}", provider.label(), of.len()))
                         .strong()
                         .size(12.0),
                 )
-                .id_salt(("git_mr_provider", provider.label()))
+                .id_salt(("git_mr_provider", provider.label(), key))
                 .default_open(true)
                 .show(ui, |ui| {
                     let mut repos: Vec<&str> =
-                        mine.iter().map(|m| m.repo_full_name.as_str()).collect();
+                        of.iter().map(|m| m.repo_full_name.as_str()).collect();
                     repos.sort_unstable();
                     repos.dedup();
                     for repo in repos {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} {repo}",
-                                i::ICON_SOURCE_REPOSITORY.codepoint
-                            ))
-                            .size(11.5)
-                            .color(muted(ui)),
-                        );
-                        for m in mine.iter().filter(|m| m.repo_full_name == repo) {
+                        if mine {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {repo}",
+                                    i::ICON_SOURCE_REPOSITORY.codepoint
+                                ))
+                                .size(11.5)
+                                .color(muted(ui)),
+                            );
+                        }
+                        for m in of.iter().filter(|m| m.repo_full_name == repo) {
                             if mr_row(ui, m).clicked() {
                                 open = Some((*m).clone());
                             }
@@ -1057,13 +1372,20 @@ fn mr_row(ui: &mut egui::Ui, m: &MergeRequest) -> egui::Response {
 
 // ─── Dialog ─────────────────────────────────────────────────────────────────
 
-fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
-    if let Some(c) = t.git.confirm.clone() {
+/// Dialog konfirmasi sidebar dan dialog clone. Dipanggil juga oleh Git Graph
+/// saat sidebar Git tidak tampil.
+pub(crate) fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
+    if let Some((key, c)) = t.git.confirm.clone() {
+        let repo = t
+            .git
+            .entry(&key)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
         let (title, msg, label) = match &c {
             SidebarConfirm::DiscardTracked(p) => (
                 "Discard changes",
                 format!(
-                    "Discard changes in {}? This cannot be undone.",
+                    "Discard changes in {} ({repo})? This cannot be undone.",
                     describe_paths(p)
                 ),
                 "Discard",
@@ -1071,7 +1393,7 @@ fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
             SidebarConfirm::DiscardUntracked(p) => (
                 "Discard untracked files",
                 format!(
-                    "Remove {} from disk? This cannot be undone.",
+                    "Remove {} from disk ({repo})? This cannot be undone.",
                     describe_paths(p)
                 ),
                 "Remove files",
@@ -1080,24 +1402,32 @@ fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
                 "Remove branch",
                 if *force {
                     format!(
-                        "Force-remove local branch \"{name}\"? Unmerged commits on it will be lost."
+                        "Force-remove local branch \"{name}\" in {repo}? Unmerged commits on it will be lost."
                     )
                 } else {
-                    format!("Remove local branch \"{name}\"?")
+                    format!("Remove local branch \"{name}\" in {repo}?")
                 },
                 "Remove",
             ),
             SidebarConfirm::Checkout { name, .. } => (
                 "Checkout with local changes",
                 format!(
-                    "You have uncommitted changes. Git carries them over to \"{name}\" when possible, or refuses the checkout if they conflict."
+                    "{repo} has uncommitted changes. Git carries them over to \"{name}\" when possible, or refuses the checkout if they conflict."
                 ),
                 "Checkout",
             ),
-            SidebarConfirm::RemoveRepo(_) => (
+            SidebarConfirm::RemoveRepo => (
                 "Remove repository",
-                "Remove this folder from the Git list? Files on disk are not touched.".to_string(),
+                format!("Remove {repo} from the Git list? Files on disk are not touched."),
                 "Remove",
+            ),
+            SidebarConfirm::AbortOperation(st) => (
+                "Abort operation",
+                format!(
+                    "{} in {repo}. Abort it and return to the state before it started?",
+                    st.label()
+                ),
+                "Abort",
             ),
         };
         let danger = !matches!(c, SidebarConfirm::Checkout { .. });
@@ -1106,7 +1436,7 @@ fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
             ConfirmOutcome::Cancelled => t.git.confirm = None,
             ConfirmOutcome::Confirmed => {
                 t.git.confirm = None;
-                git_jobs::confirm_sidebar(t, c);
+                git_jobs::confirm_sidebar(t, &key, c);
             }
         }
     }
@@ -1141,17 +1471,28 @@ fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
                         None,
                     );
                     // Isi tujuan otomatis selama user belum mengubahnya.
-                    let auto_before = crate::git::repos::default_clone_dir(&before).to_string_lossy().to_string();
+                    let auto_before = crate::git::repos::default_clone_dir(&before)
+                        .to_string_lossy()
+                        .to_string();
                     if dlg.url != before && (dlg.dest.is_empty() || dlg.dest == auto_before) {
-                        dlg.dest = crate::git::repos::default_clone_dir(&dlg.url).to_string_lossy().to_string();
+                        dlg.dest = crate::git::repos::default_clone_dir(&dlg.url)
+                            .to_string_lossy()
+                            .to_string();
                     }
                     ui.add_space(6.0);
                     ui.label("Destination folder");
                     ui.horizontal(|ui| {
                         let w = (ui.available_width() - 80.0).max(120.0);
-                        style::render_text_field(ui, egui::TextEdit::singleline(&mut dlg.dest), w, None);
+                        style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut dlg.dest),
+                            w,
+                            None,
+                        );
                         if ui.button("Browse…").clicked()
-                            && let Some(dir) = crate::rfd::FileDialog::new().set_title("Parent folder").pick_folder()
+                            && let Some(dir) = crate::rfd::FileDialog::new()
+                                .set_title("Parent folder")
+                                .pick_folder()
                         {
                             let name = crate::git::repos::default_clone_dir(&dlg.url)
                                 .file_name()
@@ -1163,7 +1504,7 @@ fn render_dialogs(t: &mut Tabular, ctx: &egui::Context) {
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(
-                            "Authentication uses your git credential helper or SSH key. Diagram groups and HTTP API folders that use this URL get the new folder automatically.",
+                            "Authentication uses your git credential helper or SSH key. The clone is added to the selected project, and diagram groups and HTTP API folders that use this URL get the new folder automatically.",
                         )
                         .size(11.0)
                         .color(style::theme_muted_text(ui.ctx())),

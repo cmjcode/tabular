@@ -1,11 +1,13 @@
 //! Halaman Preferences › Git: token GitHub/GitLab (keychain), URL GitLab,
-//! bahasa review AI, interval refresh, dan mode pull.
+//! bahasa review AI, interval refresh, mode pull/fetch, dan tampilan Git Graph.
 
 use std::sync::OnceLock;
 
 use eframe::egui;
 
 use super::preferences::{Tone, callout, hint, page_header, row, section, toggle_row};
+use crate::git::history::CommitOrder;
+use crate::git::repos::{AvatarSource, DateFormat, GraphStyle};
 use crate::git::review::{self, GITHUB_TOKEN_SECRET, GITLAB_TOKEN_SECRET};
 use crate::window_egui::{Tabular, style};
 
@@ -224,13 +226,161 @@ pub fn render(t: &mut Tabular, ui: &mut egui::Ui) {
         ) {
             store_changed = true;
         }
+        store_changed |= toggle_row(
+            ui,
+            &mut settings.fetch_prune,
+            "Prune on fetch",
+            Some("Remove remote-tracking branches that were deleted on the remote"),
+        );
+        store_changed |= toggle_row(
+            ui,
+            &mut settings.fetch_prune_tags,
+            "Prune tags on fetch",
+            Some("Remove local tags that no longer exist on the remote"),
+        );
+    });
+
+    section(ui, "Git Graph", |ui| {
+        let settings = &mut t.git.store.settings;
+        row(ui, "Commit ordering", None, |ui| {
+            egui::ComboBox::from_id_salt("git_pref_graph_order")
+                .selected_text(settings.graph_order.label())
+                .show_ui(ui, |ui| {
+                    for o in CommitOrder::ALL {
+                        store_changed |= ui
+                            .selectable_value(&mut settings.graph_order, o, o.label())
+                            .changed();
+                    }
+                });
+        });
+        row(ui, "Graph style", None, |ui| {
+            store_changed |= ui
+                .radio_value(&mut settings.graph_style, GraphStyle::Rounded, "Rounded")
+                .changed();
+            store_changed |= ui
+                .radio_value(&mut settings.graph_style, GraphStyle::Angular, "Angular")
+                .changed();
+        });
+        row(ui, "Date format", None, |ui| {
+            store_changed |= ui
+                .radio_value(
+                    &mut settings.date_format,
+                    DateFormat::DateTime,
+                    "Date & time",
+                )
+                .changed();
+            store_changed |= ui
+                .radio_value(&mut settings.date_format, DateFormat::Date, "Date")
+                .changed();
+            store_changed |= ui
+                .radio_value(&mut settings.date_format, DateFormat::Relative, "Relative")
+                .changed();
+        });
+        row(
+            ui,
+            "Author avatars",
+            Some("Gravatar sends an MD5 hash of each author email to gravatar.com"),
+            |ui| {
+                store_changed |= ui
+                    .radio_value(&mut settings.avatars, AvatarSource::Initials, "Initials")
+                    .changed();
+                store_changed |= ui
+                    .radio_value(&mut settings.avatars, AvatarSource::Gravatar, "Gravatar")
+                    .changed();
+            },
+        );
+        row(
+            ui,
+            "Commits per page",
+            Some("More are loaded while you scroll"),
+            |ui| {
+                store_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut settings.graph_page)
+                            .range(50..=5000)
+                            .speed(10),
+                    )
+                    .changed();
+            },
+        );
+        super::preferences::divider(ui);
+        for (value, label, help) in [
+            (
+                &mut settings.show_remote_branches,
+                "Show remote branches",
+                None,
+            ),
+            (&mut settings.show_tags, "Show tags", None),
+            (&mut settings.show_stashes, "Show stashes", None),
+            (
+                &mut settings.show_uncommitted,
+                "Show uncommitted changes",
+                None,
+            ),
+            (
+                &mut settings.mute_merges,
+                "Mute merge commits",
+                Some("Show merge commit messages in a dimmer color"),
+            ),
+            (
+                &mut settings.first_parent,
+                "Only follow the first parent",
+                Some("Hide commits that were merged in from other branches"),
+            ),
+            (
+                &mut settings.show_reflog,
+                "Include reflog commits",
+                Some("Also show commits that are only referenced by reflogs"),
+            ),
+            (
+                &mut settings.check_signatures,
+                "Check commit signatures",
+                Some("Runs gpg for signed commits when their details are opened"),
+            ),
+        ] {
+            store_changed |= toggle_row(ui, value, label, help);
+        }
+        super::preferences::divider(ui);
+        row(
+            ui,
+            "Issue link URL",
+            Some("Use $1 for the issue number. Empty: link to GitHub/GitLab issues automatically"),
+            |ui| {
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut settings.issue_url)
+                        .hint_text("https://jira.example.com/browse/$1"),
+                    f32::INFINITY,
+                    None,
+                );
+                store_changed |= resp.lost_focus();
+            },
+        );
+        row(
+            ui,
+            "Issue pattern",
+            Some("Regular expression; group 1 replaces $1. Empty: #123"),
+            |ui| {
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut settings.issue_regex)
+                        .hint_text(r"([A-Z]+-\d+)"),
+                    f32::INFINITY,
+                    None,
+                );
+                store_changed |= resp.lost_focus();
+            },
+        );
     });
 
     if tokens_changed {
         t.git.invalidate_access();
         t.git.mrs_loaded_at = None;
     }
-    if store_changed && let Err(e) = t.git.save_store() {
-        t.toasts.error(e);
+    if store_changed {
+        if let Err(e) = t.git.save_store() {
+            t.toasts.error(e);
+        }
+        super::git_graph_jobs::refresh_open_graphs(t);
     }
 }

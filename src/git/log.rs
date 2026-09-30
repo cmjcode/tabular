@@ -34,7 +34,9 @@ pub fn page(
 ) -> Result<Vec<CommitInfo>, GitError> {
     let n = format!("-n{limit}");
     let skip = format!("--skip={skip}");
-    let mut args = vec!["log", FORMAT, n.as_str(), skip.as_str()];
+    // `--date-order` menjamin parent tidak tampil sebelum child-nya (perlu
+    // untuk graf), tanpa memisahkan cabang seperti `--topo-order`.
+    let mut args = vec!["log", FORMAT, "--date-order", n.as_str(), skip.as_str()];
     if let Some(r) = rev {
         args.push(r);
     }

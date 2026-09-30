@@ -61,6 +61,18 @@ pub fn render_active_git_tab(t: &mut Tabular, ui: &mut egui::Ui) {
     let Some(mut st) = tab.git_state.take() else {
         return;
     };
+    if let GitView::Graph { key, repo } = st.view.clone() {
+        // Data Git Graph ada di `t.git.graphs`; state tab dikembalikan dulu.
+        if let Some(tab) = t.query_tabs.get_mut(idx) {
+            tab.git_state = Some(st);
+        }
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                super::git_graph_view::render(t, ui, tab_id, &key, &repo)
+            });
+        return;
+    }
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| match &st.view {
@@ -69,6 +81,8 @@ pub fn render_active_git_tab(t: &mut Tabular, ui: &mut egui::Ui) {
             GitView::MergeRequest { .. } => {
                 super::git_review_view::render_mr(t, ui, tab_id, &mut st)
             }
+            GitView::RangeDiff { .. } => render_range_diff(ui, &mut st),
+            GitView::Graph { .. } => {}
         });
     // Tab bisa saja berganti selama render (mis. job membuka tab lain).
     if let Some(tab) = t.query_tabs.iter_mut().find(|q| q.id == tab_id)
@@ -122,6 +136,7 @@ pub fn diff_body(
 
 fn render_file_diff(t: &mut Tabular, ui: &mut egui::Ui, st: &mut GitTabState) {
     let GitView::FileDiff {
+        key,
         repo,
         path,
         orig,
@@ -151,23 +166,19 @@ fn render_file_diff(t: &mut Tabular, ui: &mut egui::Ui, st: &mut GitTabState) {
             style::nav_text_strong(ui.ctx()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let busy = t.git.is_busy();
-            let same_repo = t.git.active_path().as_deref() == Some(repo.as_path());
+            let busy = t.git.is_busy(&key);
             match source {
                 DiffSource::Staged => {
                     if ui
-                        .add_enabled(!busy && same_repo, egui::Button::new("Unstage"))
+                        .add_enabled(!busy, egui::Button::new("Unstage"))
                         .clicked()
                     {
-                        git_jobs::unstage(t, vec![path.clone()]);
+                        git_jobs::unstage(t, &key, vec![path.clone()]);
                     }
                 }
                 _ => {
-                    if ui
-                        .add_enabled(!busy && same_repo, egui::Button::new("Stage"))
-                        .clicked()
-                    {
-                        git_jobs::stage(t, vec![path.clone()]);
+                    if ui.add_enabled(!busy, egui::Button::new("Stage")).clicked() {
+                        git_jobs::stage(t, &key, vec![path.clone()]);
                     }
                 }
             }
@@ -197,6 +208,43 @@ fn render_file_diff(t: &mut Tabular, ui: &mut egui::Ui, st: &mut GitTabState) {
     }
     ui.separator();
     diff_body(ui, ("git_file_diff", &path), st);
+}
+
+/// Diff satu file pada rentang revisi (dibuka dari Git Graph).
+fn render_range_diff(ui: &mut egui::Ui, st: &mut GitTabState) {
+    let GitView::RangeDiff { range, change, .. } = st.view.clone() else {
+        return;
+    };
+    let short = |h: &str| h.chars().take(8).collect::<String>();
+    let what = match &range {
+        crate::git::history::DiffRange::Commit { hash, .. } => format!("Commit {}", short(hash)),
+        crate::git::history::DiffRange::Between { from, to } => {
+            format!("{} → {}", short(from), short(to))
+        }
+        crate::git::history::DiffRange::WorkingTree { from } => {
+            format!("{} → working tree", short(from))
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(i::ICON_DIFFERENCE.codepoint).size(16.0));
+        ui.label(egui::RichText::new(&change.path).strong().size(14.0));
+        if let Some(o) = &change.orig_path {
+            ui.label(
+                egui::RichText::new(format!("(from {o})")).color(style::theme_muted_text(ui.ctx())),
+            );
+        }
+        style::render_badge(
+            ui,
+            &what,
+            style::nav_track(ui.ctx()),
+            style::nav_text_strong(ui.ctx()),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            layout_toggle(ui, st);
+        });
+    });
+    ui.separator();
+    diff_body(ui, ("git_range_diff", &change.path), st);
 }
 
 fn render_commit(t: &mut Tabular, ui: &mut egui::Ui, tab_id: usize, st: &mut GitTabState) {

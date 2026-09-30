@@ -25,10 +25,81 @@ pub const FILE_NAME: &str = "git_repos.json";
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManualRepo {
     pub path: String,
+    /// Project Tabular pemilik folder ini (diisi saat ditambahkan ketika
+    /// sebuah project sedang dipilih).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+/// Gaya garis graf.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphStyle {
+    #[default]
+    Rounded,
+    Angular,
+}
+
+/// Format tanggal kolom Date di Git Graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DateFormat {
+    #[default]
+    DateTime,
+    Date,
+    Relative,
+}
+
+/// Penyedia avatar author.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AvatarSource {
+    /// Tanpa avatar jaringan: inisial berwarna.
+    #[default]
+    Initials,
+    /// Gravatar (hash MD5 email dikirim ke gravatar.com).
+    Gravatar,
+}
+
+/// State UI per repository yang diingat antar sesi.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepoPrefs {
+    /// Sub-tab terakhir: Changes / Branches / History / Review.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sub: String,
+    #[serde(default)]
+    pub expanded: bool,
+    /// Code review Git Graph: rentang → file yang sudah dilihat.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reviewed: BTreeMap<String, Vec<String>>,
+    /// Branch yang dipilih di filter graf (kosong = semua).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_branches: Vec<String>,
+}
+
+/// Batas jumlah rentang code review yang disimpan per repository.
+pub const MAX_REVIEWS: usize = 30;
+
+impl RepoPrefs {
+    pub fn mark_reviewed(&mut self, range: &str, path: &str) {
+        let files = self.reviewed.entry(range.to_string()).or_default();
+        if !files.iter().any(|f| f == path) {
+            files.push(path.to_string());
+        }
+        while self.reviewed.len() > MAX_REVIEWS {
+            let Some(k) = self.reviewed.keys().next().cloned() else {
+                break;
+            };
+            self.reviewed.remove(&k);
+        }
+    }
+
+    pub fn is_reviewed(&self, range: &str, path: &str) -> bool {
+        self.reviewed
+            .get(range)
+            .is_some_and(|f| f.iter().any(|x| x == path))
+    }
 }
 
 /// Pengaturan tab Git. Personal (tidak ikut sync); token ada di keychain.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GitSettings {
     /// URL GitLab (self-hosted atau gitlab.com).
     #[serde(default = "default_gitlab_url")]
@@ -45,6 +116,66 @@ pub struct GitSettings {
     /// Pull memakai `--rebase` alih-alih `--ff-only`.
     #[serde(default)]
     pub pull_rebase: bool,
+    // ── Git Graph ──
+    #[serde(default)]
+    pub graph_order: crate::git::history::CommitOrder,
+    #[serde(default)]
+    pub graph_style: GraphStyle,
+    #[serde(default)]
+    pub date_format: DateFormat,
+    #[serde(default)]
+    pub avatars: AvatarSource,
+    #[serde(default = "yes")]
+    pub show_date: bool,
+    #[serde(default = "yes")]
+    pub show_author: bool,
+    #[serde(default = "yes")]
+    pub show_commit: bool,
+    #[serde(default = "yes")]
+    pub show_remote_branches: bool,
+    #[serde(default = "yes")]
+    pub show_tags: bool,
+    #[serde(default = "yes")]
+    pub show_stashes: bool,
+    #[serde(default = "yes")]
+    pub show_uncommitted: bool,
+    #[serde(default)]
+    pub first_parent: bool,
+    #[serde(default)]
+    pub show_reflog: bool,
+    /// Redupkan merge commit seperti Git Graph.
+    #[serde(default = "yes")]
+    pub mute_merges: bool,
+    #[serde(default = "yes")]
+    pub check_signatures: bool,
+    #[serde(default = "default_page")]
+    pub graph_page: usize,
+    #[serde(default = "yes")]
+    pub fetch_prune: bool,
+    #[serde(default)]
+    pub fetch_prune_tags: bool,
+    /// Pola URL issue, mis. `https://jira.example.com/browse/$1`; kosong =
+    /// tautan otomatis GitHub/GitLab dari remote.
+    #[serde(default)]
+    pub issue_url: String,
+    /// Regex nomor issue; kosong = `#(\d+)`.
+    #[serde(default)]
+    pub issue_regex: String,
+    /// Lebar kolom Date, Author, Commit (px).
+    #[serde(default = "default_widths")]
+    pub column_widths: [f32; 3],
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_page() -> usize {
+    300
+}
+
+fn default_widths() -> [f32; 3] {
+    [130.0, 140.0, 80.0]
 }
 
 fn default_gitlab_url() -> String {
@@ -67,6 +198,27 @@ impl Default for GitSettings {
             auto_refresh_min: default_refresh_min(),
             show_closed: false,
             pull_rebase: false,
+            graph_order: Default::default(),
+            graph_style: GraphStyle::default(),
+            date_format: DateFormat::default(),
+            avatars: AvatarSource::default(),
+            show_date: true,
+            show_author: true,
+            show_commit: true,
+            show_remote_branches: true,
+            show_tags: true,
+            show_stashes: true,
+            show_uncommitted: true,
+            first_parent: false,
+            show_reflog: false,
+            mute_merges: true,
+            check_signatures: true,
+            graph_page: default_page(),
+            fetch_prune: true,
+            fetch_prune_tags: false,
+            issue_url: String::new(),
+            issue_regex: String::new(),
+            column_widths: default_widths(),
         }
     }
 }
@@ -80,6 +232,8 @@ struct FileBody {
     active: Option<String>,
     #[serde(default)]
     settings: GitSettings,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    repo_prefs: BTreeMap<String, RepoPrefs>,
 }
 
 /// Repository yang ditambahkan langsung di tab Git.
@@ -89,6 +243,8 @@ pub struct GitRepoStore {
     pub repos: Vec<ManualRepo>,
     pub active: Option<String>,
     pub settings: GitSettings,
+    /// State UI per kunci repository.
+    pub prefs: BTreeMap<String, RepoPrefs>,
 }
 
 impl GitRepoStore {
@@ -106,6 +262,7 @@ impl GitRepoStore {
             repos: body.repos,
             active: body.active,
             settings: body.settings,
+            prefs: body.repo_prefs,
         }
     }
 
@@ -121,6 +278,7 @@ impl GitRepoStore {
             repos: self.repos.clone(),
             active: self.active.clone(),
             settings: self.settings.clone(),
+            repo_prefs: self.prefs.clone(),
         };
         let json = serde_json::to_vec_pretty(&body).map_err(std::io::Error::other)?;
         std::fs::write(&self.file, json)
@@ -128,12 +286,25 @@ impl GitRepoStore {
 
     /// Tambah folder; `false` bila sudah ada.
     pub fn add(&mut self, path: &str) -> bool {
+        self.add_to_project(path, None)
+    }
+
+    /// Tambah folder milik `project_id`. Folder yang sudah ada tetapi belum
+    /// punya project ikut ditandai.
+    pub fn add_to_project(&mut self, path: &str, project_id: Option<&str>) -> bool {
         let path = path.trim();
-        if path.is_empty() || self.repos.iter().any(|r| same_path(&r.path, path)) {
+        if path.is_empty() {
+            return false;
+        }
+        if let Some(r) = self.repos.iter_mut().find(|r| same_path(&r.path, path)) {
+            if r.project_id.is_none() && project_id.is_some() {
+                r.project_id = project_id.map(str::to_string);
+            }
             return false;
         }
         self.repos.push(ManualRepo {
             path: path.to_string(),
+            project_id: project_id.map(str::to_string),
         });
         true
     }
@@ -181,6 +352,8 @@ pub struct LinkSource {
     pub url: Option<String>,
     /// Folder lokal yang tercatat (belum tentu ada di disk).
     pub path: Option<String>,
+    /// Project Tabular pemilik tautan ini.
+    pub project: Option<String>,
 }
 
 /// Repository gabungan yang tampil di tab Git.
@@ -196,6 +369,11 @@ pub struct RepoEntry {
 }
 
 impl RepoEntry {
+    /// Repository dipakai oleh project `id` (lewat tautan mana pun).
+    pub fn in_project(&self, id: &str) -> bool {
+        self.links.iter().any(|l| l.project.as_deref() == Some(id))
+    }
+
     /// Tautan diagram/API yang belum punya folder lokal; diisi saat clone
     /// atau lewat "Use this folder for linked items".
     pub fn links_without_folder(&self) -> impl Iterator<Item = &LinkSource> {
@@ -333,6 +511,7 @@ mod tests {
             label: id.to_string(),
             url: url.map(str::to_string),
             path: path.map(|p| p.to_string_lossy().to_string()),
+            project: None,
         }
     }
 
@@ -373,6 +552,38 @@ mod tests {
         let other = &repos[1];
         assert!(other.path.is_none());
         assert_eq!(other.name, "other");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_scope_and_prefs() {
+        let dir = tmp("scope");
+        let mut a = src(
+            LinkKind::Project,
+            "p1",
+            Some("https://github.com/o/a"),
+            None,
+        );
+        a.project = Some("p1".into());
+        let b = src(LinkKind::Manual, "m", Some("https://github.com/o/b"), None);
+        let repos = merge(&[a, b], |_| None);
+        assert!(repos[0].in_project("p1"));
+        assert!(!repos[1].in_project("p1"));
+
+        let file = dir.join(FILE_NAME);
+        let mut s = GitRepoStore::load(file.clone());
+        assert!(s.add_to_project(&dir.to_string_lossy(), None));
+        assert!(!s.add_to_project(&dir.to_string_lossy(), Some("p1")));
+        assert_eq!(s.repos[0].project_id.as_deref(), Some("p1"));
+        let p = s.prefs.entry("k".into()).or_default();
+        p.expanded = true;
+        p.mark_reviewed("abc", "x.rs");
+        p.mark_reviewed("abc", "x.rs");
+        s.save().expect("save");
+        let s2 = GitRepoStore::load(file);
+        assert!(s2.prefs["k"].expanded);
+        assert!(s2.prefs["k"].is_reviewed("abc", "x.rs"));
+        assert_eq!(s2.prefs["k"].reviewed["abc"].len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

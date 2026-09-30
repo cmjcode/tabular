@@ -19,7 +19,26 @@ The repository list is shared with the rest of Tabular. A repository shows up wh
 
 Entries that point to the same repository are merged by their git URL, so
 `git@github.com:org/app.git` and `https://github.com/org/app` are one repository. The
-line under the picker tells you which diagram groups, API folders and projects use it.
+line under a repository tells you which diagram groups, API folders and projects use it.
+
+### One section per repository
+
+Like Source Control in VS Code, the sidebar shows every repository of the project
+selected in the project switcher at once. Each repository is a section you can open
+and close. Its header shows the current branch, commits behind/ahead, the number of
+changes, and buttons for **Git Graph** and **Fetch**. Right-click the header for
+Pull, Push, Reveal in file manager, Copy path, and Remove from list.
+
+An open section has its own **Changes / Branches / History / Review** buttons, and
+remembers which one you used. Operations run per repository, so a fetch in one
+repository does not block a commit in another.
+
+A repository belongs to a project when the project's repository URL points to it, when
+a diagram group of the project's connections or an HTTP API folder of its workspace
+uses it, or when you added it with **+** while that project was selected. Other
+repositories are listed under **Other repositories**; right-click one and choose
+**Add to project** to move it. With no project selected, every repository is listed.
+The **Fetch all** button in the sidebar header fetches every repository of the project.
 
 If a repository is known only by its URL (for example a teammate set it on a diagram
 group), the Git tab offers **Clone…** or **Choose folder…**. The folder you pick or
@@ -46,15 +65,60 @@ Discarding changes and removing untracked files always asks for confirmation.
 
 - **Branches**: create a branch from HEAD, double-click a branch to check it out (a
   remote branch becomes a local tracking branch), right-click to remove it.
-- **History**: the latest 200 commits, with **Load more**. Click a commit to see its
-  message and changed files.
-- The header shows the current branch, commits ahead/behind, and **Fetch**, **Pull**
-  and **Push**. Pull only fast-forwards unless you turn on **Pull with rebase** in
-  Preferences > Git. Push sets the upstream on the first push of a new branch.
+- **History**: the latest 200 commits of the current branch with a small graph, and
+  **Load more**. Click a commit to see its message and changed files, or click
+  **Open Git Graph** for all branches.
+- Pull only fast-forwards unless you turn on **Pull with rebase** in Preferences > Git.
+  Push sets the upstream on the first push of a new branch.
+- When a merge, rebase, cherry-pick or revert stops on conflicts, the section and Git
+  Graph show **Continue** and **Abort**.
 
 Git never prompts inside Tabular. Fetch, pull, push and clone use your credential
 helper or SSH key; if they need a password, the error tells you to set one up in a
 terminal first.
+
+## Git Graph
+
+**Git Graph** opens a repository's history in the editor area, modeled on the Git Graph
+extension for VS Code:
+
+- A colored graph of all local branches, remote branches, tags and stashes, with an
+  **Uncommitted Changes** row on top. Branches that also exist on a remote show as one
+  label (`main | origin`). Columns: Description, Date, Author, Commit. Drag a column
+  edge to resize it.
+- **Branches** filters the graph to the branches you tick; **Show Remote Branches**
+  hides or shows remote branches. More commits load while you scroll.
+- Click a commit for its details at the bottom: hash, parents (click to jump), author,
+  committer, signature, labels, and the full message with Markdown, emoji shortcodes
+  and issue links. The file list (list or tree) shows added/removed lines; click a file
+  for its diff, double-click to open it in a tab.
+- Ctrl/Cmd+click a second commit to compare the two. **Compare with Working Tree** is
+  in the commit menu.
+- **Start Code Review** marks every file you open as reviewed for that commit or
+  comparison, so you can see what is left. The marks are kept between sessions.
+- Find (Ctrl/Cmd+F) searches messages, hashes, authors and branch names, with match
+  case and regular expression options. Ctrl/Cmd+R refreshes, Ctrl/Cmd+H jumps to HEAD,
+  and the arrow keys move between commits while the details are open.
+- **Remotes** (toolbar) adds, edits, renames, fetches, prunes and removes remotes.
+
+Right-click for actions:
+
+| Where | Actions |
+|---|---|
+| Commit | Add Tag, Create Branch, Checkout, Cherry Pick, Revert, Drop, Merge into current branch, Rebase current branch on this commit, Reset current branch to this commit (soft, mixed, hard), Compare, Copy hash or subject, Create Archive |
+| Local branch | Checkout, Rename, Delete (optionally on the remote too), Merge, Rebase, Push (normal, force with lease, force), Create Pull Request, Create Archive, Select in filter, Copy name |
+| Remote branch | Checkout as a local tracking branch, Delete on remote, Fetch into a local branch, Merge, Pull into current branch, Create Pull Request |
+| Tag | View details, Delete (optionally on the remote too), Push, Create Archive |
+| Stash | Apply, Pop, Drop, Create Branch from stash |
+| Uncommitted Changes | Stash, Reset (mixed or hard), Clean untracked files |
+
+Double-click a branch label to check it out. Every action that can lose work asks
+for confirmation first, with a red button.
+
+Graph settings are in the toolbar (ordering by commit date, author date or topology;
+rounded or angular lines; date format; columns; tags, stashes, uncommitted changes,
+first-parent only, reflog commits, muted merge commits) and in Preferences > Git
+(author avatars, commits per page, commit signatures, prune on fetch, issue links).
 
 ## Merge Review
 
@@ -65,9 +129,9 @@ terminal first.
      self-hosted instance.
 
    Tokens are stored in the OS keychain.
-2. In the Git tab choose **Review**. **Assigned to me** lists open requests where you
-   are a requested reviewer, an assignee or the author, across all repositories.
-   **This repository** lists the requests of the selected repository.
+2. Open a repository section and choose **Review**. **This repository** lists the
+   requests of that repository. **Assigned to me** lists open requests where you are a
+   requested reviewer, an assignee or the author, across all repositories.
 3. Click a request to open it in the editor area: changed files, side-by-side diff,
    description, labels and reviewers.
 4. **Analyze with AI** reviews every changed file and ends with APPROVE, APPROVE WITH
@@ -89,8 +153,11 @@ Preferences > Git.
   listed as not shown.
 - Git and the GitHub/GitLab API are contacted only for actions you start, listed under
   Preferences > Privacy > Always initiated by you.
+- Author avatars are initials by default. If you choose **Gravatar** in Preferences >
+  Git, an MD5 hash of each author's email is sent to gravatar.com; the images are
+  cached in the `git_avatars` folder in the Tabular data folder.
 
 ## Not included yet
 
-Stash, rebase and cherry-pick, tags, blame, a conflict editor (conflicted files are
-listed; resolve them in your editor and stage them) and syntax highlighting in diffs.
+Blame, interactive rebase, a conflict editor (conflicted files are listed; resolve them
+in your editor, stage them, then choose **Continue**) and syntax highlighting in diffs.
