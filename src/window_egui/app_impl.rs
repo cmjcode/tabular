@@ -2619,6 +2619,12 @@ impl Tabular {
                                                 self.show_settings_menu = false;
                                             }
 
+                                            #[cfg(not(target_os = "ios"))]
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_SECURITY.codepoint, "Agent Access (MCP)", None) {
+                                                self.open_agent_access();
+                                                self.show_settings_menu = false;
+                                            }
+
                                             if draw_menu_item(ui, egui_icons::icons::ICON_KEYBOARD.codepoint, "Keyboard Shortcuts", None) {
                                                 self.show_shortcuts_window = true;
                                                 self.show_settings_menu = false;
@@ -3192,10 +3198,20 @@ impl Tabular {
                            
                                // Tab subset (`scoped_to`) tidak pernah disimpan:
                                // isinya akan menimpa layout diagram database.
+                               // Auto save mati: perubahan hanya ditandai belum
+                               // tersimpan, kecuali ada permintaan simpan paksa.
+                               let force = std::mem::take(&mut diagram_state.force_save);
                                if std::mem::take(&mut diagram_state.save_requested)
                                    && diagram_state.scoped_to.is_none()
                                {
-                                   diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                                   if diagram_state.auto_save || force {
+                                       if force {
+                                           diagram_state.unsaved_changes = false;
+                                       }
+                                       diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                                   } else {
+                                       diagram_state.unsaved_changes = true;
+                                   }
                                }
                             }
                     
@@ -4201,6 +4217,7 @@ impl Tabular {
                     ai_obsidian_vault_path: self.ai_obsidian_vault_path.clone(),
                     ai_obsidian_enabled: self.ai_obsidian_enabled,
                     ai_obsidian_allow_write: self.ai_obsidian_allow_write,
+                    ai_inline_suggestions: self.ai_inline_suggestions,
                     redis_browser_auto_refresh_seconds: self
                         .redis_browser_auto_refresh_default_seconds
                         .max(1),
@@ -5208,6 +5225,7 @@ impl App for Tabular {
         // Show cache miss dialog (topmost)
         self.poll_diagram_schema_jobs(ctx);
         self.poll_diagram_repo_scan_jobs(ctx);
+        crate::http_repo::render(self, ctx);
         self.render_cache_miss_dialog(ctx);
         self.render_link_database_dialog(ctx);
 
@@ -5539,6 +5557,9 @@ impl App for Tabular {
         crate::session_restore::tick(self, ctx);
 
         self.render_query_insights(ctx);
+        #[cfg(not(target_os = "ios"))]
+        self.render_agent_access(ctx);
+        super::ai_fix::render_ai_fix_window(self, ctx);
 
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.

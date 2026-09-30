@@ -161,8 +161,10 @@ objc2-foundation = { version = "0.3", features = [
 rfd = "0.17"
 # Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
 # Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
-# sering mengubah API antar rilis.
-rmcp = { version = "3.4", features = ["transport-io"] }
+# sering mengubah API antar rilis. `elicitation`: konfirmasi statement tulis
+# lewat klien bila GUI tidak berjalan (K1). `client` + `transport-child-process`:
+# chat AI memanggil server MCP eksternal (K5).
+rmcp = { version = "3.4", features = ["transport-io", "elicitation", "client", "transport-child-process"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }

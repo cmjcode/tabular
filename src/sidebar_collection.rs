@@ -393,6 +393,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 ws_to_rename = Some((ws_id.clone(), ws_name.clone()));
                 ui.close();
             }
+            crate::http_repo::workspace_menu_items(ui);
             ui.separator();
             if ui.button("🗑 Delete Workspace").clicked() {
                 ws_to_delete = Some(ws_id.clone());
@@ -892,9 +893,15 @@ fn render_folder_node(
             ui.style().visuals.text_color()
         };
 
+        // Folder yang punya repository diberi ikon git.
+        let repo_mark = if folder.repo_url.is_some() || folder.local_repo_path().is_some() {
+            format!("  {}", egui_icons::icons::MDI_GIT.codepoint)
+        } else {
+            String::new()
+        };
         let lbl = ui.add(
             egui::Label::new(
-                egui::RichText::new(format!("📂  {}", folder.name))
+                egui::RichText::new(format!("📂  {}{repo_mark}", folder.name))
                     .small()
                     .strong()
                     .color(text_color),
@@ -1043,6 +1050,7 @@ fn render_folder_node(
             *folder_to_rename = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }
+        crate::http_repo::folder_menu_items(ui, folder);
         ui.separator();
         if ui.button("🗑 Delete Folder").clicked() {
             *folder_to_delete = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));

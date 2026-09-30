@@ -1,7 +1,7 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::mpsc;
 
-use crate::config::AiProvider;
+use crate::config::{AiApiStyle, AiProvider};
 
 /// Build a schema context string from the active connection's cached tables + columns.
 /// Returns an empty string if cache is empty or no connection is active.
@@ -171,16 +171,24 @@ pub fn request_ai_suggestion(
     };
 
     std::thread::spawn(move || {
-        let result = match provider {
-            AiProvider::Anthropic => call_anthropic(
+        let result = match provider.api_style() {
+            AiApiStyle::Anthropic => call_anthropic(
                 &api_key,
                 &effective_model,
                 &effective_base_url,
                 &system_prompt,
                 &user_prompt,
             ),
-            // OpenAI, GitHub, Groq, and Custom all use the OpenAI-compatible /chat/completions endpoint
-            _ => call_openai_compatible(
+            AiApiStyle::Gemini => call_gemini(
+                &api_key,
+                &effective_model,
+                &effective_base_url,
+                &system_prompt,
+                &user_prompt,
+            ),
+            // OpenAI, GitHub, Groq, xAI, OpenRouter, Ollama, llama.cpp, MLX, Custom
+            AiApiStyle::OpenAiCompatible => call_openai_compatible(
+                provider,
                 &api_key,
                 &effective_model,
                 &effective_base_url,
@@ -194,16 +202,33 @@ pub fn request_ai_suggestion(
     rx
 }
 
-fn call_openai_compatible(
-    api_key: &str,
-    model: &str,
-    base_url: &str,
-    system_prompt: &str,
-    user_prompt: &str,
-) -> Result<String, String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+/// Pesan error kirim request; untuk server lokal beri petunjuk yang jelas.
+fn send_error(provider: AiProvider, url: &str, e: &reqwest::Error) -> String {
+    if provider.is_local() && (e.is_connect() || e.is_timeout()) {
+        format!(
+            "Cannot reach {} at {url}. Make sure the local server is running and the Base URL in Settings → AI Assistant is correct. ({e})",
+            provider.display_name()
+        )
+    } else {
+        format!("Request failed: {e}")
+    }
+}
 
-    let body = json!({
+/// Header tambahan per provider untuk endpoint OpenAI-compatible.
+/// OpenRouter memakai `HTTP-Referer` / `X-Title` untuk atribusi aplikasi.
+pub fn openai_extra_headers(provider: AiProvider) -> &'static [(&'static str, &'static str)] {
+    match provider {
+        AiProvider::OpenRouter => &[
+            ("HTTP-Referer", "https://tabular.id"),
+            ("X-Title", "Tabular"),
+        ],
+        _ => &[],
+    }
+}
+
+/// Body request `/chat/completions` (OpenAI-compatible).
+pub fn openai_request_body(model: &str, system_prompt: &str, user_prompt: &str) -> Value {
+    json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system_prompt },
@@ -211,17 +236,137 @@ fn call_openai_compatible(
         ],
         "temperature": 0.2,
         "max_tokens": 1024
-    });
+    })
+}
+
+/// Ambil teks jawaban dari response `/chat/completions`.
+pub fn parse_openai_response(text: &str) -> Result<String, String> {
+    let json: Value =
+        serde_json::from_str(text).map_err(|e| format!("Failed to parse response: {e}"))?;
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| format!("Unexpected response format: {text}"))
+}
+
+fn call_openai_compatible(
+    provider: AiProvider,
+    api_key: &str,
+    model: &str,
+    base_url: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = openai_request_body(model, system_prompt, user_prompt);
 
     crate::privacy::check(crate::privacy::NetCategory::Ai, &url)?;
+    // Model lokal bisa lambat saat pertama kali dimuat ke memori.
+    let timeout = if provider.is_local() { 180 } else { 30 };
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(timeout))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body);
+    // Server lokal tidak butuh key; jangan kirim header Authorization kosong.
+    if !api_key.trim().is_empty() {
+        req = req.bearer_auth(api_key.trim());
+    }
+    for (name, value) in openai_extra_headers(provider) {
+        req = req.header(*name, *value);
+    }
+    let resp = req.send().map_err(|e| send_error(provider, &url, &e))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .map_err(|e| format!("Failed to read response: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("API error {status}: {text}"));
+    }
+    parse_openai_response(&text)
+}
+
+/// URL `generateContent` Gemini. Nama model boleh diawali `models/`.
+pub fn gemini_request_url(base_url: &str, model: &str) -> String {
+    let model = model.trim().trim_start_matches("models/");
+    format!(
+        "{}/models/{model}:generateContent",
+        base_url.trim_end_matches('/')
+    )
+}
+
+/// Body request `generateContent` dengan `systemInstruction`.
+pub fn gemini_request_body(system_prompt: &str, user_prompt: &str) -> Value {
+    let mut body = json!({
+        "contents": [
+            { "role": "user", "parts": [ { "text": user_prompt } ] }
+        ],
+        // Model 2.5 memakai sebagian token untuk "thinking"; batas lebih
+        // longgar supaya jawaban tidak terpotong kosong.
+        "generationConfig": { "temperature": 0.2, "maxOutputTokens": 8192 }
+    });
+    if !system_prompt.trim().is_empty() {
+        body["systemInstruction"] = json!({ "parts": [ { "text": system_prompt } ] });
+    }
+    body
+}
+
+/// Gabungkan teks kandidat pertama (bagian `thought` dilewati).
+pub fn parse_gemini_response(text: &str) -> Result<String, String> {
+    let json: Value =
+        serde_json::from_str(text).map_err(|e| format!("Failed to parse response: {e}"))?;
+    let Some(candidate) = json["candidates"].get(0) else {
+        if let Some(reason) = json["promptFeedback"]["blockReason"].as_str() {
+            return Err(format!("Gemini blocked the prompt ({reason})."));
+        }
+        return Err(format!("Unexpected Gemini response format: {text}"));
+    };
+    let out: String = candidate["content"]["parts"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|p| !p["thought"].as_bool().unwrap_or(false))
+                .filter_map(|p| p["text"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let out = out.trim().to_string();
+    if out.is_empty() {
+        let reason = candidate["finishReason"].as_str().unwrap_or("unknown");
+        return Err(format!(
+            "Gemini returned no text (finish reason: {reason})."
+        ));
+    }
+    Ok(out)
+}
+
+fn call_gemini(
+    api_key: &str,
+    model: &str,
+    base_url: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
+    let url = gemini_request_url(base_url, model);
+    let body = gemini_request_body(system_prompt, user_prompt);
+
+    crate::privacy::check(crate::privacy::NetCategory::Ai, &url)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    // Key lewat header, bukan query string, supaya tidak tercatat di log URL.
     let resp = client
         .post(&url)
-        .bearer_auth(api_key)
+        .header("x-goog-api-key", api_key.trim())
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -233,16 +378,9 @@ fn call_openai_compatible(
         .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if !status.is_success() {
-        return Err(format!("API error {status}: {text}"));
+        return Err(format!("Gemini API error {status}: {text}"));
     }
-
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("Failed to parse response: {e}"))?;
-
-    json["choices"][0]["message"]["content"]
-        .as_str()
-        .map(|s| s.trim().to_string())
-        .ok_or_else(|| format!("Unexpected response format: {text}"))
+    parse_gemini_response(&text)
 }
 
 fn call_anthropic(
@@ -410,7 +548,7 @@ pub fn backend_label_for(tabular: &Tabular, target: ChatTarget) -> String {
 pub fn backend_ready_for(tabular: &Tabular, target: ChatTarget) -> Result<(), String> {
     match target {
         ChatTarget::Api => {
-            if tabular.ai_api_key.is_empty() {
+            if tabular.ai_provider.requires_api_key() && tabular.ai_api_key.trim().is_empty() {
                 Err("No API key configured. Open Settings → AI Assistant to add one, or switch to a CLI agent.".to_string())
             } else {
                 Ok(())
@@ -921,6 +1059,67 @@ pub fn build_chat_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_request_shape() {
+        let url = gemini_request_url(
+            "https://generativelanguage.googleapis.com/v1beta/",
+            "models/gemini-2.5-flash",
+        );
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+        let body = gemini_request_body("be terse", "fix this");
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "be terse");
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "fix this");
+        assert!(
+            body["generationConfig"]["maxOutputTokens"]
+                .as_u64()
+                .is_some()
+        );
+        // System prompt kosong tidak dikirim.
+        let body = gemini_request_body("  ", "hi");
+        assert!(body.get("systemInstruction").is_none());
+    }
+
+    #[test]
+    fn gemini_response_parsing() {
+        let ok = r#"{"candidates":[{"content":{"role":"model","parts":[
+            {"text":"thinking...","thought":true},{"text":"SELECT 1;"},{"text":"\n"}]},
+            "finishReason":"STOP"}]}"#;
+        assert_eq!(parse_gemini_response(ok).as_deref(), Ok("SELECT 1;"));
+
+        let blocked = r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#;
+        let err = parse_gemini_response(blocked).unwrap_err();
+        assert!(err.contains("SAFETY"), "{err}");
+
+        let empty = r#"{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}"#;
+        let err = parse_gemini_response(empty).unwrap_err();
+        assert!(err.contains("MAX_TOKENS"), "{err}");
+
+        assert!(parse_gemini_response("not json").is_err());
+    }
+
+    #[test]
+    fn openai_compatible_request_and_headers() {
+        let body = openai_request_body("llama3.2", "sys", "usr");
+        assert_eq!(body["model"], "llama3.2");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "usr");
+        let names: Vec<&str> = openai_extra_headers(AiProvider::OpenRouter)
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(names, ["HTTP-Referer", "X-Title"]);
+        assert!(openai_extra_headers(AiProvider::Ollama).is_empty());
+        assert!(openai_extra_headers(AiProvider::XAi).is_empty());
+
+        let reply = r#"{"choices":[{"message":{"role":"assistant","content":"  ok \n"}}]}"#;
+        assert_eq!(parse_openai_response(reply).as_deref(), Ok("ok"));
+        assert!(parse_openai_response(r#"{"error":"x"}"#).is_err());
+    }
 
     #[test]
     fn truncate_respects_char_boundaries() {

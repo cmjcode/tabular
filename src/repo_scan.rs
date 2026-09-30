@@ -27,9 +27,9 @@ use crate::config::{AiBackend, CliAgentKind};
 /// Batas jumlah file yang dipindai per repository.
 pub const MAX_FILES: usize = 20_000;
 /// File lebih besar dari ini dilewati (biasanya hasil build atau data).
-const MAX_FILE_BYTES: u64 = 1_000_000;
+pub(crate) const MAX_FILE_BYTES: u64 = 1_000_000;
 /// Baris lebih panjang dari ini dianggap minified dan dilewati.
-const MAX_LINE_BYTES: usize = 2_000;
+pub(crate) const MAX_LINE_BYTES: usize = 2_000;
 /// Bukti (path:line) maksimum per tabel.
 const MAX_EVIDENCE: usize = 5;
 /// Batas waktu operasi git (clone/fetch).
@@ -174,6 +174,55 @@ pub fn expand_home(s: &str) -> PathBuf {
         return home.join(rest);
     }
     PathBuf::from(s)
+}
+
+/// Kunci normal URL git untuk mencocokkan folder HTTP API dengan group
+/// diagram yang menunjuk repository yang sama. `https://github.com/Org/App.git`,
+/// `git@github.com:org/app` dan `ssh://git@github.com:22/org/app/` semuanya
+/// menjadi `github.com/org/app`. Kredensial, port, `.git` dan huruf besar
+/// dibuang. `None` bila bukan URL git.
+pub fn repo_key(url: &str) -> Option<String> {
+    let s = url.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (host, path) = if let Some((scheme, rest)) = s.split_once("://") {
+        if scheme.eq_ignore_ascii_case("file") {
+            let path = rest.trim_end_matches('/');
+            let path = path.strip_suffix(".git").unwrap_or(path);
+            return (!path.is_empty()).then(|| format!("file:{path}"));
+        }
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        (host.split(':').next().unwrap_or(host), path)
+    } else if is_scp_like(s) {
+        let (head, path) = s.split_once(':')?;
+        (head.rsplit_once('@').map_or(head, |(_, h)| h), path)
+    } else {
+        return None;
+    };
+    let path = path.trim_matches('/');
+    let path = path
+        .strip_suffix(".git")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        host.to_ascii_lowercase(),
+        path.to_ascii_lowercase()
+    ))
+}
+
+/// Kunci repository dari URL git, atau bila kosong dari remote `.git/config`
+/// folder project lokal.
+pub fn repo_key_for(url: Option<&str>, path: Option<&str>) -> Option<String> {
+    url.and_then(repo_key).or_else(|| {
+        let path = path.map(str::trim).filter(|p| !p.is_empty())?;
+        git_remote_url(&expand_home(path)).and_then(|u| repo_key(&u))
+    })
 }
 
 /// Pilih sumber pemindaian: folder project bila ada di komputer ini, kalau
@@ -682,6 +731,19 @@ fn collect_files(root: &Path, cancel: &AtomicBool) -> Result<(Vec<PathBuf>, bool
     Ok((files, false))
 }
 
+/// File kode di bawah `root`: daftar git bila tersedia (menghormati
+/// `.gitignore`), kalau tidak telusuri folder. `true` = batas [`MAX_FILES`]
+/// tercapai.
+pub(crate) fn list_repo_files(
+    root: &Path,
+    cancel: &AtomicBool,
+) -> Result<(Vec<PathBuf>, bool), RepoScanError> {
+    match git_listed_files(root, cancel)? {
+        Some(listed) => Ok(listed),
+        None => collect_files(root, cancel),
+    }
+}
+
 /// Cari nama tabel `candidates` di seluruh file teks di bawah `root`.
 pub fn grep_tables(
     root: &Path,
@@ -701,10 +763,7 @@ pub fn grep_tables(
         }
     }
 
-    let (files, truncated) = match git_listed_files(root, cancel)? {
-        Some(listed) => listed,
-        None => collect_files(root, cancel)?,
-    };
+    let (files, truncated) = list_repo_files(root, cancel)?;
     let mut score = vec![0.0f32; candidates.len()];
     let mut refs = vec![0usize; candidates.len()];
     let mut file_sets: Vec<HashSet<usize>> = vec![HashSet::new(); candidates.len()];
@@ -853,7 +912,7 @@ fn scan_line(
     }
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
+pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -1070,7 +1129,7 @@ struct ReplyTable {
     evidence: Vec<serde_json::Value>,
 }
 
-fn slice_between(text: &str, open: char, close: char) -> Option<&str> {
+pub(crate) fn slice_between(text: &str, open: char, close: char) -> Option<&str> {
     let start = text.find(open)?;
     let end = text.rfind(close)?;
     (end > start).then(|| &text[start..=end])
@@ -1198,13 +1257,17 @@ pub struct ScanOutcome {
     pub files_scanned: usize,
 }
 
+/// Event job repository di background (pemindaian tabel, pembuatan
+/// endpoint, dll.).
 #[derive(Debug)]
-pub enum ScanEvent {
+pub enum RepoJobEvent<T> {
     Progress(ProgressStep),
     /// AI masih mengirim output (teks/tool) tanpa langkah baru; tanda tidak macet.
     Activity,
-    Finished(Result<ScanOutcome, String>),
+    Finished(Result<T, String>),
 }
+
+pub type ScanEvent = RepoJobEvent<ScanOutcome>;
 
 /// Pegangan job pemindaian yang berjalan.
 pub struct ScanHandle {
@@ -1248,13 +1311,13 @@ pub fn spawn_scan(input: ScanInput) -> ScanHandle {
     ScanHandle { rx, cancel }
 }
 
-fn step(
+pub(crate) fn step<T>(
     index: u64,
     description: impl Into<String>,
     detail: Option<String>,
     status: ProgressStatus,
-) -> ScanEvent {
-    ScanEvent::Progress(ProgressStep {
+) -> RepoJobEvent<T> {
+    RepoJobEvent::Progress(ProgressStep {
         step_index: Some(index),
         description: description.into(),
         detail,
@@ -1354,66 +1417,7 @@ fn run_scan(
         });
     };
 
-    // Tentukan cara AI membaca kode. Claude Code dan Gemini CLI bisa dibatasi
-    // read-only, jadi boleh langsung di folder user. Agent lain hanya bekerja
-    // di salinan milik Tabular.
-    let (mode, workspace) = match backend.backend {
-        AiBackend::Api => (PromptMode::Snippets, ChatWorkspace::default()),
-        AiBackend::Cli => match backend.cli.kind {
-            CliAgentKind::ClaudeCode => (
-                PromptMode::ReadRepo,
-                ChatWorkspace {
-                    cwd: Some(resolved.root.clone()),
-                    allowed_tools: READ_ONLY_TOOLS.iter().map(|s| s.to_string()).collect(),
-                    without_mcp: true,
-                },
-            ),
-            CliAgentKind::GeminiCli => (
-                PromptMode::ReadRepo,
-                ChatWorkspace {
-                    cwd: Some(resolved.root.clone()),
-                    ..Default::default()
-                },
-            ),
-            CliAgentKind::Antigravity | CliAgentKind::Custom => {
-                let copy = if resolved.isolated {
-                    Some(resolved.root.clone())
-                } else {
-                    let _ = tx.send(step(
-                        3,
-                        "Making a private copy for the agent",
-                        None,
-                        ProgressStatus::Active,
-                    ));
-                    let copy = isolated_copy(&resolved.root, &input.cache_root, cancel);
-                    let status = if copy.is_ok() {
-                        ProgressStatus::Done
-                    } else {
-                        ProgressStatus::Error
-                    };
-                    let _ = tx.send(step(3, "Making a private copy for the agent", None, status));
-                    match copy {
-                        Ok(c) => c,
-                        Err(RepoScanError::Cancelled) => return Err(RepoScanError::Cancelled),
-                        Err(e) => {
-                            log::warn!("[REPO_SCAN] private copy failed: {e}");
-                            None
-                        }
-                    }
-                };
-                match copy {
-                    Some(dir) => (
-                        PromptMode::ReadRepo,
-                        ChatWorkspace {
-                            cwd: Some(dir),
-                            ..Default::default()
-                        },
-                    ),
-                    None => (PromptMode::Snippets, ChatWorkspace::default()),
-                }
-            }
-        },
-    };
+    let (mode, workspace) = ai_workspace(backend, &resolved, &input.cache_root, tx, cancel, 3)?;
 
     let repo_root = workspace.cwd.clone();
     let (system, user) = build_scan_prompts(
@@ -1468,14 +1472,104 @@ fn run_scan(
     })
 }
 
+/// Tentukan cara AI membaca kode. Claude Code dan Gemini CLI bisa dibatasi
+/// read-only, jadi boleh langsung di folder user. Agent lain hanya bekerja di
+/// salinan milik Tabular; bila salinan gagal dibuat, AI hanya melihat cuplikan.
+pub(crate) fn ai_workspace<T>(
+    backend: &ChatBackend,
+    resolved: &ResolvedRepo,
+    cache_root: &Path,
+    tx: &mpsc::Sender<RepoJobEvent<T>>,
+    cancel: &AtomicBool,
+    step_index: u64,
+) -> Result<(PromptMode, ChatWorkspace), RepoScanError> {
+    Ok(match backend.backend {
+        AiBackend::Api => (PromptMode::Snippets, ChatWorkspace::default()),
+        AiBackend::Cli => match backend.cli.kind {
+            CliAgentKind::ClaudeCode => (
+                PromptMode::ReadRepo,
+                ChatWorkspace {
+                    cwd: Some(resolved.root.clone()),
+                    allowed_tools: READ_ONLY_TOOLS.iter().map(|s| s.to_string()).collect(),
+                    without_mcp: true,
+                },
+            ),
+            CliAgentKind::GeminiCli => (
+                PromptMode::ReadRepo,
+                ChatWorkspace {
+                    cwd: Some(resolved.root.clone()),
+                    ..Default::default()
+                },
+            ),
+            CliAgentKind::Antigravity | CliAgentKind::Custom => {
+                let copy = if resolved.isolated {
+                    Some(resolved.root.clone())
+                } else {
+                    let _ = tx.send(step(
+                        step_index,
+                        "Making a private copy for the agent",
+                        None,
+                        ProgressStatus::Active,
+                    ));
+                    let copy = isolated_copy(&resolved.root, cache_root, cancel);
+                    let status = if copy.is_ok() {
+                        ProgressStatus::Done
+                    } else {
+                        ProgressStatus::Error
+                    };
+                    let _ = tx.send(step(
+                        step_index,
+                        "Making a private copy for the agent",
+                        None,
+                        status,
+                    ));
+                    match copy {
+                        Ok(c) => c,
+                        Err(RepoScanError::Cancelled) => return Err(RepoScanError::Cancelled),
+                        Err(e) => {
+                            log::warn!("[REPO_SCAN] private copy failed: {e}");
+                            None
+                        }
+                    }
+                };
+                match copy {
+                    Some(dir) => (
+                        PromptMode::ReadRepo,
+                        ChatWorkspace {
+                            cwd: Some(dir),
+                            ..Default::default()
+                        },
+                    ),
+                    None => (PromptMode::Snippets, ChatWorkspace::default()),
+                }
+            }
+        },
+    })
+}
+
 /// Satu giliran AI; kemajuan agent diteruskan ke `tx`.
-fn ask_ai(
+pub(crate) fn ask_ai<T>(
     backend: &ChatBackend,
     system: String,
     user: String,
     workspace: ChatWorkspace,
-    tx: &mpsc::Sender<ScanEvent>,
+    tx: &mpsc::Sender<RepoJobEvent<T>>,
     cancel: &AtomicBool,
+) -> Result<String, RepoScanError> {
+    ask_ai_with_offset(backend, system, user, workspace, tx, cancel, 100)
+}
+
+/// Seperti [`ask_ai`], dengan nomor langkah agent digeser `step_offset`.
+/// Giliran AI yang berjalan paralel memakai offset berbeda supaya langkah
+/// agent-nya tidak saling menimpa di daftar kemajuan.
+pub(crate) fn ask_ai_with_offset<T>(
+    backend: &ChatBackend,
+    system: String,
+    user: String,
+    workspace: ChatWorkspace,
+    tx: &mpsc::Sender<RepoJobEvent<T>>,
+    cancel: &AtomicBool,
+    step_offset: u64,
 ) -> Result<String, RepoScanError> {
     let (events, handle) =
         crate::ai_assistant::start_chat_in(backend, system, user, None, workspace)
@@ -1504,7 +1598,7 @@ fn ask_ai(
                 text.push_str(&d);
                 if last_ping.elapsed() >= Duration::from_secs(1) {
                     last_ping = Instant::now();
-                    let _ = tx.send(ScanEvent::Activity);
+                    let _ = tx.send(RepoJobEvent::Activity);
                 }
             }
             Ok(AgentEvent::Done { text: full, .. }) => {
@@ -1513,8 +1607,8 @@ fn ask_ai(
             Ok(AgentEvent::Error(e)) => return Err(RepoScanError::Ai(e)),
             Ok(AgentEvent::Progress(mut p)) => {
                 // Nomor step agent digeser supaya tidak bentrok dengan step pemindai.
-                p.step_index = p.step_index.map(|i| i + 100);
-                let _ = tx.send(ScanEvent::Progress(p));
+                p.step_index = p.step_index.map(|i| i + step_offset);
+                let _ = tx.send(RepoJobEvent::Progress(p));
             }
             Ok(AgentEvent::ToolUse(_) | AgentEvent::Session(_)) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -2100,5 +2194,55 @@ mod tests {
         assert!(s[0].confidence < 0.5);
         assert!(s[1].confidence > 0.8);
         assert!(s.iter().all(|x| !x.from_ai));
+    }
+
+    #[test]
+    fn repo_key_matches_equivalent_urls() {
+        let expected = Some("github.com/org/app".to_string());
+        for url in [
+            "https://github.com/Org/App.git",
+            "https://github.com/org/app/",
+            "http://github.com/org/app",
+            "git@github.com:org/app.git",
+            "ssh://git@github.com:22/org/app",
+            "https://token@github.com/org/app.git",
+            "  git@GitHub.com:Org/App  ",
+        ] {
+            assert_eq!(repo_key(url), expected, "{url}");
+        }
+        assert_eq!(
+            repo_key("https://gitlab.example.com/group/sub/app.git"),
+            Some("gitlab.example.com/group/sub/app".to_string())
+        );
+        assert_eq!(
+            repo_key("file:///srv/git/app.git"),
+            Some("file:/srv/git/app".to_string())
+        );
+        assert_eq!(repo_key(""), None);
+        assert_eq!(repo_key("/local/folder"), None);
+        assert_eq!(repo_key("https://github.com"), None);
+        assert_ne!(
+            repo_key("git@github.com:org/app"),
+            repo_key("git@github.com:org/api")
+        );
+    }
+
+    #[test]
+    fn repo_key_for_prefers_url_then_folder_remote() {
+        let repo = TempRepo::new("key");
+        repo.write(
+            ".git/config",
+            "[remote \"origin\"]\n\turl = git@github.com:org/from-folder.git\n",
+        );
+        let path = repo.0.to_string_lossy().to_string();
+        assert_eq!(
+            repo_key_for(Some("https://github.com/org/app"), Some(&path)),
+            Some("github.com/org/app".to_string())
+        );
+        assert_eq!(
+            repo_key_for(None, Some(&path)),
+            Some("github.com/org/from-folder".to_string())
+        );
+        assert_eq!(repo_key_for(Some(" "), None), None);
     }
 }

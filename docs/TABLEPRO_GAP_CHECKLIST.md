@@ -250,22 +250,61 @@ sungguhan maupun notifikasi OS di tiap platform.
 
 ## K. AI & MCP
 
-- [ ] **K1. MCP permission level Ask / Edit / Agent per koneksi** · P1 · M · Sebagian
-  Saat ini read-only total. `src/agent/mcp.rs`, `src/agent/classify.rs`.
-- [ ] **K2. MCP scoped token + pairing PKCE + revocation + activity log** · P2 · L · Belum
-  Diperlukan bila transport HTTP/SSE ditambahkan; stdio sekarang tanpa token.
-- [ ] **K3. MCP resources (connections, schema, tables, history) + prompts (8 template) + subscriptions** · P2 · M · Belum
-- [ ] **K4. Per-connection allowlist untuk klien MCP + "Forget"** · P3 · S · Belum
-- [ ] **K5. Outside MCP servers: AI chat memanggil MCP eksternal dengan allowlist** · P3 · L · Belum
-- [ ] **K6. Agent Mode: satu sesi AI kelola window + session history** · P3 · L · Sebagian
-  Live edit tab sudah ada.
-- [ ] **K7. Inline ghost-text suggestions di editor** · P2 · M · Belum
-- [ ] **K8. Review with AI (dari editor bar / context menu)** · P3 · S · Belum
-- [ ] **K9. Fix failed query sebagai diff** · P3 · S · Belum
-- [ ] **K10. Provider tambahan: Gemini API, xAI, OpenRouter, Ollama, llama.cpp, MLX** · P3 · S · Sebagian
-  OpenAI-compatible endpoint sudah mencakup sebagian (Ollama, OpenRouter).
+Status 2026-09-30: K1–K4 dan K11 diverifikasi dengan unit test, clippy, dan smoke test stdio
+`tabular mcp` terhadap data dir sementara berisi koneksi SQLite (tool, resources, prompts,
+subscribe, allowlist, blocked, alur persetujuan disetujui/ditolak lewat antrean). Dialog GUI
+persetujuan dan jendela Agent Access belum diklik manual; PostgreSQL/MySQL/SQL Server belum
+diuji melawan server sungguhan; elicitation belum dicoba dengan klien yang mendukungnya.
+
+- [x] **K1. MCP permission level Ask / Edit / Agent per koneksi** · P1 · M · Selesai
+  Level Blocked / Read only (default) / Ask / Edit / Agent per koneksi (tabel
+  `agent_connection_access`, lokal). Tool `execute_statement`; statement berisiko (tanpa WHERE,
+  DROP/TRUNCATE, apa pun di Production, admin) selalu minta persetujuan. Persetujuan lewat
+  dialog GUI (antrean `agent_approvals`, dipantau tiap detik, notifikasi OS), fallback
+  elicitation MCP bila GUI tidak berjalan, kedaluwarsa 3 menit. Classifier kini menolak
+  SELECT yang memanggil fungsi ber-efek samping (`pg_terminate_backend`, `nextval`, `dblink`,
+  `load_extension`, ...). `src/agent/{access,ops,mcp}.rs`, `src/window_egui/agent_access_ui.rs`.
+- [ ] **K2. MCP scoped token + pairing PKCE + revocation + activity log** · P2 · L · Sebagian
+  Activity log selesai: setiap tool/resource/prompt dicatat (klien, koneksi, jenis statement,
+  hasil, durasi; statement sebagai SHA-256), retensi 90 hari, tab Activity Log + Clear.
+  Token/pairing/revocation tidak dikerjakan karena transport masih stdio saja (tanpa endpoint
+  HTTP/SSE, token tidak punya arti).
+- [x] **K3. MCP resources (connections, schema, tables, history) + prompts (8 template) + subscriptions** · P2 · M · Selesai
+  8 resource `tabular://` (7 template), 8 prompt dirender dari skema live, subscription
+  `schema` (legacy `resources/subscribe` dan `subscriptions/listen`) dengan sidik cache tiap
+  20 dtk + `resources/list_changed`. `src/agent/mcp_resources.rs`.
+- [x] **K4. Per-connection allowlist untuk klien MCP + "Forget"** · P3 · S · Selesai
+  Klien dicatat dari `clientInfo.name` (`agent_clients`); allowlist per koneksi (All / pilih
+  klien); Forget menghapus klien dari daftar dan semua allowlist. Nama klien tidak
+  terverifikasi, jadi ini pagar kenyamanan, bukan batas keamanan (didokumentasikan).
+- [x] **K5. Outside MCP servers: AI chat memanggil MCP eksternal dengan allowlist** · P3 · L · Selesai (stdio)
+  Settings → AI Assistant → MCP Servers: tambah/edit/hapus server stdio (command, args, env; env rahasia
+  ke secret store), "Test / List tools", allowlist per tool (default mati) + "Ask first" (default nyala).
+  Chat HTTP API mengirim tool native OpenAI/Anthropic/Gemini (`<server>__<tool>`), kartu Approve/Deny,
+  hasil 20 KB, timeout 60 s, maks 8 ronde. `ai_tool_calling`, `outside_mcp`, `outside_mcp_client`,
+  `ai_tool_chat`, `window_egui/ai_mcp_ui.rs`. Client rmcp diuji terhadap `tabular mcp` (list + call);
+  loop tool calling ke provider sungguhan dan kartu approval di GUI belum diuji manual. HTTP/SSE MCP belum.
+- [x] **K6. Agent Mode: satu sesi AI kelola window + session history** · P3 · L · Selesai (history)
+  Live edit tab sudah ada. Riwayat sesi: tombol History di header panel AI (buka, rename, hapus,
+  Clear all), simpan otomatis tiap giliran selesai, id sesi CLI native ikut dipulihkan, maks 200 sesi,
+  tabel lokal `ai_chat_sessions` (`src/ai_chat_history.rs`, `window_egui/ai_history_ui.rs`). Storage diuji
+  dengan SQLite in-memory; UI dan resume CLI setelah reopen belum diuji manual.
+- [x] **K7. Inline ghost-text suggestions di editor** · P2 · M · Selesai
+  Preferences → AI Assistant → "Inline AI suggestions" (default mati). Debounce 600 ms, satu
+  request berjalan, respons basi dibuang; Tab terima, Cmd/Ctrl+→ per kata, Esc tutup. Hanya
+  provider HTTP (bukan CLI agent). Baris pertama digambar inline, sisanya "+N lines".
+  `src/editor_ghost.rs`. Render dan tombol belum diuji manual.
+- [x] **K8. Review with AI (dari editor bar / context menu)** · P3 · S · Selesai
+  Tombol di floating bar editor + context menu editor; `ai_query_fix::review_prompt`, `editor::ai_review_sql`.
+- [x] **K9. Fix failed query sebagai diff** · P3 · S · Selesai
+  Tombol "Fix with AI" di kartu error & toast error; diff baris LCS di `src/window_egui/ai_fix.rs`.
+- [x] **K10. Provider tambahan: Gemini API, xAI, OpenRouter, Ollama, llama.cpp, MLX** · P3 · S · Selesai
+  Gemini native (`generateContent`), sisanya OpenAI-compatible; provider lokal tanpa API key.
 - [ ] **K11. Perluasan MCP tools ke 40+ (write/DDL terkontrol, backup, kill, dsb.)** · P3 · L · Sebagian
-  Bergantung K1.
+  16 → 25 tool: `execute_statement` (write/DDL terkontrol K1), `cancel_query` (selalu
+  persetujuan), `list_running_queries`, `list_tables`, `describe_table`, `get_table_ddl`,
+  `sample_rows`, `count_rows`, `get_agent_permissions`. Belum: backup/restore, export,
+  user/role management, dan tool lain untuk mencapai 40+.
 
 ## L. Engine database baru
 
@@ -354,6 +393,8 @@ Windows, xdg, iPad Split View) belum diuji manual di perangkat/bundle yang ditan
 
 Windows/Linux native · HTTP client + AI + code export · E2E zero-knowledge sync lintas platform
 dengan teams dan CRDT collab · Diagram dengan groups, notes, repo linking, Mermaid, LOD ·
+Folder HTTP API ber-repository: generate endpoint (AI), badge endpoint per tabel di diagram,
+integration test AI lintas repo ·
 Obsidian vault sebagai knowledge · Multi CLI agent chat (agy, claude, gemini) · Wasm plugin
 exporter/ORM generator · Query data-flow diagram · Index check badge · Semantic history search ·
 AST query optimizer · Two-way schema sync.

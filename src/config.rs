@@ -77,6 +77,9 @@ impl std::str::FromStr for UiModePreference {
     }
 }
 
+/// Penyedia model untuk backend HTTP API. Nilai persist lewat [`AiProvider::as_str`]
+/// / `FromStr` (preferensi) dan nama varian (serde); varian baru hanya boleh
+/// ditambahkan, jangan mengganti nama yang sudah ada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AiProvider {
     #[default]
@@ -85,9 +88,47 @@ pub enum AiProvider {
     Groq,
     GitHub,
     Custom,
+    /// Google Gemini API native (`generateContent`).
+    Gemini,
+    /// xAI (Grok), OpenAI-compatible.
+    XAi,
+    /// OpenRouter, OpenAI-compatible dengan header atribusi aplikasi.
+    OpenRouter,
+    /// Ollama lokal (endpoint OpenAI-compatible `/v1`), tanpa API key.
+    Ollama,
+    /// `llama-server` dari llama.cpp, tanpa API key.
+    LlamaCpp,
+    /// `mlx_lm.server` (Apple MLX), tanpa API key.
+    Mlx,
+}
+
+/// Format wire request yang dipakai sebuah provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiApiStyle {
+    /// `POST {base}/chat/completions` dengan bearer token (opsional).
+    OpenAiCompatible,
+    /// `POST {base}/messages` (Anthropic Messages API).
+    Anthropic,
+    /// `POST {base}/models/{model}:generateContent` (Gemini API).
+    Gemini,
 }
 
 impl AiProvider {
+    /// Urutan tampil di Settings.
+    pub const ALL: [AiProvider; 11] = [
+        AiProvider::OpenAI,
+        AiProvider::Anthropic,
+        AiProvider::Gemini,
+        AiProvider::XAi,
+        AiProvider::Groq,
+        AiProvider::OpenRouter,
+        AiProvider::GitHub,
+        AiProvider::Ollama,
+        AiProvider::LlamaCpp,
+        AiProvider::Mlx,
+        AiProvider::Custom,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             AiProvider::OpenAI => "OPENAI",
@@ -95,6 +136,12 @@ impl AiProvider {
             AiProvider::Groq => "GROQ",
             AiProvider::GitHub => "GITHUB",
             AiProvider::Custom => "CUSTOM",
+            AiProvider::Gemini => "GEMINI",
+            AiProvider::XAi => "XAI",
+            AiProvider::OpenRouter => "OPENROUTER",
+            AiProvider::Ollama => "OLLAMA",
+            AiProvider::LlamaCpp => "LLAMACPP",
+            AiProvider::Mlx => "MLX",
         }
     }
     pub fn display_name(self) -> &'static str {
@@ -104,7 +151,33 @@ impl AiProvider {
             AiProvider::Groq => "Groq",
             AiProvider::GitHub => "GitHub (Copilot/Models)",
             AiProvider::Custom => "Custom (OpenAI-compatible)",
+            AiProvider::Gemini => "Google Gemini",
+            AiProvider::XAi => "xAI (Grok)",
+            AiProvider::OpenRouter => "OpenRouter",
+            AiProvider::Ollama => "Ollama (local)",
+            AiProvider::LlamaCpp => "llama.cpp (local)",
+            AiProvider::Mlx => "MLX (local)",
         }
+    }
+    /// Format request yang dipakai provider ini.
+    pub fn api_style(self) -> AiApiStyle {
+        match self {
+            AiProvider::Anthropic => AiApiStyle::Anthropic,
+            AiProvider::Gemini => AiApiStyle::Gemini,
+            _ => AiApiStyle::OpenAiCompatible,
+        }
+    }
+    /// Server model berjalan di mesin user (default ke localhost).
+    pub fn is_local(self) -> bool {
+        matches!(
+            self,
+            AiProvider::Ollama | AiProvider::LlamaCpp | AiProvider::Mlx
+        )
+    }
+    /// Backend tidak bisa dipakai tanpa API key. Provider lokal dan endpoint
+    /// custom (mis. Ollama/LM Studio di jaringan sendiri) boleh tanpa key.
+    pub fn requires_api_key(self) -> bool {
+        !(self.is_local() || self == AiProvider::Custom)
     }
     pub fn default_model(self) -> &'static str {
         match self {
@@ -113,6 +186,13 @@ impl AiProvider {
             AiProvider::Groq => "llama3-70b-8192",
             AiProvider::GitHub => "gpt-4o-mini",
             AiProvider::Custom => "gpt-4o-mini",
+            AiProvider::Gemini => "gemini-2.5-flash",
+            AiProvider::XAi => "grok-3-mini",
+            AiProvider::OpenRouter => "openai/gpt-4o-mini",
+            AiProvider::Ollama => "llama3.2",
+            // llama-server melayani satu model yang dimuat; nama diabaikan.
+            AiProvider::LlamaCpp => "default",
+            AiProvider::Mlx => "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
         }
     }
     pub fn preset_models(self) -> &'static [&'static str] {
@@ -162,6 +242,35 @@ impl AiProvider {
                 "mistral",
                 "deepseek-coder",
             ],
+            AiProvider::Gemini => &[
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash",
+            ],
+            AiProvider::XAi => &["grok-3-mini", "grok-3", "grok-4", "grok-code-fast-1"],
+            AiProvider::OpenRouter => &[
+                "openai/gpt-4o-mini",
+                "anthropic/claude-sonnet-4",
+                "google/gemini-2.5-flash",
+                "x-ai/grok-3-mini",
+                "meta-llama/llama-3.3-70b-instruct",
+                "deepseek/deepseek-chat",
+            ],
+            AiProvider::Ollama => &[
+                "llama3.2",
+                "llama3.1",
+                "qwen2.5-coder",
+                "deepseek-coder-v2",
+                "mistral",
+                "gemma3",
+            ],
+            AiProvider::LlamaCpp => &["default"],
+            AiProvider::Mlx => &[
+                "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "mlx-community/Llama-3.2-3B-Instruct-4bit",
+                "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+            ],
         }
     }
     pub fn default_base_url(self) -> &'static str {
@@ -171,6 +280,12 @@ impl AiProvider {
             AiProvider::Groq => "https://api.groq.com/openai/v1",
             AiProvider::GitHub => "https://models.inference.ai.azure.com",
             AiProvider::Custom => "https://api.openai.com/v1",
+            AiProvider::Gemini => "https://generativelanguage.googleapis.com/v1beta",
+            AiProvider::XAi => "https://api.x.ai/v1",
+            AiProvider::OpenRouter => "https://openrouter.ai/api/v1",
+            AiProvider::Ollama => "http://localhost:11434/v1",
+            AiProvider::LlamaCpp => "http://localhost:8080/v1",
+            AiProvider::Mlx => "http://localhost:8080/v1",
         }
     }
     pub fn api_key_hint(self) -> &'static str {
@@ -181,7 +296,13 @@ impl AiProvider {
             AiProvider::OpenAI => "sk-… (platform.openai.com/api-keys)",
             AiProvider::Anthropic => "sk-ant-… (console.anthropic.com/settings/keys)",
             AiProvider::Groq => "gsk_… (console.groq.com/keys)",
-            AiProvider::Custom => "API key for your custom endpoint",
+            AiProvider::Custom => "API key for your custom endpoint (optional)",
+            AiProvider::Gemini => "AIza… (aistudio.google.com/apikey)",
+            AiProvider::XAi => "xai-… (console.x.ai)",
+            AiProvider::OpenRouter => "sk-or-… (openrouter.ai/keys)",
+            AiProvider::Ollama | AiProvider::LlamaCpp | AiProvider::Mlx => {
+                "Not required for a local server"
+            }
         }
     }
 }
@@ -194,6 +315,12 @@ impl std::str::FromStr for AiProvider {
             "GROQ" => AiProvider::Groq,
             "GITHUB" => AiProvider::GitHub,
             "CUSTOM" => AiProvider::Custom,
+            "GEMINI" => AiProvider::Gemini,
+            "XAI" => AiProvider::XAi,
+            "OPENROUTER" => AiProvider::OpenRouter,
+            "OLLAMA" => AiProvider::Ollama,
+            "LLAMACPP" => AiProvider::LlamaCpp,
+            "MLX" => AiProvider::Mlx,
             _ => AiProvider::OpenAI,
         })
     }
@@ -502,6 +629,10 @@ pub struct AppPreferences {
     /// Izinkan AI menulis catatan baru ke `<vault>/Tabular Memory/`.
     #[serde(default)]
     pub ai_obsidian_allow_write: bool,
+    /// Saran AI inline (ghost text) di editor SQL; default mati karena mengirim
+    /// teks editor ke provider AI.
+    #[serde(default)]
+    pub ai_inline_suggestions: bool,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
@@ -576,6 +707,7 @@ impl Default for AppPreferences {
             ai_obsidian_vault_path: String::new(),
             ai_obsidian_enabled: false,
             ai_obsidian_allow_write: false,
+            ai_inline_suggestions: false,
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
             query_timeout_secs: 0,
@@ -669,6 +801,7 @@ pub(crate) fn apply_kv_pair(
         "ai_obsidian_vault_path" => prefs.ai_obsidian_vault_path = v.to_string(),
         "ai_obsidian_enabled" => prefs.ai_obsidian_enabled = v == "1",
         "ai_obsidian_allow_write" => prefs.ai_obsidian_allow_write = v == "1",
+        "ai_inline_suggestions" => prefs.ai_inline_suggestions = v == "1",
         "redis_browser_auto_refresh_seconds" => {
             prefs.redis_browser_auto_refresh_seconds = v
                 .parse()
@@ -841,6 +974,7 @@ impl ConfigStore {
                 ai_obsidian_vault_path: String::new(),
                 ai_obsidian_enabled: false,
                 ai_obsidian_allow_write: false,
+                ai_inline_suggestions: false,
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
@@ -966,7 +1100,7 @@ impl ConfigStore {
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
             let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
-            let entries: [(&str, &str); 30] = [
+            let entries: [(&str, &str); 31] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1022,6 +1156,14 @@ impl ConfigStore {
                 (
                     "ai_obsidian_allow_write",
                     if prefs.ai_obsidian_allow_write {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                ),
+                (
+                    "ai_inline_suggestions",
+                    if prefs.ai_inline_suggestions {
                         "1"
                     } else {
                         "0"
@@ -1405,6 +1547,57 @@ pub fn load_fast_preferences() -> AppPreferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_provider_persisted_values_round_trip() {
+        // Nilai lama harus tetap terbaca sama persis.
+        for (raw, p) in [
+            ("OPENAI", AiProvider::OpenAI),
+            ("ANTHROPIC", AiProvider::Anthropic),
+            ("GROQ", AiProvider::Groq),
+            ("GITHUB", AiProvider::GitHub),
+            ("CUSTOM", AiProvider::Custom),
+        ] {
+            assert_eq!(raw.parse::<AiProvider>(), Ok(p));
+        }
+        for p in AiProvider::ALL {
+            assert_eq!(p.as_str().parse::<AiProvider>(), Ok(p));
+            let json = serde_json::to_string(&p).expect("serialize provider");
+            let back: AiProvider = serde_json::from_str(&json).expect("deserialize provider");
+            assert_eq!(back, p);
+            assert!(p.preset_models().contains(&p.default_model()));
+            assert!(p.default_base_url().starts_with("http"));
+        }
+        assert_eq!("UNKNOWN".parse::<AiProvider>(), Ok(AiProvider::OpenAI));
+    }
+
+    #[test]
+    fn ai_provider_defaults_for_new_providers() {
+        assert_eq!(AiProvider::Gemini.api_style(), AiApiStyle::Gemini);
+        assert_eq!(AiProvider::Anthropic.api_style(), AiApiStyle::Anthropic);
+        for p in [
+            AiProvider::XAi,
+            AiProvider::OpenRouter,
+            AiProvider::Ollama,
+            AiProvider::LlamaCpp,
+            AiProvider::Mlx,
+        ] {
+            assert_eq!(p.api_style(), AiApiStyle::OpenAiCompatible);
+        }
+        for p in [AiProvider::Ollama, AiProvider::LlamaCpp, AiProvider::Mlx] {
+            assert!(p.is_local());
+            assert!(!p.requires_api_key());
+            assert!(p.default_base_url().starts_with("http://localhost:"));
+        }
+        assert!(!AiProvider::Custom.requires_api_key());
+        assert!(AiProvider::Gemini.requires_api_key());
+        assert!(AiProvider::OpenRouter.requires_api_key());
+        assert_eq!(AiProvider::XAi.default_base_url(), "https://api.x.ai/v1");
+        assert_eq!(
+            AiProvider::OpenRouter.default_base_url(),
+            "https://openrouter.ai/api/v1"
+        );
+    }
 
     #[test]
     fn obsidian_settings_read_from_prefs_json_mirror() {

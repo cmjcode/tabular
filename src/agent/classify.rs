@@ -269,8 +269,54 @@ pub fn classify_sql_statement(sql: &str) -> StatementKind {
     classify_from(&keywords, 0)
 }
 
+/// Fungsi yang bisa dipanggil dari SELECT tetapi mengubah state server atau
+/// data (mengakhiri sesi, mengubah sequence, menulis file, eksekusi remote).
+/// SELECT yang memanggilnya dianggap perintah admin, bukan read.
+const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
+    "PG_TERMINATE_BACKEND",
+    "PG_CANCEL_BACKEND",
+    "PG_RELOAD_CONF",
+    "PG_ROTATE_LOGFILE",
+    "PG_PROMOTE",
+    "PG_CREATE_RESTORE_POINT",
+    "PG_SWITCH_WAL",
+    "PG_ADVISORY_LOCK",
+    "PG_ADVISORY_XACT_LOCK",
+    "PG_TRY_ADVISORY_LOCK",
+    "PG_FILE_WRITE",
+    "PG_FILE_UNLINK",
+    "PG_FILE_RENAME",
+    "PG_CREATE_LOGICAL_REPLICATION_SLOT",
+    "PG_CREATE_PHYSICAL_REPLICATION_SLOT",
+    "PG_DROP_REPLICATION_SLOT",
+    "SET_CONFIG",
+    "SETVAL",
+    "NEXTVAL",
+    "LO_IMPORT",
+    "LO_EXPORT",
+    "LO_UNLINK",
+    "LO_CREATE",
+    "DBLINK_EXEC",
+    "DBLINK",
+    "GET_LOCK",
+    "RELEASE_LOCK",
+    "RELEASE_ALL_LOCKS",
+    "SYS_EXEC",
+    "SYS_EVAL",
+    "XP_CMDSHELL",
+    "OPENROWSET",
+    "OPENQUERY",
+    "LOAD_EXTENSION",
+];
+
 fn classify_from(keywords: &[Keyword], start_idx: usize) -> StatementKind {
     let start = &keywords[start_idx];
+    if keywords[start_idx..]
+        .iter()
+        .any(|k| SIDE_EFFECT_FUNCTIONS.contains(&k.word.as_str()))
+    {
+        return StatementKind::Admin;
+    }
     match kind_of_starter(&start.word) {
         Some(StatementKind::Read) => {
             // SELECT ... INTO / CTE yang membungkus DML tetap dianggap menulis.
@@ -596,5 +642,26 @@ mod tests {
         assert!(is_read_only(&DatabaseType::Redis, "GET a\nHGETALL b"));
         assert!(!is_read_only(&DatabaseType::Redis, "GET a\nDEL b"));
         assert!(!is_read_only(&DatabaseType::MongoDB, "db.users.find({})"));
+    }
+
+    #[test]
+    fn side_effect_functions_are_not_reads() {
+        assert_eq!(
+            classify_sql_statement("SELECT pg_terminate_backend(123)"),
+            StatementKind::Admin
+        );
+        assert_eq!(
+            classify_sql_statement("select nextval('orders_id_seq')"),
+            StatementKind::Admin
+        );
+        assert_eq!(
+            classify_sql_statement("SELECT * FROM dblink('x', 'DELETE FROM t') AS r(a int)"),
+            StatementKind::Admin
+        );
+        // Nama fungsi di dalam literal tidak dihitung.
+        assert_eq!(
+            classify_sql_statement("SELECT 'pg_terminate_backend' AS name"),
+            StatementKind::Read
+        );
     }
 }

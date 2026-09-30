@@ -19,13 +19,17 @@
 //! dikompilasi di semua target supaya tipe state UI seragam; di mobile backend
 //! CLI disembunyikan dari pengaturan.
 
+pub mod access;
 pub mod classify;
 pub mod core;
 pub mod harness;
 pub mod knowledge;
 pub mod live_edit;
+pub mod ops;
 
 #[cfg(not(target_os = "ios"))]
 pub mod cli;
 #[cfg(not(target_os = "ios"))]
 pub mod mcp;
+#[cfg(not(target_os = "ios"))]
+pub mod mcp_resources;

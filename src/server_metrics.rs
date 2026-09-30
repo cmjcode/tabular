@@ -69,6 +69,9 @@ pub struct SlowStatement {
     pub calls: f64,
     pub avg_ms: f64,
     pub total_ms: f64,
+    /// Waktu eksekusi terakhir menurut jam server (`YYYY-MM-DD HH:MM:SS`);
+    /// `None` bila engine tidak mencatatnya (PostgreSQL).
+    pub last_seen: Option<String>,
 }
 
 /// Hasil fetch latar belakang yang dikirim ke UI.
@@ -205,13 +208,15 @@ UNION ALL
 SELECT 'max_connections', CAST(@@MAX_CONNECTIONS AS VARCHAR(40))";
 
 const PG_SLOW_SQL: &str = "\
-SELECT query, CAST(calls AS TEXT), CAST(mean_exec_time AS TEXT), CAST(total_exec_time AS TEXT)
+SELECT query, CAST(calls AS TEXT), CAST(mean_exec_time AS TEXT), CAST(total_exec_time AS TEXT),
+       CAST(NULL AS TEXT)
 FROM pg_stat_statements
 WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
 ORDER BY mean_exec_time DESC LIMIT 25";
 /// PostgreSQL < 13 memakai nama kolom lama.
 const PG_SLOW_SQL_LEGACY: &str = "\
-SELECT query, CAST(calls AS TEXT), CAST(mean_time AS TEXT), CAST(total_time AS TEXT)
+SELECT query, CAST(calls AS TEXT), CAST(mean_time AS TEXT), CAST(total_time AS TEXT),
+       CAST(NULL AS TEXT)
 FROM pg_stat_statements
 WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
 ORDER BY mean_time DESC LIMIT 25";
@@ -219,7 +224,8 @@ ORDER BY mean_time DESC LIMIT 25";
 /// Timer performance_schema dalam picodetik; dibagi 1e9 menjadi milidetik.
 const MYSQL_SLOW_SQL: &str = "\
 SELECT CAST(DIGEST_TEXT AS CHAR), CAST(COUNT_STAR AS CHAR),
-       CAST(AVG_TIMER_WAIT / 1000000000 AS CHAR), CAST(SUM_TIMER_WAIT / 1000000000 AS CHAR)
+       CAST(AVG_TIMER_WAIT / 1000000000 AS CHAR), CAST(SUM_TIMER_WAIT / 1000000000 AS CHAR),
+       CAST(LAST_SEEN AS CHAR)
 FROM performance_schema.events_statements_summary_by_digest
 WHERE DIGEST_TEXT IS NOT NULL
 ORDER BY AVG_TIMER_WAIT DESC LIMIT 25";
@@ -231,7 +237,8 @@ SELECT TOP 25
       ELSE qs.statement_end_offset END - qs.statement_start_offset) / 2) + 1) AS NVARCHAR(4000)),
   CAST(qs.execution_count AS VARCHAR(40)),
   CAST(qs.total_elapsed_time / 1000.0 / qs.execution_count AS VARCHAR(40)),
-  CAST(qs.total_elapsed_time / 1000.0 AS VARCHAR(40))
+  CAST(qs.total_elapsed_time / 1000.0 AS VARCHAR(40)),
+  CONVERT(VARCHAR(19), qs.last_execution_time, 120)
 FROM sys.dm_exec_query_stats qs
 CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
 ORDER BY qs.total_elapsed_time / qs.execution_count DESC";
@@ -323,7 +330,7 @@ pub async fn fetch_counters(
     Ok(counters_from_pairs(db_type, &pairs(rows)))
 }
 
-/// Petakan baris (query, calls, avg_ms, total_ms) ke [`SlowStatement`].
+/// Petakan baris (query, calls, avg_ms, total_ms, last_seen) ke [`SlowStatement`].
 pub fn slow_from_rows(rows: Vec<Vec<String>>) -> Vec<SlowStatement> {
     rows.into_iter()
         .filter(|r| r.len() >= 4)
@@ -332,6 +339,10 @@ pub fn slow_from_rows(rows: Vec<Vec<String>>) -> Vec<SlowStatement> {
             calls: num(&r[1]).unwrap_or(0.0),
             avg_ms: num(&r[2]).unwrap_or(0.0),
             total_ms: num(&r[3]).unwrap_or(0.0),
+            last_seen: r
+                .get(4)
+                .map(|v| v.trim().chars().take(19).collect::<String>())
+                .filter(|v| !v.is_empty()),
         })
         .collect()
 }
@@ -546,11 +557,21 @@ mod tests {
             "12".into(),
             "3.5".into(),
             "42".into(),
+            "2026-09-30 10:11:12.345678".into(),
         ]];
         let s = slow_from_rows(rows);
         assert_eq!(s[0].query, "SELECT * FROM t");
         assert_eq!(s[0].calls, 12.0);
         assert_eq!(s[0].avg_ms, 3.5);
+        assert_eq!(s[0].last_seen.as_deref(), Some("2026-09-30 10:11:12"));
+        let no_time = slow_from_rows(vec![vec![
+            "q".into(),
+            "1".into(),
+            "1".into(),
+            "1".into(),
+            String::new(),
+        ]]);
+        assert_eq!(no_time[0].last_seen, None);
     }
 
     #[test]

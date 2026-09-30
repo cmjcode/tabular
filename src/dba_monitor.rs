@@ -1615,36 +1615,72 @@ fn render_dashboard(
         .id_salt("dba_dash_slow")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // Kolom angka lebar tetap; kolom Statement mengisi sisa lebar sehingga
+            // tabel memenuhi panel.
+            const COL_CALLS: f32 = 80.0;
+            const COL_AVG: f32 = 80.0;
+            const COL_TOTAL: f32 = 90.0;
+            const COL_LAST: f32 = 150.0;
+            const COL_ACTION: f32 = 56.0;
+            const GAP: f32 = 14.0;
+            let fixed = COL_CALLS + COL_AVG + COL_TOTAL + COL_LAST + COL_ACTION + GAP * 5.0;
+            let stmt_w = (ui.available_width() - fixed).max(200.0);
+            let cell = |ui: &mut egui::Ui, w: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(w);
+                        add(ui);
+                    },
+                );
+            };
             egui::Grid::new("dba_dash_slow_grid")
                 .striped(true)
-                .spacing([14.0, 4.0])
+                .spacing([GAP, 4.0])
                 .show(ui, |ui| {
-                    for h in ["Statement", "Calls", "Avg", "Total", ""] {
-                        ui.label(egui::RichText::new(h).strong());
+                    let widths = [stmt_w, COL_CALLS, COL_AVG, COL_TOTAL, COL_LAST, COL_ACTION];
+                    let headers = ["Statement", "Calls", "Avg", "Total", "Last run", ""];
+                    for (h, w) in headers.iter().zip(widths) {
+                        cell(ui, w, &mut |ui| {
+                            let resp = ui.label(egui::RichText::new(*h).strong());
+                            if *h == "Last run" {
+                                resp.on_hover_text(
+                                    "Last execution in server time. PostgreSQL (pg_stat_statements) does not record it.",
+                                );
+                            }
+                        });
                     }
                     ui.end_row();
                     for s in &state.dashboard.slow {
-                        let short: String = if s.query.chars().count() > 90 {
-                            s.query
-                                .chars()
-                                .take(89)
-                                .chain(std::iter::once('…'))
-                                .collect()
-                        } else {
-                            s.query.clone()
-                        };
-                        ui.label(
-                            egui::RichText::new(short)
-                                .family(egui::FontFamily::Monospace)
-                                .size(12.0),
-                        )
-                        .on_hover_text(&s.query);
-                        ui.label(format!("{:.0}", s.calls));
-                        ui.label(crate::query_stats::format_ms(s.avg_ms));
-                        ui.label(crate::query_stats::format_ms(s.total_ms));
-                        if ui.small_button("Open").clicked() {
-                            *to_execute = Some(DbaAction::OpenInSqlTab(s.query.clone()));
-                        }
+                        cell(ui, stmt_w, &mut |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&s.query)
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(12.0),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&s.query);
+                        });
+                        cell(ui, COL_CALLS, &mut |ui| {
+                            ui.label(format!("{:.0}", s.calls));
+                        });
+                        cell(ui, COL_AVG, &mut |ui| {
+                            ui.label(crate::query_stats::format_ms(s.avg_ms));
+                        });
+                        cell(ui, COL_TOTAL, &mut |ui| {
+                            ui.label(crate::query_stats::format_ms(s.total_ms));
+                        });
+                        cell(ui, COL_LAST, &mut |ui| {
+                            ui.label(s.last_seen.as_deref().unwrap_or("—"));
+                        });
+                        cell(ui, COL_ACTION, &mut |ui| {
+                            if ui.small_button("Open").clicked() {
+                                *to_execute = Some(DbaAction::OpenInSqlTab(s.query.clone()));
+                            }
+                        });
                         ui.end_row();
                     }
                 });

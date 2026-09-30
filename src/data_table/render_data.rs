@@ -2578,6 +2578,19 @@ fn render_error_card(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
                 {
                     ui.ctx().copy_text(tabular.query_message.clone());
                 }
+                if crate::window_egui::ai_fix::can_fix(tabular)
+                    && ui
+                        .add(crate::window_egui::style::btn_secondary(format!(
+                            "{} Fix with AI",
+                            egui_icons::icons::ICON_AUTO_FIX_HIGH.codepoint
+                        )))
+                        .on_hover_text(
+                            "Ask AI for a corrected statement and review it as a diff before applying",
+                        )
+                        .clicked()
+                {
+                    crate::window_egui::ai_fix::start_fix(tabular);
+                }
                 if tabular.error_location_in_editor().is_some()
                     && ui
                         .add(crate::window_egui::style::btn_primary_ctx(

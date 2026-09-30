@@ -485,6 +485,9 @@ fn unpack_remote_request_with(
         api_key_value: String::new(),
         api_key_in_header: true,
         description: String::new(),
+        tables: Vec::new(),
+        source: None,
+        route: None,
     };
 
     if let Some(h_json) = &remote.headers_json
@@ -683,6 +686,7 @@ fn navigate_or_create_folders<'a>(
                 parent_folder_id: None,
                 requests: Vec::new(),
                 children: Vec::new(),
+                repo_url: None,
             });
             current_folders.len() - 1
         };

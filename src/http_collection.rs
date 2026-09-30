@@ -50,6 +50,17 @@ pub struct SavedRequest {
     pub api_key_in_header: bool,
     #[serde(default)]
     pub description: String,
+    /// Tabel database yang dibaca/ditulis endpoint ini (hasil generate dari
+    /// repository). Dipakai untuk menautkan endpoint ke tabel di diagram.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
+    /// Lokasi definisi route di repository (`path/file:line`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Template path route (`/users/{id}`) bila request di-generate dari
+    /// repository; `url` bisa berisi contoh nilai parameter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 /// Extracts the endpoint path from a URL (e.g. "https://api.example.com/v1/users?a=1" -> "/v1/users").
@@ -148,6 +159,122 @@ pub struct HttpFolder {
     /// Child sub-folders (populated after full tree resolution).
     #[serde(default)]
     pub children: Vec<HttpFolder>,
+    /// URL repository git berisi kode API folder ini. Menjadi kunci tautan ke
+    /// group diagram dengan URL yang sama (lihat [`crate::repo_links`]).
+    /// Folder project lokal disimpan personal di `diagram_repo_paths`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+}
+
+impl HttpFolder {
+    /// URL git bersama yang tidak kosong.
+    pub fn shared_repo_url(&self) -> Option<&str> {
+        self.repo_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Folder project personal folder ini di komputer ini.
+    pub fn local_repo_path(&self) -> Option<String> {
+        crate::diagram_repo_paths::http_folder_repo_path(&self.id)
+    }
+
+    /// Folder punya URL git atau folder project.
+    pub fn has_repository(&self) -> bool {
+        self.shared_repo_url().is_some() || self.local_repo_path().is_some()
+    }
+
+    /// Kunci repository (URL git ternormalisasi) untuk tautan ke diagram.
+    pub fn repo_key(&self) -> Option<String> {
+        crate::repo_scan::repo_key_for(self.shared_repo_url(), self.local_repo_path().as_deref())
+    }
+
+    /// Semua request di folder ini dan sub-foldernya.
+    pub fn all_requests(&self) -> Vec<&SavedRequest> {
+        let mut out: Vec<&SavedRequest> = self.requests.iter().collect();
+        for child in &self.children {
+            out.extend(child.all_requests());
+        }
+        out
+    }
+}
+
+/// Cari folder `folder_id` di pohon `folders`.
+pub fn find_folder<'a>(folders: &'a [HttpFolder], folder_id: &str) -> Option<&'a HttpFolder> {
+    folders.iter().find_map(|f| {
+        if f.id == folder_id {
+            Some(f)
+        } else {
+            find_folder(&f.children, folder_id)
+        }
+    })
+}
+
+/// Versi mutable dari [`find_folder`].
+pub fn find_folder_mut<'a>(
+    folders: &'a mut [HttpFolder],
+    folder_id: &str,
+) -> Option<&'a mut HttpFolder> {
+    for f in folders.iter_mut() {
+        if f.id == folder_id {
+            return Some(f);
+        }
+        if let Some(found) = find_folder_mut(&mut f.children, folder_id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Folder `folder_id` beserta workspace pemiliknya.
+pub fn find_workspace_folder<'a>(
+    workspaces: &'a [HttpWorkspace],
+    folder_id: &str,
+) -> Option<(&'a HttpWorkspace, &'a HttpFolder)> {
+    workspaces
+        .iter()
+        .find_map(|ws| find_folder(&ws.folders, folder_id).map(|f| (ws, f)))
+}
+
+/// Semua folder (termasuk sub-folder) di semua workspace, beserta workspace-nya.
+pub fn all_folders(workspaces: &[HttpWorkspace]) -> Vec<(&HttpWorkspace, &HttpFolder)> {
+    fn walk<'a>(
+        ws: &'a HttpWorkspace,
+        folders: &'a [HttpFolder],
+        out: &mut Vec<(&'a HttpWorkspace, &'a HttpFolder)>,
+    ) {
+        for f in folders {
+            out.push((ws, f));
+            walk(ws, &f.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    for ws in workspaces {
+        walk(ws, &ws.folders, &mut out);
+    }
+    out
+}
+
+/// Cari request `request_id` di semua workspace.
+pub fn find_request<'a>(
+    workspaces: &'a [HttpWorkspace],
+    request_id: &str,
+) -> Option<&'a SavedRequest> {
+    fn in_folders<'a>(folders: &'a [HttpFolder], id: &str) -> Option<&'a SavedRequest> {
+        folders.iter().find_map(|f| {
+            f.requests
+                .iter()
+                .find(|r| r.id == id)
+                .or_else(|| in_folders(&f.children, id))
+        })
+    }
+    workspaces.iter().find_map(|ws| {
+        ws.requests
+            .iter()
+            .find(|r| r.id == request_id)
+            .or_else(|| in_folders(&ws.folders, request_id))
+    })
 }
 
 /// A workspace (project) containing folders and top-level requests.
@@ -269,7 +396,7 @@ pub fn delete_workspace(workspace_id: &str) {
 
 static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn unique_id(prefix: &str) -> String {
+pub(crate) fn unique_id(prefix: &str) -> String {
     let count = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!(
         "{}_{}_{}",
@@ -309,6 +436,7 @@ pub fn create_folder_in_workspace(
         parent_folder_id: parent_folder_id.map(|s| s.to_string()),
         requests: Vec::new(),
         children: Vec::new(),
+        repo_url: None,
     };
 
     let ws = workspaces.iter_mut().find(|w| w.id == ws_id)?;
@@ -643,6 +771,9 @@ pub fn snapshot_from_state(state: &HttpClientState, name: &str) -> SavedRequest 
         api_key_value: state.api_key_value.clone(),
         api_key_in_header: state.api_key_in_header,
         description: String::new(),
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -860,6 +991,7 @@ fn import_yaak_sqlite(db_path: &std::path::Path) -> Result<YaakImportResult, Str
                     parent_folder_id,
                     requests: Vec::new(),
                     children: Vec::new(),
+                    repo_url: None,
                 },
             );
         },
@@ -1011,6 +1143,9 @@ fn parse_yaak_request(row: &sqlite_raw::Stmt, _warnings: &mut Vec<String>) -> Sa
         api_key_value,
         api_key_in_header,
         description,
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -1348,6 +1483,7 @@ fn parse_postman_item(
             parent_folder_id,
             requests: child_requests,
             children: child_folders,
+            repo_url: None,
         });
     } else if let Some(req_val) = item.get("request") {
         // It's a request
@@ -1396,6 +1532,9 @@ fn parse_postman_request(
             api_key_value: String::new(),
             api_key_in_header: true,
             description: String::new(),
+            tables: Vec::new(),
+            source: None,
+            route: None,
         };
     }
 
@@ -1451,6 +1590,9 @@ fn parse_postman_request(
         api_key_value,
         api_key_in_header,
         description,
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -2031,6 +2173,7 @@ mod tests {
                 parent_folder_id: None,
                 requests: vec![],
                 children: vec![],
+                repo_url: None,
             }],
             environments: vec![],
         }];
@@ -2073,7 +2216,9 @@ mod tests {
                         parent_folder_id: Some("fld-parent".to_string()),
                         requests: vec![],
                         children: vec![],
+                        repo_url: None,
                     }],
+                    repo_url: None,
                 },
                 HttpFolder {
                     id: "fld-sibling".to_string(),
@@ -2081,6 +2226,7 @@ mod tests {
                     parent_folder_id: None,
                     requests: vec![],
                     children: vec![],
+                    repo_url: None,
                 },
             ],
             environments: vec![],

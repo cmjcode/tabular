@@ -77,6 +77,7 @@ impl super::Tabular {
         self.ai_model = prefs.ai_model.clone();
         self.ai_provider = prefs.ai_provider;
         self.ai_base_url = prefs.ai_base_url.clone();
+        self.ai_inline_suggestions = prefs.ai_inline_suggestions;
         self.ai_settings_api_key_input = prefs.ai_api_key.clone();
         self.ai_settings_model_input = if prefs.ai_model.is_empty() {
             prefs.ai_provider.default_model().to_string()
@@ -537,6 +538,8 @@ impl super::Tabular {
             window_focused: true,
             query_timings_by_tab: std::collections::HashMap::new(),
             query_stats_view: Default::default(),
+            #[cfg(not(target_os = "ios"))]
+            agent_access: Default::default(),
             restore_session: true,
             show_system_objects: false,
             pending_tab_close: None,
@@ -628,6 +631,7 @@ impl super::Tabular {
             ai_markdown_cache: egui_commonmark::CommonMarkCache::default(),
             query_insights: std::collections::HashMap::new(),
             query_insight_width: super::query_insight::DEFAULT_PANEL_W,
+            ai_fix: None,
             ai_schema_badge: None,
             ai_confirm_clear_until: None,
             ai_api_key: String::new(),
@@ -642,6 +646,8 @@ impl super::Tabular {
             ai_chat_target: crate::config::ChatTarget::Api,
             ai_turn_target: None,
             ai_session: None,
+            ai_mcp: Default::default(),
+            ai_history: Default::default(),
             ai_settings_cli_tab: crate::config::CliAgentKind::Antigravity,
             ai_cli_mcp: std::collections::HashMap::new(),
             ai_cli_auto_apply_edits: true,
@@ -656,6 +662,8 @@ impl super::Tabular {
             ai_obsidian_index: None,
             ai_obsidian_index_receiver: None,
             ai_obsidian_save_message: None,
+            ai_inline_suggestions: false,
+            ghost: Default::default(),
             ai_inline_processed: std::collections::HashSet::new(),
             ai_inline_receiver: None,
             toasts: crate::window_egui::notifications::ToastManager::default(),
@@ -791,6 +799,7 @@ impl super::Tabular {
             workspaces_load_receiver: None,
             collection_search: String::new(),
             collection_expanded_folders: std::collections::HashSet::new(),
+            http_repo: Default::default(),
             collection_just_saved_workspace: None,
             show_yaak_import_dialog: false,
             show_postman_import_dialog: false,

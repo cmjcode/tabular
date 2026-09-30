@@ -78,6 +78,14 @@ found in the code that are not in this diagram are listed separately.
 **Rescan** repeats the scan. **Cancel** or closing the window stops a running
 scan, including the git and AI processes.
 
+## HTTP API endpoints on tables
+
+A group is linked to every folder in the **APIs** sidebar that uses the same git
+repository. Right-click the group title and choose **HTTP API Folders…** to
+show it. When endpoints are generated from that folder's repository, each table
+the endpoints read or write gets a blue **API n** badge; click it for the list
+of methods and paths. See [HTTP_API_REPOSITORY.md](HTTP_API_REPOSITORY.md).
+
 ## Notes
 
 - `git` must be installed for URLs, private copies and `.gitignore` support.

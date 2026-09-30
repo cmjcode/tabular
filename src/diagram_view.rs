@@ -91,6 +91,13 @@ pub enum DiagramAction {
     SuggestGroupTables(String),
     /// Buka tab baru berisi seluruh tabel anggota group (id group).
     OpenGroupInNewTab(String),
+    /// Buka request HTTP API sebuah endpoint yang tertaut ke tabel.
+    OpenEndpointRequest {
+        request_id: Option<String>,
+        label: String,
+    },
+    /// Tampilkan folder HTTP API yang repository-nya sama dengan group ini.
+    ShowLinkedHttpFolders(String),
     Info(String),
     Error(String),
 }
@@ -590,12 +597,20 @@ fn subset_with_relations(
         })
         .cloned()
         .collect();
+    let endpoint_links = source
+        .endpoint_links
+        .iter()
+        .filter(|l| keep.contains(l.table.as_str()))
+        .cloned()
+        .collect();
     DiagramState {
         nodes,
         edges,
         virtual_relations,
         linked_relations,
         notes,
+        endpoint_links,
+        show_endpoints: source.show_endpoints,
         show_notes: source.show_notes,
         show_grid: source.show_grid,
         prevent_overlap: source.prevent_overlap,
@@ -894,6 +909,16 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             state.save_requested = true;
         }
         if ui
+            .checkbox(&mut state.show_endpoints, "Show API endpoints")
+            .on_hover_text(
+                "Show on each table how many HTTP API endpoints use it (generated from the \
+                 repository of a linked HTTP API folder)",
+            )
+            .clicked()
+        {
+            state.save_requested = true;
+        }
+        if ui
             .checkbox(&mut state.prevent_overlap, "Prevent table & group overlap")
             .clicked()
         {
@@ -1004,6 +1029,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         // Save Shortcut (Cmd + S)
         if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             state.save_requested = true;
+            state.unsaved_changes = false;
             action = Some(DiagramAction::Save);
         }
 
@@ -1095,6 +1121,15 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let mut group_focus_request: Option<Option<String>> = None;
     let mut note_request: Option<crate::diagram_notes_view::NoteRequest> = None;
     let note_counts = crate::diagram_notes::note_counts(&state.notes);
+    let endpoint_counts: HashMap<String, usize> = if state.show_endpoints {
+        crate::repo_links::endpoint_counts(state)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    let mut endpoint_panel_request: Option<String> = None;
 
     // 1. Calculate Group Bounds (requires immutable access to nodes and groups)
     let mut group_bounds: Vec<(usize, String, egui::Rect, egui::Color32, String)> = Vec::new(); // (index, id, rect, color, title)
@@ -1413,6 +1448,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     if suggest.clicked() {
                         ui.close();
                         group_suggest_request = Some(group_id.clone());
+                    }
+                    if has_repo
+                        && ui
+                            .button(format!(
+                                "{} HTTP API Folders…",
+                                egui_icons::icons::MDI_API.codepoint
+                            ))
+                            .on_hover_text(
+                                "HTTP API folders that use the same git repository as this group",
+                            )
+                            .clicked()
+                    {
+                        ui.close();
+                        action = Some(DiagramAction::ShowLinkedHttpFolders(group_id.clone()));
                     }
                     ui.separator();
                     let anchor = crate::models::structs::NoteAnchor::Group(group_id.clone());
@@ -2536,6 +2585,34 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 }
             }
         }
+
+        if let Some(&count) = endpoint_counts.get(&node.id) {
+            let active = state.endpoints_panel.as_deref() == Some(node.id.as_str());
+            if let Some(resp) = crate::diagram_endpoints_view::draw_badge(
+                ui,
+                egui::pos2(node_rect.left() + 10.0 * scale, node_rect.top()),
+                count,
+                scale,
+                ui.id().with("node_endpoint_badge").with(&node.id),
+                active,
+            ) {
+                let resp = resp.on_hover_text(crate::diagram_endpoints_view::badge_tooltip(
+                    &state.endpoint_links,
+                    &node.id,
+                ));
+                if resp.clicked() {
+                    endpoint_panel_request = Some(node.id.clone());
+                }
+            }
+        }
+    }
+    if let Some(table) = endpoint_panel_request {
+        state.endpoints_panel = if state.endpoints_panel.as_deref() == Some(table.as_str()) {
+            None
+        } else {
+            Some(table)
+        };
+        state.endpoints_panel_query.clear();
     }
     if let Some(table) = relations_request {
         state.relations_panel = Some(table);
@@ -2995,16 +3072,40 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         "Save diagram layout (Cmd S) - also saves to Obsidian vault if enabled"
                     }
                 };
-                if toolbar_square_button(ui, egui_icons::icons::ICON_SAVE.codepoint, "Save", false)
-                    .on_hover_text(save_hover)
-                    .clicked()
+                let save_hover = if state.unsaved_changes {
+                    format!("Unsaved changes (auto save is off)\n{save_hover}")
+                } else {
+                    save_hover.to_string()
+                };
+                // Tombol Save tampil aktif selama ada perubahan belum tersimpan.
+                if toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_SAVE.codepoint,
+                    "Save",
+                    state.unsaved_changes,
+                )
+                .on_hover_text(save_hover)
+                .clicked()
                 {
                     state.save_requested = true;
+                    state.unsaved_changes = false;
                     action = Some(DiagramAction::Save);
                 }
 
                 let more_btn = toolbar_dropdown_arrow(ui, "save_more");
                 egui::Popup::menu(&more_btn).show(|ui| {
+                    if ui
+                        .checkbox(&mut state.auto_save, "Auto save")
+                        .on_hover_text(
+                            "Save layout changes automatically.\nWhen off, changes are kept until you press Save (Cmd S).",
+                        )
+                        .changed()
+                    {
+                        // Simpan preferensi ini sekaligus perubahan yang tertunda.
+                        state.save_requested = true;
+                        state.force_save = true;
+                    }
+                    ui.separator();
                     if ui.button("☁️ Sync to Tabular Cloud now").clicked() {
                         ui.close();
                         action = Some(DiagramAction::SyncToServer);
@@ -3368,6 +3469,19 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     render_relations_panel(ui, state, rect, now);
+    let endpoint_table_screen = state
+        .endpoints_panel
+        .as_ref()
+        .and_then(|t| state.nodes.iter().find(|n| &n.id == t))
+        .map(|n| egui::Rect::from_min_max(to_screen(n.pos), to_screen(n.pos + n.size)));
+    if let Some(a) = crate::diagram_endpoints_view::render_endpoints_panel(
+        ui,
+        state,
+        rect,
+        endpoint_table_screen,
+    ) {
+        action = Some(a);
+    }
     crate::diagram_notes_view::render_notes_panel(ui, state, rect, now);
     crate::diagram_notes_view::render_note_editor(ui.ctx(), state);
     crate::diagram_relation_editor::render_relation_editor(ui.ctx(), state);

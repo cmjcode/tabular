@@ -647,6 +647,11 @@ impl DiagramGroup {
     pub fn has_repository(&self) -> bool {
         self.shared_repo_url().is_some() || self.local_repo_path().is_some()
     }
+
+    /// Kunci repository (URL git ternormalisasi) untuk tautan ke folder HTTP API.
+    pub fn repo_key(&self) -> Option<String> {
+        crate::repo_scan::repo_key_for(self.shared_repo_url(), self.local_repo_path().as_deref())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -894,6 +899,16 @@ pub struct DiagramState {
     /// Tampilkan relasi bawaan database yang di-link.
     #[serde(default = "default_true")]
     pub show_linked_relations: bool,
+    /// Simpan otomatis setiap perubahan layout. Bila mati, perubahan hanya
+    /// disimpan lewat tombol Save / Cmd S.
+    #[serde(default = "default_true")]
+    pub auto_save: bool,
+    /// Ada perubahan yang belum disimpan karena auto save mati.
+    #[serde(skip)]
+    pub unsaved_changes: bool,
+    /// Paksa simpan walau auto save mati (mis. toggle auto save, link database).
+    #[serde(skip)]
+    pub force_save: bool,
     /// Relasi tanpa FK database (disarankan, manual, atau hasil impor).
     #[serde(default)]
     pub virtual_relations: Vec<VirtualRelation>,
@@ -1041,6 +1056,50 @@ pub struct DiagramState {
     /// Modal edit relasi virtual yang sedang terbuka (double-click garis relasi).
     #[serde(skip)]
     pub relation_editor: Option<RelationEditDraft>,
+    /// Endpoint HTTP API yang memakai tabel diagram ini (hasil generate dari
+    /// repository group atau ditautkan manual). Ikut disimpan dan disinkron.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_links: Vec<EndpointLink>,
+    /// Tampilkan badge endpoint di header tabel.
+    #[serde(default = "default_true")]
+    pub show_endpoints: bool,
+    /// Panel daftar endpoint untuk tabel ini (None = tertutup).
+    #[serde(skip)]
+    pub endpoints_panel: Option<String>,
+    #[serde(skip)]
+    pub endpoints_panel_query: String,
+}
+
+/// Endpoint HTTP API yang membaca/menulis sebuah tabel diagram.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointLink {
+    /// Id node tabel di diagram.
+    pub table: String,
+    /// Method HTTP, huruf besar (`GET`, `POST`, …).
+    pub method: String,
+    /// Path route, mis. `/users/{id}`.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Id `SavedRequest` di collection HTTP (hanya ada di komputer yang
+    /// punya collection-nya).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Kunci repository asal (lihat `repo_scan::repo_key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_key: Option<String>,
+    /// Lokasi definisi route di repository (`path/file:line`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl EndpointLink {
+    /// Identitas logis link: tabel + method + path.
+    pub fn same_endpoint(&self, other: &EndpointLink) -> bool {
+        self.table == other.table
+            && self.method.eq_ignore_ascii_case(&other.method)
+            && self.path == other.path
+    }
 }
 
 /// Draft modal edit relasi virtual: tabel tetap, kolom kedua ujung bisa diganti.
@@ -1232,6 +1291,9 @@ impl Default for DiagramState {
             show_fk_relations: true,
             show_virtual_relations: true,
             show_linked_relations: true,
+            auto_save: true,
+            unsaved_changes: false,
+            force_save: false,
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
@@ -1276,6 +1338,10 @@ impl Default for DiagramState {
             notes_panel_query: String::new(),
             note_editor: None,
             relation_editor: None,
+            endpoint_links: Vec::new(),
+            show_endpoints: true,
+            endpoints_panel: None,
+            endpoints_panel_query: String::new(),
         }
     }
 }
@@ -1536,6 +1602,8 @@ pub struct AiChatMessage {
     pub progress_steps: Vec<crate::agent::harness::ProgressStep>,
     /// Nama backend/agent yang menjawab; hanya diisi untuk role Assistant.
     pub agent_label: Option<String>,
+    /// Pemanggilan tool MCP luar pada giliran ini (chat HTTP API, K5).
+    pub tool_calls: Vec<crate::ai_tool_calling::ToolCallRecord>,
 }
 
 /// Sesi CLI aktif untuk melanjutkan percakapan (agy --conversation / claude --resume).

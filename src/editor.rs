@@ -1464,6 +1464,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         find_previous_match(tabular, ui);
     }
 
+    // Ghost text AI inline: Tab / Cmd|Ctrl+→ / Esc ditangani sebelum logika Tab
+    // editor lain, hanya saat saran sedang tampil dan popup autocomplete tertutup.
+    if crate::editor_ghost::handle_keys_pre_render(tabular, ui, editor_id) {
+        request_scroll_to_cursor = true;
+    }
+
     // ----- Pre-widget key handling & indentation (no active borrow of editor_text) -----
     let rows = if tabular.advanced_editor.desired_rows > 0 {
         tabular.advanced_editor.desired_rows
@@ -3374,6 +3380,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 crate::window_egui::query_insight::open_query_insight(tabular);
                 ui.close();
             }
+            let label = format!(
+                "{}  Review with AI",
+                String::from(egui_icons::icons::ICON_RATE_REVIEW)
+            );
+            if ui
+                .button(label)
+                .on_hover_text(
+                    "Send the selected SQL (or the statement at the cursor) to the AI Assistant for a correctness, performance, safety and style review",
+                )
+                .clicked()
+            {
+                let selected = tabular.selected_text.clone();
+                ai_review_sql(tabular, selected);
+                ui.close();
+            }
         }
     });
 
@@ -4713,6 +4734,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Ghost text AI inline: lacak ketikan, debounce, poll respons, gambar saran.
+    crate::editor_ghost::update_after_render(
+        tabular,
+        ui,
+        &galley,
+        galley_pos,
+        text_clip_rect,
+        egui::FontId::monospace(effective_font_size),
+        response.has_focus(),
+    );
+
     // ── Inline AI block response polling ──────────────────────────────────────
     // Check if an in-flight inline AI request has a response ready and replace the placeholder.
     let inline_result = {
@@ -4958,6 +4990,8 @@ enum AiPanelAction {
     SetInput(String),
     /// Simpan jawaban (index pesan) sebagai catatan memory di vault Obsidian.
     SaveToVault(usize),
+    /// Approve / Deny pemanggilan tool MCP luar: (call_id, approve).
+    ToolDecision(String, bool),
 }
 
 /// Judul + isi catatan memory dari satu jawaban assistant: pertanyaan user
@@ -5282,6 +5316,8 @@ fn ai_handle_agent_event(
 }
 
 fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
+    crate::window_egui::ai_mcp_ui::poll_tool_updates(tabular);
+    crate::window_egui::ai_mcp_ui::end_tool_turn(tabular);
     tabular.ai_turn_target = None;
     if let Some(mut parser) = tabular.ai_live_edit_parser.take() {
         for ev in parser.finish() {
@@ -5300,12 +5336,15 @@ fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
             }
         }
     }
+    // K6: simpan sesi setelah tiap giliran selesai.
+    tabular.ai_history_autosave();
 }
 
 fn ai_poll_stream(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     let Some(rx) = tabular.ai_stream_receiver.take() else {
         return;
     };
+    crate::window_egui::ai_mcp_ui::poll_tool_updates(tabular);
     let mut finished = false;
     loop {
         match rx.try_recv() {
@@ -5389,8 +5428,8 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     tabular.ai_error = None;
     tabular.ai_turn_target = Some(target);
 
-    match crate::ai_assistant::start_chat(&cfg, system, user, native_session.map(|s| s.to_string()))
-    {
+    let session_id = native_session.map(|s| s.to_string());
+    match crate::window_egui::ai_mcp_ui::start_chat_turn(tabular, &cfg, system, user, session_id) {
         Ok((rx, cancel)) => {
             tabular.ai_stream_receiver = Some(rx);
             tabular.ai_cancel = cancel;
@@ -5409,6 +5448,35 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     }
 }
 
+/// "Review with AI" (K8): kirim SQL terpilih (atau statement di kursor, atau
+/// seluruh tab) ke panel AI Assistant dengan prompt review, memakai backend
+/// chat yang sedang dipilih. Panel dibuka bila tertutup.
+pub(crate) fn ai_review_sql(tabular: &mut window_egui::Tabular, selected: String) {
+    let mut sql = selected.trim().to_string();
+    if sql.is_empty() {
+        sql = extract_query_from_cursor(tabular).trim().to_string();
+    }
+    if sql.is_empty() {
+        sql = tabular.editor.text.trim().to_string();
+    }
+    if sql.is_empty() {
+        tabular.toasts.info("Write or select some SQL to review.");
+        return;
+    }
+    let engine = window_egui::ai_fix::active_engine(tabular);
+    tabular.show_ai_panel = true;
+    tabular.ai_input = crate::ai_query_fix::review_prompt(&sql, engine);
+    if tabular.ai_stream_receiver.is_some() {
+        // Giliran lain masih berjalan: prompt disiapkan, user kirim sendiri.
+        tabular.toasts.info(
+            "The AI Assistant is still answering. The review request is ready in the chat box.",
+        );
+        return;
+    }
+    log::info!("[AI] review SQL dikirim ke panel AI Assistant");
+    ai_send_message(tabular);
+}
+
 fn ai_stop_turn(tabular: &mut window_egui::Tabular) {
     if let Some(cancel) = &tabular.ai_cancel {
         // Thread pembaca akan mengirim Error("Stopped by user.") lalu selesai.
@@ -5423,8 +5491,9 @@ fn ai_stop_turn(tabular: &mut window_egui::Tabular) {
     }
 }
 
-fn ai_new_chat(tabular: &mut window_egui::Tabular) {
+pub(crate) fn ai_new_chat(tabular: &mut window_egui::Tabular) {
     ai_stop_turn(tabular);
+    tabular.ai_history_detach();
     tabular.ai_chat.clear();
     tabular.ai_session = None;
     tabular.ai_turn_target = None;
@@ -6188,6 +6257,8 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
             ui.separator();
             ui.add_space(2.0);
 
+            tabular.render_ai_history_button(ui, busy);
+
             let export = ui
                 .add_enabled_ui(has_chat && !busy, |ui| {
                     style::ai_icon_button(
@@ -6688,6 +6759,16 @@ fn ai_render_assistant_message(
     } else if !msg.tool_activity.is_empty() {
         ui.add_space(2.0);
         ai_render_tool_chips(ui, &msg.tool_activity);
+    }
+    if !msg.tool_calls.is_empty() {
+        ui.add_space(3.0);
+        let mut decisions = Vec::new();
+        crate::window_egui::ai_mcp_ui::render_tool_calls(ui, mi, &msg.tool_calls, &mut decisions);
+        actions.extend(
+            decisions
+                .into_iter()
+                .map(|(id, ok)| AiPanelAction::ToolDecision(id, ok)),
+        );
     }
     ui.add_space(2.0);
 
@@ -7197,6 +7278,9 @@ pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui:
             }
             AiPanelAction::ApplyEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, false),
             AiPanelAction::RevertEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, true),
+            AiPanelAction::ToolDecision(call_id, approve) => {
+                crate::window_egui::ai_mcp_ui::send_tool_decision(tabular, &call_id, approve);
+            }
             AiPanelAction::SetInput(text) => {
                 tabular.ai_input = text;
                 ui.ctx()

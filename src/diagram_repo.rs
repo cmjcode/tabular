@@ -23,7 +23,7 @@ fn arrange_pref_id() -> egui::Id {
     egui::Id::new("group_table_suggest_arrange")
 }
 
-fn accent_button(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'static> {
+pub(crate) fn accent_button(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(
         egui::RichText::new(text.into())
             .color(egui::Color32::WHITE)
@@ -43,11 +43,11 @@ struct CloneTask {
     cancel: Arc<AtomicBool>,
 }
 
-fn clone_task_id(gid: &str) -> egui::Id {
-    egui::Id::new(("group_repo_clone", gid))
+fn clone_task_id(key: &str) -> egui::Id {
+    egui::Id::new(("group_repo_clone", key))
 }
 
-fn start_clone(ctx: &egui::Context, gid: &str, url: String, dest: String) {
+fn start_clone(ctx: &egui::Context, key: &str, url: String, dest: String) {
     let task = CloneTask {
         dest: dest.clone(),
         result: Arc::new(Mutex::new(None)),
@@ -62,7 +62,7 @@ fn start_clone(ctx: &egui::Context, gid: &str, url: String, dest: String) {
         }
         repaint.request_repaint();
     });
-    ctx.data_mut(|d| d.insert_temp(clone_task_id(gid), task));
+    ctx.data_mut(|d| d.insert_temp(clone_task_id(key), task));
 }
 
 /// Isi ulang URL dari `.git/config` folder bila URL masih kosong atau hasil
@@ -88,6 +88,296 @@ fn autofill_url(draft: &mut GroupRepoDraft) {
     }
 }
 
+/// Status clone "Clone into this folder" untuk satu modal repository
+/// (group diagram atau folder HTTP API). `key` membedakan modal.
+pub(crate) struct RepoCloneState {
+    key: String,
+    task: Option<CloneTask>,
+    pub cloning: bool,
+    last_error: Option<String>,
+}
+
+impl RepoCloneState {
+    /// Baca status clone; clone yang selesai mengisi folder draft. Pesan info
+    /// dikembalikan bila clone baru saja berhasil.
+    pub(crate) fn poll(
+        ctx: &egui::Context,
+        key: &str,
+        draft: &mut GroupRepoDraft,
+    ) -> (Self, Option<String>) {
+        let task_id = clone_task_id(key);
+        let task: Option<CloneTask> = ctx.data(|d| d.get_temp(task_id));
+        let task_result = task
+            .as_ref()
+            .and_then(|t| t.result.lock().ok().and_then(|r| r.clone()));
+        let cloning = task.is_some() && task_result.is_none();
+        let mut info = None;
+        if let (Some(t), Some(r)) = (&task, task_result) {
+            ctx.data_mut(|d| d.remove::<CloneTask>(task_id));
+            match r {
+                Ok(()) => {
+                    draft.path = t.dest.clone();
+                    autofill_url(draft);
+                    info = Some(format!("Cloned into {}", t.dest));
+                }
+                Err(e) if e == "Cancelled" => {}
+                Err(e) => {
+                    ctx.data_mut(|d| d.insert_temp(task_id.with("error"), e));
+                }
+            }
+        }
+        let last_error: Option<String> = ctx.data(|d| d.get_temp(task_id.with("error")));
+        (
+            Self {
+                key: key.to_string(),
+                task,
+                cloning,
+                last_error,
+            },
+            info,
+        )
+    }
+
+    /// Modal ditutup: hentikan clone yang masih berjalan dan buang status.
+    pub(crate) fn finish(&self, ctx: &egui::Context) {
+        if let Some(t) = &self.task
+            && self.cloning
+        {
+            t.cancel.store(true, Ordering::SeqCst);
+        }
+        let task_id = clone_task_id(&self.key);
+        ctx.data_mut(|d| {
+            d.remove::<CloneTask>(task_id);
+            d.remove::<String>(task_id.with("error"));
+        });
+    }
+}
+
+/// Validasi isi field repository.
+pub(crate) struct RepoFieldsState {
+    pub path_empty: bool,
+    pub url_empty: bool,
+    pub url_ok: bool,
+}
+
+impl RepoFieldsState {
+    /// Boleh disimpan: ada folder atau URL, URL valid, dan tidak sedang clone.
+    pub(crate) fn valid(&self, clone: &RepoCloneState) -> bool {
+        (!self.path_empty || !self.url_empty) && self.url_ok && !clone.cloning
+    }
+}
+
+/// Kartu "PROJECT FOLDER" + "GIT URL" yang dipakai modal repository group
+/// diagram dan folder HTTP API. `shared_with` menjelaskan ke mana URL ikut
+/// disimpan (mis. "the diagram").
+pub(crate) fn render_repo_fields(
+    ui: &mut egui::Ui,
+    draft: &mut GroupRepoDraft,
+    clone: &RepoCloneState,
+    shared_with: &str,
+) -> RepoFieldsState {
+    let path_empty = draft.path.trim().is_empty();
+    let url_empty = draft.url.trim().is_empty();
+    let folder = crate::repo_scan::expand_home(draft.path.trim());
+    let folder_exists = !path_empty && folder.is_dir();
+    let url_parsed = crate::repo_scan::RepoSource::parse(&draft.url);
+    let url_has_secret = crate::repo_scan::has_embedded_credentials(&draft.url);
+    let url_ok = url_empty || (url_parsed.is_ok() && !url_has_secret);
+    let task_id = clone_task_id(&clone.key);
+
+    style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("PROJECT FOLDER")
+                    .small()
+                    .strong()
+                    .weak(),
+            );
+            ui.label(
+                egui::RichText::new("personal, only on this computer")
+                    .small()
+                    .italics()
+                    .weak(),
+            );
+        });
+        ui.horizontal(|ui| {
+            let browse_w = if cfg!(target_os = "ios") { 0.0 } else { 86.0 };
+            let edit = style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut draft.path).hint_text("/path/to/project"),
+                ui.available_width() - browse_w,
+                Some(egui_icons::icons::ICON_FOLDER.codepoint),
+            );
+            if edit.changed() {
+                autofill_url(draft);
+            }
+            #[cfg(not(target_os = "ios"))]
+            if ui
+                .add(egui::Button::new("Browse…").min_size(egui::vec2(0.0, 28.0)))
+                .clicked()
+            {
+                let mut dialog =
+                    crate::rfd::FileDialog::new().set_title("Select the project folder");
+                if folder_exists {
+                    dialog = dialog.set_directory(&folder);
+                }
+                if let Some(dir) = dialog.pick_folder() {
+                    draft.path = dir.to_string_lossy().to_string();
+                    autofill_url(draft);
+                }
+            }
+        });
+        if !path_empty {
+            let (msg, color) = if folder_exists {
+                (
+                    "Folder found. Scans read it in place, including uncommitted changes.",
+                    ui.visuals().weak_text_color(),
+                )
+            } else if matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_))) {
+                (
+                    "Folder not found on this computer. Clone it here, or leave it: \
+                     scans then use a private clone of the git URL.",
+                    ui.visuals().warn_fg_color,
+                )
+            } else {
+                (
+                    "Folder not found on this computer. Add a git URL to clone it.",
+                    ui.visuals().warn_fg_color,
+                )
+            };
+            ui.label(egui::RichText::new(msg).small().color(color));
+
+            let can_clone = !folder_exists
+                && !cfg!(target_os = "ios")
+                && matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_)));
+            if clone.cloning {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.label(egui::RichText::new("Cloning…").small());
+                    if ui.small_button("Cancel").clicked()
+                        && let Some(t) = &clone.task
+                    {
+                        t.cancel.store(true, Ordering::SeqCst);
+                    }
+                });
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(200));
+            } else if can_clone {
+                if let Some(e) = &clone.last_error {
+                    ui.label(
+                        egui::RichText::new(e)
+                            .small()
+                            .color(ui.visuals().error_fg_color),
+                    );
+                }
+                if ui
+                    .add(
+                        egui::Button::new(format!(
+                            "{} Clone into this folder",
+                            egui_icons::icons::MDI_GIT.codepoint
+                        ))
+                        .min_size(egui::vec2(0.0, 26.0)),
+                    )
+                    .on_hover_text(format!(
+                        "git clone {} {}",
+                        crate::repo_scan::redact(draft.url.trim()),
+                        draft.path.trim()
+                    ))
+                    .clicked()
+                {
+                    ui.ctx()
+                        .data_mut(|d| d.remove::<String>(task_id.with("error")));
+                    start_clone(
+                        ui.ctx(),
+                        &clone.key,
+                        draft.url.trim().to_string(),
+                        draft.path.trim().to_string(),
+                    );
+                }
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("GIT URL").small().strong().weak());
+            ui.label(
+                egui::RichText::new(format!("shared with {shared_with}"))
+                    .small()
+                    .italics()
+                    .weak(),
+            );
+            if draft.url_auto && !url_empty {
+                ui.label(
+                    egui::RichText::new("detected from .git/config")
+                        .small()
+                        .italics()
+                        .weak(),
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            let detect_w = if folder_exists { 76.0 } else { 0.0 };
+            let edit = style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut draft.url)
+                    .hint_text("https://github.com/org/app.git"),
+                ui.available_width() - detect_w,
+                Some(egui_icons::icons::MDI_GIT.codepoint),
+            );
+            if edit.changed() {
+                draft.url_auto = false;
+            }
+            if folder_exists
+                && ui
+                    .add(egui::Button::new("Detect").min_size(egui::vec2(0.0, 28.0)))
+                    .on_hover_text("Read the remote URL from the folder's .git/config")
+                    .clicked()
+            {
+                draft.url.clear();
+                draft.url_auto = true;
+                autofill_url(draft);
+            }
+        });
+        if !url_empty {
+            let (msg, color) = match &url_parsed {
+                Err(e) => (e.to_string(), ui.visuals().error_fg_color),
+                Ok(_) if url_has_secret => (
+                    format!(
+                        "Remove the password or token from the URL. It is shared with \
+                         everyone who opens {shared_with}; use SSH keys or a git credential \
+                         helper instead."
+                    ),
+                    ui.visuals().error_fg_color,
+                ),
+                Ok(crate::repo_scan::RepoSource::Remote(_)) => (
+                    "Cloned with depth 1 when needed; private repositories use your \
+                     git credentials."
+                        .to_string(),
+                    ui.visuals().weak_text_color(),
+                ),
+                Ok(crate::repo_scan::RepoSource::Local(_)) => (
+                    "This looks like a folder path. Put it in Project folder instead.".to_string(),
+                    ui.visuals().warn_fg_color,
+                ),
+            };
+            ui.label(egui::RichText::new(msg).small().color(color));
+        } else if folder_exists {
+            ui.label(
+                egui::RichText::new("No git remote found in this folder.")
+                    .small()
+                    .weak(),
+            );
+        }
+    });
+
+    RepoFieldsState {
+        path_empty,
+        url_empty,
+        url_ok,
+    }
+}
+
 /// Modal pengaturan repository sebuah group: folder project dan/atau URL git.
 pub fn render_group_repo_editor(
     ctx: &egui::Context,
@@ -105,32 +395,9 @@ pub fn render_group_repo_editor(
     let mut save = false;
     let mut scan_after_save = false;
     let mut remove = false;
-    let mut result_action = None;
 
-    // Clone ke folder project yang sedang/selesai berjalan.
-    let task_id = clone_task_id(&gid);
-    let task: Option<CloneTask> = ctx.data(|d| d.get_temp(task_id));
-    let task_result = task
-        .as_ref()
-        .and_then(|t| t.result.lock().ok().and_then(|r| r.clone()));
-    let cloning = task.is_some() && task_result.is_none();
-    let mut clone_error: Option<String> = None;
-    if let (Some(t), Some(r)) = (&task, task_result) {
-        ctx.data_mut(|d| d.remove::<CloneTask>(task_id));
-        match r {
-            Ok(()) => {
-                draft.path = t.dest.clone();
-                autofill_url(&mut draft);
-                result_action = Some(DiagramAction::Info(format!("Cloned into {}", t.dest)));
-            }
-            Err(e) if e == "Cancelled" => {}
-            Err(e) => clone_error = Some(e),
-        }
-    }
-    if let Some(e) = clone_error {
-        ctx.data_mut(|d| d.insert_temp(task_id.with("error"), e));
-    }
-    let last_clone_error: Option<String> = ctx.data(|d| d.get_temp(task_id.with("error")));
+    let (clone, info) = RepoCloneState::poll(ctx, &gid, &mut draft);
+    let result_action = info.map(DiagramAction::Info);
 
     style::render_modal_backdrop(ctx, "group_repo_editor_backdrop", true);
     let screen = ctx.content_rect();
@@ -151,206 +418,15 @@ pub fn render_group_repo_editor(
                     "Link the code that uses this group's tables. The git URL is saved with the \
                      diagram and shared with everyone who opens it. The project folder is \
                      personal: it stays on this computer only. Scans use your folder when it \
-                     exists, otherwise a private clone of the git URL.",
+                     exists, otherwise a private clone of the git URL. HTTP API folders with \
+                     the same git URL are linked to this group.",
                 )
                 .weak()
                 .small(),
             );
             ui.add_space(8.0);
 
-            let path_empty = draft.path.trim().is_empty();
-            let url_empty = draft.url.trim().is_empty();
-            let folder = crate::repo_scan::expand_home(draft.path.trim());
-            let folder_exists = !path_empty && folder.is_dir();
-            let url_parsed = crate::repo_scan::RepoSource::parse(&draft.url);
-            let url_has_secret = crate::repo_scan::has_embedded_credentials(&draft.url);
-            let url_ok = url_empty || (url_parsed.is_ok() && !url_has_secret);
-
-            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("PROJECT FOLDER")
-                            .small()
-                            .strong()
-                            .weak(),
-                    );
-                    ui.label(
-                        egui::RichText::new("personal, only on this computer")
-                            .small()
-                            .italics()
-                            .weak(),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    let browse_w = if cfg!(target_os = "ios") { 0.0 } else { 86.0 };
-                    let edit = style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut draft.path).hint_text("/path/to/project"),
-                        ui.available_width() - browse_w,
-                        Some(egui_icons::icons::ICON_FOLDER.codepoint),
-                    );
-                    if edit.changed() {
-                        autofill_url(&mut draft);
-                    }
-                    #[cfg(not(target_os = "ios"))]
-                    if ui
-                        .add(egui::Button::new("Browse…").min_size(egui::vec2(0.0, 28.0)))
-                        .clicked()
-                    {
-                        let mut dialog =
-                            crate::rfd::FileDialog::new().set_title("Select the project folder");
-                        if folder_exists {
-                            dialog = dialog.set_directory(&folder);
-                        }
-                        if let Some(dir) = dialog.pick_folder() {
-                            draft.path = dir.to_string_lossy().to_string();
-                            autofill_url(&mut draft);
-                        }
-                    }
-                });
-                if !path_empty {
-                    let (msg, color) = if folder_exists {
-                        (
-                            "Folder found. Scans read it in place, including uncommitted changes.",
-                            ui.visuals().weak_text_color(),
-                        )
-                    } else if matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_))) {
-                        (
-                            "Folder not found on this computer. Clone it here, or leave it: \
-                             scans then use a private clone of the git URL.",
-                            ui.visuals().warn_fg_color,
-                        )
-                    } else {
-                        (
-                            "Folder not found on this computer. Add a git URL to clone it.",
-                            ui.visuals().warn_fg_color,
-                        )
-                    };
-                    ui.label(egui::RichText::new(msg).small().color(color));
-
-                    let can_clone = !folder_exists
-                        && !cfg!(target_os = "ios")
-                        && matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_)));
-                    if cloning {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(14.0));
-                            ui.label(egui::RichText::new("Cloning…").small());
-                            if ui.small_button("Cancel").clicked()
-                                && let Some(t) = &task
-                            {
-                                t.cancel.store(true, Ordering::SeqCst);
-                            }
-                        });
-                        ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(200));
-                    } else if can_clone {
-                        if let Some(e) = &last_clone_error {
-                            ui.label(
-                                egui::RichText::new(e)
-                                    .small()
-                                    .color(ui.visuals().error_fg_color),
-                            );
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(format!(
-                                    "{} Clone into this folder",
-                                    egui_icons::icons::MDI_GIT.codepoint
-                                ))
-                                .min_size(egui::vec2(0.0, 26.0)),
-                            )
-                            .on_hover_text(format!(
-                                "git clone {} {}",
-                                crate::repo_scan::redact(draft.url.trim()),
-                                draft.path.trim()
-                            ))
-                            .clicked()
-                        {
-                            ui.ctx()
-                                .data_mut(|d| d.remove::<String>(task_id.with("error")));
-                            start_clone(
-                                ui.ctx(),
-                                &gid,
-                                draft.url.trim().to_string(),
-                                draft.path.trim().to_string(),
-                            );
-                        }
-                    }
-                }
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("GIT URL").small().strong().weak());
-                    ui.label(
-                        egui::RichText::new("shared with the diagram")
-                            .small()
-                            .italics()
-                            .weak(),
-                    );
-                    if draft.url_auto && !url_empty {
-                        ui.label(
-                            egui::RichText::new("detected from .git/config")
-                                .small()
-                                .italics()
-                                .weak(),
-                        );
-                    }
-                });
-                ui.horizontal(|ui| {
-                    let detect_w = if folder_exists { 76.0 } else { 0.0 };
-                    let edit = style::render_text_field(
-                        ui,
-                        egui::TextEdit::singleline(&mut draft.url)
-                            .hint_text("https://github.com/org/app.git"),
-                        ui.available_width() - detect_w,
-                        Some(egui_icons::icons::MDI_GIT.codepoint),
-                    );
-                    if edit.changed() {
-                        draft.url_auto = false;
-                    }
-                    if folder_exists
-                        && ui
-                            .add(egui::Button::new("Detect").min_size(egui::vec2(0.0, 28.0)))
-                            .on_hover_text("Read the remote URL from the folder's .git/config")
-                            .clicked()
-                    {
-                        draft.url.clear();
-                        draft.url_auto = true;
-                        autofill_url(&mut draft);
-                    }
-                });
-                if !url_empty {
-                    let (msg, color) = match &url_parsed {
-                        Err(e) => (e.to_string(), ui.visuals().error_fg_color),
-                        Ok(_) if url_has_secret => (
-                            "Remove the password or token from the URL. It is shared with \
-                             everyone who opens this diagram; use SSH keys or a git credential \
-                             helper instead."
-                                .to_string(),
-                            ui.visuals().error_fg_color,
-                        ),
-                        Ok(crate::repo_scan::RepoSource::Remote(_)) => (
-                            "Cloned with depth 1 when needed; private repositories use your \
-                             git credentials."
-                                .to_string(),
-                            ui.visuals().weak_text_color(),
-                        ),
-                        Ok(crate::repo_scan::RepoSource::Local(_)) => (
-                            "This looks like a folder path. Put it in Project folder instead."
-                                .to_string(),
-                            ui.visuals().warn_fg_color,
-                        ),
-                    };
-                    ui.label(egui::RichText::new(msg).small().color(color));
-                } else if folder_exists {
-                    ui.label(
-                        egui::RichText::new("No git remote found in this folder.")
-                            .small()
-                            .weak(),
-                    );
-                }
-            });
+            let fields = render_repo_fields(ui, &mut draft, &clone, "the diagram");
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
@@ -363,7 +439,7 @@ pub fn render_group_repo_editor(
                     remove = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let valid = (!path_empty || !url_empty) && url_ok && !cloning;
+                    let valid = fields.valid(&clone);
                     if ui
                         .add_enabled(valid, accent_button(ui, "Save & Suggest Tables"))
                         .clicked()
@@ -391,16 +467,7 @@ pub fn render_group_repo_editor(
         });
 
     if close || save || remove {
-        // Modal ditutup: hentikan clone yang masih berjalan dan buang status.
-        if let Some(t) = &task
-            && cloning
-        {
-            t.cancel.store(true, Ordering::SeqCst);
-        }
-        ctx.data_mut(|d| {
-            d.remove::<CloneTask>(task_id);
-            d.remove::<String>(task_id.with("error"));
-        });
+        clone.finish(ctx);
     }
     if save || remove {
         let clean = |v: &str| {
@@ -1034,8 +1101,26 @@ fn render_progress(
     sugg: &crate::models::structs::GroupTableSuggestions,
     live: bool,
 ) {
+    render_job_progress(
+        ui,
+        &sugg.progress,
+        sugg.started_at,
+        sugg.last_activity_at,
+        sugg.elapsed,
+        live,
+    );
+}
+
+/// Daftar langkah kemajuan job repository (pemindai + langkah agent AI).
+pub(crate) fn render_job_progress(
+    ui: &mut egui::Ui,
+    steps: &[crate::agent::harness::ProgressStep],
+    started_at: Option<std::time::Instant>,
+    last_activity_at: Option<std::time::Instant>,
+    elapsed: Option<std::time::Duration>,
+    live: bool,
+) {
     let weak = ui.visuals().weak_text_color();
-    let steps = &sugg.progress;
     let (scan_steps, agent_steps): (Vec<_>, Vec<_>) = steps
         .iter()
         .partition(|s| s.tool_name.as_deref() == Some("repo_scan"));
@@ -1050,13 +1135,12 @@ fn render_progress(
 
     if live {
         let now = std::time::Instant::now();
-        let elapsed = sugg.started_at.map(|t| now - t).unwrap_or_default();
-        let idle = sugg
-            .last_activity_at
-            .or(sugg.started_at)
+        let running_for = started_at.map(|t| now - t).unwrap_or_default();
+        let idle = last_activity_at
+            .or(started_at)
             .map(|t| now - t)
             .unwrap_or_default();
-        let mut summary = format!("Working · {}", format_duration(elapsed));
+        let mut summary = format!("Working · {}", format_duration(running_for));
         if !agent_steps.is_empty() {
             summary.push_str(&format!(
                 " · AI used {} tool(s), {agent_done} finished",
@@ -1086,7 +1170,7 @@ fn render_progress(
             ui.label(egui::RichText::new("Starting…").weak());
             return;
         }
-    } else if let Some(d) = sugg.elapsed {
+    } else if let Some(d) = elapsed {
         let mut summary = format!("Finished in {}", format_duration(d));
         if !agent_steps.is_empty() {
             summary.push_str(&format!(" · AI used {} tool(s)", agent_steps.len()));

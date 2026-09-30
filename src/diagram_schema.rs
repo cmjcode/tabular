@@ -311,6 +311,7 @@ pub fn merge_schema(
     // Relasi virtual ke tabel yang sudah tidak ada ikut dibuang; relasi ke
     // tabel link database dibiarkan sampai link-nya selesai dimuat.
     crate::diagram_links::prune_virtual_relations(state);
+    crate::repo_links::prune_endpoint_links(state);
 
     if is_init && !state.nodes.is_empty() {
         crate::diagram_view::perform_auto_layout(state);

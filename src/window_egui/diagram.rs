@@ -299,6 +299,33 @@ impl super::Tabular {
             DiagramAction::SuggestGroupTables(group_id) => {
                 self.start_group_table_scan(conn_id, db_name, &group_id);
             }
+            DiagramAction::OpenEndpointRequest { request_id, label } => match request_id {
+                Some(request_id) => crate::http_repo::perform(
+                    self,
+                    crate::http_repo::RepoAction::OpenRequest { request_id, label },
+                ),
+                None => self.toasts.info(format!(
+                    "{label} has no saved request. Generate endpoints from the repository of the \
+                     linked HTTP API folder."
+                )),
+            },
+            DiagramAction::ShowLinkedHttpFolders(group_id) => {
+                let Some(group) = state.groups.iter().find(|g| g.id == group_id) else {
+                    return;
+                };
+                match group.repo_key() {
+                    Some(key) => crate::http_repo::perform(
+                        self,
+                        crate::http_repo::RepoAction::ShowLinkedFolders {
+                            key,
+                            group_title: group.title.clone(),
+                        },
+                    ),
+                    None => self
+                        .toasts
+                        .info("Set a git repository for this group first (Set Repository…)"),
+                }
+            }
         }
     }
 
@@ -663,6 +690,8 @@ impl super::Tabular {
                     current_state.linked_databases = loaded_state.linked_databases;
                     current_state.notes = loaded_state.notes;
                     current_state.show_notes = loaded_state.show_notes;
+                    current_state.endpoint_links = loaded_state.endpoint_links;
+                    current_state.show_endpoints = loaded_state.show_endpoints;
                     current_state.pan = loaded_state.pan;
                     current_state.zoom = loaded_state.zoom;
                     current_state.show_grid = loaded_state.show_grid;
@@ -1957,6 +1986,7 @@ impl super::Tabular {
         };
         // Simpan daftar link (isi kontainernya sendiri tidak ikut disimpan).
         st.save_requested = true;
+        st.force_save = true;
         let status = st
             .linked_databases
             .iter()
@@ -2088,7 +2118,7 @@ impl super::Tabular {
 
 /// Perbarui langkah dengan nomor yang sama (Active → Done/Error) atau tambahkan
 /// langkah baru di akhir.
-fn upsert_progress(
+pub(crate) fn upsert_progress(
     steps: &mut Vec<crate::agent::harness::ProgressStep>,
     step: crate::agent::harness::ProgressStep,
 ) {

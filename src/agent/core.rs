@@ -255,6 +255,9 @@ pub struct AgentQueryResult {
     pub truncated: bool,
     pub execution_ms: u128,
     pub warnings: Vec<String>,
+    /// Jumlah baris terdampak untuk statement tulis, bila driver melaporkannya.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_rows: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,7 +353,7 @@ pub async fn open_cache_pool() -> Result<SqlitePool, AgentError> {
     Ok(pool)
 }
 
-fn kind_label(t: &DatabaseType) -> &'static str {
+pub(super) fn kind_label(t: &DatabaseType) -> &'static str {
     match t {
         DatabaseType::MySQL => "MySQL",
         DatabaseType::PostgreSQL => "PostgreSQL",
@@ -503,7 +506,15 @@ impl HeadlessSession {
         conn: &ConnectionConfig,
         requested: Option<&str>,
     ) -> Result<String, AgentError> {
-        if let Some(db) = requested.map(str::trim).filter(|s| !s.is_empty()) {
+        let requested = requested.map(str::trim).filter(|s| !s.is_empty());
+        // SQLite: `conn.database` adalah path file, sedangkan cache menyimpan
+        // skema sebagai `main` (atau nama ATTACH lain).
+        if conn.connection_type == DatabaseType::SQLite
+            && requested.is_none_or(|r| r == conn.database.trim())
+        {
+            return Ok("main".to_string());
+        }
+        if let Some(db) = requested {
             return Ok(db.to_string());
         }
         if !conn.database.trim().is_empty() {
@@ -521,7 +532,11 @@ impl HeadlessSession {
             })
     }
 
-    async fn cached_tables(&self, id: i64, db: &str) -> Result<Vec<(String, String)>, AgentError> {
+    pub(super) async fn cached_tables(
+        &self,
+        id: i64,
+        db: &str,
+    ) -> Result<Vec<(String, String)>, AgentError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT DISTINCT table_name, table_type FROM table_cache \
              WHERE connection_id = ? AND database_name = ? COLLATE NOCASE \
@@ -754,7 +769,12 @@ impl HeadlessSession {
     }
 
     /// Index tabel dari `index_cache`; kosong bila belum di-cache.
-    async fn cached_indexes(&self, id: i64, db: &str, table: &str) -> Vec<IndexDescription> {
+    pub(super) async fn cached_indexes(
+        &self,
+        id: i64,
+        db: &str,
+        table: &str,
+    ) -> Vec<IndexDescription> {
         let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
             "SELECT index_name, method, is_unique, columns_json FROM index_cache \
              WHERE connection_id = ? AND database_name = ? COLLATE NOCASE AND table_name = ? COLLATE NOCASE \
@@ -847,6 +867,18 @@ impl HeadlessSession {
                 kinds.join(", ")
             )));
         }
+        self.execute_unchecked(id, sql, database, max_rows).await
+    }
+
+    /// Eksekusi tanpa gerbang read-only. Pemanggil **wajib** sudah memutuskan
+    /// statement boleh jalan (lihat `run_query` dan `super::ops`).
+    pub(super) async fn execute_unchecked(
+        &self,
+        id: i64,
+        sql: &str,
+        database: Option<&str>,
+        max_rows: Option<usize>,
+    ) -> Result<AgentQueryResult, AgentError> {
         let (conn, pool) = self.pool_for(id).await?;
         let database = match conn.connection_type {
             DatabaseType::SQLite => None,
@@ -909,6 +941,7 @@ impl HeadlessSession {
             truncated: msg.truncated,
             execution_ms: msg.duration.as_millis(),
             warnings: Vec::new(),
+            affected_rows: msg.affected_rows,
         };
         if let Some(n) = msg.affected_rows {
             result
@@ -1348,6 +1381,7 @@ mod tests {
             truncated: false,
             execution_ms: 0,
             warnings: Vec::new(),
+            affected_rows: None,
         }
     }
 

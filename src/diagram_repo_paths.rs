@@ -1,4 +1,5 @@
-//! Folder project lokal per group diagram. Bersifat **personal**: disimpan di
+//! Folder project lokal per group diagram dan per folder HTTP API (kunci
+//! `http:{folder_id}`). Bersifat **personal**: disimpan di
 //! `{data_dir}/diagram_repo_paths.json` milik user OS ini, tidak pernah ikut
 //! ke file diagram, tabel `diagram_by_tabular`, vault, atau sync. Path lokal
 //! user lain hampir pasti tidak ada di komputer ini, sedangkan URL git
@@ -106,6 +107,24 @@ pub fn set_local_repo_path(group_id: &str, path: Option<&str>) -> Result<(), Str
         log::warn!("[DIAGRAM] cannot save {}: {e}", guard.file().display());
         format!("Cannot save the project folder: {e}")
     })
+}
+
+/// Prefix kunci folder HTTP API di file yang sama, supaya tidak bentrok
+/// dengan id group diagram.
+const HTTP_FOLDER_PREFIX: &str = "http:";
+
+fn http_folder_key(folder_id: &str) -> String {
+    format!("{HTTP_FOLDER_PREFIX}{folder_id}")
+}
+
+/// Folder project personal untuk folder HTTP API `folder_id`.
+pub fn http_folder_repo_path(folder_id: &str) -> Option<String> {
+    local_repo_path(&http_folder_key(folder_id))
+}
+
+/// Simpan (atau hapus bila `None`) folder project personal folder HTTP API.
+pub fn set_http_folder_repo_path(folder_id: &str, path: Option<&str>) -> Result<(), String> {
+    set_local_repo_path(&http_folder_key(folder_id), path)
 }
 
 #[cfg(test)]

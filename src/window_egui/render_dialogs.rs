@@ -148,6 +148,25 @@ impl super::Tabular {
                                         {
                                             close_msg_toast = true;
                                         }
+                                        if super::ai_fix::can_fix(self)
+                                            && ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new(format!(
+                                                            "{} Fix with AI",
+                                                            egui_icons::icons::ICON_AUTO_FIX_HIGH.codepoint
+                                                        ))
+                                                        .size(11.0),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(
+                                                    "Ask AI for a corrected statement and review it as a diff before applying",
+                                                )
+                                                .clicked()
+                                        {
+                                            super::ai_fix::start_fix(self);
+                                        }
                                         if self.query_message_is_error
                                             && self.error_location_in_editor().is_some()
                                             && ui
@@ -1038,6 +1057,7 @@ impl super::Tabular {
                 let mut execute_clicked = false;
                 let mut format_clicked = false;
                 let mut explain_clicked = false;
+                let mut review_clicked = false;
                 let mut captured_selection_text = String::new();
 
                 // Auto-execute if requested by the tab (e.g. Custom View opened)
@@ -1184,6 +1204,19 @@ impl super::Tabular {
                                         explain_clicked = true;
                                     }
 
+                                    let review_button = egui::Button::new(egui_icons::icons::ICON_RATE_REVIEW.rich_text().size(icon_size))
+                                        .min_size(egui::vec2(button_size.x, button_size.y))
+                                        .fill(base_fill)
+                                        .stroke(egui::Stroke::new(1.0, base_border))
+                                        .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if ui
+                                        .add_sized(button_size, review_button)
+                                        .on_hover_text("Review with AI: send the selection (or the statement at the cursor) to the AI Assistant")
+                                        .clicked()
+                                    {
+                                        review_clicked = true;
+                                    }
+
                                     ui.add_space(4.0);
                                     draw_separator(ui);
                                     ui.add_space(4.0);
@@ -1267,6 +1300,34 @@ impl super::Tabular {
                 if format_clicked {
                     editor::reformat_current_sql(self, ui);
                     ui.ctx().memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                    ui.ctx().request_repaint();
+                }
+
+                if review_clicked {
+                    let id = egui::Id::new("sql_editor");
+                    let mut direct_selected = String::new();
+                    if let Some(range) =
+                        crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+                    {
+                        let to_byte_index = |s: &str, char_idx: usize| -> usize {
+                            s.char_indices()
+                                .map(|(b, _)| b)
+                                .chain(std::iter::once(s.len()))
+                                .nth(char_idx)
+                                .unwrap_or(s.len())
+                        };
+                        let start_b = to_byte_index(&self.editor.text, range.start);
+                        let end_b = to_byte_index(&self.editor.text, range.end);
+                        if start_b < end_b && end_b <= self.editor.text.len() {
+                            direct_selected = self.editor.text[start_b..end_b].to_string();
+                        }
+                    }
+                    let captured = if !direct_selected.is_empty() {
+                        direct_selected
+                    } else {
+                        self.selected_text.clone()
+                    };
+                    editor::ai_review_sql(self, captured);
                     ui.ctx().request_repaint();
                 }
 

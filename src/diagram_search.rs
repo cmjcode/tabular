@@ -23,8 +23,16 @@ const BADGE_WIDTH: f32 = 58.0;
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchTarget {
     Table(String),
-    Column { table: String, column: String },
+    Column {
+        table: String,
+        column: String,
+    },
     Group(String),
+    /// Endpoint HTTP API yang tertaut ke `table`.
+    Endpoint {
+        table: String,
+        label: String,
+    },
 }
 
 impl SearchTarget {
@@ -34,6 +42,7 @@ impl SearchTarget {
             SearchTarget::Table(_) => 0,
             SearchTarget::Group(_) => 1,
             SearchTarget::Column { .. } => 2,
+            SearchTarget::Endpoint { .. } => 3,
         }
     }
 
@@ -42,6 +51,7 @@ impl SearchTarget {
             SearchTarget::Table(_) => ("TABLE", egui::Color32::from_rgb(66, 133, 244)),
             SearchTarget::Column { .. } => ("COLUMN", egui::Color32::from_rgb(46, 160, 90)),
             SearchTarget::Group(_) => ("GROUP", egui::Color32::from_rgb(171, 71, 188)),
+            SearchTarget::Endpoint { .. } => ("API", egui::Color32::from_rgb(33, 150, 243)),
         }
     }
 }
@@ -134,6 +144,30 @@ pub fn search_hits(state: &DiagramState, query: &str) -> SearchHits {
         }
     }
 
+    // Endpoint HTTP API ikut filter tabel: hasilnya menunjuk tabel pemakainya.
+    if state.search_tables && state.show_endpoints {
+        for link in &state.endpoint_links {
+            let label = format!("{} {}", link.method, link.path);
+            let Some(score) = q.score(&label).or_else(|| q.score(&link.summary)) else {
+                continue;
+            };
+            let table = state
+                .nodes
+                .iter()
+                .find(|n| n.id == link.table)
+                .map_or(link.table.as_str(), |n| n.title.as_str());
+            hits.push(SearchHit {
+                target: SearchTarget::Endpoint {
+                    table: link.table.clone(),
+                    label: label.clone(),
+                },
+                label,
+                detail: format!("uses {table}"),
+                score,
+            });
+        }
+    }
+
     hits.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)
@@ -150,7 +184,7 @@ pub fn search_hits(state: &DiagramState, query: &str) -> SearchHits {
 /// objeknya sudah tidak ada.
 pub fn target_world_rect(state: &DiagramState, target: &SearchTarget) -> Option<egui::Rect> {
     match target {
-        SearchTarget::Table(id) => state
+        SearchTarget::Table(id) | SearchTarget::Endpoint { table: id, .. } => state
             .nodes
             .iter()
             .find(|n| &n.id == id)
@@ -450,6 +484,7 @@ fn result_row(
         SearchTarget::Table(_) => "Focus this table",
         SearchTarget::Column { .. } => "Focus this column",
         SearchTarget::Group(_) => "Focus this group",
+        SearchTarget::Endpoint { .. } => "Focus the table this endpoint uses",
     };
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -575,5 +610,38 @@ mod tests {
             view,
             1.0
         ));
+    }
+
+    #[test]
+    fn finds_endpoints_and_points_to_their_table() {
+        let mut state = fixture();
+        state
+            .endpoint_links
+            .push(crate::models::structs::EndpointLink {
+                table: "orders".into(),
+                method: "POST".into(),
+                path: "/api/orders".into(),
+                summary: "Create order".into(),
+                request_id: None,
+                repo_key: None,
+                source: None,
+            });
+        let hits = search_hits(&state, "api/orders");
+        let hit = hits
+            .hits
+            .iter()
+            .find(|h| matches!(h.target, SearchTarget::Endpoint { .. }))
+            .expect("endpoint hit");
+        assert_eq!(hit.label, "POST /api/orders");
+        assert_eq!(hit.detail, "uses orders");
+        assert!(target_world_rect(&state, &hit.target).is_some());
+
+        state.show_endpoints = false;
+        assert!(
+            search_hits(&state, "api/orders")
+                .hits
+                .iter()
+                .all(|h| !matches!(h.target, SearchTarget::Endpoint { .. }))
+        );
     }
 }

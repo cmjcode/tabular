@@ -1432,13 +1432,7 @@ impl Tabular {
         section(ui, "API Provider", |ui| {
             row(ui, "Provider", None, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for p in [
-                        AiProvider::OpenAI,
-                        AiProvider::Anthropic,
-                        AiProvider::Groq,
-                        AiProvider::GitHub,
-                        AiProvider::Custom,
-                    ] {
+                    for p in AiProvider::ALL {
                         if ui
                             .radio_value(&mut self.ai_provider, p, p.display_name())
                             .clicked()
@@ -1472,6 +1466,31 @@ impl Tabular {
                     );
                 });
             }
+            if self.ai_provider.is_local() {
+                ui.add_space(4.0);
+                callout(ui, Tone::Info, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} runs on this machine",
+                            self.ai_provider.display_name()
+                        ))
+                        .strong()
+                        .size(12.0),
+                    );
+                    let how = match self.ai_provider {
+                        AiProvider::Ollama => {
+                            "Start it with `ollama serve` and pull a model first (for example `ollama pull llama3.2`). No API key is needed."
+                        }
+                        AiProvider::LlamaCpp => {
+                            "Start `llama-server -m <model.gguf> --port 8080`. The model name is ignored; no API key is needed."
+                        }
+                        _ => {
+                            "Start `mlx_lm.server --model <model> --port 8080`. No API key is needed."
+                        }
+                    };
+                    hint(ui, how);
+                });
+            }
         });
 
         section(ui, "Credentials", |ui| {
@@ -1501,7 +1520,13 @@ impl Tabular {
                 },
             );
             divider(ui);
-            if self.ai_api_key.is_empty() {
+            if self.ai_api_key.is_empty() && !self.ai_provider.requires_api_key() {
+                status(
+                    ui,
+                    Tone::Info,
+                    "No API key set. That is fine for this provider unless your server requires one.",
+                );
+            } else if self.ai_api_key.is_empty() {
                 status(
                     ui,
                     Tone::Warning,
@@ -1605,7 +1630,9 @@ impl Tabular {
         });
 
         self.render_ai_cli_section(ui);
+        self.render_ai_mcp_servers_section(ui);
         self.render_ai_default_target(ui);
+        self.render_ai_inline_suggestions_pref(ui);
         self.render_ai_memory_settings(ui);
     }
 

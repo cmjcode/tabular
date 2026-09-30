@@ -946,6 +946,9 @@ fn render_save_dialog(
             api_key_value: state.api_key_value.clone(),
             api_key_in_header: state.api_key_in_header,
             description: String::new(),
+            tables: Vec::new(),
+            source: None,
+            route: None,
         };
 
         let mut workspaces = crate::http_collection::load_workspaces();
@@ -2388,184 +2391,9 @@ fn execute_request(state: &mut HttpClientState) {
     let (tx, rx) = mpsc::channel::<HttpClientResponse>();
     state.response_receiver = Some(Arc::new(Mutex::new(rx)));
 
-    // Gather all request data before moving into thread
-    let url = state.url.clone();
-    let method = state.method.clone();
-    let body_type = state.body_type.clone();
-    let body_text = state.body_text.clone();
-    let form_data: Vec<(String, String)> = state
-        .form_data
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let params: Vec<(String, String)> = state
-        .params
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let custom_headers: Vec<(String, String)> = state
-        .headers
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let auth_type = state.auth_type.clone();
-    let bearer_token = state.bearer_token.clone();
-    let basic_user = state.basic_user.clone();
-    let basic_pass = state.basic_pass.clone();
-    let api_key_name = state.api_key_name.clone();
-    let api_key_value = state.api_key_value.clone();
-    let api_key_in_header = state.api_key_in_header;
-
+    let spec = crate::http_send::RequestSpec::from_state(state);
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                log::error!("[HTTP] failed to start tokio runtime: {}", e);
-                let _ = tx.send(HttpClientResponse {
-                    status: 0,
-                    status_text: String::new(),
-                    body: String::new(),
-                    headers: Vec::new(),
-                    time_ms: 0,
-                    size_bytes: 0,
-                    error: Some(format!("Could not start HTTP runtime: {e}")),
-                });
-                return;
-            }
-        };
-        let result = rt.block_on(async move {
-            let client = reqwest::Client::builder()
-                .danger_accept_invalid_certs(false)
-                .build()
-                .unwrap_or_default();
-
-            let start = std::time::Instant::now();
-
-            // Build URL with query params
-            let mut full_url = url.clone();
-            if !params.is_empty() {
-                let query_str: String = params
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("&");
-                if full_url.contains('?') {
-                    full_url.push('&');
-                } else {
-                    full_url.push('?');
-                }
-                full_url.push_str(&query_str);
-            }
-
-            // Add API key to URL if needed
-            if matches!(auth_type, HttpAuthType::ApiKey) && !api_key_in_header {
-                let q = format!("{}={}", api_key_name, api_key_value);
-                if full_url.contains('?') {
-                    full_url.push('&');
-                } else {
-                    full_url.push('?');
-                }
-                full_url.push_str(&q);
-            }
-
-            let mut req_builder = match method {
-                HttpMethod::GET => client.get(&full_url),
-                HttpMethod::POST => client.post(&full_url),
-                HttpMethod::PUT => client.put(&full_url),
-                HttpMethod::DELETE => client.delete(&full_url),
-                HttpMethod::PATCH => client.patch(&full_url),
-                HttpMethod::HEAD => client.head(&full_url),
-                HttpMethod::OPTIONS => client.request(reqwest::Method::OPTIONS, &full_url),
-            };
-
-            // Custom headers
-            for (k, v) in &custom_headers {
-                req_builder = req_builder.header(k.as_str(), v.as_str());
-            }
-
-            // Auth headers
-            match auth_type {
-                HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
-                    req_builder =
-                        req_builder.header("Authorization", format!("Bearer {}", bearer_token));
-                }
-                HttpAuthType::BasicAuth => {
-                    req_builder = req_builder.basic_auth(&basic_user, Some(&basic_pass));
-                }
-                HttpAuthType::ApiKey if api_key_in_header && !api_key_name.is_empty() => {
-                    req_builder = req_builder.header(api_key_name.as_str(), api_key_value.as_str());
-                }
-                _ => {}
-            }
-
-            // Body
-            req_builder = match &body_type {
-                HttpBodyType::Json => req_builder
-                    .header("Content-Type", "application/json")
-                    .body(body_text.clone()),
-                HttpBodyType::Xml => req_builder
-                    .header("Content-Type", "application/xml")
-                    .body(body_text.clone()),
-                HttpBodyType::GraphQL => req_builder
-                    .header("Content-Type", "application/json")
-                    .body(body_text.clone()),
-                HttpBodyType::OtherText => req_builder.body(body_text.clone()),
-                HttpBodyType::UrlEncoded => req_builder.form(&form_data),
-                HttpBodyType::MultiPart => {
-                    let mut form = reqwest::multipart::Form::new();
-                    for (k, v) in form_data {
-                        form = form.text(k, v);
-                    }
-                    req_builder.multipart(form)
-                }
-                HttpBodyType::NoBody | HttpBodyType::BinaryFile => req_builder,
-            };
-
-            match req_builder.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let status_text = response
-                        .status()
-                        .canonical_reason()
-                        .unwrap_or("")
-                        .to_string();
-                    let resp_headers: Vec<(String, String)> = response
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<binary>").to_string()))
-                        .collect();
-                    let body = response.text().await.unwrap_or_default();
-                    let time_ms = start.elapsed().as_millis();
-                    let size_bytes = body.len();
-                    HttpClientResponse {
-                        status,
-                        status_text,
-                        body,
-                        headers: resp_headers,
-                        time_ms,
-                        size_bytes,
-                        error: None,
-                    }
-                }
-                Err(e) => {
-                    let time_ms = start.elapsed().as_millis();
-                    HttpClientResponse {
-                        status: 0,
-                        status_text: String::new(),
-                        body: String::new(),
-                        headers: Vec::new(),
-                        time_ms,
-                        size_bytes: 0,
-                        error: Some(e.to_string()),
-                    }
-                }
-            }
-        });
-
-        let _ = tx.send(result);
+        let _ = tx.send(crate::http_send::send_blocking(spec));
     });
 }
 

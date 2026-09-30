@@ -9,6 +9,9 @@ use std::sync::mpsc::{Receiver, Sender};
 use crate::{connection, models, query_tools};
 
 mod ai_cli_settings;
+pub mod ai_history_ui;
+pub mod ai_mcp_ui;
+pub mod ai_fix;
 pub mod app_impl;
 pub mod connection_mgr;
 pub mod device_profile;
@@ -23,6 +26,8 @@ pub(crate) mod preferences;
 pub mod query_insight;
 pub mod query_jobs;
 pub mod query_stats_ui;
+#[cfg(not(target_os = "ios"))]
+pub mod agent_access_ui;
 pub mod render_dialogs;
 pub mod schema_actions;
 pub mod schema_menus;
@@ -556,6 +561,9 @@ pub struct Tabular {
         std::collections::HashMap<usize, crate::connection::timing::QueryTiming>,
     /// Jendela Query Insights dan popup riwayat load tabel (I1, I2).
     pub query_stats_view: query_stats_ui::InsightsState,
+    /// Akses agent MCP per koneksi, klien, log aktivitas, dan dialog persetujuan (K1, K2, K4).
+    #[cfg(not(target_os = "ios"))]
+    pub agent_access: agent_access_ui::AgentAccessState,
     /// Buka kembali tab dari sesi sebelumnya saat startup.
     pub restore_session: bool,
     /// Tampilkan database/schema sistem di sidebar (lihat `schema_objects::show_system_objects`).
@@ -660,6 +668,8 @@ pub struct Tabular {
     pub query_insights: std::collections::HashMap<usize, query_insight::QueryInsight>,
     /// Lebar panel "Query Diagram" di kanan editor.
     pub query_insight_width: f32,
+    /// Jendela "Fix with AI" untuk query yang gagal (lihat `ai_fix`).
+    pub ai_fix: Option<ai_fix::AiFixState>,
     pub ai_input: String,
     pub ai_is_loading: bool,
     pub ai_error: Option<String>,
@@ -693,6 +703,10 @@ pub struct Tabular {
     pub ai_turn_target: Option<crate::config::ChatTarget>,
     /// Sesi CLI aktif; hanya dipakai bila `kind` sama dengan target giliran berikutnya.
     pub ai_session: Option<models::structs::AgentSession>,
+    /// MCP server luar untuk chat HTTP API (K5); lihat `ai_mcp_ui`.
+    pub ai_mcp: ai_mcp_ui::AiMcpUiState,
+    /// Riwayat sesi AI Assistant (K6); lihat `ai_history_ui`.
+    pub ai_history: ai_history_ui::AiHistoryState,
     /// Tab agent yang sedang diedit di Settings (tidak dipersist).
     pub ai_settings_cli_tab: crate::config::CliAgentKind,
     /// Status registrasi MCP global per agent (agy, gemini).
@@ -716,6 +730,10 @@ pub struct Tabular {
         Option<std::sync::mpsc::Receiver<Result<crate::vector_index::NoteSyncStats, String>>>,
     /// Pesan hasil "Save to vault" terakhir dari panel chat.
     pub ai_obsidian_save_message: Option<Result<String, String>>,
+    /// Preferensi: saran AI inline (ghost text) di editor SQL.
+    pub ai_inline_suggestions: bool,
+    /// State ghost text editor (request berjalan, saran aktif, debounce).
+    pub ghost: crate::editor_ghost::GhostState,
     // Inline --AI ... -- block processing
     pub ai_inline_processed: std::collections::HashSet<u64>,
     // (block_hash, placeholder_start, placeholder_end, rx)
@@ -964,6 +982,8 @@ pub struct Tabular {
     pub collection_search: String,
     /// Which folder ids are expanded in the sidebar tree.
     pub collection_expanded_folders: std::collections::HashSet<String>,
+    /// Jendela repository folder HTTP API: generate endpoint dan integration test.
+    pub http_repo: crate::http_repo::HttpRepoUi,
     /// Workspace id that was just saved, used to force-expand it in the sidebar.
     pub collection_just_saved_workspace: Option<String>,
     /// Flag: show the Yaak import file-picker dialog next frame.
