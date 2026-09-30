@@ -1122,10 +1122,6 @@ impl Tabular {
 
                         // Middle section with scrollable content
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            // Project switcher: sama untuk Database dan APIs.
-                            if matches!(self.selected_menu.as_str(), "Database" | "APIs") {
-                                crate::window_egui::project_ui::render_switcher(self, ui);
-                            }
                             match self.selected_menu.as_str() {
                                 "Database" => {
                                     // ── Sub-tabs: Connections / Queries / History ──────────
@@ -1560,8 +1556,10 @@ impl Tabular {
                     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
                     let top_bar_height = metrics.tab_button_height;
                     let available_width = ui.available_width();
-                    let min_selectors = if metrics.is_touch { 420.0 } else { 360.0 };
-                    let mut selectors_width = (available_width * 0.50).clamp(min_selectors, 580.0);
+                    // Grup kanan hanya berisi switcher project, AI, dan akun/gear
+                    // (picker koneksi/database pindah ke kartu melayang editor).
+                    let min_selectors = if metrics.is_touch { 340.0 } else { 280.0 };
+                    let mut selectors_width = (available_width * 0.35).clamp(min_selectors, 420.0);
                     let mut left_width = available_width - selectors_width;
                     if left_width < 180.0 {
                         left_width = 180.0;
@@ -2721,139 +2719,20 @@ impl Tabular {
                                 self.show_ai_panel = !self.show_ai_panel;
                             }
 
-                            let mut conn_list: Vec<(i64, String)> = self
-                                .connections
-                                .iter()
-                                .filter_map(|c| c.id.map(|id| (id, c.display_name())))
-                                .collect();
-                            conn_list.sort_by_key(|a| a.1.to_lowercase());
-                            let (tab_conn_id, tab_db_name) = self
-                                .query_tabs
-                                .get(self.active_tab_index)
-                                .map(|t| (t.connection_id, t.database_name.clone()))
-                                .unwrap_or((None, None));
-                            let current_conn_name = if let Some(cid) = tab_conn_id {
-                                self.get_connection_name(cid)
-                                    .unwrap_or_else(|| "(conn)".to_string())
-                            } else {
-                                "Select Connection".to_string()
-                            };
-
-                            if let Some(cid) = tab_conn_id {
-                                add_divider(ui);
-
-                                // 3. Database selector
-                                let mut dbs = self.get_databases_cached(cid);
-                                if dbs.is_empty() {
-                                    dbs.push("(default)".to_string());
-                                }
-                                let active_db = tab_db_name
-                                    .clone()
-                                    .unwrap_or_else(|| "(default)".to_string());
-                                let db_picker = crate::window_egui::searchable_picker::PickerConfig {
-                                    id_salt: "query_db_select",
-                                    icon: egui_icons::icons::ICON_STORAGE.codepoint,
-                                    title: "Databases",
-                                    search_hint: "Search databases…",
-                                    tooltip: "Active database",
-                                    min_width: if metrics.is_touch { 150.0 } else { 130.0 },
-                                    max_width: if metrics.is_touch { 260.0 } else { 220.0 },
-                                    is_touch: metrics.is_touch,
-                                };
-                                let db_selected = dbs.iter().position(|d| *d == active_db);
-                                if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
-                                    ui, &db_picker, &active_db, &dbs, db_selected,
-                                ) {
-                                    let db = &dbs[i];
-                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                        tab.database_name = if db == "(default)" {
-                                            None
-                                        } else {
-                                            Some(db.clone())
-                                        };
-                                    }
-                                    self.current_table_headers.clear();
-                                    self.current_table_data.clear();
-                                }
-
-                                // 3.5 Active Schema / Search Path selector (Only for databases supporting schemas e.g. PostgreSQL & MsSQL)
-                                let (tab_schema, active_conn_type) = self
-                                    .query_tabs
-                                    .get(self.active_tab_index)
-                                    .map(|t| {
-                                        let conn_type = self.connections.iter().find(|c| c.id == t.connection_id).map(|c| c.connection_type.clone());
-                                        (t.schema_name.clone(), conn_type)
-                                    })
-                                    .unwrap_or((None, None));
-
-                                if active_conn_type.as_ref().is_some_and(|t| t.supports_schemas()) {
-                                    add_divider(ui);
-
-                                    let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());
-                                    if schemas.is_empty() {
-                                        schemas.push("public".to_string());
-                                    }
-                                    let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
-
-                                    let schema_picker = crate::window_egui::searchable_picker::PickerConfig {
-                                        id_salt: "query_schema_select",
-                                        icon: egui_icons::icons::ICON_SCHEMA.codepoint,
-                                        title: "Schemas",
-                                        search_hint: "Search schemas…",
-                                        tooltip: "Active schema",
-                                        min_width: if metrics.is_touch { 120.0 } else { 100.0 },
-                                        max_width: if metrics.is_touch { 200.0 } else { 170.0 },
-                                        is_touch: metrics.is_touch,
-                                    };
-                                    let schema_selected = schemas.iter().position(|s| *s == active_schema);
-                                    if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
-                                        ui, &schema_picker, &active_schema, &schemas, schema_selected,
-                                    ) {
-                                        let s = &schemas[i];
-                                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                            tab.schema_name = Some(s.clone());
-                                        }
-                                        // search_path diterapkan executor pada koneksi yang
-                                        // menjalankan query (lihat QueryExecutionOptions::schema_name).
-                                        self.toasts.info(format!("Switched active schema to '{}'", s));
-                                    }
-                                }
-                            }
-
                             add_divider(ui);
 
-                            // 4. Connection selector (Leftmost in group)
-                            let conn_picker = crate::window_egui::searchable_picker::PickerConfig {
-                                id_salt: "query_conn_select",
-                                icon: egui_icons::icons::ICON_DNS.codepoint,
-                                title: "Connections",
-                                search_hint: "Search connections…",
-                                tooltip: "Active connection",
-                                min_width: if metrics.is_touch { 170.0 } else { 150.0 },
-                                max_width: if metrics.is_touch { 280.0 } else { 240.0 },
-                                is_touch: metrics.is_touch,
-                            };
-                            let conn_names: Vec<String> = conn_list.iter().map(|(_, n)| n.clone()).collect();
-                            let conn_selected = conn_list.iter().position(|(cid, _)| tab_conn_id == Some(*cid));
-                            if let Some(i) = crate::window_egui::searchable_picker::searchable_picker(
-                                ui, &conn_picker, &current_conn_name, &conn_names, conn_selected,
-                            ) {
-                                let cid = conn_list[i].0;
-                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                    tab.connection_id = Some(cid);
-                                    tab.database_name = None; // reset db for new connection
-                                }
-                                self.current_table_headers.clear();
-                                self.current_table_data.clear();
-                            }
-                            // M10: badge environment di kiri picker koneksi.
-                            if let Some(env) = tab_conn_id
-                                .and_then(|cid| self.connection_environment_by_id(cid))
-                            {
-                                super::platform_ui::environment_badge(ui, env);
-                            }
+                            // 3. Switcher project (paling kiri di grup kanan). Picker koneksi/database
+                            // kini ada di kartu melayang pojok kanan atas editor (db_context_bar).
+                            crate::window_egui::project_ui::render_switcher(self, ui);
                         },
                     );
+                    // Kartu melayang konteks database (koneksi/database/schema) di pojok
+                    // kanan atas area editor, tepat di bawah tab bar.
+                    let db_context_rect = egui::Rect::from_min_max(
+                        egui::pos2(bar_rect.left(), bar_rect.bottom()),
+                        ui.max_rect().right_bottom(),
+                    );
+                    crate::window_egui::db_context_bar::render(self, ui, db_context_rect, &metrics);
 
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                         && tab.content != self.editor.text

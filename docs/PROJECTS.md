@@ -7,7 +7,8 @@ you add) and a memory that AI agents read and write.
 
 ## Create a project
 
-1. Open the project menu at the top of the **Database** or **APIs** sidebar.
+1. Open the project menu on the right side of the header, next to the AI button. The
+   pill beside the project name shows the active environment; click it to switch.
 2. Choose **New project…**, type a name and keep the three **Create folders** boxes
    ticked.
 3. Tabular creates a connection folder, a query folder and an HTTP collection with the

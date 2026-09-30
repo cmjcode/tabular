@@ -14,6 +14,7 @@ pub mod ai_mcp_ui;
 pub mod ai_fix;
 pub mod app_impl;
 pub mod connection_mgr;
+pub mod db_context_bar;
 pub mod device_profile;
 pub mod diagram;
 pub mod init;

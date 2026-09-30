@@ -1,4 +1,4 @@
-//! UI Project: switcher di header sidebar, dialog New/Edit Project, filter
+//! UI Project: switcher di header kanan, dialog New/Edit Project, filter
 //! tree per project, share project ke team, dan sinkronisasi manifest.
 //!
 //! Logika data ada di [`crate::project`] dan [`crate::project_memory`]; modul
@@ -352,115 +352,46 @@ fn env_pill(ui: &mut egui::Ui, env: &ProjectEnv) -> egui::Response {
     .on_hover_text(format!("Environment: {} (click to switch)", env.name))
 }
 
-/// Baris project di atas tree sidebar Database dan APIs.
+/// Aksi yang dipilih user dari switcher project pada satu frame.
+#[derive(Default)]
+struct SwitcherAction {
+    open_create: bool,
+    open_edit: Option<String>,
+    select: Option<Option<String>>,
+    select_env: Option<(String, String)>,
+    toggle_filter: bool,
+    go_share: bool,
+}
+
+/// Panjang maksimum nama project di header sebelum dipotong.
+const HEADER_NAME_MAX_CHARS: usize = 24;
+
+/// Switcher project di header kanan: tombol menu project + pill environment.
+///
+/// Urutan widget mengikuti arah layout `ui`: pada layout kanan-ke-kiri (header)
+/// pill environment ditambahkan lebih dulu agar tetap tampil di kanan nama project.
 pub fn render_switcher(t: &mut Tabular, ui: &mut egui::Ui) {
     ensure_loaded(t);
-    let mut open_create = false;
-    let mut open_edit: Option<String> = None;
-    let mut select: Option<Option<String>> = None;
-    let mut select_env: Option<(String, String)> = None;
-    let mut toggle_filter = false;
-    let mut go_share = false;
-
+    let mut act = SwitcherAction::default();
     let active_proj = active(t).cloned();
-    let label = match &active_proj {
-        Some(p) => p.name.clone(),
-        None => "All projects".to_string(),
-    };
+    let right_to_left = ui.layout().main_dir() == egui::Direction::RightToLeft;
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(
-            icons::ICON_WORKSPACES
-                .rich_text()
-                .size(15.0)
-                .color(style::theme_accent(ui.ctx())),
-        );
-        let menu_text =
-            egui::RichText::new(format!("{}  {}", label, icons::ICON_EXPAND_MORE.codepoint))
-                .strong();
-        ui.menu_button(menu_text, |ui| {
-            ui.set_min_width(220.0);
-            if ui
-                .selectable_label(active_proj.is_none(), "All projects")
-                .clicked()
-            {
-                select = Some(None);
-                ui.close();
-            }
-            if !t.projects.list.is_empty() {
-                ui.separator();
-            }
-            for p in &t.projects.list {
-                let is_active = active_proj.as_ref().is_some_and(|a| a.id == p.id);
-                let mut text = p.name.clone();
-                if p.owner_id.is_some() {
-                    text.push_str("  (shared)");
-                }
-                if ui.selectable_label(is_active, text).clicked() {
-                    select = Some(Some(p.id.clone()));
-                    ui.close();
-                }
-            }
-            ui.separator();
-            if ui
-                .button(format!("{}  New project…", icons::ICON_ADD.codepoint))
-                .clicked()
-            {
-                open_create = true;
-                ui.close();
-            }
-            if let Some(p) = &active_proj {
-                if ui
-                    .button(format!("{}  Edit project…", icons::ICON_EDIT.codepoint))
-                    .clicked()
-                {
-                    open_edit = Some(p.id.clone());
-                    ui.close();
-                }
-                let mut only = t.projects.ui.filter_only;
-                if ui.checkbox(&mut only, "Show only this project").changed() {
-                    toggle_filter = true;
-                    ui.close();
-                }
-                if ui
-                    .button(format!("{}  Share with team…", icons::ICON_SHARE.codepoint))
-                    .clicked()
-                {
-                    go_share = true;
-                    ui.close();
-                }
-            }
-        });
+    if right_to_left {
+        switcher_env_pill(ui, active_proj.as_ref(), &mut act);
+        switcher_menu(t, ui, active_proj.as_ref(), &mut act);
+    } else {
+        switcher_menu(t, ui, active_proj.as_ref(), &mut act);
+        switcher_env_pill(ui, active_proj.as_ref(), &mut act);
+    }
 
-        if let Some(p) = &active_proj
-            && let Some(env) = p.active_environment().cloned()
-        {
-            let pill = env_pill(ui, &env);
-            egui::Popup::menu(&pill).show(|ui| {
-                ui.set_min_width(160.0);
-                for e in &p.environments {
-                    let is_active = e.name == env.name;
-                    let color = e
-                        .environment()
-                        .map(Environment::color)
-                        .unwrap_or_else(|| ui.visuals().text_color());
-                    let text = egui::RichText::new(format!(
-                        "{}  {}",
-                        icons::ICON_CIRCLE.codepoint,
-                        e.name
-                    ))
-                    .color(color);
-                    if ui.selectable_label(is_active, text).clicked() {
-                        select_env = Some((p.id.clone(), e.name.clone()));
-                        ui.close();
-                    }
-                }
-            });
-        }
-    });
-    ui.add_space(4.0);
-
+    let SwitcherAction {
+        open_create,
+        open_edit,
+        select,
+        select_env,
+        toggle_filter,
+        go_share,
+    } = act;
     if let Some(id) = select {
         set_active(t, id);
     }
@@ -482,6 +413,108 @@ pub fn render_switcher(t: &mut Tabular, ui: &mut egui::Ui) {
         t.selected_collab_sub_menu = "Projects".to_string();
         crate::sync::ui_teams::refresh_teams(t);
     }
+}
+
+/// Tombol menu project (ikon + nama + chevron) beserta isi menunya.
+fn switcher_menu(
+    t: &Tabular,
+    ui: &mut egui::Ui,
+    active_proj: Option<&Project>,
+    act: &mut SwitcherAction,
+) {
+    let full_name = active_proj.map_or("All projects", |p| p.name.as_str());
+    let mut label: String = full_name.chars().take(HEADER_NAME_MAX_CHARS).collect();
+    if label.chars().count() < full_name.chars().count() {
+        label.push('…');
+    }
+    let menu_text = egui::RichText::new(format!(
+        "{}  {}  {}",
+        icons::ICON_WORKSPACES.codepoint,
+        label,
+        icons::ICON_EXPAND_MORE.codepoint
+    ))
+    .strong();
+    let resp = ui.menu_button(menu_text, |ui| {
+        ui.set_min_width(220.0);
+        if ui
+            .selectable_label(active_proj.is_none(), "All projects")
+            .clicked()
+        {
+            act.select = Some(None);
+            ui.close();
+        }
+        if !t.projects.list.is_empty() {
+            ui.separator();
+        }
+        for p in &t.projects.list {
+            let is_active = active_proj.is_some_and(|a| a.id == p.id);
+            let mut text = p.name.clone();
+            if p.owner_id.is_some() {
+                text.push_str("  (shared)");
+            }
+            if ui.selectable_label(is_active, text).clicked() {
+                act.select = Some(Some(p.id.clone()));
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui
+            .button(format!("{}  New project…", icons::ICON_ADD.codepoint))
+            .clicked()
+        {
+            act.open_create = true;
+            ui.close();
+        }
+        if let Some(p) = active_proj {
+            if ui
+                .button(format!("{}  Edit project…", icons::ICON_EDIT.codepoint))
+                .clicked()
+            {
+                act.open_edit = Some(p.id.clone());
+                ui.close();
+            }
+            let mut only = t.projects.ui.filter_only;
+            if ui.checkbox(&mut only, "Show only this project").changed() {
+                act.toggle_filter = true;
+                ui.close();
+            }
+            if ui
+                .button(format!("{}  Share with team…", icons::ICON_SHARE.codepoint))
+                .clicked()
+            {
+                act.go_share = true;
+                ui.close();
+            }
+        }
+    });
+    resp.response.on_hover_text(format!("Project: {full_name}"));
+}
+
+/// Pill environment aktif project; klik untuk memilih environment lain.
+fn switcher_env_pill(ui: &mut egui::Ui, active_proj: Option<&Project>, act: &mut SwitcherAction) {
+    let Some(p) = active_proj else {
+        return;
+    };
+    let Some(env) = p.active_environment().cloned() else {
+        return;
+    };
+    let pill = env_pill(ui, &env);
+    egui::Popup::menu(&pill).show(|ui| {
+        ui.set_min_width(160.0);
+        for e in &p.environments {
+            let is_active = e.name == env.name;
+            let color = e
+                .environment()
+                .map(Environment::color)
+                .unwrap_or_else(|| ui.visuals().text_color());
+            let text = egui::RichText::new(format!("{}  {}", icons::ICON_CIRCLE.codepoint, e.name))
+                .color(color);
+            if ui.selectable_label(is_active, text).clicked() {
+                act.select_env = Some((p.id.clone(), e.name.clone()));
+                ui.close();
+            }
+        }
+    });
 }
 
 // ─── Dialog ───────────────────────────────────────────────────────────────────

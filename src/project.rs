@@ -443,7 +443,7 @@ pub fn validate_name(
 /// State UI project yang diingat antar sesi.
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct UiState {
-    /// Project yang dipilih di switcher sidebar.
+    /// Project yang dipilih di switcher header.
     #[serde(default)]
     pub active_id: Option<String>,
     /// Sidebar hanya menampilkan folder project aktif.
