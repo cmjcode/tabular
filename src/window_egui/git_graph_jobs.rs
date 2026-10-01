@@ -1055,7 +1055,7 @@ pub fn execute(t: &mut Tabular, tab_id: usize, d: GraphDialog) -> bool {
             branch,
             opt,
         } => run_op(t, &key, "Pull", move |p, c| {
-            hops::pull_into_current(p, &remote, &branch, opt, c).map(done)
+            hops::pull_into_current(p, &remote, &branch, opt, c)
         }),
         GraphDialog::FetchInto {
             remote,

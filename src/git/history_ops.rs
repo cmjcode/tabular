@@ -310,24 +310,26 @@ pub fn push_branch(
     net(repo, &args, cancel).map(|_| ())
 }
 
-/// Pull `remote/branch` ke branch aktif.
+/// Pull `remote/branch` ke branch aktif. Perubahan lokal di-autostash;
+/// hasilnya catatan peringatan dari [`super::ops::autostash_note`].
 pub fn pull_into_current(
     repo: &Path,
     remote: &str,
     branch: &str,
     opt: MergeOptions,
     cancel: &AtomicBool,
-) -> Result<(), GitError> {
+) -> Result<String, GitError> {
     check_name("remote", remote)?;
     check_name("branch", branch)?;
-    let mut args = vec!["pull", "--no-edit"];
+    let mut args = vec!["pull", "--no-edit", "--autostash"];
     if opt.squash {
         args.push("--squash");
     } else if opt.no_ff {
         args.push("--no-ff");
     }
     args.extend([remote, branch]);
-    net(repo, &args, cancel).map(|_| ())
+    net(repo, &args, cancel)?;
+    Ok(super::ops::autostash_note(repo))
 }
 
 /// Perbarui branch lokal `local` dari `remote/branch` tanpa checkout.

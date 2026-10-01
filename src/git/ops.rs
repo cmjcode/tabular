@@ -112,9 +112,32 @@ pub fn fetch(repo: &Path, cancel: &AtomicBool) -> Result<(), GitError> {
 }
 
 /// Pull tanpa membuat merge commit diam-diam; `rebase` memakai `--rebase`.
-pub fn pull(repo: &Path, rebase: bool, cancel: &AtomicBool) -> Result<(), GitError> {
+/// Perubahan lokal disimpan dulu lewat `--autostash` supaya tidak memblokir
+/// pull. Mengembalikan catatan peringatan (lihat [`autostash_note`]).
+pub fn pull(repo: &Path, rebase: bool, cancel: &AtomicBool) -> Result<String, GitError> {
     let mode = if rebase { "--rebase" } else { "--ff-only" };
-    cli::run(Some(repo), &["pull", mode], cancel, cli::DEFAULT_TIMEOUT).map(|_| ())
+    cli::run(
+        Some(repo),
+        &["pull", mode, "--autostash"],
+        cancel,
+        cli::DEFAULT_TIMEOUT,
+    )?;
+    Ok(autostash_note(repo))
+}
+
+/// Setelah pull `--autostash` yang sukses: bila perubahan lokal bentrok saat
+/// dikembalikan, git tetap exit 0 dan menyisakan file unmerged. Kembalikan
+/// pesan peringatan untuk pengguna, atau string kosong bila bersih.
+pub fn autostash_note(repo: &Path) -> String {
+    let files = run(repo, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+    let files: Vec<&str> = files.lines().filter(|l| !l.is_empty()).collect();
+    if files.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Pull completed, but your local changes conflict with it in: {}. Resolve the conflicts; the original changes are still in the stash (\"autostash\").",
+        files.join(", ")
+    )
 }
 
 /// Push branch aktif. Branch tanpa upstream di-push ke `origin` dengan `-u`.
@@ -277,6 +300,43 @@ mod tests {
         assert_eq!(
             discover_root(&r.join(".")).expect("root").file_name(),
             r.file_name()
+        );
+    }
+
+    #[test]
+    fn pull_keeps_local_changes() {
+        let Some(up) = temp_repo("pull-up") else {
+            eprintln!("git not installed; skipping");
+            return;
+        };
+        let u = &up.0;
+        std::fs::write(u.join("a.txt"), "one\n").expect("write");
+        std::fs::write(u.join("b.txt"), "one\n").expect("write");
+        stage_all(u).expect("stage");
+        commit(u, "first", false).expect("commit");
+
+        let clone = TempRepo(u.with_extension("clone"));
+        let c = &clone.0;
+        let (src, dst) = (u.to_string_lossy(), c.to_string_lossy());
+        run(u, &["clone", "-q", &src, &dst]).expect("clone");
+
+        std::fs::write(u.join("a.txt"), "two\n").expect("write");
+        std::fs::write(u.join("b.txt"), "two\n").expect("write");
+        stage_all(u).expect("stage");
+        commit(u, "second", false).expect("commit");
+
+        // Perubahan lokal pada file yang juga berubah di remote: pull tetap
+        // jalan, konfliknya dilaporkan lewat catatan dan stash dipertahankan.
+        std::fs::write(c.join("a.txt"), "local\n").expect("write");
+        let note = pull(c, false, &cli::NEVER).expect("pull");
+        assert!(note.contains("a.txt"), "{note}");
+        assert_eq!(
+            std::fs::read_to_string(c.join("b.txt")).expect("read"),
+            "two\n"
+        );
+        assert_eq!(
+            run(c, &["stash", "list"]).expect("stash").lines().count(),
+            1
         );
     }
 }

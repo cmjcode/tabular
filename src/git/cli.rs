@@ -126,7 +126,7 @@ pub fn run_with_codes(
     if ok_codes.contains(&code) {
         return Ok((stdout, code));
     }
-    let detail = crate::repo_scan::redact(stderr.trim());
+    let detail = crate::repo_scan::redact(&clean_stderr(&stderr));
     let detail = if detail.is_empty() {
         format!("{status}")
     } else {
@@ -141,6 +141,29 @@ pub fn run_with_codes(
         ));
     }
     Err(GitError::Command { action, detail })
+}
+
+/// Ringkas stderr git menjadi penyebab gagalnya saja: peringatan ssh dan
+/// progres fetch (`From …`, daftar ref) dibuang bila ada baris `error:` /
+/// `fatal:`, dan baris yang berulang hanya ditampilkan sekali.
+pub fn clean_stderr(stderr: &str) -> String {
+    const NOISE: &[&str] = &["Pseudo-terminal will not be allocated"];
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !NOISE.iter().any(|n| l.starts_with(n)))
+        .collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("error:") || l.starts_with("fatal:"))
+        .unwrap_or(0);
+    let mut out: Vec<&str> = Vec::new();
+    for line in &lines[start..] {
+        if !out.contains(line) {
+            out.push(line);
+        }
+    }
+    out.join("\n").trim().to_string()
 }
 
 /// stderr git yang menandakan kredensial tidak tersedia.
@@ -170,6 +193,26 @@ mod tests {
             "git@github.com: Permission denied (publickey)."
         ));
         assert!(!is_auth_failure("fatal: not a git repository"));
+    }
+
+    #[test]
+    fn stderr_keeps_only_the_cause() {
+        let raw = "Pseudo-terminal will not be allocated because stdin is not a terminal.\n\
+From gitlab.com:group/repo\n   8ff4d05..2728dac  a -> origin/a\n * [new tag]         v1 -> v1\n\
+error: Your local changes to the following files would be overwritten by merge:\n\tDockerfile\n\
+Please commit your changes or stash them before you merge.\n\
+error: Your local changes to the following files would be overwritten by merge:\n\t.DS_Store\n\
+Please commit your changes or stash them before you merge.\nAborting\n";
+        assert_eq!(
+            clean_stderr(raw),
+            "error: Your local changes to the following files would be overwritten by merge:\n\
+\tDockerfile\nPlease commit your changes or stash them before you merge.\n\t.DS_Store\nAborting"
+        );
+        // Tanpa baris error, isi dipertahankan kecuali peringatan ssh.
+        assert_eq!(
+            clean_stderr("Pseudo-terminal will not be allocated\nsomething odd\n"),
+            "something odd"
+        );
     }
 
     #[test]

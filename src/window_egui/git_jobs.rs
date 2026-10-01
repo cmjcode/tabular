@@ -1026,9 +1026,7 @@ pub fn fetch_all(t: &mut Tabular) {
 
 pub fn pull(t: &mut Tabular, key: &str) {
     let rebase = t.git.store.settings.pull_rebase;
-    run_op(t, key, "Pull", move |p, c| {
-        ops::pull(p, rebase, c).map(|_| String::new())
-    });
+    run_op(t, key, "Pull", move |p, c| ops::pull(p, rebase, c));
 }
 
 pub fn push(t: &mut Tabular, key: &str) {
@@ -1768,12 +1766,17 @@ fn apply(t: &mut Tabular, r: JobResult, ctx: &egui::Context) {
             let ui = t.git.ui_mut(&key);
             ui.busy = None;
             match res {
-                Ok(_) => {
+                Ok(note) => {
                     if label == "Commit" {
                         ui.commit_message.clear();
                         ui.amend = false;
                     }
-                    if !matches!(label.as_str(), "Stage" | "Unstage") {
+                    // Pull sukses tetapi autostash bentrok: beri peringatan.
+                    if label == "Pull" && !note.is_empty() {
+                        log::warn!("[GIT] {note}");
+                        ui.last_error = Some(note.clone());
+                        t.toasts.warning(note);
+                    } else if !matches!(label.as_str(), "Stage" | "Unstage") {
                         t.toasts.success(format!("{label} completed"));
                     }
                 }
