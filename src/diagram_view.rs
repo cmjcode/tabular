@@ -1034,7 +1034,8 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         state.view_anim = None;
     }
     // Klik latar kosong menghentikan animasi aliran data dan pemutaran, tapi
-    // detail flow card terpilih tetap tampil sampai card-nya diklik lagi (Esc).
+    // flow card terpilih tetap tampil sampai Esc atau endpoint-nya diklik
+    // lagi di rail.
     if response.clicked() {
         state.flow_anim = None;
         state.focus_flow = None;
@@ -3028,13 +3029,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     // kontrolnya. Card yang baru dihapus frame ini menggeser indeks, jadi
     // dilewati sampai frame berikutnya.
     if state.flow_play.is_some() && flow_frame.rects.len() == state.flow_cards.len() {
-        let lod = lod_for_zoom(state.zoom);
         let index_of = |id: &str| state.flow_cards.iter().position(|c| c.id == id);
         let card_rect = |id: &str| {
-            let r = crate::diagram_flow_layout::lod_rect(
-                flow_frame.drawn_rect(state, index_of(id)?),
-                lod,
-            );
+            let r = flow_frame.drawn_rect(state, index_of(id)?);
             Some(egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max)))
         };
         let curve = |id: &str, table: &str| {
@@ -3807,11 +3804,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
 
     render_relations_panel(ui, state, rect, now);
-    // Detail proses menempel di bawah card terpilih (hanya LOD Detail).
+    // Detail proses menempel di bawah card terpilih, di semua zoom.
     let selected_card_rect = state
         .selected_flow
         .as_deref()
-        .filter(|_| lod == Lod::Detail && flow_frame.rects.len() == state.flow_cards.len())
+        .filter(|_| flow_frame.rects.len() == state.flow_cards.len())
         .and_then(|id| state.flow_cards.iter().position(|c| c.id == id))
         .map(|i| {
             let r = flow_frame.drawn_rect(state, i);
@@ -8883,21 +8880,36 @@ mod tests {
         );
     }
 
-    /// LOD Overview (titik) lebih ringan daripada Detail (card penuh). Garis
-    /// proses ke tabel tetap digambar di kedua LOD.
+    /// Card digambar penuh di semua zoom: zoom kecil tidak mengecilkannya
+    /// menjadi pil atau titik.
     #[test]
-    fn test_flow_card_overview_is_lighter_than_detail() {
+    fn test_flow_card_stays_full_when_zoomed_out() {
         let mut state = flow_fixture(12);
         spotlight_and_center(&mut state, 3, 1.0);
         state.selected_flow = state.focus_flow.clone();
         let detail = card_vertices(&state);
         spotlight_and_center(&mut state, 3, 0.2);
-        let overview = card_vertices(&state);
-        assert!(overview > 0, "overview must still draw the card");
+        let zoomed_out = card_vertices(&state);
         assert!(
-            overview * 2 < detail,
-            "overview {overview} vertices vs detail {detail}"
+            zoomed_out * 2 > detail,
+            "zoomed out {zoomed_out} vertices vs detail {detail}"
         );
+    }
+
+    /// Klik endpoint memusatkan viewport ke card-nya pada zoom 50%.
+    #[test]
+    fn test_spotlight_centers_the_card_at_half_zoom() {
+        let view = egui::vec2(1600.0, 1000.0);
+        let mut state = flow_fixture(6);
+        let id = state.flow_cards[2].id.clone();
+        assert!(crate::diagram_flow_view::spotlight_card(
+            &mut state, &id, view, 0.0
+        ));
+        let anim = state.view_anim.as_ref().expect("viewport tween");
+        assert_eq!(anim.to_zoom, 0.5);
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&state);
+        let center = frame.drawn_rect(&state, 2).center();
+        assert_eq!(anim.to_pan, pan_to_center(center, view, 0.5));
     }
 
     /// Garis proses hanya digambar untuk card sorotan.
@@ -8998,10 +9010,10 @@ mod tests {
         assert!(state.focus_flow.is_none() && state.selected_flow.is_none());
     }
 
-    /// Detail card terpilih tidak hilang saat klik area lain; klik card itu
-    /// lagi yang menyembunyikannya.
+    /// Card terpilih tidak hilang saat klik area lain maupun saat card itu
+    /// diklik lagi, dan bisa digeser.
     #[test]
-    fn test_card_detail_hidden_only_by_clicking_card() {
+    fn test_card_stays_on_click_and_can_be_dragged() {
         let ctx = egui::Context::default();
         let mut state = flow_fixture(3);
         // Frame awal mengukur ukuran tabel; posisi card sorotan mengikutinya.
@@ -9057,9 +9069,35 @@ mod tests {
         click(&mut state, &mut step, empty);
         assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
 
-        // Klik card yang sama: detail disembunyikan.
+        // Klik card yang sama: card tetap tampil.
         click(&mut state, &mut step, card);
-        assert!(state.selected_flow.is_none());
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
+
+        // Geser card 120 px ke kanan dan 60 px ke bawah.
+        let before = crate::diagram_flow_layout::FlowFrame::compute(&state).rects[1].min;
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let to = card + egui::vec2(120.0, 60.0);
+        step(&mut state, vec![]);
+        step(&mut state, vec![egui::Event::PointerMoved(card)]);
+        step(&mut state, vec![button(card, true)]);
+        step(
+            &mut state,
+            vec![egui::Event::PointerMoved(card + egui::vec2(60.0, 30.0))],
+        );
+        step(&mut state, vec![egui::Event::PointerMoved(to)]);
+        step(&mut state, vec![button(to, false)]);
+        let after = crate::diagram_flow_layout::FlowFrame::compute(&state).rects[1].min;
+        let moved = after - before;
+        assert!(
+            (moved.x - 120.0 / zoom).abs() < 8.0 && (moved.y - 60.0 / zoom).abs() < 8.0,
+            "card moved by {moved:?}"
+        );
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
     }
 
     /// Tabel mirip kasus nyata: beberapa tabel tinggi, relasi berpusat di

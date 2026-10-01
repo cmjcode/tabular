@@ -23,6 +23,8 @@ pub enum PlayPhase {
 pub const STEP_SECS: f64 = 1.2;
 pub const STEP_NO_TARGET_SECS: f64 = 0.5;
 pub const RESPONSE_SECS: f64 = 0.6;
+/// Lama popup PLAY di awal timeline (detik, kecepatan 1×).
+pub const PLAY_POPUP_SECS: f64 = 0.8;
 /// Pilihan kecepatan di bilah kontrol.
 pub const SPEEDS: [f32; 3] = [0.5, 1.0, 2.0];
 /// Kecepatan awal setiap pemutaran baru.
@@ -326,6 +328,32 @@ mod tests {
         assert_eq!(previous_item(&items, 0.1), 0);
         assert_eq!(next_item(&items, 0.1), 1);
         assert_eq!(next_item(&items, play_duration(&items)), 3);
+    }
+
+    #[test]
+    fn popup_play_at_start_and_end_when_done() {
+        let items = play_items(&card(vec![db("users"), db("orders")]), &["users"]);
+        let total = play_duration(&items);
+        assert_eq!(play_popup(&items, 0.0), Some((PlayPopup::Play, 0.0)));
+        assert!(matches!(
+            play_popup(&items, PLAY_POPUP_SECS / 2.0),
+            Some((PlayPopup::Play, t)) if (t - 0.5).abs() < 1e-6
+        ));
+        // Di tengah timeline tidak ada popup.
+        assert_eq!(play_popup(&items, PLAY_POPUP_SECS), None);
+        assert_eq!(play_popup(&items, total - RESPONSE_SECS * 0.75), None);
+        // END muncul di paruh akhir respons dan menetap setelah selesai.
+        assert!(matches!(
+            play_popup(&items, total - RESPONSE_SECS * 0.25),
+            Some((PlayPopup::End, t)) if (t - 0.5).abs() < 1e-4
+        ));
+        assert_eq!(play_popup(&items, total), Some((PlayPopup::End, 1.0)));
+        // Card tanpa item: END tetap menang atas PLAY di akhir respons.
+        assert_eq!(play_popup(&[], 0.1).map(|p| p.0), Some(PlayPopup::Play));
+        assert_eq!(
+            play_popup(&[], RESPONSE_SECS * 0.9).map(|p| p.0),
+            Some(PlayPopup::End)
+        );
     }
 
     #[test]

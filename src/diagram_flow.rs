@@ -359,6 +359,7 @@ pub fn remove_card(state: &mut DiagramState, card_id: &str) {
     state
         .endpoint_links
         .retain(|l| !card_matches_link(&card, l));
+    state.flow_card_pos.remove(card_id);
     if state.selected_flow.as_deref() == Some(card_id) {
         state.selected_flow = None;
     }

@@ -1113,6 +1113,10 @@ pub struct DiagramState {
     /// terakhir, koordinat diagram; card memanjang setinggi ini.
     #[serde(skip)]
     pub flow_footer_h: f32,
+    /// Posisi card (koordinat diagram) yang digeser pengguna, per id card.
+    /// Card tanpa entri ditata otomatis di samping tabelnya.
+    #[serde(skip)]
+    pub flow_card_pos: std::collections::HashMap<String, eframe::egui::Pos2>,
     /// Flow card yang sedang difokuskan (meredupkan lainnya). Tidak pernah
     /// aktif bersamaan dengan `focus_table` atau `focus_group`.
     #[serde(skip)]
@@ -1684,6 +1688,7 @@ impl Default for DiagramState {
             selected_flow: None,
             flow_open_step: None,
             flow_footer_h: 0.0,
+            flow_card_pos: std::collections::HashMap::new(),
             focus_flow: None,
             flow_play: None,
             flow_gen: None,

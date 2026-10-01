@@ -146,11 +146,13 @@ The diagram menu controls how endpoints are shown:
 | **Show API endpoints** | Hides or shows cards and badges |
 | **API endpoints as** | **Rail**: the API panel beside the diagram; the selected endpoint shows its process card next to its tables. **Badges**: only the blue **API n** badge on each table header. **Both** (default): the API panel and the badges |
 
-Working with cards (only the endpoint selected in the API panel has a card, and
-it is placed automatically, so it cannot be dragged):
+Working with cards (only the endpoint selected in the API panel has a card; it
+is placed next to its tables and always shows all its steps, at any zoom):
 
 - Select an endpoint in the API panel to show its card and its lines to the
-  tables. Click the card to show or hide its steps.
+  tables. The view centres on the card at 50% zoom. Clicking the card plays its
+  process and never hides it.
+- Drag a card to move it. It keeps that place until the diagram tab is closed.
 - Line colour follows the operation: blue for reads (arrow from the table),
   green for insert, update and upsert, red for delete (arrow to the table), grey
   when the operation is unknown. A table that is both read and written gets the

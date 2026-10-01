@@ -2,7 +2,8 @@
 //! penempatan card sorotan di samping tabel yang disentuhnya.
 //!
 //! Kanvas hanya menampilkan satu card: endpoint yang dipilih di API rail
-//! (card sorotan). Card itu ditata otomatis dan tidak bisa digeser.
+//! (card sorotan). Card itu ditata otomatis sampai digeser pengguna
+//! (`DiagramState::flow_card_pos`) dan selalu digambar penuh di semua zoom.
 //!
 //! Semua koordinat di sini adalah koordinat diagram (zoom 1.0). Modul ini
 //! hanya memakai tipe geometri egui (`Rect`, `Pos2`), tanpa `Ui`, supaya
@@ -10,7 +11,6 @@
 
 use eframe::egui;
 
-use crate::diagram_lod::Lod;
 use crate::models::structs::{DiagramState, FlowCard, FlowStep, FlowTrigger, FlowTriggerKind};
 
 /// Lebar card.
@@ -29,8 +29,6 @@ pub const STEP_DETAIL_PAD: f32 = 6.0;
 const STEP_DETAIL_CHARS: usize = 40;
 /// Padding bawah card.
 pub const CARD_PAD_BOTTOM: f32 = 6.0;
-/// Sisi titik card pada LOD `Overview`.
-pub const OVERVIEW_DOT: f32 = 34.0;
 /// Jarak card sorotan tanpa tabel di diagram ke isi diagram di kanannya.
 const FREE_SPOT_GAP: f32 = 140.0;
 /// Jarak card sorotan (mode rail) ke tabel-tabelnya; ruang untuk garis dan
@@ -113,7 +111,7 @@ pub fn step_detail_height(step: &FlowStep) -> f32 {
 }
 
 /// Langkah yang detailnya dibuka di card ini beserta tinggi bloknya. Hanya
-/// card terpilih yang badannya tampil.
+/// card terpilih yang detail langkahnya bisa dibuka.
 pub fn open_step(state: &DiagramState, card: &FlowCard) -> Option<(usize, f32)> {
     if !is_selected(state, card) {
         return None;
@@ -123,21 +121,21 @@ pub fn open_step(state: &DiagramState, card: &FlowCard) -> Option<(usize, f32)> 
     (h > 0.0).then_some((i, h))
 }
 
-/// Card terpilih? Hanya card terpilih yang badannya (ringkasan dan langkah)
-/// tampil; card sorotan lain (fokus, pemutaran) hanya header.
+/// Card terpilih? Hanya card terpilih yang punya detail langkah dan bagian
+/// bawah (daftar tabel).
 pub fn is_selected(state: &DiagramState, card: &FlowCard) -> bool {
     state.selected_flow.as_deref() == Some(card.id.as_str())
 }
 
-/// Tinggi yang digambar pada LOD `Detail`. Card terpilih diperluas: semua
-/// langkah, detail langkah yang dibuka, dan bagian bawahnya (tombol + tabel,
-/// `state.flow_footer_h`) di dalam bingkai yang sama.
+/// Tinggi yang digambar: card selalu penuh (header, ringkasan, semua
+/// langkah). Card terpilih ditambah detail langkah yang dibuka dan bagian
+/// bawahnya (tabel, `state.flow_footer_h`) di dalam bingkai yang sama.
 pub fn drawn_height(state: &DiagramState, card: &FlowCard) -> f32 {
     if is_selected(state, card) {
         let open = open_step(state, card).map_or(0.0, |(_, h)| h);
         body_height(card) + open + state.flow_footer_h
     } else {
-        CARD_HEADER_H
+        body_height(card)
     }
 }
 
@@ -168,20 +166,6 @@ pub fn step_row_rect(
         egui::pos2(rect.left(), top),
         egui::vec2(rect.width(), STEP_ROW_H),
     ))
-}
-
-/// Rect yang benar-benar digambar untuk LOD `lod`: card penuh, pil
-/// setinggi header, atau titik.
-pub fn lod_rect(rect: egui::Rect, lod: Lod) -> egui::Rect {
-    match lod {
-        Lod::Detail => rect,
-        Lod::Compact => {
-            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), CARD_HEADER_H))
-        }
-        Lod::Overview => {
-            egui::Rect::from_min_size(rect.min, egui::vec2(OVERVIEW_DOT, OVERVIEW_DOT))
-        }
-    }
 }
 
 /// Resource sebuah trigger: segmen path pertama setelah awalan umum (`api`,
@@ -250,7 +234,7 @@ impl FlowFrame {
         let mut shown = vec![false; n];
         if let Some(i) = spotlight_index(state) {
             let size = egui::vec2(CARD_WIDTH, expanded_height(state, &state.flow_cards[i]));
-            rects[i] = egui::Rect::from_min_size(spotlight_pos(state, &tables[i], size), header);
+            rects[i] = egui::Rect::from_min_size(card_pos(state, i, &tables[i], size), header);
             shown[i] = true;
         }
         Self {
@@ -265,7 +249,7 @@ impl FlowFrame {
         self.shown.get(i).copied().unwrap_or(false)
     }
 
-    /// Rect card `i` di LOD `Detail`, diperluas bila card itu terpilih.
+    /// Rect card `i` seperti yang digambar, diperluas bila card itu terpilih.
     pub fn drawn_rect(&self, state: &DiagramState, i: usize) -> egui::Rect {
         let card = &state.flow_cards[i];
         let r = self.rects[i];
@@ -282,6 +266,15 @@ pub fn spotlight_index(state: &DiagramState) -> Option<usize> {
         .or(state.focus_flow.as_deref())
         .or(state.flow_play.as_ref().map(|p| p.card_id.as_str()))?;
     state.flow_cards.iter().position(|c| c.id == id)
+}
+
+/// Pojok kiri atas card `i`: posisi hasil geser pengguna bila ada, selain
+/// itu tempat otomatis di samping tabel-tabelnya (lihat [`spotlight_pos`]).
+fn card_pos(state: &DiagramState, i: usize, tables: &[String], size: egui::Vec2) -> egui::Pos2 {
+    match state.flow_card_pos.get(&state.flow_cards[i].id) {
+        Some(pos) => *pos,
+        None => spotlight_pos(state, tables, size),
+    }
 }
 
 /// Pojok kiri atas card sorotan berukuran `size` untuk tabel `tables` (id
@@ -346,15 +339,14 @@ pub fn cards_visible(state: &DiagramState) -> bool {
     state.show_endpoints && state.endpoint_display.shows_rail() && !state.flow_cards.is_empty()
 }
 
-/// Rect card `card_id` (koordinat diagram), seperti yang digambar di LOD
-/// `Detail`. Dipakai pencarian dan panel endpoint untuk melompat ke card.
+/// Rect card `card_id` (koordinat diagram), seperti yang digambar. Dipakai pencarian dan panel endpoint untuk melompat ke card.
 pub fn card_world_rect(state: &DiagramState, card_id: &str) -> Option<egui::Rect> {
     let i = state.flow_cards.iter().position(|c| c.id == card_id)?;
     let frame = FlowFrame::compute(state);
     if !frame.is_shown(i) {
         // Tempat card ini bila menjadi card sorotan.
         let size = egui::vec2(CARD_WIDTH, expanded_height(state, &state.flow_cards[i]));
-        let pos = spotlight_pos(state, &frame.tables[i], size);
+        let pos = card_pos(state, i, &frame.tables[i], size);
         return Some(egui::Rect::from_min_size(pos, size));
     }
     Some(frame.drawn_rect(state, i))
@@ -483,19 +475,20 @@ mod tests {
     }
 
     #[test]
-    fn body_is_drawn_only_for_the_selected_card() {
+    fn body_is_always_drawn_and_footer_only_for_the_selected_card() {
         let mut st = DiagramState::default();
         let mut c = card("flw_1", "GET", "/a", None);
         c.steps = steps(3);
         st.flow_cards.push(c);
+        st.flow_footer_h = 50.0;
         let c = &st.flow_cards[0];
         assert!(!is_selected(&st, c));
-        assert_eq!(drawn_height(&st, c), CARD_HEADER_H);
+        assert_eq!(drawn_height(&st, c), body_height(c));
 
         st.selected_flow = Some("flw_1".into());
         let c = &st.flow_cards[0];
         assert!(is_selected(&st, c));
-        assert_eq!(drawn_height(&st, c), body_height(c));
+        assert_eq!(drawn_height(&st, c), body_height(c) + 50.0);
     }
 
     #[test]
@@ -588,10 +581,15 @@ mod tests {
     }
 
     #[test]
-    fn lod_rect_shrinks_for_small_zoom() {
-        let r = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(CARD_WIDTH, 200.0));
-        assert_eq!(lod_rect(r, Lod::Detail), r);
-        assert_eq!(lod_rect(r, Lod::Compact).height(), CARD_HEADER_H);
-        assert_eq!(lod_rect(r, Lod::Overview).width(), OVERVIEW_DOT);
+    fn dragged_position_overrides_the_automatic_spot() {
+        let mut st = rail_state(vec![node("users", 600.0, 300.0)]);
+        st.selected_flow = Some("flw_1".into());
+        let auto = FlowFrame::compute(&st).drawn_rect(&st, 0).min;
+        let moved = auto + egui::vec2(-250.0, 120.0);
+        st.flow_card_pos.insert("flw_1".into(), moved);
+        assert_eq!(FlowFrame::compute(&st).drawn_rect(&st, 0).min, moved);
+        // Posisi itu juga dipakai sebelum card menjadi card sorotan.
+        st.selected_flow = None;
+        assert_eq!(card_world_rect(&st, "flw_1").map(|r| r.min), Some(moved));
     }
 }

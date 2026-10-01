@@ -13,8 +13,8 @@ use std::collections::HashSet;
 use eframe::egui;
 
 use crate::diagram_flow::{self, FlowDirection, op_direction};
-use crate::diagram_flow_play::{self as play, PlayItem, PlayPhase};
-use crate::diagram_lod::{Lod, curve_visible, lod_for_zoom};
+use crate::diagram_flow_play::{self as play, PlayItem, PlayPhase, PlayPopup};
+use crate::diagram_lod::{Lod, curve_visible, lod_for_zoom, quantize_font};
 use crate::models::structs::{DiagramNode, DiagramState, FlowCard, FlowOp, FlowStepKind};
 
 /// Operasi baca.
@@ -25,6 +25,12 @@ pub const DELETE_COLOR: egui::Color32 = egui::Color32::from_rgb(239, 83, 80);
 pub const UNKNOWN_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 150, 160);
 /// Warna request / respons di luar card.
 const REQUEST_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 196, 60);
+/// Warna pendar garis lintasan yang sedang dilewati partikel.
+const GLOW_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 48, 48);
+/// Popup PLAY di awal pemutaran.
+const POPUP_PLAY_COLOR: egui::Color32 = egui::Color32::from_rgb(34, 160, 76);
+/// Popup END setelah pemutaran selesai.
+const POPUP_END_COLOR: egui::Color32 = egui::Color32::from_rgb(214, 48, 49);
 /// Jarak (layar) asal partikel request dan tujuan partikel respons.
 const OUTSIDE_PX: f32 = 90.0;
 /// Tinggi header card (koordinat diagram), sama dengan
@@ -182,6 +188,18 @@ fn particle(
     }
 }
 
+/// Garis lintasan aktif: inti tebal berwarna `color` di atas pendar merah
+/// berlapis (makin lebar makin tipis alfanya).
+fn glow_line(painter: &egui::Painter, points: Vec<egui::Pos2>, color: egui::Color32, s: f32) {
+    for (width, alpha) in [(16.0, 0.10), (11.0, 0.18), (7.5, 0.30)] {
+        painter.add(egui::Shape::line(
+            points.clone(),
+            egui::Stroke::new(width * s, GLOW_COLOR.linear_multiply(alpha)),
+        ));
+    }
+    painter.add(egui::Shape::line(points, egui::Stroke::new(4.5 * s, color)));
+}
+
 /// Label kecil berlatar gelap di layar.
 fn chip(painter: &egui::Painter, at: egui::Pos2, text: String, color: egui::Color32) {
     let galley =
@@ -292,99 +310,100 @@ pub fn draw_playback(
     let entry = egui::pos2(cr.left(), header_y);
     let outside = entry - egui::vec2(OUTSIDE_PX, 0.0);
 
-    match phase {
-        PlayPhase::Response(t) => {
-            painter.line_segment(
-                [entry, outside],
-                egui::Stroke::new(1.5 * s, REQUEST_COLOR.linear_multiply(0.5)),
-            );
-            particle(painter, &|t| entry.lerp(outside, t), t, REQUEST_COLOR, s);
-        }
-        PlayPhase::Step { index, t } => {
-            let Some(item) = items.get(index) else {
-                return;
-            };
-            let step = item.step.and_then(|i| card.steps.get(i));
-            let op = step.and_then(|s| s.op);
-            let color = op_color(op);
-            let number = index + 1;
-            let title = match (step, &item.table) {
-                (Some(st), _) if !st.title.trim().is_empty() => st.title.clone(),
-                (_, Some(tb)) => format!("Uses {}", table_title(state, tb)),
-                _ => "Step".to_string(),
-            };
-            let target = item
-                .table
-                .as_deref()
-                .and_then(|tb| Some((tb, state.nodes.iter().find(|n| n.id == tb)?)));
-            let Some((table_id, node)) = target else {
-                // Langkah tanpa tabel: card saja yang berdenyut.
-                painter.rect_stroke(
-                    cr.expand(2.0 * s),
-                    6.0 * scale,
-                    egui::Stroke::new(2.0 * s, color.linear_multiply(k)),
-                    egui::StrokeKind::Outside,
-                );
-                if detail {
-                    chip(
-                        painter,
-                        cr.center_bottom() + egui::vec2(0.0, 14.0),
-                        format!("{number}. {title}"),
-                        color,
-                    );
-                }
-                return;
-            };
-            let columns = step.map(|s| s.columns.as_slice()).unwrap_or(&[]);
-            pulse_table(painter, node, columns, to_screen, scale, color, k, detail);
-            let Some(ctrl) = curve(&card.id, table_id) else {
-                return;
-            };
-            if !curve_visible(&ctrl, clip, 24.0) {
-                return;
+    // Blok berlabel: langkah yang tidak bisa digambar keluar lebih awal,
+    // popup PLAY/END tetap digambar paling atas sesudahnya.
+    'phase: {
+        match phase {
+            PlayPhase::Response(t) => {
+                glow_line(painter, vec![entry, outside], REQUEST_COLOR, s);
+                particle(painter, &|t| entry.lerp(outside, t), t, REQUEST_COLOR, s);
             }
-            let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
-                ctrl,
-                false,
-                egui::Color32::TRANSPARENT,
-                egui::Stroke::NONE,
-            );
-            let points: Vec<egui::Pos2> =
-                (0..=32).map(|i| bezier.sample(i as f32 / 32.0)).collect();
-            painter.add(egui::Shape::line(
-                points,
-                egui::Stroke::new(2.5 * s, color.linear_multiply(0.8)),
-            ));
-            let dir = if item.step.is_none() {
-                FlowDirection::ToTarget
-            } else {
-                op_direction(op)
-            };
-            let along: &dyn Fn(f32) -> egui::Pos2 = &|t| bezier.sample(t);
-            let back: &dyn Fn(f32) -> egui::Pos2 = &|t| bezier.sample(1.0 - t);
-            match dir {
-                FlowDirection::FromTarget => particle(painter, back, t, color, s),
-                FlowDirection::Both => {
-                    if t < 0.5 {
-                        particle(painter, along, t * 2.0, color, s);
-                    } else {
-                        particle(painter, back, (t - 0.5) * 2.0, color, s);
+            PlayPhase::Step { index, t } => {
+                let Some(item) = items.get(index) else {
+                    break 'phase;
+                };
+                let step = item.step.and_then(|i| card.steps.get(i));
+                let op = step.and_then(|s| s.op);
+                let color = op_color(op);
+                let number = index + 1;
+                let title = match (step, &item.table) {
+                    (Some(st), _) if !st.title.trim().is_empty() => st.title.clone(),
+                    (_, Some(tb)) => format!("Uses {}", table_title(state, tb)),
+                    _ => "Step".to_string(),
+                };
+                let target = item
+                    .table
+                    .as_deref()
+                    .and_then(|tb| Some((tb, state.nodes.iter().find(|n| n.id == tb)?)));
+                let Some((table_id, node)) = target else {
+                    // Langkah tanpa tabel: card saja yang berdenyut.
+                    painter.rect_stroke(
+                        cr.expand(2.0 * s),
+                        6.0 * scale,
+                        egui::Stroke::new(2.0 * s, color.linear_multiply(k)),
+                        egui::StrokeKind::Outside,
+                    );
+                    if detail {
+                        chip(
+                            painter,
+                            cr.center_bottom() + egui::vec2(0.0, 14.0),
+                            format!("{number}. {title}"),
+                            color,
+                        );
+                    }
+                    break 'phase;
+                };
+                let columns = step.map(|s| s.columns.as_slice()).unwrap_or(&[]);
+                pulse_table(painter, node, columns, to_screen, scale, color, k, detail);
+                let Some(ctrl) = curve(&card.id, table_id) else {
+                    break 'phase;
+                };
+                if !curve_visible(&ctrl, clip, 24.0) {
+                    break 'phase;
+                }
+                let bezier = egui::epaint::CubicBezierShape::from_points_stroke(
+                    ctrl,
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    egui::Stroke::NONE,
+                );
+                let points: Vec<egui::Pos2> =
+                    (0..=32).map(|i| bezier.sample(i as f32 / 32.0)).collect();
+                glow_line(painter, points, color, s);
+                let dir = if item.step.is_none() {
+                    FlowDirection::ToTarget
+                } else {
+                    op_direction(op)
+                };
+                let along: &dyn Fn(f32) -> egui::Pos2 = &|t| bezier.sample(t);
+                let back: &dyn Fn(f32) -> egui::Pos2 = &|t| bezier.sample(1.0 - t);
+                match dir {
+                    FlowDirection::FromTarget => particle(painter, back, t, color, s),
+                    FlowDirection::Both => {
+                        if t < 0.5 {
+                            particle(painter, along, t * 2.0, color, s);
+                        } else {
+                            particle(painter, back, (t - 0.5) * 2.0, color, s);
+                        }
+                    }
+                    FlowDirection::ToTarget | FlowDirection::Unknown => {
+                        particle(painter, along, t, color, s)
                     }
                 }
-                FlowDirection::ToTarget | FlowDirection::Unknown => {
-                    particle(painter, along, t, color, s)
-                }
+                // Caption di dekat ujung tabel, supaya tidak menutupi chip nomor
+                // langkah yang digambar garis proses di tengah kurva.
+                chip(
+                    painter,
+                    bezier.sample(0.8) - egui::vec2(0.0, 16.0),
+                    format!("{number}. {title}"),
+                    color,
+                );
             }
-            // Caption di dekat ujung tabel, supaya tidak menutupi chip nomor
-            // langkah yang digambar garis proses di tengah kurva.
-            chip(
-                painter,
-                bezier.sample(0.8) - egui::vec2(0.0, 16.0),
-                format!("{number}. {title}"),
-                color,
-            );
+            PlayPhase::Done => {}
         }
-        PlayPhase::Done => {}
+    }
+    if let Some((kind, t)) = play::play_popup(&items, p.position) {
+        popup(painter, cr, kind, t);
     }
 }
 
@@ -528,13 +547,13 @@ fn crud_badge(ui: &mut egui::Ui, ch: char, s: f32) {
     };
     egui::Frame::NONE
         .fill(color.linear_multiply(0.2))
-        .corner_radius(3.0)
-        .inner_margin(egui::Margin::symmetric(4, 0))
+        .corner_radius(3.0 * s)
+        .inner_margin(egui::Margin::symmetric((4.0 * s).round() as i8, 0))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(ch.to_string())
                     .family(egui::FontFamily::Monospace)
-                    .size(10.5 * s)
+                    .size(quantize_font(10.5 * s))
                     .strong()
                     .color(color),
             );
@@ -547,8 +566,7 @@ fn crud_badge(ui: &mut egui::Ui, ch: char, s: f32) {
 /// Open Request dan Generate tidak ada di sini: klik card langsung memutar
 /// prosesnya, sisanya ada di menu klik kanan card. Tinggi yang terukur disimpan ke
 /// `state.flow_footer_h` supaya card memanjang setinggi itu di frame
-/// berikutnya. `card_rect` = `None` saat card tidak tampil penuh (LOD kecil,
-/// di luar layar). `canvas` = rect kanvas diagram.
+/// berikutnya. `card_rect` = `None` saat card tidak tampil. `canvas` = rect kanvas diagram.
 pub fn render_process_panel(
     ui: &mut egui::Ui,
     state: &mut DiagramState,
@@ -571,8 +589,11 @@ pub fn render_process_panel(
     let uses = diagram_flow::table_uses(&card, &table_refs);
     let known: HashSet<&str> = state.nodes.iter().map(|n| n.id.as_str()).collect();
 
-    // Teks dan jarak diskalakan seperti card, dibatasi supaya tetap terbaca.
-    let s = state.zoom.clamp(0.5, 1.4);
+    // Teks dan jarak memakai skala dan ukuran font yang sama dengan baris
+    // langkah card, supaya seragam di semua zoom.
+    let s = state.zoom;
+    let body_px = quantize_font(11.5 * s);
+    let small_px = quantize_font(10.0 * s);
     let margin = (10.0 * s).round();
     let top = card_rect.bottom() - state.flow_footer_h * state.zoom;
 
@@ -584,8 +605,11 @@ pub fn render_process_panel(
             ui.set_clip_rect(canvas);
             let style = ui.style_mut();
             for font in style.text_styles.values_mut() {
-                font.size *= s;
+                font.size = body_px;
             }
+            // Tema global memasang `override_font_id`, yang mengalahkan
+            // `text_styles`; tanpa ini teks tetap sebesar UI biasa.
+            style.override_font_id = Some(egui::FontId::proportional(body_px));
             style.spacing.item_spacing *= s;
             style.spacing.button_padding *= s;
             style.spacing.interact_size *= s;
@@ -598,7 +622,7 @@ pub fn render_process_panel(
                     bottom: margin as i8,
                 })
                 .show(ui, |ui| {
-                    ui.set_width((card_rect.width() - 2.0 * margin).max(80.0));
+                    ui.set_width((card_rect.width() - 2.0 * margin).max(80.0 * s));
                     ui.separator();
                     ui.label(egui::RichText::new("Tables involved").strong());
                     if uses.is_empty() {
@@ -608,7 +632,7 @@ pub fn render_process_panel(
                         ui.horizontal_wrapped(|ui| {
                             let badges = u.crud_badges();
                             if badges.is_empty() {
-                                ui.label(egui::RichText::new("?").small().weak())
+                                ui.label(egui::RichText::new("?").size(small_px).weak())
                                     .on_hover_text("Operation unknown");
                             }
                             for ch in badges {
@@ -618,8 +642,10 @@ pub fn render_process_panel(
                             let exists = known.contains(u.table.as_str());
                             let resp = ui.add_enabled(
                                 exists,
-                                egui::Button::new(egui::RichText::new(title).monospace())
-                                    .frame(false),
+                                egui::Button::new(
+                                    egui::RichText::new(title).family(egui::FontFamily::Monospace),
+                                )
+                                .frame(false),
                             );
                             if resp
                                 .on_hover_text("Jump to this table")
@@ -634,7 +660,7 @@ pub fn render_process_panel(
                                 let noun = if nums.len() == 1 { "step" } else { "steps" };
                                 ui.label(
                                     egui::RichText::new(format!("{noun} {}", nums.join(", ")))
-                                        .small()
+                                        .size(small_px)
                                         .weak(),
                                 );
                             }

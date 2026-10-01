@@ -128,15 +128,14 @@ fn draw_order(state: &DiagramState) -> Vec<usize> {
     order
 }
 
-/// Rect layar card `i` sesuai LOD saat ini.
+/// Rect layar card `i`; card selalu digambar penuh di semua zoom.
 fn card_screen_rect(
     state: &DiagramState,
     frame: &FlowFrame,
     i: usize,
-    lod: Lod,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
 ) -> egui::Rect {
-    screen_rect(layout::lod_rect(frame.drawn_rect(state, i), lod), to_screen)
+    screen_rect(frame.drawn_rect(state, i), to_screen)
 }
 
 /// Card paling atas di bawah pointer.
@@ -146,12 +145,11 @@ pub fn card_at(
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     pos: egui::Pos2,
 ) -> Option<usize> {
-    let lod = lod_for_zoom(state.zoom);
     draw_order(state)
         .into_iter()
         .rev()
         .filter(|&i| frame.is_shown(i))
-        .find(|&i| card_screen_rect(state, frame, i, lod, to_screen).contains(pos))
+        .find(|&i| card_screen_rect(state, frame, i, to_screen).contains(pos))
 }
 
 /// Titik kontrol kurva (layar) dari card `card_index` ke tabel `table_id`.
@@ -177,7 +175,7 @@ pub fn card_curve(
         })
         .flatten()
         .filter(|c| node.columns.iter().any(|x| x == *c));
-    let cr = card_screen_rect(state, frame, card_index, lod, to_screen);
+    let cr = card_screen_rect(state, frame, card_index, to_screen);
     let tr = screen_rect(egui::Rect::from_min_size(node.pos, node.size), to_screen);
     let s = state.zoom;
     let line_scale = s.max(0.5);
@@ -456,6 +454,9 @@ pub fn draw_flow_legend(
     painter.galley(egui::pos2(r.left() + 6.0, y + 32.0), summary, text_color);
 }
 
+/// Zoom viewport saat sebuah endpoint dijadikan card sorotan.
+pub const SPOTLIGHT_ZOOM: f32 = 0.5;
+
 /// Mulai fokus card `i`: pilih dan fokuskan card, lalu tween viewport ke
 /// card beserta semua tabelnya (margin 60 px).
 pub fn focus_card(
@@ -489,9 +490,9 @@ pub fn focus_card(
 }
 
 /// Jadikan card `card_id` card sorotan (dari rail, panel endpoint, atau
-/// pencarian). Card muncul di samping
-/// tabel-tabelnya, viewport digeser sampai card dan tabelnya terlihat, dan
-/// prosesnya diputar. `false` bila card tidak ada.
+/// pencarian). Card muncul di samping tabel-tabelnya (atau di tempat
+/// terakhir pengguna menggesernya), viewport dipusatkan ke card itu pada
+/// zoom [`SPOTLIGHT_ZOOM`], dan prosesnya diputar. `false` bila card tidak ada.
 pub fn spotlight_card(
     state: &mut DiagramState,
     card_id: &str,
@@ -506,8 +507,11 @@ pub fn spotlight_card(
     }
     // Card harus terpilih dulu supaya tata letaknya memberi tempat.
     state.selected_flow = Some(card_id.to_string());
-    let frame = FlowFrame::compute(state);
-    focus_card(state, &frame, i, view_size, now);
+    state.focus_flow = Some(card_id.to_string());
+    state.focus_table = None;
+    state.focus_group = None;
+    let center = FlowFrame::compute(state).drawn_rect(state, i).center();
+    crate::diagram_view::animate_view_to(state, center, SPOTLIGHT_ZOOM, view_size, now);
     crate::diagram_flow_play_view::start_playback(state, card_id);
     true
 }
@@ -521,8 +525,8 @@ pub struct FlowCardsOutcome {
 #[derive(Default)]
 struct CardChange {
     select: Option<String>,
-    /// Klik ulang card terpilih: lepas pilihan sehingga detailnya tersembunyi.
-    deselect: bool,
+    /// Card digeser: id dan pojok kiri atas barunya (koordinat diagram).
+    moved: Option<(String, egui::Pos2)>,
     /// Buka/tutup detail langkah ke-n di card terpilih.
     toggle_step: Option<usize>,
     /// Klik badan card: putar prosesnya seperti tombol Play.
@@ -701,7 +705,6 @@ pub fn render_flow_cards(
     let mut change = CardChange::default();
     let clip = ui.clip_rect();
     let s = state.zoom;
-    let lod = lod_for_zoom(s);
     let read_only = state.scoped_to.is_some();
     let visuals = ui.visuals().clone();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
@@ -733,7 +736,7 @@ pub fn render_flow_cards(
         }
         let card = &state.flow_cards[i];
         let world = frame.drawn_rect(state, i);
-        let sr = screen_rect(layout::lod_rect(world, lod), to_screen);
+        let sr = screen_rect(world, to_screen);
         if !clip.intersects(sr) {
             continue;
         }
@@ -751,20 +754,20 @@ pub fn render_flow_cards(
 
         // Interaksi badan card didaftarkan dulu supaya baris langkah di atasnya.
         let sense = if interactive {
-            egui::Sense::click()
+            egui::Sense::click_and_drag()
         } else {
             egui::Sense::hover()
         };
         let resp = ui.interact(sr, base_id.with("body"), sense);
-        // Klik card yang sudah terpilih menyembunyikan detailnya lagi.
-        let hide = resp.clicked() && selected && !resp.double_clicked();
-        if hide {
-            change.deselect = true;
-        } else if resp.clicked() {
+        // Klik card tidak pernah menyembunyikannya; card dilepas lewat Esc
+        // atau klik ulang endpoint-nya di rail.
+        if resp.clicked() {
             change.select = Some(card.id.clone());
-        }
-        if resp.clicked() && !hide {
             change.autoplay = true;
+        }
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            change.moved = Some((card.id.clone(), world.min + resp.drag_delta() / s));
         }
         if resp.double_clicked() {
             change.focus = Some(i);
@@ -856,41 +859,7 @@ pub fn render_flow_cards(
             });
         }
 
-        match lod {
-            Lod::Overview => {
-                let r = (sr.width() / 2.0).max(3.0);
-                painter.circle_filled(sr.center(), r, mcolor.gamma_multiply(alpha));
-                if selected {
-                    painter.circle_stroke(sr.center(), r + 2.0, egui::Stroke::new(1.5, strong));
-                }
-                resp.on_hover_text(&label);
-                continue;
-            }
-            Lod::Compact => {
-                let radius = sr.height() / 2.0;
-                painter.rect_filled(sr, radius, visuals.window_fill.gamma_multiply(alpha));
-                let stroke = if selected {
-                    egui::Stroke::new(2.5, mcolor)
-                } else {
-                    egui::Stroke::new(1.0, mcolor.gamma_multiply(0.8 * alpha))
-                };
-                painter.rect_stroke(sr, radius, stroke, egui::StrokeKind::Middle);
-                let px = quantize_font((13.0 * s).clamp(6.0, 13.0));
-                let text = format!("{label} · {}", card.steps.len());
-                painter.text(
-                    sr.left_center() + egui::vec2(radius, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    truncate_for_width(&text, sr.width() - radius * 2.0, px),
-                    egui::FontId::monospace(px),
-                    mcolor.gamma_multiply(alpha),
-                );
-                resp.on_hover_text(&label);
-                continue;
-            }
-            Lod::Detail => {}
-        }
-
-        // Card penuh.
+        // Card penuh di semua zoom.
         let radius = 8.0 * s;
         painter.rect_filled(
             sr.translate(egui::vec2(2.0, 4.0) * s),
@@ -936,12 +905,8 @@ pub fn render_flow_cards(
         if card.meta.as_ref().is_some_and(|m| m.partial) {
             tags.push(("partial".into(), egui::Color32::from_rgb(255, 167, 38)));
         }
-        // Badan card (ringkasan dan langkah) hanya tampil di card terpilih.
-        let body = selected;
         if !card.steps.is_empty() {
             tags.push((format!("{} steps", card.steps.len()), weak_text));
-        } else if !body {
-            tags.push(("no steps yet".into(), weak_text));
         }
         for (t, c) in tags.into_iter().rev() {
             let g = painter.layout_no_wrap(t, egui::FontId::proportional(small), c);
@@ -958,9 +923,6 @@ pub fn render_flow_cards(
             egui::FontId::monospace(path_px),
             text,
         );
-        if !body {
-            continue;
-        }
         painter.line_segment(
             [
                 egui::pos2(sr.left() + 1.0, header.bottom()),
@@ -1098,8 +1060,8 @@ fn apply_change(
     view_size: egui::Vec2,
     now: f64,
 ) {
-    if change.deselect {
-        crate::diagram_flow_play_view::clear(state);
+    if let Some((id, pos)) = change.moved {
+        state.flow_card_pos.insert(id, pos);
     }
     if let Some(id) = change.select {
         if state.focus_flow.as_ref().is_some_and(|f| f != &id) {
