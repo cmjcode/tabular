@@ -66,14 +66,14 @@ const TOOLBAR_OPACITY: f32 = 0.60;
 /// Aksi dari toolbar diagram yang butuh state aplikasi (toast, vault, database).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagramAction {
-    /// Simpan diagram (ke disk lokal dan otomatis ke Obsidian vault bila aktif).
+    /// Simpan diagram ke tabel `diagram_by_tabular` di database target (dan
+    /// cache lokal, plus Obsidian vault bila aktif).
     Save,
     /// Simpan skema sebagai catatan Mermaid di vault Obsidian.
     SaveToVault,
-    /// Simpan seluruh state diagram ke tabel `diagram_by_tabular` di database target.
-    SaveToDatabase,
-    /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
-    LoadFromDatabase,
+    /// Bandingkan ulang diagram dengan versi di `diagram_by_tabular` (merge
+    /// otomatis atau popup merge bila ada konflik).
+    SyncWithDatabase,
     /// Buka dialog untuk me-link database lain sebagai kontainer di kanvas.
     OpenLinkDatabaseModal,
     /// Muat ulang isi kontainer link database (`None` = semua link).
@@ -82,10 +82,6 @@ pub enum DiagramAction {
     RelinkDatabase(String),
     /// Buka tab diagram sumber sebuah link database.
     OpenLinkedDiagram(String),
-    /// Sinkronkan diagram ke Tabular Server (Cloud E2EE).
-    SyncToServer,
-    /// Buka popup unlock vault; diagram ini di-sync setelah vault terbuka.
-    UnlockVault,
     /// Buka tab baru berisi tabel ini dan tabel yang berelasi saja.
     OpenFocusInNewTab(String),
     /// Pindai repository milik group ini dan sarankan tabel untuk ditambahkan.
@@ -237,6 +233,38 @@ fn import_mermaid(state: &mut DiagramState) -> Option<DiagramAction> {
 
 /// Tombol square toolbar: ikon besar di atas, label kecil di bawah.
 /// `selected` menandai toggle yang sedang aktif (warna seleksi tema).
+/// Teks status sinkronisasi diagram dengan database untuk toolbar.
+fn db_status_text(status: &crate::models::structs::DiagramDbStatus) -> String {
+    use crate::models::structs::DiagramDbStatus;
+    match status {
+        DiagramDbStatus::Unknown => "Database: not checked yet".to_string(),
+        DiagramDbStatus::Checking => "Database: checking…".to_string(),
+        DiagramDbStatus::Saving => "Database: saving…".to_string(),
+        DiagramDbStatus::Synced {
+            revision,
+            updated_by,
+            updated_at,
+        } => {
+            let mut text = format!("Saved in database · revision {revision}");
+            if let Some(by) = updated_by {
+                text.push_str(&format!(" · by {by}"));
+            }
+            if let Some(at) = updated_at {
+                text.push_str(&format!(" · {at}"));
+            }
+            text
+        }
+        DiagramDbStatus::NotInDatabase => {
+            "Not saved to the database yet. Press Save to store it in `diagram_by_tabular`."
+                .to_string()
+        }
+        DiagramDbStatus::LocalOnly(e) => format!("Saved locally only. Database: {e}"),
+        DiagramDbStatus::MergePending => {
+            "Changed in the database too. Resolve the merge before saving.".to_string()
+        }
+    }
+}
+
 fn toolbar_square_button(
     ui: &mut egui::Ui,
     icon: &str,
@@ -1018,10 +1046,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         state.pan += response.drag_delta();
         state.view_anim = None;
     }
-    // Klik latar kosong menghentikan animasi aliran data dan melepas flow card.
+    // Klik latar kosong menghentikan animasi aliran data dan pemutaran, tapi
+    // detail flow card terpilih tetap tampil sampai card-nya diklik lagi (Esc).
     if response.clicked() {
         state.flow_anim = None;
-        state.selected_flow = None;
         state.focus_flow = None;
         state.flow_play = None;
     }
@@ -3407,32 +3435,26 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
 
                 ui.separator();
 
-                // --- 4. Save (lokal + Obsidian + Tabular Cloud) ---
-                // Save sekaligus sync ke cloud bila vault terbuka; opsi yang
-                // jarang dipakai (database target) ada di dropdown.
-                use crate::models::structs::DiagramCloudStatus;
-                let save_hover = match state.cloud_status {
-                    DiagramCloudStatus::Ready => {
-                        "Save diagram (Cmd S) and sync to Tabular Cloud (E2EE)"
-                    }
-                    DiagramCloudStatus::Locked => {
-                        "Save diagram (Cmd S). Cloud sync is paused until you unlock your vault."
-                    }
-                    DiagramCloudStatus::SignedOut => {
-                        "Save diagram layout (Cmd S) - also saves to Obsidian vault if enabled"
-                    }
-                };
-                let save_hover = if state.unsaved_changes {
-                    format!("Unsaved changes (auto save is off)\n{save_hover}")
-                } else {
-                    save_hover.to_string()
-                };
+                // --- 4. Save (database target + cache lokal + Obsidian) ---
+                use crate::models::structs::DiagramDbStatus;
+                let status_text = db_status_text(&state.db_status);
+                let not_in_db = matches!(
+                    state.db_status,
+                    DiagramDbStatus::NotInDatabase | DiagramDbStatus::LocalOnly(_)
+                );
+                let pending = state.unsaved_changes || state.db_dirty_since.is_some() || not_in_db;
+                let mut save_hover =
+                    "Save diagram to table `diagram_by_tabular` in this database (Cmd S)".to_string();
+                if state.unsaved_changes {
+                    save_hover = format!("Unsaved changes (auto save is off)\n{save_hover}");
+                }
+                save_hover = format!("{save_hover}\n{status_text}");
                 // Tombol Save tampil aktif selama ada perubahan belum tersimpan.
                 if toolbar_square_button(
                     ui,
                     egui_icons::icons::ICON_SAVE.codepoint,
                     "Save",
-                    state.unsaved_changes,
+                    pending,
                 )
                 .on_hover_text(save_hover)
                 .clicked()
@@ -3447,7 +3469,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     if ui
                         .checkbox(&mut state.auto_save, "Auto save")
                         .on_hover_text(
-                            "Save layout changes automatically.\nWhen off, changes are kept until you press Save (Cmd S).",
+                            "Save changes automatically to the database a few seconds after you stop editing.\nWhen off, changes are kept until you press Save (Cmd S).",
                         )
                         .changed()
                     {
@@ -3456,40 +3478,45 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         state.force_save = true;
                     }
                     ui.separator();
-                    if ui.button("☁️ Sync to Tabular Cloud now").clicked() {
-                        ui.close();
-                        action = Some(DiagramAction::SyncToServer);
-                    }
-                    ui.separator();
-                    if ui.button("Save to Database (diagram_by_tabular)").clicked() {
-                        ui.close();
-                        action = Some(DiagramAction::SaveToDatabase);
-                    }
-                    if ui.button("Load from Database (diagram_by_tabular)").clicked() {
-                        ui.close();
-                        action = Some(DiagramAction::LoadFromDatabase);
-                    }
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(
-                            "Save also syncs to Tabular Cloud (E2EE) when you are signed in.\nOr store the diagram in the target database table `diagram_by_tabular`.",
+                    if ui
+                        .button("Sync with database now")
+                        .on_hover_text(
+                            "Compare this diagram with the copy in `diagram_by_tabular` and merge changes made by others",
                         )
-                        .weak()
-                        .small(),
-                    );
+                        .clicked()
+                    {
+                        ui.close();
+                        action = Some(DiagramAction::SyncWithDatabase);
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new(status_text.as_str()).weak().small());
                 });
 
-                if state.cloud_status == DiagramCloudStatus::Locked
+                if let Some(merge) = state.pending_merge.as_mut() {
+                    if toolbar_square_button(
+                        ui,
+                        egui_icons::icons::ICON_CALL_MERGE.codepoint,
+                        "Resolve merge",
+                        true,
+                    )
+                    .on_hover_text(
+                        "This diagram was changed in the database too. Click to resolve the differences.",
+                    )
+                    .clicked()
+                    {
+                        merge.visible = true;
+                    }
+                } else if matches!(state.db_status, DiagramDbStatus::LocalOnly(_))
                     && toolbar_square_button(
                         ui,
-                        egui_icons::icons::ICON_LOCK.codepoint,
-                        "Unlock",
+                        egui_icons::icons::ICON_SYNC_PROBLEM.codepoint,
+                        "Database unavailable",
                         false,
                     )
-                    .on_hover_text("Vault is locked. Unlock it to sync this diagram to the cloud.")
+                    .on_hover_text(format!("{status_text}\nClick to try again."))
                     .clicked()
                 {
-                    action = Some(DiagramAction::UnlockVault);
+                    action = Some(DiagramAction::SyncWithDatabase);
                 }
 
                 let import_btn = toolbar_square_button(
@@ -8993,6 +9020,66 @@ mod tests {
             }],
         );
         assert!(state.focus_flow.is_none() && state.selected_flow.is_none());
+    }
+
+    /// Detail card terpilih tidak hilang saat klik area lain; klik card itu
+    /// lagi yang menyembunyikannya.
+    #[test]
+    fn test_card_detail_hidden_only_by_clicking_card() {
+        let ctx = egui::Context::default();
+        let mut state = flow_fixture(3);
+        center_on_cards(&mut state, 1.0);
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&state);
+        let world = frame.rects[1];
+        let (pan, zoom) = (state.pan, state.zoom);
+        let to_screen = |p: egui::Pos2| egui::Pos2::ZERO + pan + p.to_vec2() * zoom;
+        let card = to_screen(egui::pos2(world.center().x, world.top() + 10.0));
+        let id = state.flow_cards[1].id.clone();
+
+        let mut t = 0.0;
+        let mut step = |state: &mut DiagramState, events: Vec<egui::Event>| {
+            // Klik pertama tiap rangkaian didahului jeda > batas double-click.
+            t += if events.is_empty() { 1.0 } else { 0.05 };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                time: Some(t),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                render_diagram(ui, state);
+            });
+            out.textures_delta.clear();
+        };
+        let click = |state: &mut DiagramState,
+                     step: &mut dyn FnMut(&mut DiagramState, Vec<egui::Event>),
+                     p| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            step(state, vec![]);
+            step(state, vec![egui::Event::PointerMoved(p)]);
+            step(state, vec![button(true)]);
+            step(state, vec![button(false)]);
+        };
+
+        click(&mut state, &mut step, card);
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
+
+        // Klik area kanvas lain: detail tetap tampil.
+        let empty = to_screen(egui::pos2(world.center().x, world.top() - 400.0));
+        click(&mut state, &mut step, empty);
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
+
+        // Klik card yang sama: detail disembunyikan.
+        click(&mut state, &mut step, card);
+        assert!(state.selected_flow.is_none());
     }
 
     /// Tabel mirip kasus nyata: beberapa tabel tinggi, relasi berpusat di

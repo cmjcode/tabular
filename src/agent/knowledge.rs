@@ -581,7 +581,7 @@ impl HeadlessSession {
             Ok((_, pool)) => pool,
             Err(e) => return (None, Some(format!("shared diagram not checked: {e}"))),
         };
-        let load = crate::diagram_storage::load_diagram_from_database(&pool, db, None);
+        let load = crate::diagram_storage::load_diagram_from_database(&pool, db);
         match tokio::time::timeout(REMOTE_DIAGRAM_TIMEOUT, load).await {
             Ok(Ok(Some(mut state))) => {
                 crate::diagram_links::strip_linked(&mut state);

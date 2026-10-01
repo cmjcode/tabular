@@ -799,16 +799,38 @@ pub struct VirtualRelation {
     pub origin: RelationOrigin,
 }
 
-/// Status cloud sync untuk toolbar diagram (runtime saja, diisi app tiap frame).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DiagramCloudStatus {
-    /// Belum login ke Tabular: Save hanya menyimpan lokal.
+/// Status sinkronisasi diagram dengan tabel `diagram_by_tabular` di
+/// database target (runtime saja, diisi app).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DiagramDbStatus {
+    /// Belum diperiksa.
     #[default]
-    SignedOut,
-    /// Sudah login tapi vault masih terkunci: sync ditunda sampai unlock.
-    Locked,
-    /// Vault terbuka: Save sekaligus sync ke Tabular Cloud.
-    Ready,
+    Unknown,
+    /// Sedang membandingkan salinan lokal dengan database.
+    Checking,
+    /// Sedang menyimpan ke database.
+    Saving,
+    /// Salinan lokal sama dengan database pada revision ini.
+    Synced {
+        revision: i64,
+        updated_by: Option<String>,
+        updated_at: Option<String>,
+    },
+    /// Diagram belum pernah disimpan ke database ini.
+    NotInDatabase,
+    /// Database tidak bisa dibaca/ditulis; perubahan hanya tersimpan lokal.
+    LocalOnly(String),
+    /// Ada konflik dengan versi database yang belum diselesaikan.
+    MergePending,
+}
+
+/// Konflik dengan versi database yang menunggu keputusan user.
+#[derive(Clone, Debug)]
+pub struct DiagramPendingMerge {
+    pub result: crate::diagram_sync::MergeResult,
+    pub remote: crate::diagram_storage::DiagramRecord,
+    /// Popup merge sedang tampil (ditutup = diputuskan nanti).
+    pub visible: bool,
 }
 
 /// Status materialisasi sebuah link database (runtime saja).
@@ -865,7 +887,13 @@ pub struct DiagramState {
     #[serde(skip)]
     pub save_requested: bool,
     #[serde(skip)]
-    pub cloud_status: DiagramCloudStatus,
+    pub db_status: DiagramDbStatus,
+    /// Waktu perubahan terakhir yang belum dikirim ke database (autosave
+    /// ke database menunggu beberapa detik tanpa perubahan).
+    #[serde(skip)]
+    pub db_dirty_since: Option<std::time::Instant>,
+    #[serde(skip)]
+    pub pending_merge: Option<Box<DiagramPendingMerge>>,
     #[serde(skip)]
     pub renaming_group: Option<String>,
     #[serde(skip)]
@@ -991,11 +1019,6 @@ pub struct DiagramState {
     /// Skema live sedang diambil di background; tampilan masih dari cache.
     #[serde(skip)]
     pub schema_syncing: bool,
-    /// Sidik layout saat tab dibuka. Beda dengan sidik terkini berarti user
-    /// sudah mengedit, jadi layout bersama dari `diagram_by_tabular` tidak
-    /// boleh menimpanya.
-    #[serde(skip)]
-    pub layout_baseline: Option<u64>,
     /// Mode fokus: hanya tabel ini dan tabel yang berelasi yang tampil
     /// normal, sisanya diredupkan.
     #[serde(skip)]
@@ -1420,9 +1443,11 @@ pub struct FlowGenWindow {
     pub failed: Vec<(String, String)>,
     /// Permintaan batal dari user; dibaca oleh poller job.
     pub cancel_requested: bool,
-    /// `true` = jendela disembunyikan; job tetap berjalan dan hasilnya
-    /// dilaporkan lewat toast.
+    /// `true` = jendela disembunyikan; job tetap berjalan dan terlihat di
+    /// panel Background Processes. Hasilnya dilaporkan lewat toast.
     pub hidden: bool,
+    /// Entri job ini di `window_egui::background_tasks`.
+    pub task_id: Option<u64>,
     pub started_at: Option<std::time::Instant>,
     pub last_activity_at: Option<std::time::Instant>,
     pub elapsed: Option<std::time::Duration>,
@@ -1559,6 +1584,11 @@ pub struct GroupTableSuggestions {
     pub unknown: Vec<String>,
     /// Permintaan batal dari user; dibaca oleh poller job.
     pub cancel_requested: bool,
+    /// `true` = jendela disembunyikan; pemindaian tetap berjalan dan terlihat
+    /// di panel Background Processes.
+    pub hidden: bool,
+    /// Entri job ini di `window_egui::background_tasks`.
+    pub task_id: Option<u64>,
     /// Waktu pemindaian dimulai (untuk menampilkan durasi).
     pub started_at: Option<std::time::Instant>,
     /// Waktu event kemajuan terakhir diterima (untuk mendeteksi macet).
@@ -1600,7 +1630,9 @@ impl Default for DiagramState {
             last_mouse_pos: None,
             is_centered: false,
             save_requested: false,
-            cloud_status: DiagramCloudStatus::SignedOut,
+            db_status: DiagramDbStatus::Unknown,
+            db_dirty_since: None,
+            pending_merge: None,
             renaming_group: None,
             selected_edge: None,
             selected_column: None,
@@ -1645,7 +1677,6 @@ impl Default for DiagramState {
             diagram_title: None,
             remote_id: None,
             schema_syncing: false,
-            layout_baseline: None,
             focus_table: None,
             focus_group: None,
             view_anim: None,

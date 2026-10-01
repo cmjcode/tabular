@@ -555,8 +555,8 @@ pub fn open_vault_unlock_dialog(tabular: &mut Tabular) {
 }
 
 /// Popup "Unlock Vault". Isinya sama dengan panel vault di Preferences
-/// (unlock, buat vault baru, atau recovery), lalu menutup sendiri dan
-/// melanjutkan sync yang tertunda begitu vault terbuka.
+/// (unlock, buat vault baru, atau recovery), lalu menutup sendiri begitu
+/// vault terbuka.
 pub fn render_vault_unlock_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if !tabular.show_vault_unlock_dialog {
         return;
@@ -564,7 +564,6 @@ pub fn render_vault_unlock_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if tabular.sync_account.is_none() {
         // Logout dari tempat lain saat popup masih terbuka.
         tabular.show_vault_unlock_dialog = false;
-        tabular.vault_pending_diagram_sync = None;
         return;
     }
 
@@ -595,10 +594,8 @@ pub fn render_vault_unlock_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if unlocked {
         tabular.show_vault_unlock_dialog = false;
         tabular.toasts.success("Vault unlocked");
-        tabular.resume_pending_diagram_sync();
     } else if close {
         tabular.show_vault_unlock_dialog = false;
-        tabular.vault_pending_diagram_sync = None;
         tabular.vault_passphrase_input.clear();
     }
 }

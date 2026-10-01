@@ -31,6 +31,10 @@ pub struct AiFixState {
     pub status: FixStatus,
     rx: Option<Receiver<Result<String, String>>>,
     pub notice: Option<String>,
+    /// `true` = jendela disembunyikan; permintaan tetap berjalan di background.
+    hidden: bool,
+    /// Entri permintaan ini di panel Background Processes.
+    task_id: Option<u64>,
 }
 
 /// Nama engine koneksi tab aktif, bila ada.
@@ -112,6 +116,8 @@ pub fn start_fix(tabular: &mut Tabular) {
         },
         rx: None,
         notice: None,
+        hidden: false,
+        task_id: None,
     };
 
     let target = tabular.effective_chat_target();
@@ -215,15 +221,73 @@ fn render_diff(ui: &mut egui::Ui, diff: &[DiffLine]) {
     }
 }
 
+/// Cerminkan permintaan ke panel Background Processes dan jalankan permintaan
+/// panel. Mengembalikan `false` bila jendela tidak perlu digambar.
+fn sync_background_task(tabular: &mut Tabular) -> bool {
+    use super::background_tasks::{Snapshot, TaskOwner};
+
+    let Some(state) = tabular.ai_fix.as_mut() else {
+        tabular.background_tasks.retain_owner(TaskOwner::AiFix, &[]);
+        return false;
+    };
+    let (started_at, result) = match &state.status {
+        FixStatus::Loading { started } => (Some(*started), None),
+        FixStatus::Ready { .. } => (None, Some(Ok("Fix ready to review".to_string()))),
+        FixStatus::Failed(e) => (None, Some(Err(e.clone()))),
+    };
+    let subtitle = format!("{} error: {}", state.engine, state.error);
+    let out = tabular.background_tasks.mirror(
+        &mut state.task_id,
+        Snapshot {
+            owner: TaskOwner::AiFix,
+            title: "Fix with AI",
+            subtitle: &subtitle,
+            steps: &[],
+            started_at,
+            last_activity_at: None,
+            hidden: state.hidden,
+            result,
+        },
+    );
+    let seen: Vec<u64> = state.task_id.into_iter().collect();
+    tabular
+        .background_tasks
+        .retain_owner(TaskOwner::AiFix, &seen);
+    if out.show {
+        state.hidden = false;
+    }
+    if out.finished_hidden {
+        match &state.status {
+            FixStatus::Failed(e) => tabular.toasts.error(format!("Fix with AI failed: {e}")),
+            _ => tabular
+                .toasts
+                .success("Fix with AI is ready. Open it from Background Processes."),
+        }
+    }
+    if out.cancel || out.dismissed {
+        tabular.ai_fix = None;
+        return false;
+    }
+    !state.hidden
+}
+
 /// Gambar jendela Fix with AI bila sedang terbuka.
 pub fn render_ai_fix_window(tabular: &mut Tabular, ctx: &egui::Context) {
     let Some(state) = tabular.ai_fix.as_mut() else {
+        // Jendela sudah ditutup: entri panelnya ikut hilang.
+        sync_background_task(tabular);
         return;
     };
     poll(state);
     if matches!(state.status, FixStatus::Loading { .. }) {
         ctx.request_repaint_after(std::time::Duration::from_millis(150));
     }
+    if !sync_background_task(tabular) {
+        return;
+    }
+    let Some(state) = tabular.ai_fix.as_mut() else {
+        return;
+    };
 
     let mut open = true;
     let mut action: Option<Action> = None;
@@ -315,6 +379,17 @@ pub fn render_ai_fix_window(tabular: &mut Tabular, ctx: &egui::Context) {
                 }
                 if ui.add(super::style::btn_secondary("Cancel")).clicked() {
                     action = Some(Action::Close);
+                }
+                if matches!(state.status, FixStatus::Loading { .. })
+                    && ui
+                        .add(super::style::btn_secondary("Process in Background"))
+                        .on_hover_text(
+                            "Hide this window and keep working. Follow it in Background \
+                             Processes at the bottom of the sidebar.",
+                        )
+                        .clicked()
+                {
+                    state.hidden = true;
                 }
             });
         });

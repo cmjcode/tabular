@@ -51,6 +51,7 @@ pub mod diagram_repo_paths;
 pub mod diagram_schema;
 pub mod diagram_search;
 pub mod diagram_storage;
+pub mod diagram_sync;
 pub mod diagram_view;
 pub mod dialog;
 pub mod dialog_backup_restore;

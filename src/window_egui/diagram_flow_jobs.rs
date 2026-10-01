@@ -391,6 +391,115 @@ impl super::Tabular {
     }
 }
 
+/// Hasil job generate alur bisnis yang sudah selesai, untuk panel background.
+fn flow_gen_result(win: &FlowGenWindow) -> Result<String, String> {
+    match win.error.clone().filter(|_| win.generated == 0) {
+        Some(e) => Err(e),
+        None => Ok(summary_message(win)),
+    }
+}
+
+/// Hasil pemindaian saran tabel yang sudah selesai, untuk panel background.
+fn suggestions_result(
+    sugg: &crate::models::structs::GroupTableSuggestions,
+) -> Result<String, String> {
+    match &sugg.error {
+        Some(e) if sugg.items.is_empty() => Err(e.clone()),
+        _ => Ok(format!("{} table suggestion(s) ready", sugg.items.len())),
+    }
+}
+
+impl super::Tabular {
+    /// Cerminkan jendela progress AI semua diagram ke panel Background
+    /// Processes dan jalankan permintaan panel (tampilkan, batal, buang).
+    /// Dipanggil tiap frame setelah poller job diagram.
+    pub fn sync_diagram_background_tasks(&mut self) {
+        use super::background_tasks::{Snapshot, TaskOwner};
+
+        let mut tasks = std::mem::take(&mut self.background_tasks);
+        let mut seen = Vec::new();
+        let mut activate: Option<usize> = None;
+        let mut ready: Vec<String> = Vec::new();
+        for (idx, tab) in self.query_tabs.iter_mut().enumerate() {
+            let Some(state) = tab.diagram_state.as_mut() else {
+                continue;
+            };
+            if let Some(win) = state.flow_gen.as_mut() {
+                let title = format!("Business process: {}", win.scope);
+                let subtitle = crate::diagram_flow_gen_view::subtitle(win);
+                let result = (!win.running).then(|| flow_gen_result(win));
+                let out = tasks.mirror(
+                    &mut win.task_id,
+                    Snapshot {
+                        owner: TaskOwner::Diagram,
+                        title: &title,
+                        subtitle: &subtitle,
+                        steps: &win.progress,
+                        started_at: win.started_at,
+                        last_activity_at: win.last_activity_at,
+                        hidden: win.hidden,
+                        result,
+                    },
+                );
+                seen.extend(win.task_id);
+                if out.cancel {
+                    win.cancel_requested = true;
+                }
+                if out.show {
+                    win.hidden = false;
+                    activate = Some(idx);
+                }
+                if out.dismissed {
+                    state.flow_gen = None;
+                }
+            }
+            if let Some(sugg) = state.group_table_suggestions.as_mut() {
+                let title = format!("Suggested tables for {}", sugg.group_title);
+                let result = (!sugg.running).then(|| suggestions_result(sugg));
+                let out = tasks.mirror(
+                    &mut sugg.task_id,
+                    Snapshot {
+                        owner: TaskOwner::Diagram,
+                        title: &title,
+                        subtitle: "",
+                        steps: &sugg.progress,
+                        started_at: sugg.started_at,
+                        last_activity_at: sugg.last_activity_at,
+                        hidden: sugg.hidden,
+                        result,
+                    },
+                );
+                seen.extend(sugg.task_id);
+                if out.cancel {
+                    sugg.cancel_requested = true;
+                }
+                if out.show {
+                    sugg.hidden = false;
+                    activate = Some(idx);
+                }
+                if out.finished_hidden {
+                    ready.push(sugg.group_title.clone());
+                }
+                if out.dismissed {
+                    state.group_table_suggestions = None;
+                }
+            }
+        }
+        tasks.retain_owner(TaskOwner::Diagram, &seen);
+        self.background_tasks = tasks;
+        for group in ready {
+            self.toasts.info(format!(
+                "Table suggestions for '{group}' are ready. Open them from Background Processes."
+            ));
+        }
+        if let Some(idx) = activate
+            && idx != self.active_tab_index
+        {
+            crate::editor::switch_to_tab(self, idx);
+        }
+    }
+}
+
 /// Proses event satu job. `None` = masih berjalan; `Some(toast)` = selesai
 /// (toast opsional: (sukses, pesan)).
 fn poll_job(
@@ -474,8 +583,9 @@ fn finish(state: &mut DiagramState, cancelled: bool) -> Option<(bool, String)> {
     } else {
         Some((true, summary_message(win)))
     };
-    // Jendela tersembunyi tidak dimunculkan lagi; toast cukup.
-    if win.hidden || cancelled {
+    // Jendela tersembunyi tetap tersembunyi (toast cukup); hasilnya bisa
+    // dibuka dari panel Background Processes.
+    if cancelled {
         state.flow_gen = None;
     }
     toast
@@ -611,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_hidden_window_is_removed_and_reports() {
+    fn finish_hidden_window_stays_hidden_and_reports() {
         let mut state = DiagramState {
             flow_gen: Some(FlowGenWindow {
                 running: true,
@@ -629,7 +739,13 @@ mod tests {
                 "Business process generated for 2 endpoint(s); 0 unchanged, 0 failed".into()
             ))
         );
-        assert!(state.flow_gen.is_none());
+        // Hasil tetap tersimpan supaya bisa dibuka dari panel background.
+        assert!(
+            state
+                .flow_gen
+                .as_ref()
+                .is_some_and(|w| w.hidden && !w.running)
+        );
         // Dibatalkan: tanpa toast, jendela ditutup.
         state.flow_gen = Some(FlowGenWindow {
             running: true,

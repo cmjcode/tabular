@@ -157,6 +157,8 @@ struct EndpointWindow {
     visible: bool,
     /// Batch AI paralel yang dipakai job ini.
     parallel: usize,
+    /// Entri job ini di panel Background Processes.
+    task_id: Option<u64>,
 }
 
 struct TestGenWindow {
@@ -164,6 +166,10 @@ struct TestGenWindow {
     instructions: String,
     handle: Option<TestGenHandle>,
     progress: Option<JobProgress>,
+    /// `true` = jendela disembunyikan; job tetap berjalan di background.
+    hidden: bool,
+    /// Entri job ini di panel Background Processes.
+    task_id: Option<u64>,
 }
 
 struct RunState {
@@ -622,6 +628,7 @@ pub fn render(app: &mut Tabular, ctx: &egui::Context) {
         ui.handle(app, action);
     }
     ui.poll(app, ctx);
+    ui.sync_background_tasks(app);
     ui.render_editor(app, ctx);
     ui.render_endpoints(app, ctx);
     ui.render_test_gen(app, ctx);
@@ -687,6 +694,8 @@ impl HttpRepoUi {
                     instructions: String::new(),
                     handle: None,
                     progress: None,
+                    hidden: false,
+                    task_id: None,
                 });
             }
             RepoAction::OpenSuites => self.open_suites(None),
@@ -842,7 +851,89 @@ impl HttpRepoUi {
             files_scanned: 0,
             visible: true,
             parallel,
+            task_id: None,
         });
+    }
+
+    /// Cerminkan job AI yang berjalan ke panel Background Processes dan
+    /// jalankan permintaan panel (tampilkan, batal).
+    fn sync_background_tasks(&mut self, app: &mut Tabular) {
+        use crate::window_egui::background_tasks::{Snapshot, TaskOwner};
+
+        let tasks = &mut app.background_tasks;
+        let mut seen = Vec::new();
+        self.endpoints.retain_mut(|win| {
+            if win.handle.is_none() && win.task_id.is_none() {
+                return true;
+            }
+            let title = format!("Generate endpoints: {}", win.folder_name);
+            let out = tasks.mirror(
+                &mut win.task_id,
+                Snapshot {
+                    owner: TaskOwner::HttpRepo,
+                    title: &title,
+                    subtitle: "",
+                    steps: &win.progress.steps,
+                    started_at: win.progress.started_at,
+                    last_activity_at: win.progress.last_activity_at,
+                    hidden: !win.visible,
+                    // Jendela muncul lagi sendiri saat hasilnya siap.
+                    result: win.handle.is_none().then(|| Ok(String::new())),
+                },
+            );
+            seen.extend(win.task_id);
+            if out.show {
+                win.visible = true;
+            }
+            if out.cancel
+                && let Some(h) = win.handle.take()
+            {
+                h.cancel();
+                win.progress.finish(Some("Cancelled".into()));
+                // Jendela tersembunyi yang dibatalkan tidak perlu muncul lagi.
+                return win.visible;
+            }
+            true
+        });
+        let mut close_test_gen = false;
+        if let Some(win) = self.test_gen.as_mut()
+            && (win.handle.is_some() || win.task_id.is_some())
+        {
+            let (steps, started_at, last_activity_at) = match &win.progress {
+                Some(p) => (p.steps.as_slice(), p.started_at, p.last_activity_at),
+                None => (&[][..], None, None),
+            };
+            let out = tasks.mirror(
+                &mut win.task_id,
+                Snapshot {
+                    owner: TaskOwner::HttpRepo,
+                    title: "Generate integration tests",
+                    subtitle: "",
+                    steps,
+                    started_at,
+                    last_activity_at,
+                    hidden: win.hidden,
+                    result: win.handle.is_none().then(|| Ok(String::new())),
+                },
+            );
+            seen.extend(win.task_id);
+            if out.show {
+                win.hidden = false;
+            }
+            if out.cancel
+                && let Some(h) = win.handle.take()
+            {
+                h.cancel();
+                if let Some(p) = win.progress.as_mut() {
+                    p.finish(Some("Cancelled".into()));
+                }
+                close_test_gen = win.hidden;
+            }
+        }
+        if close_test_gen {
+            self.test_gen = None;
+        }
+        tasks.retain_owner(TaskOwner::HttpRepo, &seen);
     }
 
     fn poll(&mut self, app: &mut Tabular, ctx: &egui::Context) {
@@ -898,6 +989,14 @@ impl HttpRepoUi {
             }
             if finished {
                 win.handle = None;
+                if win.hidden {
+                    // Gagal di background: munculkan lagi jendelanya.
+                    win.hidden = false;
+                    if let Some(e) = &progress.error {
+                        app.toasts
+                            .error(format!("Generating integration tests failed: {e}"));
+                    }
+                }
             }
         }
         if let Some(suites) = generated {
@@ -1233,6 +1332,7 @@ impl HttpRepoUi {
         let mut add = false;
         let mut rescan = false;
         let mut cancel = false;
+        let mut background = false;
         let mut parallel = self.parallel();
         // Tinggi dikunci (hanya lebar yang bisa diubah) supaya jendela tidak memanjang
         // sampai setinggi layar; tetap muat di layar kecil.
@@ -1253,17 +1353,29 @@ impl HttpRepoUi {
                     small_weak(
                         ui,
                         format!(
-                            "{} AI batch(es) in parallel. Close this window to keep it running in \
-                             the background; it opens again when the endpoints are ready.",
+                            "{} AI batch(es) in parallel. Process it in the background to keep \
+                             working; this window opens again when the endpoints are ready.",
                             win.parallel
                         ),
                     );
                     ui.add_space(4.0);
                     win.progress.show(ui);
                     ui.add_space(8.0);
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                        if ui
+                            .button("Process in Background")
+                            .on_hover_text(
+                                "Hide this window and keep working. Follow it in Background \
+                                 Processes at the bottom of the sidebar.",
+                            )
+                            .clicked()
+                        {
+                            background = true;
+                        }
+                    });
                     return;
                 }
                 if let Some(e) = &win.progress.error {
@@ -1286,6 +1398,10 @@ impl HttpRepoUi {
         if cancel && let Some(h) = win.handle.take() {
             h.cancel();
             win.progress.finish(Some("Cancelled".into()));
+        }
+        if background && win.handle.is_some() {
+            win.visible = false;
+            return Some(win);
         }
         if !open {
             if win.handle.is_some() {
@@ -1311,6 +1427,9 @@ impl HttpRepoUi {
     }
 
     fn render_test_gen(&mut self, app: &mut Tabular, ctx: &egui::Context) {
+        if self.test_gen.as_ref().is_some_and(|w| w.hidden) {
+            return; // berjalan di background; dibuka lagi dari panel sidebar
+        }
         let Some(mut win) = self.test_gen.take() else {
             return;
         };
@@ -1398,6 +1517,16 @@ impl HttpRepoUi {
                     if running {
                         if ui.button("Cancel").clicked() {
                             cancel = true;
+                        }
+                        if ui
+                            .button("Process in Background")
+                            .on_hover_text(
+                                "Hide this window and keep working. Follow it in Background \
+                                 Processes at the bottom of the sidebar.",
+                            )
+                            .clicked()
+                        {
+                            win.hidden = true;
                         }
                     } else if ui
                         .add_enabled(

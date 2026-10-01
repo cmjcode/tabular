@@ -27,8 +27,9 @@ pub struct SchemaSnapshot {
     pub foreign_keys: Option<Vec<ForeignKey>>,
     pub columns: Option<HashMap<String, Vec<DiagramColumn>>>,
     pub tables: Option<Vec<String>>,
-    /// Layout bersama dari tabel `diagram_by_tabular` (bila ada).
-    pub shared_state: Option<DiagramState>,
+    /// Diagram di tabel `diagram_by_tabular`: `Some(Ok(None))` = belum ada,
+    /// `Some(Err)` = gagal dibaca, `None` = tidak diperiksa.
+    pub shared: Option<Result<Option<crate::diagram_storage::DiagramRecord>, String>>,
 }
 
 /// Semua yang dibutuhkan task background; tidak meminjam `Tabular`.
@@ -43,7 +44,7 @@ pub struct SchemaFetchRequest {
     pub cache_pool: Option<Arc<sqlx::SqlitePool>>,
 }
 
-async fn wait_for_pool(
+pub(crate) async fn wait_for_pool(
     conn_id: i64,
     shared: &Mutex<HashMap<i64, DatabasePool>>,
 ) -> Option<DatabasePool> {
@@ -120,15 +121,21 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
             _ => None,
         }
     });
-    let shared_state = timed(async {
-        crate::diagram_storage::load_diagram_from_database(&pool, db, None)
-            .await
-            .ok()
-            .flatten()
-    });
+    let shared = async {
+        match tokio::time::timeout(
+            crate::diagram_storage::DB_TIMEOUT,
+            crate::diagram_storage::load_diagram_record(&pool, db),
+        )
+        .await
+        {
+            Ok(Ok(rec)) => Ok(rec),
+            Ok(Err(crate::diagram_storage::DiagramStoreError::Unsupported)) => Ok(None),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("reading diagram_by_tabular timed out".to_string()),
+        }
+    };
 
-    let (foreign_keys, columns, tables, shared_state) =
-        tokio::join!(fks, columns, tables, shared_state);
+    let (foreign_keys, columns, tables, shared) = tokio::join!(fks, columns, tables, shared);
 
     if let (Some(cache), Some(keys)) = (&req.cache_pool, &foreign_keys) {
         crate::connection::metadata::write_foreign_key_cache(cache, conn_id, db, keys).await;
@@ -141,7 +148,7 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
         tables.as_ref().map_or(0, Vec::len),
         foreign_keys.as_ref().map_or(0, Vec::len),
         columns.as_ref().map_or(0, HashMap::len),
-        shared_state.is_some(),
+        matches!(shared, Ok(Some(_))),
         started.elapsed()
     );
 
@@ -149,7 +156,7 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
         foreign_keys,
         columns,
         tables,
-        shared_state,
+        shared: Some(shared),
     })
 }
 
@@ -390,7 +397,7 @@ mod tests {
             foreign_keys: Some(fks),
             columns: None,
             tables: Some(tables.iter().map(|t| t.to_string()).collect()),
-            shared_state: None,
+            shared: None,
         }
     }
 

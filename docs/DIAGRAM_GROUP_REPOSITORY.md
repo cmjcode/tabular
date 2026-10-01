@@ -10,7 +10,7 @@ Repository…**). The dialog has two fields:
 
 | Field | What it is | Where it is stored | When it is used |
 |---|---|---|---|
-| Git URL | `https://…`, `ssh://…`, `git@host:org/repo.git` or `file://…` | In the diagram, so it is shared with everyone who can open it (diagram file, `diagram_by_tabular` table, vault and sync) | When you have no project folder for this group, or it is missing |
+| Git URL | `https://…`, `ssh://…`, `git@host:org/repo.git` or `file://…` | In the diagram, so it is shared with everyone who can open it (the `diagram_by_tabular` table and the local diagram file) | When you have no project folder for this group, or it is missing |
 | Project folder | A local checkout, picked with **Browse…** | Only on this computer, in `{data dir}/diagram_repo_paths.json` for your OS user | First choice, whenever it exists |
 
 The split is deliberate. Another user who opens the diagram gets the git URL

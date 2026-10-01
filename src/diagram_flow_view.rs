@@ -652,6 +652,8 @@ pub struct FlowCardsOutcome {
 #[derive(Default)]
 struct CardChange {
     select: Option<String>,
+    /// Klik ulang card terpilih: lepas pilihan sehingga detailnya tersembunyi.
+    deselect: bool,
     /// Buka/tutup detail langkah ke-n di card terpilih.
     toggle_step: Option<usize>,
     /// Klik badan card: putar prosesnya seperti tombol Play.
@@ -870,10 +872,14 @@ pub fn render_flow_cards(
             (true, false) => egui::Sense::click_and_drag(),
         };
         let resp = ui.interact(sr, base_id.with("body"), sense);
-        if resp.clicked() || resp.drag_started() {
+        // Klik card yang sudah terpilih menyembunyikan detailnya lagi.
+        let hide = resp.clicked() && selected && !resp.double_clicked();
+        if hide {
+            change.deselect = true;
+        } else if resp.clicked() || resp.drag_started() {
             change.select = Some(card.id.clone());
         }
-        if resp.clicked() {
+        if resp.clicked() && !hide {
             change.autoplay = true;
         }
         if resp.dragged() {
@@ -1249,6 +1255,9 @@ fn apply_change(
     view_size: egui::Vec2,
     now: f64,
 ) {
+    if change.deselect {
+        crate::diagram_flow_play_view::clear(state);
+    }
     if let Some(id) = change.select {
         if state.focus_flow.as_ref().is_some_and(|f| f != &id) {
             state.focus_flow = None;

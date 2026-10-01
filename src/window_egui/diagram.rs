@@ -248,11 +248,9 @@ impl super::Tabular {
             action,
             DiagramAction::Save
                 | DiagramAction::SaveToVault
-                | DiagramAction::SaveToDatabase
-                | DiagramAction::LoadFromDatabase
+                | DiagramAction::SyncWithDatabase
                 | DiagramAction::OpenLinkDatabaseModal
                 | DiagramAction::RelinkDatabase(_)
-                | DiagramAction::SyncToServer
                 | DiagramAction::SuggestGroupTables(_)
                 | DiagramAction::GenerateFlows { .. }
         );
@@ -276,9 +274,10 @@ impl super::Tabular {
             DiagramAction::Info(msg) => self.toasts.success(msg),
             DiagramAction::Error(msg) => self.toasts.error(msg),
             DiagramAction::SaveToVault => self.save_diagram_to_vault(conn_id, db_name, state),
-            DiagramAction::SaveToDatabase => self.save_diagram_to_db(conn_id, db_name, state),
-            DiagramAction::LoadFromDatabase => {
-                self.load_diagram_from_db_and_apply(conn_id, db_name)
+            DiagramAction::SyncWithDatabase => {
+                if let (Some(cid), Some(db)) = (conn_id, db_name.as_deref()) {
+                    self.sync_diagram_with_database(cid, db);
+                }
             }
             DiagramAction::OpenLinkDatabaseModal => self.open_link_database_modal(None),
             DiagramAction::RelinkDatabase(link_id) => self.open_link_database_modal(Some(link_id)),
@@ -288,17 +287,6 @@ impl super::Tabular {
                 // `fail_diagram_links` saat tiba.
                 self.refresh_diagram_links(self.active_tab_index, only.as_deref());
                 self.toasts.info("Refreshing linked databases…");
-            }
-            DiagramAction::SyncToServer => {
-                self.sync_diagram_to_server(conn_id, db_name, state);
-            }
-            DiagramAction::UnlockVault => {
-                if self.vault.is_some() {
-                    self.sync_diagram_to_server(conn_id, db_name, state);
-                } else {
-                    self.vault_pending_diagram_sync = Some((conn_id, db_name));
-                    crate::sync::ui_vault_setup::open_vault_unlock_dialog(self);
-                }
             }
             DiagramAction::SuggestGroupTables(group_id) => {
                 self.start_group_table_scan(conn_id, db_name, &group_id);
@@ -534,7 +522,8 @@ impl super::Tabular {
         }
     }
 
-    /// Simpan diagram ke disk lokal dan secara default otomatis ke vault Obsidian (bila diaktifkan).
+    /// Save: simpan ke cache lokal, kirim ke tabel `diagram_by_tabular` di
+    /// database target (penyimpanan utama), dan ke vault Obsidian bila aktif.
     pub fn save_diagram_with_defaults(
         &mut self,
         conn_id: Option<i64>,
@@ -547,208 +536,10 @@ impl super::Tabular {
         };
         let db = db_name.unwrap_or_else(|| "default".to_string());
 
-        // 1. Simpan layout ke cache JSON lokal
         self.save_diagram_and_propagate(cid, &db, state);
-
-        // 2. Sync ke Tabular Cloud bila vault terbuka. Vault terkunci tidak
-        //    memunculkan popup di setiap Cmd+S; toolbar menampilkan tombol Unlock.
-        let cloud = self.diagram_cloud_status();
-        if cloud == models::structs::DiagramCloudStatus::Ready {
-            self.push_diagram_to_cloud(conn_id, Some(db.clone()), state, false);
-        }
-
-        // 3. Default: simpan juga ke Obsidian vault jika vault aktif
+        self.start_diagram_db_save(cid, &db, true);
         if self.obsidian_root().is_some() {
             self.save_diagram_to_vault(Some(cid), Some(db), state);
-        } else {
-            self.toasts.success(match cloud {
-                models::structs::DiagramCloudStatus::Ready => "Diagram saved and syncing to cloud",
-                models::structs::DiagramCloudStatus::Locked => {
-                    "Diagram saved locally. Unlock your vault to sync it to the cloud."
-                }
-                models::structs::DiagramCloudStatus::SignedOut => "Diagram layout saved",
-            });
-        }
-    }
-
-    /// Status cloud sync untuk toolbar diagram dan tombol Save.
-    pub fn diagram_cloud_status(&self) -> models::structs::DiagramCloudStatus {
-        use models::structs::DiagramCloudStatus;
-        match (&self.sync_account, &self.vault) {
-            (None, _) => DiagramCloudStatus::SignedOut,
-            (Some(_), None) => DiagramCloudStatus::Locked,
-            (Some(_), Some(_)) => DiagramCloudStatus::Ready,
-        }
-    }
-
-    /// Simpan diagram ke tabel `diagram_by_tabular` di database target dan cache lokal.
-    pub fn save_diagram_to_db(
-        &mut self,
-        conn_id: Option<i64>,
-        db_name: Option<String>,
-        state: &models::structs::DiagramState,
-    ) {
-        let Some(cid) = conn_id else {
-            self.toasts.error("No active connection for diagram save");
-            return;
-        };
-        let db = db_name.unwrap_or_else(|| "default".to_string());
-
-        // Simpan juga ke cache disk lokal segera
-        self.save_diagram_and_propagate(cid, &db, state);
-
-        let pool_opt = self.connection_pools.get(&cid).cloned().or_else(|| {
-            self.shared_connection_pools
-                .lock()
-                .ok()
-                .and_then(|p| p.get(&cid).cloned())
-        });
-
-        let Some(pool) = pool_opt else {
-            self.toasts
-                .error("Database connection pool not ready. Reconnect and try again.");
-            return;
-        };
-
-        let Some(rt) = self.runtime.clone() else {
-            self.toasts.error("Tokio runtime unavailable");
-            return;
-        };
-
-        let state_clone = crate::diagram_links::persistable(state);
-        let db_clone = db.clone();
-
-        let save_res = rt.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                crate::diagram_storage::save_diagram_to_database(
-                    &pool,
-                    &db_clone,
-                    &state_clone,
-                    None,
-                    None,
-                ),
-            )
-            .await
-        });
-
-        match save_res {
-            Ok(Ok(())) => {
-                self.toasts
-                    .success("Diagram saved to table 'diagram_by_tabular' in database");
-            }
-            Ok(Err(e)) => {
-                log::error!("[DIAGRAM_DB] Failed to save diagram to database: {e}");
-                self.toasts.error(format!("Save to database failed: {e}"));
-            }
-            Err(_) => {
-                log::error!("[DIAGRAM_DB] Save diagram to database timed out");
-                self.toasts.error("Save to database timed out (10s)");
-            }
-        }
-    }
-
-    /// Muat ulang diagram dari tabel `diagram_by_tabular` di database target.
-    pub fn load_diagram_from_db_and_apply(
-        &mut self,
-        conn_id: Option<i64>,
-        db_name: Option<String>,
-    ) {
-        let Some(cid) = conn_id else {
-            self.toasts.error("No active connection for diagram load");
-            return;
-        };
-        let db = db_name.unwrap_or_else(|| "default".to_string());
-
-        let pool_opt = self.connection_pools.get(&cid).cloned().or_else(|| {
-            self.shared_connection_pools
-                .lock()
-                .ok()
-                .and_then(|p| p.get(&cid).cloned())
-        });
-
-        let Some(pool) = pool_opt else {
-            self.toasts
-                .error("Database connection pool not ready. Reconnect and try again.");
-            return;
-        };
-
-        let Some(rt) = self.runtime.clone() else {
-            self.toasts.error("Tokio runtime unavailable");
-            return;
-        };
-
-        let db_clone = db.clone();
-        let load_res = rt.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                crate::diagram_storage::load_diagram_from_database(&pool, &db_clone, None),
-            )
-            .await
-        });
-
-        match load_res {
-            Ok(Ok(Some(loaded_state))) => {
-                let mut state_to_cache = None;
-                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
-                    && let Some(current_state) = &mut tab.diagram_state
-                {
-                    crate::diagram_links::strip_linked(current_state);
-                    current_state.groups = loaded_state.groups;
-                    current_state.virtual_relations = loaded_state.virtual_relations;
-                    current_state.linked_databases = loaded_state.linked_databases;
-                    current_state.notes = loaded_state.notes;
-                    current_state.show_notes = loaded_state.show_notes;
-                    current_state.endpoint_links = loaded_state.endpoint_links;
-                    current_state.show_endpoints = loaded_state.show_endpoints;
-                    current_state.flow_cards = loaded_state.flow_cards;
-                    current_state.endpoint_display = loaded_state.endpoint_display;
-                    current_state.flow_lines = loaded_state.flow_lines;
-                    current_state.flow_show_steps = loaded_state.flow_show_steps;
-                    crate::diagram_flow::sync_cards_from_links(current_state);
-                    current_state.pan = loaded_state.pan;
-                    current_state.zoom = loaded_state.zoom;
-                    current_state.show_grid = loaded_state.show_grid;
-                    current_state.prevent_overlap = loaded_state.prevent_overlap;
-                    current_state.show_relations = loaded_state.show_relations;
-
-                    for node in &mut current_state.nodes {
-                        if let Some(ln) = loaded_state.nodes.iter().find(|n| n.id == node.id) {
-                            node.pos = ln.pos;
-                            node.size = ln.size;
-                            node.group_ids = ln.group_ids.clone();
-                            node.group_id = ln.group_id.clone();
-                            node.detached = ln.detached;
-                        }
-                    }
-
-                    for ln in loaded_state.nodes {
-                        if ln.detached && !current_state.nodes.iter().any(|n| n.id == ln.id) {
-                            current_state.nodes.push(ln);
-                        }
-                    }
-
-                    state_to_cache = Some(current_state.clone());
-                }
-
-                if let Some(st) = state_to_cache {
-                    self.save_diagram(cid, &db, &st);
-                }
-                self.refresh_diagram_links(self.active_tab_index, None);
-                self.toasts
-                    .success("Diagram loaded from table 'diagram_by_tabular'");
-            }
-            Ok(Ok(None)) => {
-                self.toasts
-                    .warning("Table 'diagram_by_tabular' not found or empty in database");
-            }
-            Ok(Err(e)) => {
-                log::error!("[DIAGRAM_DB] Failed to load diagram from database: {e}");
-                self.toasts.error(format!("Load from database failed: {e}"));
-            }
-            Err(_) => {
-                self.toasts.error("Load from database timed out (10s)");
-            }
         }
     }
 
@@ -842,7 +633,7 @@ impl super::Tabular {
     /// Mulai ambil skema live (conn, db) di background. Job untuk database
     /// yang sama tidak diduplikasi; hasilnya diproses di
     /// [`Self::poll_diagram_schema_jobs`].
-    fn request_diagram_schema(&mut self, conn_id: i64, db_name: &str) {
+    pub(crate) fn request_diagram_schema(&mut self, conn_id: i64, db_name: &str) {
         if self
             .diagram_schema_jobs
             .iter()
@@ -900,7 +691,7 @@ impl super::Tabular {
         let mut state = cached.unwrap_or_default();
         self.materialize_links(&mut state, None);
         state.schema_syncing = true;
-        state.layout_baseline = Some(crate::diagram_schema::layout_fingerprint(&state));
+        state.db_status = models::structs::DiagramDbStatus::Checking;
 
         let title = format!("Diagram: {}", db_name);
         crate::editor::create_new_tab_with_connection_and_database(
@@ -1079,7 +870,13 @@ impl super::Tabular {
         conn_name: Option<&str>,
     ) -> models::structs::DiagramState {
         use crate::diagram_schema::{merge_schema, prepare_stored_state};
-        let mut st = match snapshot.shared_state.clone() {
+        let shared = snapshot
+            .shared
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(Option::as_ref)
+            .map(|rec| rec.state.clone());
+        let mut st = match shared {
             Some(mut shared) => {
                 prepare_stored_state(&mut shared, conn_id, db_name);
                 shared
@@ -1252,7 +1049,7 @@ impl super::Tabular {
 
     /// Tab diagram penuh milik (conn, db). Tab subset (`scoped_to`) tidak
     /// termasuk: tidak menerima sinkron skema dan bukan sumber link.
-    fn is_diagram_host_tab(tab: &models::structs::QueryTab, conn_id: i64, db_name: &str) -> bool {
+    pub(crate) fn is_diagram_host_tab(tab: &models::structs::QueryTab, conn_id: i64, db_name: &str) -> bool {
         tab.diagram_state
             .as_ref()
             .is_some_and(|s| s.scoped_to.is_none())
@@ -1272,7 +1069,7 @@ impl super::Tabular {
         db_name: &str,
         snapshot: &crate::diagram_schema::SchemaSnapshot,
     ) {
-        use crate::diagram_schema::{layout_fingerprint, merge_schema, prepare_stored_state};
+        use crate::diagram_schema::merge_schema;
 
         let conn_name = self
             .connections
@@ -1283,47 +1080,46 @@ impl super::Tabular {
             .filter(|&i| Self::is_diagram_host_tab(&self.query_tabs[i], conn_id, db_name))
             .collect();
 
-        let mut shared_applied = false;
         let mut source: Option<models::structs::DiagramState> = None;
+        let mut messages: Vec<String> = Vec::new();
         for i in host_tabs {
             let Some(mut state) = self.query_tabs[i].diagram_state.take() else {
                 continue;
             };
-            // Layout bersama hanya menggantikan cache bila user belum
-            // mengedit apa pun sejak tab dibuka.
-            let untouched = state
-                .layout_baseline
-                .is_some_and(|b| b == layout_fingerprint(&state));
-            let replaced = match snapshot.shared_state.clone() {
-                Some(mut shared) if untouched => {
-                    prepare_stored_state(&mut shared, conn_id, db_name);
-                    state = shared;
-                    true
+            // Bandingkan salinan lokal dengan versi di `diagram_by_tabular`.
+            let mut replaced = false;
+            if state.pending_merge.is_none() {
+                match &snapshot.shared {
+                    Some(Ok(Some(rec))) => {
+                        if let crate::window_egui::diagram_db_sync::Reconciled::Replaced(msg) =
+                            self.reconcile_diagram(&mut state, conn_id, db_name, rec.clone())
+                        {
+                            replaced = true;
+                            messages.push(msg);
+                        }
+                    }
+                    Some(Ok(None)) => {
+                        state.db_status = models::structs::DiagramDbStatus::NotInDatabase;
+                    }
+                    Some(Err(e)) => {
+                        log::warn!("[DIAGRAM_DB] reading diagram of '{db_name}' failed: {e}");
+                        state.db_status = models::structs::DiagramDbStatus::LocalOnly(e.clone());
+                    }
+                    None => {}
                 }
-                Some(_) => {
-                    log::info!(
-                        "[DIAGRAM_DB] shared layout of '{db_name}' skipped: diagram was edited before it arrived"
-                    );
-                    false
-                }
-                None => false,
-            };
+            }
             merge_schema(&mut state, snapshot, conn_id, db_name, conn_name.as_deref());
             if replaced {
                 // Isi link ikut terbuang saat state diganti.
                 self.materialize_links(&mut state, None);
-                shared_applied = true;
             }
             state.schema_syncing = false;
-            state.layout_baseline = None;
             self.save_diagram(conn_id, db_name, &state);
             source.get_or_insert_with(|| crate::diagram_links::persistable(&state));
             self.query_tabs[i].diagram_state = Some(state);
         }
-        if shared_applied {
-            self.toasts.info(format!(
-                "Diagram loaded from table `diagram_by_tabular` in {db_name}"
-            ));
+        for msg in messages {
+            self.toasts.info(msg);
         }
 
         self.resolve_focus_requests(conn_id, db_name, snapshot, conn_name.as_deref());
@@ -1379,7 +1175,15 @@ impl super::Tabular {
             {
                 was_syncing |= st.schema_syncing;
                 st.schema_syncing = false;
-                st.layout_baseline = None;
+                // Database tidak terjangkau: versi di `diagram_by_tabular`
+                // belum bisa dibandingkan.
+                if matches!(
+                    st.db_status,
+                    models::structs::DiagramDbStatus::Checking
+                        | models::structs::DiagramDbStatus::Unknown
+                ) {
+                    st.db_status = models::structs::DiagramDbStatus::LocalOnly(error.clone());
+                }
             }
         }
         if was_syncing {
@@ -2045,114 +1849,6 @@ impl super::Tabular {
                 .toasts
                 .success(format!("Linked database '{db}' ({tables} tables)")),
         };
-    }
-
-    /// Jalankan ulang sync diagram yang tertunda karena vault terkunci.
-    /// Dipanggil oleh popup unlock vault begitu vault terbuka.
-    pub fn resume_pending_diagram_sync(&mut self) {
-        let Some((conn_id, db_name)) = self.vault_pending_diagram_sync.take() else {
-            return;
-        };
-        let Some(state) = self
-            .diagram_state_for_mut(conn_id, db_name.as_deref())
-            .cloned()
-        else {
-            log::warn!("[SYNC] Pending diagram sync dropped: diagram tab is no longer open");
-            return;
-        };
-        self.sync_diagram_to_server(conn_id, db_name, &state);
-    }
-
-    pub fn sync_diagram_to_server(
-        &mut self,
-        conn_id: Option<i64>,
-        db_name: Option<String>,
-        state: &models::structs::DiagramState,
-    ) {
-        if self.sync_account.is_none() {
-            self.toasts
-                .warning("Please sign in to Tabular to sync diagrams to cloud");
-            crate::sync::ui_login::open_account_dialog(self);
-            return;
-        }
-
-        if self.vault.is_none() {
-            // Langsung minta passphrase; sync dilanjutkan otomatis setelah unlock.
-            self.vault_pending_diagram_sync = Some((conn_id, db_name));
-            crate::sync::ui_vault_setup::open_vault_unlock_dialog(self);
-            return;
-        }
-
-        self.push_diagram_to_cloud(conn_id, db_name, state, true);
-    }
-
-    /// Kirim diagram ke Tabular Cloud. Pemanggil memastikan sudah login dan
-    /// vault terbuka; `announce` menampilkan toast "Syncing…".
-    fn push_diagram_to_cloud(
-        &mut self,
-        conn_id: Option<i64>,
-        db_name: Option<String>,
-        state: &models::structs::DiagramState,
-        announce: bool,
-    ) {
-        let (Some(account), Some(vault)) = (self.sync_account.as_ref(), self.vault.as_ref()) else {
-            return;
-        };
-
-        let db = db_name.unwrap_or_else(|| "default".to_string());
-        let diag_title = state.diagram_title.clone().unwrap_or_else(|| {
-            if let Some(cid) = conn_id {
-                let conn_name = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == Some(cid))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "diagram".to_string());
-                format!("{}_{}", conn_name, db)
-            } else {
-                format!("diagram_{}", db)
-            }
-        });
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let token = account.access_token.clone();
-        let server_url = self.sync_server_url.clone();
-        let team_keys = self.vault_team_keys.clone();
-        let shared_folders = self.shared_folders_cache.clone();
-
-        crate::sync::sync_diagrams::push_single_diagram(
-            diag_title.clone(),
-            crate::diagram_links::persistable(state),
-            vault.account_key.clone(),
-            team_keys,
-            shared_folders,
-            token,
-            server_url,
-            tx,
-        );
-
-        if announce {
-            self.toasts
-                .info(format!("Syncing diagram '{}' to cloud…", diag_title));
-        }
-
-        if let Some(rt) = &self.runtime {
-            rt.spawn(async move {
-                match rx.recv() {
-                    Ok(Ok(remote_id)) => {
-                        log::info!(
-                            "[SYNC] Diagram '{}' synced successfully (id: {})",
-                            diag_title,
-                            remote_id
-                        );
-                    }
-                    Ok(Err(e)) => {
-                        log::error!("[SYNC] Diagram sync failed: {}", e);
-                    }
-                    Err(_) => {}
-                }
-            });
-        }
     }
 }
 

@@ -115,7 +115,7 @@ requests that already have tables, for example after you link a new diagram grou
 ## Endpoints in the database diagram
 
 Linked endpoints are stored in the diagram, so they are saved to the diagram
-file, the `diagram_by_tabular` table, the vault and cloud sync together with
+file and the `diagram_by_tabular` table together with
 groups and notes. A diagram that is not open is updated in its local file; open
 it and save it to share the links.
 

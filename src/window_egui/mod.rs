@@ -13,11 +13,15 @@ pub mod ai_history_ui;
 pub mod ai_mcp_ui;
 pub mod ai_fix;
 pub mod app_impl;
+pub mod background_dock;
+pub mod background_tasks;
 pub mod connection_mgr;
 pub mod db_context_bar;
 pub mod device_profile;
 pub mod diagram;
+pub mod diagram_db_sync;
 pub mod diagram_flow_jobs;
+pub(crate) mod diagram_merge_dialog;
 pub mod git_avatar;
 pub mod git_diff_view;
 pub(crate) mod git_graph_dialogs;
@@ -764,6 +768,8 @@ pub struct Tabular {
     )>,
     // Centralized, non-blocking toast/notification surface (see notifications.rs)
     pub toasts: notifications::ToastManager,
+    /// Proses AI yang berjalan di background (panel bawah sidebar).
+    pub background_tasks: background_tasks::BackgroundTasks,
     /// State tab Git (repository, status, job latar, Merge Review).
     pub git: git_jobs::GitUiState,
     /// State integrasi platform: deep link, Handoff, environment koneksi, Touch ID.
@@ -800,6 +806,8 @@ pub struct Tabular {
     pub diagram_focus_requests: Vec<diagram::DiagramFocusRequest>,
     /// Pemindaian repository group diagram (saran tabel) yang sedang berjalan.
     pub diagram_repo_scan_jobs: Vec<diagram::DiagramRepoScanJob>,
+    /// Penyimpanan diagram ke tabel `diagram_by_tabular` yang sedang berjalan.
+    pub diagram_db_save_jobs: Vec<diagram_db_sync::DiagramDbSaveJob>,
     /// Generate alur bisnis flow card (AI) yang sedang berjalan, satu per diagram.
     pub diagram_flow_jobs: Vec<diagram_flow_jobs::DiagramFlowGenJob>,
     // Backup & Restore dialogs
@@ -962,9 +970,6 @@ pub struct Tabular {
     pub vault_stage: crate::sync::ui_vault_setup::VaultStage,
     /// Popup unlock vault yang dibuka langsung saat sebuah aksi sync butuh vault.
     pub show_vault_unlock_dialog: bool,
-    /// Sync diagram (conn_id, db_name) yang tertunda karena vault terkunci;
-    /// dijalankan ulang otomatis begitu vault terbuka.
-    pub vault_pending_diagram_sync: Option<(Option<i64>, Option<String>)>,
     /// Wrapped bundle fetched from the server — opaque without the passphrase.
     pub vault_remote_bundle: Option<crate::sync::api_client::RemoteVaultKeys>,
     pub vault_passphrase_input: String,

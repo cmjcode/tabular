@@ -1076,6 +1076,8 @@ impl Tabular {
                         .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
                 )
                 .show(root_ui, |ui| {
+                    // Panel proses background: dasar sidebar, sama di semua tab.
+                    crate::window_egui::background_dock::render_background_dock(&mut self.background_tasks, ui);
                     ui.vertical(|ui| {
                         // Top bar for sidebar tabs matching query tab bar height and alignment
                         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
@@ -3111,10 +3113,8 @@ impl Tabular {
                             rendered_redis_browser = true;
                         }
                     
-                        let diagram_cloud_status = self.diagram_cloud_status();
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && let Some(diagram_state) = &mut tab.diagram_state {
-                               diagram_state.cloud_status = diagram_cloud_status;
                                if let Some(action) = crate::diagram_view::render_diagram(ui, diagram_state) {
                                    diagram_action = Some((action, tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                                }
@@ -3132,6 +3132,8 @@ impl Tabular {
                                        if force {
                                            diagram_state.unsaved_changes = false;
                                        }
+                                       // Autosave ke database menunggu jeda tanpa perubahan.
+                                       diagram_state.db_dirty_since = Some(std::time::Instant::now());
                                        diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                                    } else {
                                        diagram_state.unsaved_changes = true;
@@ -5159,10 +5161,13 @@ impl App for Tabular {
         // Show cache miss dialog (topmost)
         self.poll_diagram_schema_jobs(ctx);
         self.poll_diagram_repo_scan_jobs(ctx);
+        self.poll_diagram_db_jobs(ctx);
         self.poll_diagram_flow_jobs(ctx);
+        self.sync_diagram_background_tasks();
         crate::http_repo::render(self, ctx);
         self.render_cache_miss_dialog(ctx);
         self.render_link_database_dialog(ctx);
+        self.render_diagram_merge_dialog(ctx);
 
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);

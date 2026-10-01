@@ -504,6 +504,13 @@ pub fn render_group_table_suggestions(
     ctx: &egui::Context,
     state: &mut DiagramState,
 ) -> Option<DiagramAction> {
+    if state
+        .group_table_suggestions
+        .as_ref()
+        .is_some_and(|s| s.hidden)
+    {
+        return None; // berjalan di background; dibuka lagi dari panel sidebar
+    }
     let mut sugg = state.group_table_suggestions.take()?;
     let gid = sugg.group_id.clone();
     let Some(group) = state.groups.iter().find(|g| g.id == gid) else {
@@ -576,6 +583,19 @@ pub fn render_group_table_suggestions(
                             .clicked()
                         {
                             sugg.cancel_requested = true;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Process in Background")
+                                    .min_size(egui::vec2(0.0, 28.0)),
+                            )
+                            .on_hover_text(
+                                "Hide this window and keep working. Follow it in Background \
+                                 Processes at the bottom of the sidebar.",
+                            )
+                            .clicked()
+                        {
+                            sugg.hidden = true;
                         }
                     });
                 });

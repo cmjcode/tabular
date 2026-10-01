@@ -76,14 +76,14 @@ them.
 
 ## Who can read a note
 
-Notes are part of the diagram, like group repository URLs. They are saved in
-the diagram file and travel with **Save to Database** (the `diagram_by_tabular`
-table), the Obsidian vault and Tabular Server sync. Everyone who can open the
-diagram from that database can read them. Opening or closing a card is
-personal; pinning is shared.
+Notes are part of the diagram, like group repository URLs. They are saved with
+the diagram in the `diagram_by_tabular` table of the database (and in the
+Obsidian vault when enabled). Everyone who can open the diagram from that
+database can read them. Opening or closing a card is personal; pinning is
+shared.
 
-When two people save the same diagram, the last save wins, the same as for
-table positions and groups.
+When two people change the same note, the diagram shows a merge window the
+next time it is opened or saved; see [Diagram storage](DIAGRAM_STORAGE.md).
 
 ## Limits
 

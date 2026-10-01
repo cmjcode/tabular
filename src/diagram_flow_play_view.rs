@@ -89,7 +89,7 @@ pub fn start_playback(state: &mut DiagramState, card_id: &str) {
     state.flow_play = Some(play::new_playback(card_id));
 }
 
-/// Lepas pilihan, fokus, dan pemutaran flow card (Esc / klik kanvas kosong).
+/// Lepas pilihan, fokus, dan pemutaran flow card (Esc / klik ulang card terpilih).
 pub fn clear(state: &mut DiagramState) {
     state.selected_flow = None;
     state.focus_flow = None;

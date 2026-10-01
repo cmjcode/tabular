@@ -157,10 +157,13 @@ pub fn render_flow_gen_window(ctx: &egui::Context, state: &mut DiagramState) {
                         }
                         if ui
                             .add(
-                                egui::Button::new("Run in Background")
+                                egui::Button::new("Process in Background")
                                     .min_size(egui::vec2(0.0, 28.0)),
                             )
-                            .on_hover_text("Hide this window; a notification appears when it ends")
+                            .on_hover_text(
+                                "Hide this window and keep working. Follow it in Background \
+                                 Processes at the bottom of the sidebar.",
+                            )
                             .clicked()
                         {
                             win.hidden = true;
