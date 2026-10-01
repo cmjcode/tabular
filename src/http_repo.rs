@@ -1337,6 +1337,8 @@ impl HttpRepoUi {
         // Tinggi dikunci (hanya lebar yang bisa diubah) supaya jendela tidak memanjang
         // sampai setinggi layar; tetap muat di layar kecil.
         let height = (ctx.content_rect().height() - 120.0).clamp(240.0, 580.0);
+        // Lebar maksimum 50% window utama supaya jendela tidak melebar sampai penuh.
+        let max_width = (ctx.content_rect().width() * 0.5).max(360.0);
         egui::Window::new(format!("Generate Endpoints · {}", win.folder_name))
             .id(egui::Id::new((
                 "http_repo_endpoints_window",
@@ -1345,7 +1347,8 @@ impl HttpRepoUi {
             .open(&mut open)
             .collapsible(true)
             .resizable([true, false])
-            .default_size(egui::vec2(780.0, height))
+            .default_size(egui::vec2(max_width.min(780.0), height))
+            .max_width(max_width)
             .min_height(height)
             .max_height(height)
             .show(ctx, |ui| {
@@ -1359,7 +1362,12 @@ impl HttpRepoUi {
                         ),
                     );
                     ui.add_space(4.0);
-                    win.progress.show(ui);
+                    // Baris langkah yang panjang digulung, bukan melebarkan jendela.
+                    egui::ScrollArea::both()
+                        .id_salt("http_repo_endpoints_progress")
+                        .max_height((ui.available_height() - 40.0).max(80.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| win.progress.show(ui));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -1383,7 +1391,13 @@ impl HttpRepoUi {
                     ui.add_space(6.0);
                     egui::CollapsingHeader::new("Details")
                         .default_open(false)
-                        .show(ui, |ui| win.progress.show(ui));
+                        .show(ui, |ui| {
+                            egui::ScrollArea::both()
+                                .id_salt("http_repo_endpoints_details")
+                                .max_height((ui.available_height() - 40.0).max(80.0))
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| win.progress.show(ui));
+                        });
                     ui.horizontal(|ui| {
                         if ui.button("Retry").clicked() {
                             rescan = true;

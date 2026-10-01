@@ -119,18 +119,37 @@ file and the `diagram_by_tabular` table together with
 groups and notes. A diagram that is not open is updated in its local file; open
 it and save it to share the links.
 
-Each endpoint appears as an **API card** in a lane to the left of the tables it
-uses, one lane per repository. The diagram menu controls how endpoints are
-shown:
+By default endpoints are listed in the **API panel** on the left of the diagram
+(the *Rail* mode), and the canvas stays a plain ERD:
+
+- The panel groups endpoints by their main table (the table named in the path,
+  otherwise the first table the endpoint writes), so `/panens`, `/panens/{id}`
+  and `/panens_filter_date` all sit under `panens`. Each row shows the method,
+  the full path and the operations the endpoint performs (**C**reate, **R**ead,
+  **U**pdate, **D**elete).
+- Click an endpoint to show its process card next to the tables it uses. The
+  other tables are dimmed, the lines carry the operation and step numbers, and
+  the process plays. Click the row again, or press Esc, to clear it.
+- Hover a step to outline its table; hover a table to highlight the steps that
+  use it.
+- Each table header shows a badge such as **API 6 · CRUD**: six endpoints use
+  the table, and together they create, read, update and delete it.
+- The **CRUD matrix** tab counts endpoints per table and operation. Click a
+  number to list those endpoints; click a table name to jump to it.
+- Double-click a table name in the list to jump to that table. The filter box
+  matches method, path, summary and table names. The chevron hides the panel.
+
+The diagram menu controls how endpoints are shown:
 
 | Setting | Options |
 |---|---|
 | **Show API endpoints** | Hides or shows cards and badges |
-| **API endpoints as** | **Cards** (default), **Badges** (a blue **API n** on each table header, as in earlier versions) or **Both** |
-| **Process lines** | **Selected** (default): lines only for the selected, hovered or playing card. **All**: every card's lines, faded except the active one |
-| **Arrange API cards** | Puts every card back in its automatic lane |
+| **API endpoints as** | **Rail** (default): the API panel plus table badges. **Cards**: every endpoint as a card in an API band above its tables. **Badges**: only the blue **API n** badge on each table header. **Both**: cards and badges |
+| **Process lines** | Cards and Both only. **Selected** (default): lines only for the selected, hovered or playing card. **All**: every card's lines, faded except the active one |
+| **Arrange API cards** | Cards and Both only. Puts every card back in its automatic band |
 
-Working with cards:
+Working with cards (in Rail mode only the selected endpoint has a card, and it
+is placed automatically, so it cannot be dragged):
 
 - Click a card to select it and draw its lines to the tables. Drag a card to
   move it; the position is saved with the diagram.

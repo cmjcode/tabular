@@ -1172,8 +1172,13 @@ impl EndpointLink {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointDisplay {
-    /// Flow card di lane samping tabel.
+    /// Panel "API rail" di kiri kanvas plus badge di tabel; di kanvas hanya
+    /// card endpoint terpilih yang tampil, di samping tabel-tabelnya.
+    /// Sebagai default nilainya tidak ditulis ke file, jadi klien lama yang
+    /// belum mengenal `rail` tetap bisa membaca diagram yang disinkron.
     #[default]
+    Rail,
+    /// Flow card di pita API di atas tabel.
     Cards,
     /// Badge "API n" di header tabel.
     Badges,
@@ -1181,12 +1186,18 @@ pub enum EndpointDisplay {
 }
 
 impl EndpointDisplay {
+    /// Flow card bisa tampil di kanvas (semua card, atau card terpilih saja
+    /// pada mode `Rail`).
     pub fn shows_cards(self) -> bool {
-        matches!(self, Self::Cards | Self::Both)
+        matches!(self, Self::Rail | Self::Cards | Self::Both)
     }
 
     pub fn shows_badges(self) -> bool {
-        matches!(self, Self::Badges | Self::Both)
+        matches!(self, Self::Rail | Self::Badges | Self::Both)
+    }
+
+    pub fn is_rail(self) -> bool {
+        self == Self::Rail
     }
 }
 

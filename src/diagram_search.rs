@@ -266,6 +266,14 @@ pub fn focus_target(
     view_size: egui::Vec2,
     now: f64,
 ) -> bool {
+    // Mode rail: endpoint dibuka sebagai card sorotan di samping tabelnya.
+    if state.endpoint_display.is_rail()
+        && let SearchTarget::Endpoint {
+            card: Some(card), ..
+        } = target
+    {
+        return crate::diagram_flow_view::spotlight_card(state, card, view_size, now);
+    }
     let Some(world) = target_world_rect(state, target) else {
         return false;
     };

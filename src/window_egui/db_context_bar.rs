@@ -13,8 +13,8 @@ use crate::window_egui::Tabular;
 
 /// Jarak kartu dari tepi kanan dan atas area konten.
 const CARD_OFFSET: egui::Vec2 = egui::vec2(-12.0, 8.0);
-/// Opacity latar kartu, sama dengan floating toolbar kanvas lain.
-const CARD_OPACITY: f32 = 0.92;
+/// Opacity latar kartu (70%), agar kanvas di belakangnya tetap terlihat.
+const CARD_OPACITY: f32 = 0.70;
 
 /// Apakah tab aktif memakai konteks database (bukan tab HTTP).
 fn tab_uses_db_context(t: &Tabular) -> bool {

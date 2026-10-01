@@ -820,7 +820,7 @@ mod tests {
         assert!(st.flow_cards.is_empty());
         assert_eq!(
             st.endpoint_display,
-            crate::models::structs::EndpointDisplay::Cards
+            crate::models::structs::EndpointDisplay::Rail
         );
         assert!(sync_cards_from_links(&mut st));
         assert_eq!(st.flow_cards.len(), 1);

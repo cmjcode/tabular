@@ -54,6 +54,11 @@ pub const BAND_COLUMN_GAP: f32 = 28.0;
 const BAND_ASPECT: f32 = 1.6;
 /// Jarak pita "Unmapped endpoints" ke isi diagram di kanannya.
 const FREE_BAND_GAP: f32 = 140.0;
+/// Jarak card sorotan (mode rail) ke tabel-tabelnya; ruang untuk garis dan
+/// chip langkahnya.
+pub const SPOT_GAP: f32 = 90.0;
+/// Jarak aman card sorotan ke tabel lain saat menilai tumpang tindih.
+const SPOT_CLEARANCE: f32 = 12.0;
 /// Padding kotak group, sama dengan `diagram_view` (sisi, lalu judul di atas).
 const GROUP_SIDE_PAD: f32 = 20.0;
 const GROUP_TOP_PAD: f32 = GROUP_SIDE_PAD + 30.0 + 16.0;
@@ -178,7 +183,8 @@ fn is_selected(state: &DiagramState, card: &FlowCard) -> bool {
 /// Badan card (ringkasan dan langkah) tampil? Mode ringkas (default): hanya
 /// card terpilih. Mode "show steps": semua card kecuali yang diciutkan.
 pub fn shows_body(state: &DiagramState, card: &FlowCard) -> bool {
-    if state.flow_show_steps {
+    // Mode rail: hanya card sorotan yang tampil, dan selalu lengkap.
+    if state.flow_show_steps && !state.endpoint_display.is_rail() {
         !card.collapsed
     } else {
         is_selected(state, card)
@@ -324,6 +330,12 @@ pub struct FlowFrame {
     pub tables: Vec<Vec<String>>,
     /// Pita API; card yang digeser manual tidak masuk pita mana pun.
     pub bands: Vec<Band>,
+    /// Card yang digambar di kanvas, sejajar `rects`. Mode pita: semuanya.
+    /// Mode rail: hanya card sorotan.
+    pub shown: Vec<bool>,
+    /// Mode rail: card ditata otomatis di samping tabelnya dan tidak bisa
+    /// digeser.
+    pub spotlight: bool,
 }
 
 impl FlowFrame {
@@ -348,12 +360,43 @@ impl FlowFrame {
                     .collect()
             })
             .collect();
+        if state.endpoint_display.is_rail() {
+            return Self::spotlight(state, tables);
+        }
         let (rects, bands) = arrange_bands(state, &tables);
         Self {
+            shown: vec![true; rects.len()],
             rects,
             tables,
             bands,
+            spotlight: false,
         }
+    }
+
+    /// Mode rail: tanpa pita; hanya card sorotan yang mendapat tempat, di
+    /// samping tabel-tabelnya.
+    fn spotlight(state: &DiagramState, tables: Vec<Vec<String>>) -> Self {
+        let n = state.flow_cards.len();
+        let header = egui::vec2(CARD_WIDTH, CARD_HEADER_H);
+        let mut rects = vec![egui::Rect::from_min_size(egui::Pos2::ZERO, header); n];
+        let mut shown = vec![false; n];
+        if let Some(i) = spotlight_index(state) {
+            let size = egui::vec2(CARD_WIDTH, expanded_height(state, &state.flow_cards[i]));
+            rects[i] = egui::Rect::from_min_size(spotlight_pos(state, &tables[i], size), header);
+            shown[i] = true;
+        }
+        Self {
+            rects,
+            tables,
+            bands: Vec::new(),
+            shown,
+            spotlight: true,
+        }
+    }
+
+    /// Card `i` digambar di kanvas?
+    pub fn is_shown(&self, i: usize) -> bool {
+        self.shown.get(i).copied().unwrap_or(false)
     }
 
     /// Rect card `i` di LOD `Detail`, diperluas bila card itu terpilih.
@@ -373,6 +416,74 @@ impl FlowFrame {
             })
             .collect()
     }
+}
+
+/// Card sorotan mode rail: card terpilih, lalu yang difokuskan, lalu yang
+/// sedang diputar.
+pub fn spotlight_index(state: &DiagramState) -> Option<usize> {
+    let id = state
+        .selected_flow
+        .as_deref()
+        .or(state.focus_flow.as_deref())
+        .or(state.flow_play.as_ref().map(|p| p.card_id.as_str()))?;
+    state.flow_cards.iter().position(|c| c.id == id)
+}
+
+/// Pojok kiri atas card sorotan berukuran `size` untuk tabel `tables` (id
+/// node). Dicoba berurutan: kiri dan kanan kotak tabel-tabelnya, kiri dan
+/// kanan tabel pertamanya, lalu atas dan bawah kotak itu; dipakai tempat
+/// pertama yang tidak menutupi tabel mana pun. Bila semuanya menutupi tabel,
+/// dipakai yang paling sedikit menutupinya. Card tanpa tabel di diagram
+/// ditaruh di kiri seluruh isi diagram.
+pub fn spotlight_pos(state: &DiagramState, tables: &[String], size: egui::Vec2) -> egui::Pos2 {
+    let rect_of =
+        |n: &crate::models::structs::DiagramNode| egui::Rect::from_min_size(n.pos, n.size);
+    let all: Vec<egui::Rect> = state.nodes.iter().map(rect_of).collect();
+    let touched: Vec<egui::Rect> = tables
+        .iter()
+        .filter_map(|t| state.nodes.iter().find(|n| &n.id == t))
+        .map(rect_of)
+        .collect();
+    let Some(bbox) = touched.iter().copied().reduce(|a, b| a.union(b)) else {
+        return match all.iter().copied().reduce(|a, b| a.union(b)) {
+            Some(a) => egui::pos2(a.left() - FREE_BAND_GAP - size.x, a.top()),
+            None => egui::Pos2::ZERO,
+        };
+    };
+    let mean = touched
+        .iter()
+        .fold(egui::Vec2::ZERO, |acc, r| acc + r.center().to_vec2())
+        / touched.len() as f32;
+    let first = touched[0];
+    let candidates = [
+        egui::pos2(bbox.left() - SPOT_GAP - size.x, mean.y - size.y / 2.0),
+        egui::pos2(bbox.right() + SPOT_GAP, mean.y - size.y / 2.0),
+        egui::pos2(first.left() - SPOT_GAP - size.x, first.top()),
+        egui::pos2(first.right() + SPOT_GAP, first.top()),
+        egui::pos2(mean.x - size.x / 2.0, bbox.top() - SPOT_GAP - size.y),
+        egui::pos2(mean.x - size.x / 2.0, bbox.bottom() + SPOT_GAP),
+    ];
+    // Luas tabel yang tertutup card (dengan jarak aman) di posisi `pos`.
+    let overlap = |pos: egui::Pos2| -> f32 {
+        let padded = egui::Rect::from_min_size(pos, size).expand(SPOT_CLEARANCE);
+        all.iter()
+            .map(|r| {
+                let i = r.intersect(padded);
+                if i.is_positive() { i.area() } else { 0.0 }
+            })
+            .sum()
+    };
+    let mut best = (candidates[0], overlap(candidates[0]));
+    for &pos in &candidates[1..] {
+        if best.1 <= 0.0 {
+            break;
+        }
+        let o = overlap(pos);
+        if o < best.1 {
+            best = (pos, o);
+        }
+    }
+    best.0
 }
 
 /// Card sedang tampil di kanvas (bukan hanya badge atau disembunyikan)?
@@ -779,6 +890,12 @@ pub fn arrange_bands(state: &DiagramState, tables: &[Vec<String>]) -> (Vec<egui:
 pub fn card_world_rect(state: &DiagramState, card_id: &str) -> Option<egui::Rect> {
     let i = state.flow_cards.iter().position(|c| c.id == card_id)?;
     let frame = FlowFrame::compute(state);
+    if frame.spotlight && !frame.is_shown(i) {
+        // Tempat card ini bila menjadi card sorotan.
+        let size = egui::vec2(CARD_WIDTH, expanded_height(state, &state.flow_cards[i]));
+        let pos = spotlight_pos(state, &frame.tables[i], size);
+        return Some(egui::Rect::from_min_size(pos, size));
+    }
     Some(frame.drawn_rect(state, i))
 }
 
@@ -845,6 +962,14 @@ mod tests {
                 ..Default::default()
             })
             .collect()
+    }
+
+    /// Dasar state untuk tes pita API (mode `Cards`); default-nya mode rail.
+    fn band_state() -> DiagramState {
+        DiagramState {
+            endpoint_display: crate::models::structs::EndpointDisplay::Cards,
+            ..Default::default()
+        }
     }
 
     fn assert_no_overlap(rects: &[egui::Rect]) {
@@ -986,7 +1111,7 @@ mod tests {
                 link("users", "GET", "/users", Some("r")),
                 link("orders", "GET", "/orders", Some("r")),
             ],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let frame = FlowFrame::compute(&st);
@@ -1032,7 +1157,7 @@ mod tests {
         let mut st = DiagramState {
             nodes: vec![node("t", 0.0, 0.0), node("u", 0.0, 400.0)],
             endpoint_links: vec![link("t", "POST", "/t", None), link("u", "POST", "/t", None)],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         st.flow_cards[0].steps = steps(25);
@@ -1054,7 +1179,7 @@ mod tests {
         let mut st = DiagramState {
             nodes: vec![grouped("t", 0.0, 0.0, "g")],
             groups: vec![group("g", None)],
-            ..Default::default()
+            ..band_state()
         };
         for i in 0..40 {
             st.endpoint_links
@@ -1076,7 +1201,7 @@ mod tests {
         let mut st = DiagramState {
             nodes: vec![node("t", 500.0, 0.0)],
             endpoint_links: vec![link("t", "GET", "/a", None), link("t", "GET", "/b", None)],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         st.flow_cards[0].pos = Some([-2000.0, 700.0]);
@@ -1093,7 +1218,7 @@ mod tests {
             // `u` tepat di atas `t`, menutup ruang pita `t`.
             nodes: vec![node("t", 0.0, 0.0), node("u", 0.0, -200.0)],
             endpoint_links: vec![link("t", "GET", "/a", Some("x"))],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let frame = FlowFrame::compute(&st);
@@ -1113,7 +1238,7 @@ mod tests {
                 link("a", "GET", "/a", Some("x")),
                 link("b", "GET", "/b", Some("y")),
             ],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let frame = FlowFrame::compute(&st);
@@ -1132,7 +1257,7 @@ mod tests {
                 group("svc", Some("https://github.com/org/app.git")),
             ],
             endpoint_links: vec![link("t", "GET", "/a", Some("github.com/org/app"))],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let frame = FlowFrame::compute(&st);
@@ -1146,7 +1271,7 @@ mod tests {
             nodes: vec![node("t", 0.0, 0.0), grouped("far", 3000.0, 0.0, "g")],
             groups: vec![group("g", Some("https://github.com/org/app.git"))],
             endpoint_links: vec![link("t", "GET", "/a", Some("github.com/org/app"))],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let frame = FlowFrame::compute(&st);
@@ -1159,7 +1284,7 @@ mod tests {
         let mut st = DiagramState {
             nodes: vec![node("t", 0.0, 0.0), node("u", -800.0, 50.0)],
             endpoint_links: vec![link("t", "GET", "/a", None)],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         let mut lonely = card("flw_9", "GET", "/ghost", None);
@@ -1178,13 +1303,80 @@ mod tests {
             nodes: vec![grouped("t", 0.0, 0.0, "g")],
             groups: vec![group("g", None)],
             endpoint_links: vec![link("t", "GET", "/a", None)],
-            ..Default::default()
+            ..band_state()
         };
         crate::diagram_flow::sync_cards_from_links(&mut st);
         st.endpoint_display = crate::models::structs::EndpointDisplay::Cards;
         assert!(band_sizes(&st).contains_key("g"));
         st.show_endpoints = false;
         assert!(band_sizes(&st).is_empty());
+    }
+
+    /// State mode rail: satu card `flw_1` yang tertaut ke tabel `users`.
+    fn rail_state(nodes: Vec<DiagramNode>) -> DiagramState {
+        DiagramState {
+            nodes,
+            flow_cards: vec![card("flw_1", "GET", "/users", None)],
+            endpoint_links: vec![link("users", "GET", "/users", None)],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rail_mode_places_only_the_selected_card_beside_its_table() {
+        let mut st = rail_state(vec![node("users", 600.0, 300.0)]);
+        assert!(st.endpoint_display.is_rail());
+        let frame = FlowFrame::compute(&st);
+        assert!(frame.spotlight && frame.bands.is_empty());
+        assert_eq!(frame.shown, vec![false]);
+        assert!(band_sizes(&st).is_empty());
+
+        st.selected_flow = Some("flw_1".into());
+        let frame = FlowFrame::compute(&st);
+        assert_eq!(frame.shown, vec![true]);
+        let table = egui::Rect::from_min_size(egui::pos2(600.0, 300.0), egui::vec2(200.0, 150.0));
+        let drawn = frame.drawn_rect(&st, 0);
+        // Di kiri tabel dengan jarak `SPOT_GAP`, tidak menutupinya.
+        assert_eq!(drawn.right(), table.left() - SPOT_GAP);
+        assert!(!drawn.intersects(table));
+        assert_eq!(
+            card_world_rect(&st, "flw_1").map(|r| r.min),
+            Some(drawn.min)
+        );
+    }
+
+    #[test]
+    fn spotlight_moves_right_when_the_left_side_is_taken() {
+        let mut st = rail_state(vec![
+            node("users", 600.0, 300.0),
+            node("blocker", 250.0, 300.0),
+        ]);
+        st.selected_flow = Some("flw_1".into());
+        let frame = FlowFrame::compute(&st);
+        let drawn = frame.drawn_rect(&st, 0);
+        assert_eq!(drawn.left(), 800.0 + SPOT_GAP);
+        for n in &st.nodes {
+            assert!(!drawn.intersects(egui::Rect::from_min_size(n.pos, n.size)));
+        }
+    }
+
+    #[test]
+    fn spotlight_without_diagram_tables_sits_left_of_the_diagram() {
+        let mut st = rail_state(vec![node("orders", 600.0, 300.0)]);
+        st.endpoint_links.clear();
+        let size = egui::vec2(CARD_WIDTH, 100.0);
+        let pos = spotlight_pos(&st, &[], size);
+        assert_eq!(pos, egui::pos2(600.0 - FREE_BAND_GAP - CARD_WIDTH, 300.0));
+        st.nodes.clear();
+        assert_eq!(spotlight_pos(&st, &[], size), egui::Pos2::ZERO);
+    }
+
+    #[test]
+    fn rail_card_rect_is_known_before_the_card_is_selected() {
+        let st = rail_state(vec![node("users", 600.0, 300.0)]);
+        let rect = card_world_rect(&st, "flw_1").expect("card");
+        assert_eq!(rect.right(), 600.0 - SPOT_GAP);
+        assert_eq!(rect.height(), expanded_height(&st, &st.flow_cards[0]));
     }
 
     #[test]

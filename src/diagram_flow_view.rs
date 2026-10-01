@@ -152,6 +152,7 @@ pub fn card_at(
     draw_order(state)
         .into_iter()
         .rev()
+        .filter(|&i| frame.is_shown(i))
         .find(|&i| card_screen_rect(state, frame, i, lod, to_screen).contains(pos))
 }
 
@@ -310,11 +311,16 @@ fn chip_text(u: &TableUse) -> String {
 }
 
 /// Card yang garisnya boleh digambar, beserta apakah card itu aktif.
-fn line_cards(state: &DiagramState, hovered: Option<usize>) -> Vec<(usize, bool)> {
+fn line_cards(
+    state: &DiagramState,
+    frame: &FlowFrame,
+    hovered: Option<usize>,
+) -> Vec<(usize, bool)> {
     state
         .flow_cards
         .iter()
         .enumerate()
+        .filter(|&(i, _)| frame.is_shown(i))
         .filter_map(|(i, c)| {
             let active = is_active(state, c) || hovered == Some(i);
             (active || state.flow_lines == FlowLineMode::All).then_some((i, active))
@@ -339,7 +345,7 @@ pub fn draw_flow_lines(
         return 0;
     }
     let hovered = hover.and_then(|p| card_at(state, frame, to_screen, p));
-    let cards = line_cards(state, hovered);
+    let cards = line_cards(state, frame, hovered);
     let total: usize = cards.iter().map(|&(i, _)| frame.tables[i].len()).sum();
     let skip_inactive = total > crate::diagram_lod::DASH_BUDGET;
     let lod = lod_for_zoom(state.zoom);
@@ -630,6 +636,9 @@ pub fn reveal_card(
     view_size: egui::Vec2,
     now: f64,
 ) -> bool {
+    if state.endpoint_display.is_rail() {
+        return spotlight_card(state, card_id, view_size, now);
+    }
     let Some(rect) = layout::card_world_rect(state, card_id) else {
         return false;
     };
@@ -640,6 +649,29 @@ pub fn reveal_card(
     state.focus_group = None;
     let zoom = state.zoom.max(crate::diagram_view::FOCUS_ZOOM);
     crate::diagram_view::animate_view_to(state, rect.center(), zoom, view_size, now);
+    true
+}
+
+/// Mode rail: jadikan card `card_id` card sorotan. Card muncul di samping
+/// tabel-tabelnya, viewport digeser sampai card dan tabelnya terlihat, dan
+/// prosesnya diputar. `false` bila card tidak ada.
+pub fn spotlight_card(
+    state: &mut DiagramState,
+    card_id: &str,
+    view_size: egui::Vec2,
+    now: f64,
+) -> bool {
+    let Some(i) = state.flow_cards.iter().position(|c| c.id == card_id) else {
+        return false;
+    };
+    if state.selected_flow.as_deref() != Some(card_id) {
+        state.flow_open_step = None;
+    }
+    // Card harus terpilih dulu supaya tata letaknya memberi tempat.
+    state.selected_flow = Some(card_id.to_string());
+    let frame = FlowFrame::compute(state);
+    focus_card(state, &frame, i, view_size, now);
+    crate::diagram_flow_play_view::start_playback(state, card_id);
     true
 }
 
@@ -846,7 +878,26 @@ pub fn render_flow_cards(
     let mut hover_table: Option<(String, egui::Color32)> = None;
     let gen_running = crate::diagram_flow_gen_view::is_running(state);
 
+    // Tabel di bawah pointer menyorot langkah card terpilih yang memakainya.
+    let pointer = ui
+        .input(|i| i.pointer.hover_pos())
+        .filter(|p| canvas.contains(*p));
+    let pointed_table: Option<String> = pointer.and_then(|p| {
+        if card_at(state, frame, to_screen, p).is_some() {
+            return None;
+        }
+        state
+            .nodes
+            .iter()
+            .rev()
+            .find(|n| screen_rect(egui::Rect::from_min_size(n.pos, n.size), to_screen).contains(p))
+            .map(|n| n.id.clone())
+    });
+
     for i in draw_order(state) {
+        if !frame.is_shown(i) {
+            continue;
+        }
         let card = &state.flow_cards[i];
         let world = frame.drawn_rect(state, i);
         let sr = screen_rect(layout::lod_rect(world, lod), to_screen);
@@ -866,7 +917,7 @@ pub fn render_flow_cards(
         let label = format!("{} {}", card.trigger.method, card.trigger.target);
 
         // Interaksi badan card didaftarkan dulu supaya baris langkah di atasnya.
-        let sense = match (interactive, read_only) {
+        let sense = match (interactive, read_only || frame.spotlight) {
             (false, _) => egui::Sense::hover(),
             (true, true) => egui::Sense::click(),
             (true, false) => egui::Sense::click_and_drag(),
@@ -973,7 +1024,7 @@ pub fn render_flow_cards(
                         None => {}
                     }
                 }
-                if !read_only {
+                if !read_only && !frame.spotlight {
                     if ui
                         .add_enabled(
                             card.pos.is_some(),
@@ -988,6 +1039,8 @@ pub fn render_flow_cards(
                         ui.close();
                         change.reset_pos = Some(i);
                     }
+                }
+                if !read_only {
                     ui.separator();
                     if ui
                         .button(format!(
@@ -1176,8 +1229,9 @@ pub fn render_flow_cards(
                     r.on_hover_text(step_tooltip(state, si, step))
                 }
             });
-            let hovered = row_resp.as_ref().is_some_and(|r| r.hovered());
             let table = step.target.as_ref().and_then(|t| t.table());
+            let hovered = row_resp.as_ref().is_some_and(|r| r.hovered());
+            let pointed = selected && table.is_some() && table == pointed_table.as_deref();
             if let Some(r) = &row_resp {
                 if hovered && let Some(t) = table {
                     hover_table = Some((t.to_string(), op_color(step.op)));
@@ -1202,7 +1256,7 @@ pub fn render_flow_cards(
                 s,
                 text,
                 playing == Some(si),
-                hovered,
+                hovered || pointed,
                 expandable.then_some(is_open),
             );
         }

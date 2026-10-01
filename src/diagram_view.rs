@@ -476,7 +476,7 @@ pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
     // Flow card di pita API di atas tabel ikut termuat.
     if crate::diagram_flow_layout::cards_visible(state) {
         let frame = crate::diagram_flow_layout::FlowFrame::compute(state);
-        for i in 0..frame.rects.len() {
+        for i in (0..frame.rects.len()).filter(|&i| frame.is_shown(i)) {
             bounds = bounds.union(frame.drawn_rect(state, i));
         }
     }
@@ -1029,6 +1029,21 @@ fn settle_bands(ui: &egui::Ui, state: &mut DiagramState, bands: &BandSizes) {
 pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<DiagramAction> {
     let frame_start = std::time::Instant::now();
     let mut action: Option<DiagramAction> = None;
+    // API rail: panel kiri berskala layar. Digambar lebih dulu supaya kanvas
+    // memakai sisa areanya. Modelnya juga dipakai badge CRUD di header tabel.
+    let rail_model = (state.show_endpoints
+        && state.endpoint_display.shows_badges()
+        && !state.flow_cards.is_empty())
+    .then(|| crate::diagram_api_rail::RailModel::build(state));
+    let mut rail = match &rail_model {
+        Some(model) if crate::diagram_api_rail_view::visible(state) => {
+            crate::diagram_api_rail_view::render_rail(ui, state, model)
+        }
+        _ => Default::default(),
+    };
+    if rail.action.is_some() {
+        action = rail.action.take();
+    }
     let rect = ui.available_rect_before_wrap();
     // Semua gambar & interaksi dibatasi ke area diagram, supaya node/group
     // yang digeser ke atas tidak menutupi tab bar.
@@ -1099,6 +1114,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 );
                 ui.horizontal(|ui| {
                     ui.label("API endpoints as:");
+                    ui.selectable_value(&mut state.endpoint_display, EndpointDisplay::Rail, "Rail")
+                        .on_hover_text(
+                            "An API panel beside the diagram; the selected endpoint shows its \
+                             process card next to its tables",
+                        );
                     ui.selectable_value(
                         &mut state.endpoint_display,
                         EndpointDisplay::Cards,
@@ -1113,7 +1133,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                     .on_hover_text("An \"API n\" badge on each table header");
                     ui.selectable_value(&mut state.endpoint_display, EndpointDisplay::Both, "Both");
                 });
-                if state.endpoint_display.shows_cards() {
+                if state.endpoint_display.shows_cards() && !state.endpoint_display.is_rail() {
                     ui.horizontal(|ui| {
                         ui.label("Process lines:");
                         ui.selectable_value(
@@ -1296,6 +1316,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             ui.ctx().request_repaint();
         }
     }
+    // Pilihan dari API rail: card sorotan, lompat ke tabel, progress generate.
+    if rail.deselect {
+        crate::diagram_flow_play_view::clear(state);
+    }
+    if let Some(id) = &rail.select {
+        crate::diagram_flow_view::spotlight_card(state, id, rect.size(), now);
+        ui.ctx().request_repaint();
+    }
+    if let Some(table) = &rail.focus_table {
+        start_focus_animation(state, table, rect.size(), now);
+        ui.ctx().request_repaint();
+    }
+    if rail.show_gen_progress {
+        crate::diagram_flow_gen_view::show_progress(state);
+    }
     // Majukan pemutaran flow card; berhenti sendiri di akhir timeline.
     crate::diagram_flow_play_view::tick(state, now);
     // Tabel fokus yang sudah hilang dari diagram tidak boleh meredupkan semua.
@@ -1386,6 +1421,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
         } else {
             HashMap::new()
         };
+    let table_crud = rail_model
+        .as_ref()
+        .map(|m| m.table_crud())
+        .unwrap_or_default();
     let mut endpoint_panel_request: Option<String> = None;
 
     // Flow card dihitung sekali per frame, sebelum bingkai group, karena
@@ -2924,6 +2963,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 ui,
                 egui::pos2(node_rect.left() + 10.0 * scale, node_rect.top()),
                 count,
+                table_crud.get(&node.id).map_or("", String::as_str),
                 scale,
                 ui.id().with("node_endpoint_badge").with(&node.id),
                 active,
@@ -3895,7 +3935,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     let card_on_screen = flow_frame
         .rects
         .iter()
-        .any(|r| rect.intersects(egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max))));
+        .enumerate()
+        .filter(|&(i, _)| flow_frame.is_shown(i))
+        .any(|(_, r)| {
+            rect.intersects(egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max)))
+        });
     if card_on_screen {
         // Di atas legenda kunci (tinggi 40 + jarak) bila legenda itu tampil.
         let bottom = rect.bottom() - if key_legend { 12.0 + 40.0 + 8.0 } else { 12.0 };
@@ -8768,8 +8812,10 @@ mod tests {
     /// masing-masing menyentuh dua tabel dan punya beberapa langkah.
     fn flow_fixture(cards: usize) -> DiagramState {
         use crate::models::structs::{EndpointLink, FlowOp, FlowStep, FlowStepKind, FlowTarget};
+        // Fixture pita API (mode `Cards`); mode rail dites terpisah.
         let mut state = DiagramState {
             is_centered: true,
+            endpoint_display: crate::models::structs::EndpointDisplay::Cards,
             ..Default::default()
         };
         for (i, t) in ["users", "orders"].iter().enumerate() {
@@ -8889,6 +8935,43 @@ mod tests {
         render_frame(&ctx, state, None);
         let (with, _) = render_frame(&ctx, state, None);
         with.saturating_sub(without)
+    }
+
+    /// Mode rail: kanvas tanpa card sampai sebuah endpoint dipilih, lalu
+    /// hanya card itu yang digambar.
+    #[test]
+    fn test_rail_mode_draws_only_the_selected_card() {
+        let view = egui::vec2(1600.0, 1000.0);
+        let mut state = flow_fixture(40);
+        state.endpoint_display = crate::models::structs::EndpointDisplay::Rail;
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&state);
+        assert!(frame.shown.iter().all(|s| !s));
+
+        let ctx = egui::Context::default();
+        render_frame(&ctx, &mut state, None);
+        let (idle, _) = render_frame(&ctx, &mut state, None);
+
+        let id = state.flow_cards[7].id.clone();
+        assert!(crate::diagram_flow_view::spotlight_card(
+            &mut state, &id, view, 0.0
+        ));
+        assert_eq!(state.selected_flow.as_deref(), Some(id.as_str()));
+        assert_eq!(state.focus_flow.as_deref(), Some(id.as_str()));
+        let frame = crate::diagram_flow_layout::FlowFrame::compute(&state);
+        assert_eq!(frame.shown.iter().filter(|s| **s).count(), 1);
+        assert!(frame.is_shown(7));
+
+        // Lewati animasi viewport: langsung pusatkan card sorotan.
+        state.view_anim = None;
+        state.zoom = 1.0;
+        state.pan = pan_to_center(frame.drawn_rect(&state, 7).center(), view, 1.0);
+        let ctx = egui::Context::default();
+        render_frame(&ctx, &mut state, None);
+        let (selected, _) = render_frame(&ctx, &mut state, None);
+        assert!(
+            selected > idle,
+            "selected card must add geometry ({selected} vs {idle})"
+        );
     }
 
     /// Card di luar layar tidak menghasilkan geometri; card di layar ya.

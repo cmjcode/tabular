@@ -12,11 +12,25 @@ use crate::models::structs::DiagramState;
 
 const BADGE_FILL: egui::Color32 = egui::Color32::from_rgb(33, 150, 243);
 
-/// Badge "[ikon API] n" di header tabel. `None` bila zoom terlalu kecil.
+/// Teks badge: ikon API, jumlah endpoint, lalu huruf CRUD bila sudah ada
+/// proses yang menyebut operasinya.
+fn badge_text(count: usize, crud: &str) -> String {
+    let icon = egui_icons::icons::MDI_API.codepoint;
+    if crud.is_empty() {
+        format!("{icon} {count}")
+    } else {
+        format!("{icon} {count} · {crud}")
+    }
+}
+
+/// Badge "[ikon API] n · CRUD" di header tabel. `crud` = huruf operasi
+/// gabungan semua endpoint ke tabel ini (boleh kosong). `None` bila zoom
+/// terlalu kecil.
 pub fn draw_badge(
     ui: &mut egui::Ui,
     pos: egui::Pos2,
     count: usize,
+    crud: &str,
     scale: f32,
     id: egui::Id,
     active: bool,
@@ -26,7 +40,7 @@ pub fn draw_badge(
     }
     let s = scale.clamp(0.7, 1.4);
     let galley = ui.painter().layout_no_wrap(
-        format!("{} {count}", egui_icons::icons::MDI_API.codepoint),
+        badge_text(count, crud),
         egui::FontId::proportional(quantize_font(10.5 * s)),
         egui::Color32::WHITE,
     );
@@ -73,6 +87,7 @@ pub fn badge_tooltip(all: &[crate::models::structs::EndpointLink], table: &str) 
     if links.len() > 12 {
         lines.push(format!("… and {} more", links.len() - 12));
     }
+    lines.push("C create · R read · U update · D delete".to_string());
     lines.push("Click for the endpoint list".to_string());
     format!(
         "{} API endpoint(s) use this table\n{}",

@@ -98,7 +98,10 @@ pub fn render_flow_gen_window(ctx: &egui::Context, state: &mut DiagramState) {
     style::render_modal_backdrop(ctx, "diagram_flow_gen_backdrop", true);
     let screen = ctx.content_rect();
     let win_w = (screen.width() - 48.0).clamp(380.0, 620.0);
-    let list_h = (screen.height() * 0.4).clamp(160.0, 360.0);
+    // Tinggi jendela dibatasi 70% window utama supaya tombol Close tetap terjangkau;
+    // isi yang lebih panjang (mis. Details) digulung di dalam `body_h`.
+    let body_h = (screen.height() * 0.7 - 130.0).max(120.0);
+    let list_h = (screen.height() * 0.4).clamp(160.0, 360.0).min(body_h);
 
     egui::Window::new("Generate Business Process")
         .title_bar(false)
@@ -175,84 +178,90 @@ pub fn render_flow_gen_window(ctx: &egui::Context, state: &mut DiagramState) {
                 return;
             }
 
-            if let Some(err) = &win.error {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} {err}",
-                        egui_icons::icons::ICON_ERROR.codepoint
-                    ))
-                    .color(ui.visuals().error_fg_color),
-                );
-                ui.add_space(4.0);
-            }
-            if let Some(note) = &win.note {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} {note}",
-                        egui_icons::icons::ICON_INFO.codepoint
-                    ))
-                    .small()
-                    .color(ui.visuals().warn_fg_color),
-                );
-                ui.add_space(4.0);
-            }
-            style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} generated · {} unchanged · {} failed",
-                        win.generated,
-                        win.skipped_fresh,
-                        win.failed.len()
-                    ))
-                    .strong(),
-                );
-                if win.generated > 0 {
-                    ui.label(
-                        egui::RichText::new(
-                            "Select a card on the canvas to see its steps, or double-click it to \
-                             play the process.",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                }
-                if !win.failed.is_empty() {
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(list_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for (label, msg) in win.failed.iter().take(MAX_FAILED_SHOWN) {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(label).monospace().small().strong(),
-                                    );
-                                    ui.label(egui::RichText::new(msg).small().weak());
-                                });
-                            }
-                            let more = win.failed.len().saturating_sub(MAX_FAILED_SHOWN);
-                            if more > 0 {
-                                ui.label(egui::RichText::new(format!("+{more} more")).weak());
-                            }
-                        });
-                }
-            });
-            if !win.progress.is_empty() {
-                egui::CollapsingHeader::new(egui::RichText::new("Details").small().weak())
-                    .default_open(win.error.is_some())
-                    .id_salt("diagram_flow_gen_details")
-                    .show(ui, |ui| {
-                        render_job_progress(
-                            ui,
-                            &win.progress,
-                            win.started_at,
-                            win.last_activity_at,
-                            win.elapsed,
-                            false,
+            egui::ScrollArea::vertical()
+                .id_salt("diagram_flow_gen_body")
+                .max_height(body_h)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if let Some(err) = &win.error {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {err}",
+                                egui_icons::icons::ICON_ERROR.codepoint
+                            ))
+                            .color(ui.visuals().error_fg_color),
                         );
+                        ui.add_space(4.0);
+                    }
+                    if let Some(note) = &win.note {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {note}",
+                                egui_icons::icons::ICON_INFO.codepoint
+                            ))
+                            .small()
+                            .color(ui.visuals().warn_fg_color),
+                        );
+                        ui.add_space(4.0);
+                    }
+                    style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} generated · {} unchanged · {} failed",
+                                win.generated,
+                                win.skipped_fresh,
+                                win.failed.len()
+                            ))
+                            .strong(),
+                        );
+                        if win.generated > 0 {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Select a card on the canvas to see its steps, or double-click it to \
+                                     play the process.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        }
+                        if !win.failed.is_empty() {
+                            ui.add_space(4.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(list_h)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    for (label, msg) in win.failed.iter().take(MAX_FAILED_SHOWN) {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(label).monospace().small().strong(),
+                                            );
+                                            ui.label(egui::RichText::new(msg).small().weak());
+                                        });
+                                    }
+                                    let more = win.failed.len().saturating_sub(MAX_FAILED_SHOWN);
+                                    if more > 0 {
+                                        ui.label(egui::RichText::new(format!("+{more} more")).weak());
+                                    }
+                                });
+                        }
                     });
-            }
+                    if !win.progress.is_empty() {
+                        egui::CollapsingHeader::new(egui::RichText::new("Details").small().weak())
+                            .default_open(win.error.is_some())
+                            .id_salt("diagram_flow_gen_details")
+                            .show(ui, |ui| {
+                                render_job_progress(
+                                    ui,
+                                    &win.progress,
+                                    win.started_at,
+                                    win.last_activity_at,
+                                    win.elapsed,
+                                    false,
+                                );
+                            });
+                    }
+                });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
