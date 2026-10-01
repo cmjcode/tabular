@@ -109,6 +109,30 @@ pub fn play_phase(items: &[PlayItem], position: f64) -> PlayPhase {
     PlayPhase::Done
 }
 
+/// Popup penanda di atas card selama pemutaran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayPopup {
+    /// Awal pemutaran (hijau).
+    Play,
+    /// Pemutaran selesai (merah).
+    End,
+}
+
+/// Popup pada posisi waktu `position` beserta progres hidupnya (0..1).
+/// PLAY tampil selama `PLAY_POPUP_SECS` pertama; END mulai muncul di paruh
+/// akhir fase respons (progres naik ke 1) lalu menetap di `Done`.
+pub fn play_popup(items: &[PlayItem], position: f64) -> Option<(PlayPopup, f32)> {
+    match play_phase(items, position) {
+        PlayPhase::Done => Some((PlayPopup::End, 1.0)),
+        PlayPhase::Response(t) if t >= 0.5 => Some((PlayPopup::End, (t - 0.5) * 2.0)),
+        _ if position < PLAY_POPUP_SECS => Some((
+            PlayPopup::Play,
+            (position.max(0.0) / PLAY_POPUP_SECS) as f32,
+        )),
+        _ => None,
+    }
+}
+
 /// Item yang sedang berjalan pada `position`, atau item terakhir bila sudah
 /// lewat semua. `None` bila tidak ada item.
 pub fn current_item(items: &[PlayItem], position: f64) -> Option<usize> {

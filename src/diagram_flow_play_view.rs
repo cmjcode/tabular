@@ -215,6 +215,61 @@ fn chip(painter: &egui::Painter, at: egui::Pos2, text: String, color: egui::Colo
     painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
 }
 
+/// Popup PLAY (hijau) / END (merah) di atas card: pil berisi ikon + teks
+/// dengan ekor segitiga ke arah card. `t` = progres dari `play::play_popup`;
+/// popup naik sambil memudar masuk, dan PLAY memudar keluar di akhir.
+fn popup(painter: &egui::Painter, card: egui::Rect, kind: PlayPopup, t: f32) {
+    use egui_icons::icons::{ICON_PLAY_ARROW, ICON_STOP};
+    let t = t.clamp(0.0, 1.0);
+    let (icon, label, color, alpha) = match kind {
+        PlayPopup::Play => (
+            ICON_PLAY_ARROW.codepoint,
+            "PLAY",
+            POPUP_PLAY_COLOR,
+            (t * 6.0).min((1.0 - t) * 4.0).min(1.0),
+        ),
+        PlayPopup::End => (
+            ICON_STOP.codepoint,
+            "END",
+            POPUP_END_COLOR,
+            (t * 3.0).min(1.0),
+        ),
+    };
+    if alpha <= 0.0 {
+        return;
+    }
+    // Ease-out-back: naik sedikit melewati posisi akhir lalu kembali.
+    let u = (t * if kind == PlayPopup::Play { 4.0 } else { 1.0 }).min(1.0) - 1.0;
+    let ease = 1.0 + 2.70158 * u.powi(3) + 1.70158 * u.powi(2);
+    let text = egui::Color32::WHITE.linear_multiply(alpha);
+    let fill = color.linear_multiply(alpha);
+    let galley = painter.layout_no_wrap(
+        format!("{icon} {label}"),
+        egui::FontId::proportional(13.0),
+        text,
+    );
+    let tail = 6.0;
+    let size = galley.size() + egui::vec2(20.0, 10.0);
+    let tip = card.center_top() - egui::vec2(0.0, 4.0 + 10.0 * ease);
+    let pill = egui::Rect::from_center_size(tip - egui::vec2(0.0, tail + size.y / 2.0), size);
+    painter.rect_filled(
+        pill.translate(egui::vec2(0.0, 2.0)),
+        size.y / 2.0,
+        egui::Color32::from_black_alpha((70.0 * alpha) as u8),
+    );
+    painter.rect_filled(pill, size.y / 2.0, fill);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(tip.x - tail, pill.bottom() - 0.5),
+            egui::pos2(tip.x + tail, pill.bottom() - 0.5),
+            tip,
+        ],
+        fill,
+        egui::Stroke::NONE,
+    ));
+    painter.galley(pill.min + egui::vec2(10.0, 5.0), galley, text);
+}
+
 /// Tinggi header node (koordinat diagram), sama dengan
 /// `diagram_view::node_header_height`.
 fn node_header_height(node: &DiagramNode) -> f32 {
