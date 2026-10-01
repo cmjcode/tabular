@@ -7,12 +7,10 @@ use std::collections::HashSet;
 use eframe::egui;
 
 use crate::diagram_flow::{FlowDirection, TableUse};
-use crate::diagram_flow_layout::{self as layout, BandOwner, FlowFrame};
+use crate::diagram_flow_layout::{self as layout, FlowFrame};
 use crate::diagram_lod::{Lod, lod_for_zoom, quantize_font, truncate_for_width};
 use crate::diagram_view::DiagramAction;
-use crate::models::structs::{
-    DiagramState, FlowCard, FlowLineMode, FlowOp, FlowStep, FlowStepKind, FlowTarget,
-};
+use crate::models::structs::{DiagramState, FlowCard, FlowOp, FlowStep, FlowStepKind, FlowTarget};
 
 /// Warna garis operasi baca.
 pub const READ_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 200, 255);
@@ -190,7 +188,7 @@ pub fn card_curve(
         ))
         .y
     });
-    // Card di pita API (di atas tabel): garis turun dari tepi bawah card ke
+    // Card di atas tabel: garis turun dari tepi bawah card ke
     // tepi atas tabel, atau masuk dari samping di baris kolomnya.
     if cr.bottom() <= tr.top() {
         let p0 = egui::pos2(cr.center().x, cr.bottom());
@@ -310,55 +308,25 @@ fn chip_text(u: &TableUse) -> String {
     }
 }
 
-/// Card yang garisnya boleh digambar, beserta apakah card itu aktif.
-fn line_cards(
-    state: &DiagramState,
-    frame: &FlowFrame,
-    hovered: Option<usize>,
-) -> Vec<(usize, bool)> {
-    state
-        .flow_cards
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| frame.is_shown(i))
-        .filter_map(|(i, c)| {
-            let active = is_active(state, c) || hovered == Some(i);
-            (active || state.flow_lines == FlowLineMode::All).then_some((i, active))
-        })
-        .collect()
-}
-
-/// Garis proses dari card ke tabel yang disentuhnya. Mode `Selected` hanya
-/// menggambar card terpilih, di-hover, atau yang sedang diputar; mode `All`
-/// menggambar semuanya dengan opacity rendah kecuali yang aktif. Di atas
-/// `DASH_BUDGET` garis, garis tidak aktif dilewati. Mengembalikan jumlah
-/// garis yang digambar.
+/// Garis proses dari card sorotan ke tabel yang disentuhnya. Mengembalikan
+/// jumlah garis yang digambar.
 pub fn draw_flow_lines(
     ui: &egui::Ui,
     state: &DiagramState,
     frame: &FlowFrame,
     to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
     clip: egui::Rect,
-    hover: Option<egui::Pos2>,
 ) -> usize {
-    if state.flow_cards.is_empty() {
-        return 0;
-    }
-    let hovered = hover.and_then(|p| card_at(state, frame, to_screen, p));
-    let cards = line_cards(state, frame, hovered);
-    let total: usize = cards.iter().map(|&(i, _)| frame.tables[i].len()).sum();
-    let skip_inactive = total > crate::diagram_lod::DASH_BUDGET;
     let lod = lod_for_zoom(state.zoom);
     let line_scale = state.zoom.max(0.5);
     let painter = ui.painter();
     let mut chips: Vec<(egui::Pos2, String, egui::Color32)> = Vec::new();
     let mut drawn = 0;
 
-    for (i, active) in cards {
-        if !active && skip_inactive {
+    for (i, card) in state.flow_cards.iter().enumerate() {
+        if !frame.is_shown(i) {
             continue;
         }
-        let card = &state.flow_cards[i];
         let tables: Vec<&str> = frame.tables[i].iter().map(String::as_str).collect();
         for u in crate::diagram_flow::table_uses(card, &tables) {
             let Some(ctrl) = card_curve(state, frame, i, &u.table, to_screen) else {
@@ -368,15 +336,10 @@ pub fn draw_flow_lines(
                 continue;
             }
             drawn += 1;
-            let base = use_color(&u);
-            let color = if active {
-                base
-            } else {
-                base.gamma_multiply(crate::diagram_lod::DENSE_OPACITY)
-            };
-            let width = if active { 2.2 } else { 1.4 } * line_scale;
+            let color = use_color(&u);
+            let width = 2.2 * line_scale;
             let points = sample(&ctrl, crate::diagram_lod::curve_samples(ctrl[0], ctrl[3]));
-            // Chip dekat ujung tabel: di pita, tengah kurva tertutup card lain.
+            // Chip dekat ujung tabel supaya tidak menumpuk di sisi card.
             let mid = points[points.len() * 4 / 5];
             painter.add(egui::Shape::line(points, egui::Stroke::new(width, color)));
             let size = 8.0 * line_scale;
@@ -393,10 +356,10 @@ pub fn draw_flow_lines(
                     painter.circle_filled(ctrl[3], 3.0 * line_scale, color);
                 }
             }
-            if active && lod == Lod::Detail {
+            if lod == Lod::Detail {
                 let text = chip_text(&u);
                 if !text.is_empty() {
-                    chips.push((mid, text, base));
+                    chips.push((mid, text, color));
                 }
             }
         }
@@ -405,108 +368,6 @@ pub fn draw_flow_lines(
         crate::diagram_view::draw_chip_label(ui, p, text, color);
     }
     drawn
-}
-
-/// Judul pita API: label lapisan "API", garis pemisah API/DATA di atas
-/// tabel, dan judul resource tiap tumpukan. Pita di luar group mendapat
-/// bingkai sendiri; pita group memakai bingkai group-nya.
-pub fn draw_bands(
-    ui: &egui::Ui,
-    state: &DiagramState,
-    frame: &FlowFrame,
-    to_screen: &dyn Fn(egui::Pos2) -> egui::Pos2,
-    clip: egui::Rect,
-) {
-    let s = state.zoom;
-    let lod = lod_for_zoom(s);
-    let weak = ui.visuals().weak_text_color();
-    let strong = ui.visuals().strong_text_color();
-    let painter = ui.painter();
-    // Label lapisan tetap terbaca saat zoom kecil (seperti judul group).
-    let label_px = quantize_font((12.0 * s).max(10.0));
-    let stack_px = quantize_font(11.0 * s);
-    let show_stacks = lod != Lod::Overview && stack_px >= 7.0;
-
-    for band in &frame.bands {
-        let area = band.tables.map_or(band.rect, |t| band.rect.union(t));
-        if !clip.intersects(screen_rect(area, to_screen)) {
-            continue;
-        }
-        let br = screen_rect(band.rect, to_screen);
-        let title = match &band.owner {
-            BandOwner::Group(_) | BandOwner::Repo(None) => "API".to_string(),
-            BandOwner::Repo(Some(repo)) => format!("API · {repo}"),
-            BandOwner::Unmapped => "API · endpoints without tables in this diagram".to_string(),
-        };
-        if !matches!(band.owner, BandOwner::Group(_)) {
-            let r = br.expand(12.0 * s);
-            painter.rect_filled(r, 8.0 * s, weak.gamma_multiply(0.06));
-            painter.rect_stroke(
-                r,
-                8.0 * s,
-                egui::Stroke::new(1.0, weak.gamma_multiply(0.5)),
-                egui::StrokeKind::Middle,
-            );
-        }
-
-        // Pemisah lapisan API dan DATA, setengah `BAND_GAP` di atas tabel.
-        if let Some(t) = band.tables {
-            let y = t.top() - layout::BAND_GAP / 2.0;
-            let a = to_screen(egui::pos2(band.rect.left().min(t.left()), y));
-            let b = to_screen(egui::pos2(band.rect.right().max(t.right()), y));
-            painter.extend(egui::Shape::dashed_line(
-                &[a, b],
-                egui::Stroke::new(1.0, weak.gamma_multiply(0.6)),
-                6.0 * s.max(0.5),
-                4.0 * s.max(0.5),
-            ));
-            // Label "DATA" hanya bila muat di celah antara garis dan tabel.
-            if layout::BAND_GAP / 2.0 * s >= label_px + 4.0 {
-                painter.text(
-                    a + egui::vec2(0.0, 3.0),
-                    egui::Align2::LEFT_TOP,
-                    "DATA",
-                    egui::FontId::proportional(label_px),
-                    weak,
-                );
-            }
-        }
-        painter.text(
-            egui::pos2(br.left(), br.top() + layout::BAND_LABEL_H * s / 2.0),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(label_px),
-            strong.gamma_multiply(0.85),
-        );
-        if !show_stacks {
-            continue;
-        }
-        for st in &band.stacks {
-            let hr = screen_rect(st.header, to_screen);
-            if !clip.intersects(hr) {
-                continue;
-            }
-            let noun = if st.count == 1 {
-                "endpoint"
-            } else {
-                "endpoints"
-            };
-            painter.text(
-                hr.left_center(),
-                egui::Align2::LEFT_CENTER,
-                format!("{} · {} {noun}", st.resource, st.count),
-                egui::FontId::monospace(stack_px),
-                weak,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(hr.left(), hr.bottom() - 3.0 * s),
-                    egui::pos2(hr.right(), hr.bottom() - 3.0 * s),
-                ],
-                egui::Stroke::new(1.0, weak.gamma_multiply(0.3)),
-            );
-        }
-    }
 }
 
 /// Ringkasan blueprint: jumlah endpoint, yang sudah punya proses, tabel yang
@@ -627,32 +488,8 @@ pub fn focus_card(
     crate::diagram_view::animate_view_to(state, bounds.center(), zoom, view_size, now);
 }
 
-/// Pilih card `card_id` dan geser viewport ke card itu (dari panel endpoint
-/// atau pencarian). Seperti klik card, prosesnya langsung diputar dan card
-/// difokuskan. `false` bila card tidak ada.
-pub fn reveal_card(
-    state: &mut DiagramState,
-    card_id: &str,
-    view_size: egui::Vec2,
-    now: f64,
-) -> bool {
-    if state.endpoint_display.is_rail() {
-        return spotlight_card(state, card_id, view_size, now);
-    }
-    let Some(rect) = layout::card_world_rect(state, card_id) else {
-        return false;
-    };
-    state.selected_flow = Some(card_id.to_string());
-    crate::diagram_flow_play_view::start_playback(state, card_id);
-    state.focus_flow = Some(card_id.to_string());
-    state.focus_table = None;
-    state.focus_group = None;
-    let zoom = state.zoom.max(crate::diagram_view::FOCUS_ZOOM);
-    crate::diagram_view::animate_view_to(state, rect.center(), zoom, view_size, now);
-    true
-}
-
-/// Mode rail: jadikan card `card_id` card sorotan. Card muncul di samping
+/// Jadikan card `card_id` card sorotan (dari rail, panel endpoint, atau
+/// pencarian). Card muncul di samping
 /// tabel-tabelnya, viewport digeser sampai card dan tabelnya terlihat, dan
 /// prosesnya diputar. `false` bila card tidak ada.
 pub fn spotlight_card(
@@ -690,13 +527,9 @@ struct CardChange {
     toggle_step: Option<usize>,
     /// Klik badan card: putar prosesnya seperti tombol Play.
     autoplay: bool,
-    drag: Option<(usize, egui::Vec2)>,
-    released: bool,
     focus: Option<usize>,
     /// Menu "Focus on this endpoint": fokus tanpa memutar prosesnya.
     focus_only: Option<usize>,
-    toggle_collapse: Option<usize>,
-    reset_pos: Option<usize>,
     remove: Option<String>,
     highlight: Option<String>,
     show_gen_progress: bool,
@@ -917,27 +750,21 @@ pub fn render_flow_cards(
         let label = format!("{} {}", card.trigger.method, card.trigger.target);
 
         // Interaksi badan card didaftarkan dulu supaya baris langkah di atasnya.
-        let sense = match (interactive, read_only || frame.spotlight) {
-            (false, _) => egui::Sense::hover(),
-            (true, true) => egui::Sense::click(),
-            (true, false) => egui::Sense::click_and_drag(),
+        let sense = if interactive {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
         };
         let resp = ui.interact(sr, base_id.with("body"), sense);
         // Klik card yang sudah terpilih menyembunyikan detailnya lagi.
         let hide = resp.clicked() && selected && !resp.double_clicked();
         if hide {
             change.deselect = true;
-        } else if resp.clicked() || resp.drag_started() {
+        } else if resp.clicked() {
             change.select = Some(card.id.clone());
         }
         if resp.clicked() && !hide {
             change.autoplay = true;
-        }
-        if resp.dragged() {
-            change.drag = Some((i, resp.drag_delta() / s));
-        }
-        if resp.drag_stopped() {
-            change.released = true;
         }
         if resp.double_clicked() {
             change.focus = Some(i);
@@ -972,18 +799,6 @@ pub fn render_flow_cards(
                         request_id: card.request_id.clone(),
                         label: label.clone(),
                     });
-                }
-                // Ciutkan per card hanya berarti saat langkah semua card tampil.
-                if state.flow_show_steps {
-                    let (icon, text) = if card.collapsed {
-                        (egui_icons::icons::ICON_UNFOLD_MORE.codepoint, "Expand")
-                    } else {
-                        (egui_icons::icons::ICON_UNFOLD_LESS.codepoint, "Collapse")
-                    };
-                    if ui.button(format!("{icon} {text}")).clicked() {
-                        ui.close();
-                        change.toggle_collapse = Some(i);
-                    }
                 }
                 if ui
                     .button(format!(
@@ -1022,22 +837,6 @@ pub fn render_flow_cards(
                             change.show_gen_progress = true;
                         }
                         None => {}
-                    }
-                }
-                if !read_only && !frame.spotlight {
-                    if ui
-                        .add_enabled(
-                            card.pos.is_some(),
-                            egui::Button::new(format!(
-                                "{} Reset Position",
-                                egui_icons::icons::ICON_RESTART_ALT.codepoint
-                            )),
-                        )
-                        .on_hover_text("Put the card back in its API band above its tables")
-                        .clicked()
-                    {
-                        ui.close();
-                        change.reset_pos = Some(i);
                     }
                 }
                 if !read_only {
@@ -1137,7 +936,8 @@ pub fn render_flow_cards(
         if card.meta.as_ref().is_some_and(|m| m.partial) {
             tags.push(("partial".into(), egui::Color32::from_rgb(255, 167, 38)));
         }
-        let body = layout::shows_body(state, card);
+        // Badan card (ringkasan dan langkah) hanya tampil di card terpilih.
+        let body = selected;
         if !card.steps.is_empty() {
             tags.push((format!("{} steps", card.steps.len()), weak_text));
         } else if !body {
@@ -1200,11 +1000,10 @@ pub fn render_flow_cards(
             continue;
         }
 
-        let (shown, hidden) = layout::step_rows(card, selected);
         let playing = crate::diagram_flow_play_view::active_step(state, card);
         let open = layout::open_step(state, card);
-        for (si, step) in card.steps.iter().enumerate().take(shown) {
-            let Some(row_world) = layout::step_row_rect(world, card, si, selected, open) else {
+        for (si, step) in card.steps.iter().enumerate() {
+            let Some(row_world) = layout::step_row_rect(world, card, si, open) else {
                 continue;
             };
             let row = screen_rect(row_world, to_screen);
@@ -1258,16 +1057,6 @@ pub fn render_flow_cards(
                 playing == Some(si),
                 hovered || pointed,
                 expandable.then_some(is_open),
-            );
-        }
-        if hidden > 0 {
-            let top = y + shown as f32 * layout::STEP_ROW_H * s;
-            painter.text(
-                egui::pos2(sr.left() + 10.0 * s, top + layout::STEP_ROW_H * s / 2.0),
-                egui::Align2::LEFT_CENTER,
-                format!("+{hidden} more · select the card to show all"),
-                egui::FontId::proportional(body_px),
-                weak_text,
             );
         }
     }
@@ -1337,28 +1126,6 @@ fn apply_change(
         }
         state.selected_flow = Some(id);
     }
-    if let Some((i, delta)) = change.drag
-        && let Some(card) = state.flow_cards.get_mut(i)
-    {
-        let min = frame.rects[i].min;
-        let [x, y] = card.pos.unwrap_or([min.x, min.y]);
-        card.pos = Some([x + delta.x, y + delta.y]);
-    }
-    if change.released {
-        state.save_requested = true;
-    }
-    if let Some(i) = change.toggle_collapse
-        && let Some(card) = state.flow_cards.get_mut(i)
-    {
-        card.collapsed = !card.collapsed;
-        state.save_requested = true;
-    }
-    if let Some(i) = change.reset_pos
-        && let Some(card) = state.flow_cards.get_mut(i)
-    {
-        card.pos = None;
-        state.save_requested = true;
-    }
     if let Some(i) = change.focus {
         focus_card(state, frame, i, view_size, now);
         if let Some(id) = state.flow_cards.get(i).map(|c| c.id.clone()) {
@@ -1376,15 +1143,6 @@ fn apply_change(
     if change.show_gen_progress {
         crate::diagram_flow_gen_view::show_progress(state);
     }
-}
-
-/// Kembalikan semua card ke pita API otomatis (menu "Arrange API cards" dan
-/// "Auto Arrange").
-pub fn arrange_all(state: &mut DiagramState) {
-    for c in &mut state.flow_cards {
-        c.pos = None;
-    }
-    state.save_requested = true;
 }
 
 #[cfg(test)]

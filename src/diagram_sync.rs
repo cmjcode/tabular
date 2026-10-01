@@ -28,8 +28,6 @@ const LOCAL_ONLY_FIELDS: &[&str] = &[
     "show_notes",
     "show_endpoints",
     "endpoint_display",
-    "flow_lines",
-    "flow_show_steps",
     "auto_save",
     "remote_id",
 ];
@@ -45,7 +43,10 @@ struct Collection {
 }
 
 fn str_field(v: &Value, f: &str) -> String {
-    v.get(f).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(f)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn key_id(v: &Value) -> Option<String> {
@@ -387,7 +388,11 @@ pub fn three_way_merge(
     let local_v = to_value(local);
     let remote_v = to_value(remote);
     let obj = |v: Option<&Value>| v.and_then(Value::as_object).cloned().unwrap_or_default();
-    let (b, l, r) = (obj(base_v.as_ref()), obj(Some(&local_v)), obj(Some(&remote_v)));
+    let (b, l, r) = (
+        obj(base_v.as_ref()),
+        obj(Some(&local_v)),
+        obj(Some(&remote_v)),
+    );
 
     let mut merged = l.clone();
     let mut conflicts = Vec::new();

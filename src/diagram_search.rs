@@ -147,9 +147,9 @@ pub fn search_hits(state: &DiagramState, query: &str) -> SearchHits {
     }
 
     // Endpoint HTTP API ikut filter tabel: hasilnya menunjuk tabel pemakainya,
-    // atau pada mode Cards satu hasil per card yang melompat ke card itu.
+    // atau pada mode rail satu hasil per card yang melompat ke card itu.
     if state.search_tables && state.show_endpoints {
-        let cards = state.endpoint_display.shows_cards();
+        let cards = state.endpoint_display.shows_rail();
         let mut seen_cards: std::collections::HashSet<&str> = Default::default();
         for link in &state.endpoint_links {
             let label = format!("{} {}", link.method, link.path);
@@ -266,11 +266,10 @@ pub fn focus_target(
     view_size: egui::Vec2,
     now: f64,
 ) -> bool {
-    // Mode rail: endpoint dibuka sebagai card sorotan di samping tabelnya.
-    if state.endpoint_display.is_rail()
-        && let SearchTarget::Endpoint {
-            card: Some(card), ..
-        } = target
+    // Endpoint dibuka sebagai card sorotan di samping tabelnya.
+    if let SearchTarget::Endpoint {
+        card: Some(card), ..
+    } = target
     {
         return crate::diagram_flow_view::spotlight_card(state, card, view_size, now);
     }
@@ -285,12 +284,6 @@ pub fn focus_target(
     }
     .clamp(MIN_ZOOM, MAX_ZOOM);
     crate::diagram_view::animate_view_to(state, world.center(), zoom, view_size, now);
-    if let SearchTarget::Endpoint {
-        card: Some(card), ..
-    } = target
-    {
-        state.selected_flow = Some(card.clone());
-    }
     true
 }
 
@@ -318,7 +311,7 @@ fn fingerprint(state: &DiagramState) -> u64 {
     state.groups.len().hash(&mut h);
     (
         state.show_endpoints,
-        state.endpoint_display.shows_cards(),
+        state.endpoint_display.shows_rail(),
         state.endpoint_links.len(),
         state.flow_cards.len(),
     )

@@ -52,7 +52,7 @@ pub struct RailOutcome {
 
 /// Rail tampil untuk diagram ini?
 pub fn visible(state: &DiagramState) -> bool {
-    state.show_endpoints && state.endpoint_display.is_rail() && !state.flow_cards.is_empty()
+    state.show_endpoints && state.endpoint_display.shows_rail() && !state.flow_cards.is_empty()
 }
 
 /// Warna satu huruf operasi, sama dengan garis proses di kanvas. Di tema

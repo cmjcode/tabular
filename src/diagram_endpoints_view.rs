@@ -240,7 +240,7 @@ pub fn render_endpoints_panel(
     let mut action = None;
     let mut unlink: Option<crate::models::structs::EndpointLink> = None;
     let mut show_card: Option<crate::models::structs::EndpointLink> = None;
-    let cards_shown = state.endpoint_display.shows_cards();
+    let cards_shown = state.endpoint_display.shows_rail();
     if scrollable {
         ui.data_mut(|d| d.insert_temp(scroll_rect_id(ui), card));
     }
@@ -367,7 +367,7 @@ pub fn render_endpoints_panel(
         .map(|c| c.id.clone());
         let now = ui.input(|i| i.time);
         if let Some(id) = id
-            && crate::diagram_flow_view::reveal_card(state, &id, rect.size(), now)
+            && crate::diagram_flow_view::spotlight_card(state, &id, rect.size(), now)
         {
             state.endpoints_panel = None;
         }

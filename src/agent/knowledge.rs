@@ -1409,7 +1409,6 @@ mod tests {
                     },
                     summary: "Creates an order".into(),
                     request_id: Some("req_local".into()),
-                    pos: Some([10.0, 20.0]),
                     steps: vec![
                         FlowStep {
                             kind: FlowStepKind::Db,

@@ -773,15 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_fingerprint_tracks_card_position() {
-        let mut st = state(&["users"], vec![link("users", "GET", "/users", None)]);
-        sync_cards_from_links(&mut st);
-        let before = crate::diagram_schema::layout_fingerprint(&st);
-        st.flow_cards[0].pos = Some([40.0, 80.0]);
-        assert_ne!(crate::diagram_schema::layout_fingerprint(&st), before);
-    }
-
-    #[test]
     fn op_direction_follows_data_flow() {
         assert_eq!(op_direction(Some(FlowOp::Read)), FlowDirection::FromTarget);
         assert_eq!(
@@ -820,10 +811,37 @@ mod tests {
         assert!(st.flow_cards.is_empty());
         assert_eq!(
             st.endpoint_display,
-            crate::models::structs::EndpointDisplay::Rail
+            crate::models::structs::EndpointDisplay::Both
         );
         assert!(sync_cards_from_links(&mut st));
         assert_eq!(st.flow_cards.len(), 1);
+    }
+
+    /// Mode pita API (`cards`) sudah dihapus: diagram lama yang menyimpannya,
+    /// termasuk posisi card, tetap terbaca; card-nya kini lewat rail.
+    #[test]
+    fn removed_card_display_mode_still_deserializes() {
+        use crate::models::structs::EndpointDisplay;
+        for (old, now) in [
+            ("cards", EndpointDisplay::Rail),
+            ("both", EndpointDisplay::Both),
+        ] {
+            let mut json = serde_json::to_value(DiagramState::default()).unwrap();
+            let obj = json.as_object_mut().unwrap();
+            obj.insert("endpoint_display".into(), serde_json::json!(old));
+            obj.insert("flow_lines".into(), serde_json::json!("all"));
+            obj.insert("flow_show_steps".into(), serde_json::json!(true));
+            obj.insert(
+                "flow_cards".into(),
+                serde_json::json!([{"id": "flw_1", "pos": [10.0, 20.0], "collapsed": true}]),
+            );
+            let st: DiagramState = serde_json::from_value(json).unwrap();
+            assert_eq!(st.endpoint_display, now);
+            assert_eq!(st.flow_cards.len(), 1);
+            assert!(st.endpoint_display.shows_rail());
+        }
+        let badges: EndpointDisplay = serde_json::from_value(serde_json::json!("badges")).unwrap();
+        assert_eq!(badges, EndpointDisplay::Badges);
     }
 
     #[test]
@@ -859,7 +877,6 @@ mod tests {
                 target: "/orders".into(),
             },
             summary: "Creates an order".into(),
-            pos: Some([10.0, -20.5]),
             steps: vec![
                 FlowStep {
                     columns: vec!["user_id".into()],

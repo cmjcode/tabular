@@ -144,28 +144,26 @@ The diagram menu controls how endpoints are shown:
 | Setting | Options |
 |---|---|
 | **Show API endpoints** | Hides or shows cards and badges |
-| **API endpoints as** | **Rail** (default): the API panel plus table badges. **Cards**: every endpoint as a card in an API band above its tables. **Badges**: only the blue **API n** badge on each table header. **Both**: cards and badges |
-| **Process lines** | Cards and Both only. **Selected** (default): lines only for the selected, hovered or playing card. **All**: every card's lines, faded except the active one |
-| **Arrange API cards** | Cards and Both only. Puts every card back in its automatic band |
+| **API endpoints as** | **Rail**: the API panel beside the diagram; the selected endpoint shows its process card next to its tables. **Badges**: only the blue **API n** badge on each table header. **Both** (default): the API panel and the badges |
 
-Working with cards (in Rail mode only the selected endpoint has a card, and it
-is placed automatically, so it cannot be dragged):
+Working with cards (only the endpoint selected in the API panel has a card, and
+it is placed automatically, so it cannot be dragged):
 
-- Click a card to select it and draw its lines to the tables. Drag a card to
-  move it; the position is saved with the diagram.
+- Select an endpoint in the API panel to show its card and its lines to the
+  tables. Click the card to show or hide its steps.
 - Line colour follows the operation: blue for reads (arrow from the table),
   green for insert, update and upsert, red for delete (arrow to the table), grey
   when the operation is unknown. A table that is both read and written gets the
   write colour and a two-way arrow.
-- Right-click a card for **Open Request**, **Collapse** / **Expand**, **Copy as
-  Mermaid**, **Generate Business Process (AI)** / **Regenerate**, **Reset
-  Position** and **Remove Card**. Removing a card also unlinks its endpoint
+- Right-click a card for **Open Request**, **Copy as Mermaid**, **Generate
+  Business Process (AI)** / **Regenerate** and **Remove Card**. Removing a card also unlinks its endpoint
   from the tables.
 - With badges on, click a badge for the endpoint panel: filter, open an
   endpoint's request in the HTTP client, show its card, or unlink it from the
   table. Unlinking the last table of a card that has no steps removes the card.
-- Diagram search (Cmd+F) finds endpoints by method or path. With cards, the
-  result jumps to the card; with badges only, it jumps to the table.
+- Diagram search (Cmd+F) finds endpoints by method or path. With the API panel
+  on, the result opens the endpoint's card; with badges only, it jumps to the
+  table.
 - **Esc** or a click on empty canvas clears the selection.
 - Links to tables that disappear from the schema are removed on the next schema
   sync. Steps that pointed at such a table keep their text. Focus and group tabs

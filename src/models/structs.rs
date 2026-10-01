@@ -1103,17 +1103,6 @@ pub struct DiagramState {
     /// Cara endpoint ditampilkan; `show_endpoints` tetap saklar tampil/sembunyi.
     #[serde(default, skip_serializing_if = "is_default")]
     pub endpoint_display: EndpointDisplay,
-    /// Garis proses mana yang digambar.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub flow_lines: FlowLineMode,
-    /// Tampilkan langkah di semua card. `false` = card ringkas (header saja),
-    /// langkah hanya tampil di card terpilih.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub flow_show_steps: bool,
-    /// Ukuran pita API per group pada frame terakhir (runtime), dipakai
-    /// perhitungan kotak group di luar render (mis. anchor note).
-    #[serde(skip)]
-    pub flow_band_sizes: std::collections::HashMap<String, eframe::egui::Vec2>,
     /// Flow card terpilih.
     #[serde(skip)]
     pub selected_flow: Option<String>,
@@ -1172,43 +1161,28 @@ impl EndpointLink {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointDisplay {
-    /// Panel "API rail" di kiri kanvas plus badge di tabel; di kanvas hanya
-    /// card endpoint terpilih yang tampil, di samping tabel-tabelnya.
-    /// Sebagai default nilainya tidak ditulis ke file, jadi klien lama yang
-    /// belum mengenal `rail` tetap bisa membaca diagram yang disinkron.
-    #[default]
+    /// Panel "API rail" di kiri kanvas, tanpa badge di tabel; di kanvas
+    /// hanya card endpoint terpilih yang tampil, di samping tabel-tabelnya.
+    /// `cards` adalah mode pita API yang sudah dihapus; file lama yang
+    /// memakainya dibaca sebagai rail.
+    #[serde(alias = "cards")]
     Rail,
-    /// Flow card di pita API di atas tabel.
-    Cards,
-    /// Badge "API n" di header tabel.
+    /// Hanya badge "API n" di header tabel; tanpa rail dan tanpa card.
     Badges,
+    /// Rail plus badge. Sebagai default nilainya tidak ditulis ke file.
+    #[default]
     Both,
 }
 
 impl EndpointDisplay {
-    /// Flow card bisa tampil di kanvas (semua card, atau card terpilih saja
-    /// pada mode `Rail`).
-    pub fn shows_cards(self) -> bool {
-        matches!(self, Self::Rail | Self::Cards | Self::Both)
+    /// Panel rail tampil, dan card endpoint terpilih bisa tampil di kanvas.
+    pub fn shows_rail(self) -> bool {
+        matches!(self, Self::Rail | Self::Both)
     }
 
     pub fn shows_badges(self) -> bool {
-        matches!(self, Self::Rail | Self::Badges | Self::Both)
+        matches!(self, Self::Badges | Self::Both)
     }
-
-    pub fn is_rail(self) -> bool {
-        self == Self::Rail
-    }
-}
-
-/// Garis proses flow card mana yang digambar.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FlowLineMode {
-    /// Hanya card terpilih, di-hover, atau yang sedang diputar.
-    #[default]
-    Selected,
-    All,
 }
 
 /// Jenis pemicu sebuah flow.
@@ -1400,11 +1374,6 @@ pub struct FlowCard {
     /// Id `SavedRequest`; hanya ada di komputer yang punya collection-nya.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
-    /// Posisi pojok kiri atas (koordinat diagram). `None` = ditata otomatis.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pos: Option<[f32; 2]>,
-    #[serde(default)]
-    pub collapsed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<FlowStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1712,9 +1681,6 @@ impl Default for DiagramState {
             endpoints_panel_query: String::new(),
             flow_cards: Vec::new(),
             endpoint_display: EndpointDisplay::default(),
-            flow_lines: FlowLineMode::default(),
-            flow_show_steps: false,
-            flow_band_sizes: Default::default(),
             selected_flow: None,
             flow_open_step: None,
             flow_footer_h: 0.0,

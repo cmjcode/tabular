@@ -174,10 +174,10 @@ fn particle(
         }
         let p = at(tt.min(1.0));
         let fade = 1.0 - tail as f32 * 0.25;
-        let r = (3.4 - tail as f32 * 0.6) * s;
+        let r = (6.0 - tail as f32 * 1.0) * s;
         painter.circle_filled(p, r, egui::Color32::WHITE.linear_multiply(fade));
         if tail == 0 {
-            painter.circle_filled(p, r * 2.4, color.linear_multiply(0.3));
+            painter.circle_filled(p, r * 2.0, color.linear_multiply(0.3));
         }
     }
 }

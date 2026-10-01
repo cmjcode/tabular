@@ -364,7 +364,6 @@ pub fn layout_fingerprint(state: &DiagramState) -> u64 {
     }
     for c in &state.flow_cards {
         c.id.hash(&mut h);
-        c.pos.map(|[x, y]| (x.to_bits(), y.to_bits())).hash(&mut h);
     }
     h.finish()
 }

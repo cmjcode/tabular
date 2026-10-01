@@ -342,13 +342,6 @@ pub fn anchor_rect(state: &DiagramState, anchor: &NoteAnchor) -> Option<egui::Re
                 .filter(|n| n.is_in_group(id))
                 .map(|n| egui::Rect::from_min_size(n.pos, n.size))
                 .reduce(|a, b| a.union(b));
-            // Pita API group (bila card tampil) ikut di dalam kotaknya.
-            let members = members.map(|r| {
-                crate::diagram_flow_layout::group_content_rect(
-                    r,
-                    state.flow_band_sizes.get(id).copied(),
-                )
-            });
             match members {
                 Some(r) => Some(egui::Rect::from_min_max(
                     r.min - egui::vec2(GROUP_SIDE_PAD, GROUP_TOP_PAD),

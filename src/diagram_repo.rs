@@ -1386,8 +1386,7 @@ pub fn add_tables_to_group(
         state.nodes[i].add_to_group(gid.to_string());
     }
     if arrange && state.prevent_overlap {
-        let bands = crate::diagram_flow_layout::band_sizes(state);
-        crate::diagram_view::resolve_all_overlaps(&mut state.nodes, 20.0, Some(gid), &bands);
+        crate::diagram_view::resolve_all_overlaps(&mut state.nodes, 20.0, Some(gid));
     }
     state.save_requested = true;
     log::info!("[DIAGRAM] added {} table(s) to group {gid}", new_idx.len());

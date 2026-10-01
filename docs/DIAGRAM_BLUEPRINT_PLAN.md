@@ -216,8 +216,7 @@ Field baru di `DiagramState`:
 | Field | Tipe | Serde | Guna |
 |---|---|---|---|
 | `flow_cards` | `Vec<FlowCard>` | `default`, skip bila kosong | Card dan langkahnya |
-| `endpoint_display` | `EndpointDisplay` (`Rail`, `Cards`, `Badges`, `Both`) | `default` = `Rail`, skip bila bawaan (jadi `rail` tidak pernah tertulis dan klien lama tetap bisa membaca file) | Cara endpoint ditampilkan; `show_endpoints` yang lama tetap menjadi saklar tampil/sembunyi. Helper `shows_cards()` / `shows_badges()` |
-| `flow_lines` | `FlowLineMode` (`Selected`, `All`) | `default` = `Selected`, skip bila bawaan | Garis mana yang digambar |
+| `endpoint_display` | `EndpointDisplay` (`Rail`, `Badges`, `Both`) | `default` = `Both`, skip bila bawaan; `cards` (mode pita API yang sudah dihapus) dibaca sebagai `Rail` | Cara endpoint ditampilkan; `show_endpoints` yang lama tetap menjadi saklar tampil/sembunyi. Helper `shows_rail()` / `shows_badges()` |
 | `selected_flow` | `Option<String>` | `skip` | Card terpilih |
 | `focus_flow` | `Option<String>` | `skip` | Card yang sedang difokuskan (meredupkan lainnya) |
 | `flow_play` | `Option<FlowPlayback>` | `skip` | Pemutaran animasi |
@@ -467,12 +466,19 @@ endpoint dari kanvas:
 | Model rail | `diagram_api_rail.rs` (murni) | `RailModel::build`: section per repository, entitas per tabel utama (`primary_table`: nama tabel cocok dengan resource di path, lalu tabel pertama yang ditulis, lalu langkah terbanyak), baris endpoint dengan huruf CRUD. `filtered`, `table_crud`, `matrix` |
 | Panel rail | `diagram_api_rail_view.rs` | `egui::Panel::left` di dalam `render_diagram`, berskala layar, bisa dilipat dan di-resize. Tab **Endpoints** (filter, pohon entitas) dan **CRUD matrix** (jumlah endpoint per tabel dan operasi; klik sel menyaring daftar). State tampilannya di memori egui, tidak disimpan |
 | Card sorotan | `diagram_flow_layout.rs` | `FlowFrame::compute` tanpa pita; hanya `spotlight_index` (terpilih, fokus, atau diputar) yang `shown`. `spotlight_pos` mencoba kiri/kanan kotak tabelnya, kiri/kanan tabel pertama, lalu atas/bawah, dan memakai tempat pertama yang tidak menutupi tabel. `card.pos` diabaikan dan card tidak bisa digeser |
-| Pilih endpoint | `diagram_flow_view::spotlight_card` | Memilih card, menggeser viewport sampai card dan tabelnya terlihat (`focus_card`), memutar prosesnya. Dipakai rail, pencarian, dan panel endpoint tabel (`reveal_card`) |
+| Pilih endpoint | `diagram_flow_view::spotlight_card` | Memilih card, menggeser viewport sampai card dan tabelnya terlihat (`focus_card`), memutar prosesnya. Dipakai rail, pencarian, dan panel endpoint tabel |
 | Badge tabel | `diagram_endpoints_view::draw_badge` | `API n · CRUD`, huruf dari `RailModel::table_crud` |
 | Sorotan dua arah | `render_flow_cards` | Hover langkah menyorot tabelnya; hover tabel menyorot langkah card terpilih yang memakainya |
 
-Bingkai group pada mode ini hanya memuat tabel (tidak ada `band_sizes`). Bagian di bawah ini
-menjelaskan mode `Cards`/`Both` (pita API), yang tetap tersedia lewat menu tampilan.
+Bingkai group hanya memuat tabel.
+
+> **Revisi 2026-10-02: mode `Cards` dihapus.** Pilihan tampilan kini `Rail` (panel saja),
+> `Badges` (badge saja) dan `Both` (panel + badge, bawaan). Pita API beserta `arrange_bands`,
+> `band_sizes`, `group_content_rect`, `flow_lines`/`FlowLineMode`, `flow_show_steps`,
+> `FlowCard::pos`/`collapsed`, drag card, `Collapse`/`Expand`, `Reset Position` dan
+> **Arrange API cards** sudah tidak ada di kode. File lama yang masih memuat field itu tetap
+> terbaca (field diabaikan). Bagian di bawah ini yang membahas pita API, garis `Selected`/`All`
+> dan posisi card adalah catatan rancangan lama.
 
 ### Ukuran (koordinat diagram, zoom 1.0)
 
@@ -709,7 +715,7 @@ Teks UI (bahasa Inggris):
 |---|---|
 | Menu group | `Generate Business Process (AI)` |
 | Menu card | `Play Process`, `Open Request`, `Generate Business Process (AI)` / `Regenerate`, `Collapse` / `Expand`, `Reset Position`, `Remove Card` |
-| Menu tampilan | `API endpoints as: Rail / Cards / Badges / Both`, `Process lines: Selected / All`, `Arrange API cards` |
+| Menu tampilan | `API endpoints as: Rail / Badges / Both` |
 | Card kosong | `No business process yet` |
 | Label | `partial`, `outdated` |
 | Jendela Generate Endpoints | checkbox `Also generate business process` |
