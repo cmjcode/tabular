@@ -1343,54 +1343,77 @@ pub(crate) fn render_create_table_dialog(tabular: &mut window_egui::Tabular, ctx
 
 // ── CSV Import Wizard ─────────────────────────────────────────────────────────
 
-fn parse_csv_preview(
-    path: &std::path::Path,
-    delimiter: char,
-    has_header_row: bool,
-) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(delimiter as u8)
-        .has_headers(has_header_row)
-        .flexible(true)
-        .from_path(path)
-        .map_err(|e| e.to_string())?;
-
-    let headers: Vec<String> = if has_header_row {
-        rdr.headers()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        vec![]
-    };
-
-    let mut preview: Vec<Vec<String>> = Vec::new();
-    for result in rdr.records().take(5) {
-        let record = result.map_err(|e| e.to_string())?;
-        preview.push(record.iter().map(|s| s.to_string()).collect());
+/// Opsi baca file sesuai pilihan wizard. `sniff` = biarkan pembaca menebak
+/// delimiter (saat file baru dipilih).
+fn import_read_options(
+    state: &crate::models::structs::CsvImportState,
+    sniff: bool,
+    max_rows: Option<usize>,
+) -> crate::data_transfer::readers::ReadOptions {
+    crate::data_transfer::readers::ReadOptions {
+        kind: None,
+        delimiter: (!sniff).then_some(state.delimiter as u8),
+        has_header: state.has_header_row,
+        encoding: state.source.encoding,
+        sheet: state.source.sheet.clone(),
+        passphrase: (!state.source.passphrase.is_empty()).then(|| state.source.passphrase.clone()),
+        max_rows,
     }
-    Ok((headers, preview))
 }
 
-fn parse_csv_all(
+/// Baca pratinjau file (CSV/TSV, JSON, NDJSON, spreadsheet, Parquet; juga
+/// terkompresi atau terenkripsi) dan perbarui state wizard: format, encoding,
+/// sheet, dan mapping kolom.
+fn load_import_preview(
+    state: &mut crate::models::structs::CsvImportState,
     path: &std::path::Path,
-    delimiter: char,
-    has_header_row: bool,
-) -> Result<Vec<Vec<String>>, String> {
-    let mut rdr = csv::ReaderBuilder::new()
-        .delimiter(delimiter as u8)
-        .has_headers(has_header_row)
-        .flexible(true)
-        .from_path(path)
-        .map_err(|e| e.to_string())?;
-
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for result in rdr.records() {
-        let record = result.map_err(|e| e.to_string())?;
-        rows.push(record.iter().map(|s| s.to_string()).collect());
+    sniff: bool,
+) -> Result<(), String> {
+    use crate::data_transfer::readers::{self, FileKind, ReadError};
+    let opts = import_read_options(state, sniff, Some(5));
+    match readers::read_file(path, &opts) {
+        Ok(loaded) => {
+            let src = &mut state.source;
+            src.needs_passphrase = false;
+            src.is_delimited = loaded.kind == FileKind::Delimited;
+            src.is_text = loaded.kind.is_text();
+            src.named_columns = matches!(
+                loaded.kind,
+                FileKind::Json | FileKind::Ndjson | FileKind::Parquet
+            );
+            src.detected_encoding = loaded.encoding;
+            src.sheets = loaded.sheets;
+            src.sheet = loaded.sheet;
+            let mut label = loaded.kind.label().to_string();
+            if let Some(compression) = loaded.compression {
+                label.push_str(&format!(", {compression}"));
+            }
+            if loaded.encrypted {
+                label.push_str(", encrypted");
+            }
+            src.kind_label = label;
+            if let Some(delimiter) = loaded.delimiter {
+                state.delimiter = delimiter as char;
+            }
+            let named = state.has_header_row || state.source.named_columns;
+            let table_cols = state.table_columns.clone();
+            state.column_mappings = build_auto_mappings(
+                &loaded.data.headers,
+                &loaded.data.rows,
+                named,
+                &table_cols,
+            );
+            state.preview_headers = loaded.data.headers;
+            state.preview_rows = loaded.data.rows;
+            Ok(())
+        }
+        Err(e) => {
+            if matches!(e, ReadError::NeedsPassphrase | ReadError::Decrypt(_)) {
+                state.source.needs_passphrase = true;
+            }
+            Err(e.to_string())
+        }
     }
-    Ok(rows)
 }
 
 fn csv_quote_value(
@@ -1398,7 +1421,11 @@ fn csv_quote_value(
     null_value: &str,
     db_type: &crate::models::enums::DatabaseType,
 ) -> String {
-    if v == null_value || (null_value.is_empty() && v.is_empty()) {
+    // Pembaca JSON/spreadsheet/Parquet menandai nilai kosong dengan penanda NULL.
+    if v == null_value
+        || (null_value.is_empty() && v.is_empty())
+        || crate::data_transfer::is_null_cell(v)
+    {
         return "NULL".to_string();
     }
     match db_type {
@@ -1557,12 +1584,12 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                 ui.label(egui::RichText::new("📥").size(20.0));
                 ui.vertical(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("Import CSV / TSV into Table: {}", table_name))
+                        egui::RichText::new(format!("Import Data into Table: {}", table_name))
                             .strong()
                             .size(15.0),
                     );
                     ui.label(
-                        egui::RichText::new("Choose a delimited text file, configure parsing options, and review the column mapping.")
+                        egui::RichText::new("Choose a CSV, JSON, Excel, or Parquet file, configure parsing options, and review the column mapping.")
                             .small()
                             .color(muted),
                     );
@@ -1610,7 +1637,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                                     .inner_margin(egui::Vec2::new(6.0, 2.0))
                                                     .show(ui, |ui| {
                                                         ui.label(
-                                                            egui::RichText::new(format!("✓ {} rows previewed", state.preview_rows.len()))
+                                                            egui::RichText::new(format!("{} rows previewed", state.preview_rows.len()))
                                                                 .color(tag_fg)
                                                                 .small()
                                                                 .strong(),
@@ -1649,13 +1676,13 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     ui.label(egui::RichText::new("📁").size(32.0));
                                     ui.add_space(4.0);
                                     ui.label(
-                                        egui::RichText::new("Choose a CSV or TSV File to Import")
+                                        egui::RichText::new("Choose a File to Import")
                                             .strong()
                                             .size(15.0),
                                     );
                                     ui.add_space(2.0);
                                     ui.label(
-                                        egui::RichText::new("Supports comma (.csv), tab (.tsv), semicolon, or pipe-delimited text files.")
+                                        egui::RichText::new("CSV/TSV, JSON, NDJSON, Excel/ODS, Parquet; also .gz/.zip/.zst and encrypted .enc exports.")
                                             .color(muted)
                                             .small(),
                                     );
@@ -1679,11 +1706,14 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                         .corner_radius(8.0)
                         .inner_margin(egui::Vec2::new(14.0, 12.0))
                         .show(ui, |ui| {
+                            // Selebar kartu lain, berapa pun lebar isinya.
+                            ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("⚙ Parsing Options").strong());
                             });
                             ui.add_space(8.0);
 
+                            if state.file_path.is_none() || state.source.is_delimited {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Delimiter:").color(muted));
                                 ui.add_space(4.0);
@@ -1691,7 +1721,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                 for (ch, label, icon) in [
                                     (',', "Comma", ","),
                                     (';', "Semicolon", ";"),
-                                    ('\t', "Tab", "⇥"),
+                                    ('\t', "Tab", "\\t"),
                                     ('|', "Pipe", "|"),
                                 ] {
                                     let is_selected = state.delimiter == ch;
@@ -1744,6 +1774,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     ui.add_space(2.0);
                                 }
                             });
+                            }
 
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
@@ -1764,6 +1795,94 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     None,
                                 );
                             });
+
+                            // Encoding (format teks) dan sheet (spreadsheet).
+                            let show_encoding = state.file_path.is_none() || state.source.is_text;
+                            if show_encoding || state.source.sheets.len() > 1 {
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if show_encoding {
+                                        ui.label(egui::RichText::new("Encoding:").color(muted));
+                                        let auto_label = match state.source.detected_encoding {
+                                            Some(enc) if state.source.encoding.is_none() => {
+                                                format!("Auto ({})", enc.label())
+                                            }
+                                            _ => "Auto-detect".to_string(),
+                                        };
+                                        let selected = state
+                                            .source
+                                            .encoding
+                                            .map(|enc| enc.label().to_string())
+                                            .unwrap_or_else(|| auto_label.clone());
+                                        let before = state.source.encoding;
+                                        egui::ComboBox::from_id_salt("csv_import_encoding_combo")
+                                            .selected_text(selected)
+                                            .width(150.0)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(
+                                                    &mut state.source.encoding,
+                                                    None,
+                                                    "Auto-detect",
+                                                );
+                                                for enc in crate::data_transfer::encoding::TextEncoding::ALL {
+                                                    ui.selectable_value(
+                                                        &mut state.source.encoding,
+                                                        Some(enc),
+                                                        enc.label(),
+                                                    );
+                                                }
+                                            });
+                                        if state.source.encoding != before && state.file_path.is_some() {
+                                            redelimit = true;
+                                        }
+                                        ui.add_space(16.0);
+                                    }
+                                    if state.source.sheets.len() > 1 {
+                                        ui.label(egui::RichText::new("Sheet:").color(muted));
+                                        let before = state.source.sheet.clone();
+                                        egui::ComboBox::from_id_salt("csv_import_sheet_combo")
+                                            .selected_text(before.clone().unwrap_or_default())
+                                            .width(160.0)
+                                            .show_ui(ui, |ui| {
+                                                for sheet in state.source.sheets.clone() {
+                                                    ui.selectable_value(
+                                                        &mut state.source.sheet,
+                                                        Some(sheet.clone()),
+                                                        sheet,
+                                                    );
+                                                }
+                                            });
+                                        if state.source.sheet != before {
+                                            redelimit = true;
+                                        }
+                                    }
+                                });
+                            }
+                            if state.source.needs_passphrase {
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Passphrase:").color(muted));
+                                    crate::window_egui::style::render_text_field(
+                                        ui,
+                                        egui::TextEdit::singleline(&mut state.source.passphrase)
+                                            .password(true)
+                                            .hint_text("Encrypted export passphrase"),
+                                        220.0,
+                                        None,
+                                    );
+                                    if ui.button("Unlock").clicked() {
+                                        redelimit = true;
+                                    }
+                                });
+                            }
+                            if !state.source.kind_label.is_empty() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!("Detected: {}", state.source.kind_label))
+                                        .small()
+                                        .color(muted),
+                                );
+                            }
                         });
                     ui.add_space(10.0);
 
@@ -1816,7 +1935,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                             .striped(true)
                                             .min_col_width(90.0)
                                             .show(ui, |ui| {
-                                                ui.label(egui::RichText::new("CSV Header").strong().small().color(muted));
+                                                ui.label(egui::RichText::new("Source Column").strong().small().color(muted));
                                                 ui.label(egui::RichText::new("").small());
                                                 ui.label(egui::RichText::new("Target Table Column").strong().small().color(muted));
                                                 ui.label(egui::RichText::new("Sample Preview").strong().small().color(muted));
@@ -1834,7 +1953,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                                             });
                                                     });
 
-                                                    ui.label(egui::RichText::new("➜").color(muted).small());
+                                                    ui.label(
+                                                        egui::RichText::new(egui_icons::icons::ICON_ARROW_FORWARD.codepoint)
+                                                            .color(muted)
+                                                            .small(),
+                                                    );
 
                                                     // Target column dropdown
                                                     let mut sel = mapping.target_column.clone();
@@ -1842,7 +1965,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                                     let display_text = if is_skipped {
                                                         "(skip column)".to_string()
                                                     } else {
-                                                        format!("✓ {}", sel)
+                                                        sel.clone()
                                                     };
                                                     let text_col = if is_skipped {
                                                         muted
@@ -1988,6 +2111,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
     if reset_file {
         let state = tabular.csv_import_state.as_mut().unwrap();
         state.file_path = None;
+        state.source = Default::default();
         state.preview_headers.clear();
         state.preview_rows.clear();
         state.column_mappings.clear();
@@ -2019,33 +2143,8 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
     if redelimit {
         let state = tabular.csv_import_state.as_mut().unwrap();
         let path = state.file_path.clone().unwrap();
-        let delim = state.delimiter;
-        let has_hdr = state.has_header_row;
-        if let Ok((headers, preview)) = parse_csv_preview(&path, delim, has_hdr) {
-            let table_cols = state.table_columns.clone();
-            let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
-            state.preview_headers = headers;
-            state.preview_rows = preview;
-            state.column_mappings = mappings;
-        }
-    }
-
-    if trigger_file_pick
-        && let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV / TSV", &["csv", "tsv", "txt"])
-            .pick_file()
-    {
-        let state = tabular.csv_import_state.as_mut().unwrap();
-        let delim = state.delimiter;
-        let has_hdr = state.has_header_row;
-        match parse_csv_preview(&path, delim, has_hdr) {
-            Ok((headers, preview)) => {
-                let table_cols = state.table_columns.clone();
-                let mappings = build_auto_mappings(&headers, &preview, has_hdr, &table_cols);
-                state.preview_headers = headers;
-                state.preview_rows = preview;
-                state.column_mappings = mappings;
-                state.file_path = Some(path);
+        match load_import_preview(state, &path, false) {
+            Ok(()) => {
                 state.status = crate::models::structs::CsvImportStatus::Idle;
                 state.progress_message = String::new();
             }
@@ -2056,11 +2155,42 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         }
     }
 
+    if trigger_file_pick
+        && let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Data files (CSV, JSON, Excel, Parquet)",
+                crate::data_transfer::readers::FILE_EXTENSIONS,
+            )
+            .add_filter("All files", &["*"])
+            .pick_file()
+    {
+        let state = tabular.csv_import_state.as_mut().unwrap();
+        // File baru: format, sheet, dan passphrase file lama tidak berlaku.
+        state.source = Default::default();
+        state.preview_headers.clear();
+        state.preview_rows.clear();
+        state.column_mappings.clear();
+        match load_import_preview(state, &path, true) {
+            Ok(()) => {
+                state.file_path = Some(path);
+                state.status = crate::models::structs::CsvImportStatus::Idle;
+                state.progress_message = String::new();
+            }
+            Err(e) => {
+                // File terenkripsi tetap dipilih supaya passphrase bisa diisi.
+                if state.source.needs_passphrase {
+                    state.file_path = Some(path);
+                }
+                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+                state.progress_message = format!("Parse error: {}", e);
+            }
+        }
+    }
+
     if trigger_import {
         let state = tabular.csv_import_state.as_ref().unwrap();
         let path = state.file_path.clone().unwrap();
-        let delim = state.delimiter;
-        let has_hdr = state.has_header_row;
+        let read_opts = import_read_options(state, false, None);
         let null_value = state.null_value.clone();
         let table_name2 = state.table_name.clone();
         let database_name = state.database_name.clone();
@@ -2068,7 +2198,10 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         let mappings = state.column_mappings.clone();
         let connection_id = state.connection_id;
 
-        match parse_csv_all(&path, delim, has_hdr) {
+        match crate::data_transfer::readers::read_file(&path, &read_opts)
+            .map(|loaded| loaded.data.rows)
+            .map_err(|e| e.to_string())
+        {
             Ok(all_rows) => {
                 let total_rows = all_rows.len();
                 let batches = build_csv_insert_batches(
@@ -2148,7 +2281,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
             Err(e) => {
                 let state = tabular.csv_import_state.as_mut().unwrap();
                 state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                state.progress_message = format!("Failed to read CSV: {}", e);
+                state.progress_message = format!("Failed to read file: {}", e);
             }
         }
     }

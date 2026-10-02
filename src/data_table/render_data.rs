@@ -1664,12 +1664,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     ui.separator();
+                                                    crate::window_egui::transfer_ui::result_menu_items(ui);
                                                     if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
                                                         open_plugin_modal = true;
                                                         ui.close();
                                                     }
                                                     if tabular.is_table_browse_mode
-                                                        && ui.button("📥 Import CSV...").clicked()
+                                                        && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked()
                                                     {
                                                         open_csv_import = true;
                                                         ui.close();
@@ -1805,12 +1806,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
+                            crate::window_egui::transfer_ui::result_menu_items(ui);
+                                                    if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
                                 open_plugin_modal = true;
                                 ui.close();
                             }
                             if tab.is_table_browse_mode
-                                && ui.button("📥 Import CSV...").clicked()
+                                && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked()
                             {
                                 open_csv_import = true;
                                 ui.close();
@@ -2228,6 +2230,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                     .map(|(name, _)| name)
                     .collect();
                 tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    source: Default::default(),
                     connection_id: conn_id,
                     database_name,
                     table_name,

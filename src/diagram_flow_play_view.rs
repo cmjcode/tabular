@@ -210,10 +210,12 @@ fn chip(painter: &egui::Painter, at: egui::Pos2, text: String, color: egui::Colo
     painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
 }
 
-/// Popup PLAY (hijau) / END (merah) di atas card: pil berisi ikon + teks
-/// dengan ekor segitiga ke arah card. `t` = progres dari `play::play_popup`;
-/// popup naik sambil memudar masuk, dan PLAY memudar keluar di akhir.
-fn popup(painter: &egui::Painter, card: egui::Rect, kind: PlayPopup, t: f32) {
+/// Popup PLAY (hijau) / END (merah) di atas `anchor` (bilah kontrol, supaya
+/// tidak saling menutupi): pil berisi ikon + teks dengan ekor segitiga ke
+/// arah `anchor`. Bila tidak muat di atas (bilah menempel tepi atas kanvas),
+/// popup dibalik ke bawah `anchor`. `t` = progres dari `play::play_popup`;
+/// popup bergeser sambil memudar masuk, dan PLAY memudar keluar di akhir.
+fn popup(painter: &egui::Painter, anchor: egui::Rect, clip: egui::Rect, kind: PlayPopup, t: f32) {
     use egui_icons::icons::{ICON_PLAY_ARROW, ICON_STOP};
     let t = t.clamp(0.0, 1.0);
     let (icon, label, color, alpha) = match kind {
@@ -245,8 +247,20 @@ fn popup(painter: &egui::Painter, card: egui::Rect, kind: PlayPopup, t: f32) {
     );
     let tail = 6.0;
     let size = galley.size() + egui::vec2(20.0, 10.0);
-    let tip = card.center_top() - egui::vec2(0.0, 4.0 + 10.0 * ease);
-    let pill = egui::Rect::from_center_size(tip - egui::vec2(0.0, tail + size.y / 2.0), size);
+    let above = anchor.top() - (14.0 + tail + size.y) >= clip.top();
+    let (base, dir) = if above {
+        (anchor.center_top(), -1.0)
+    } else {
+        (anchor.center_bottom(), 1.0)
+    };
+    let tip = base + egui::vec2(0.0, dir * (4.0 + 10.0 * ease));
+    let pill =
+        egui::Rect::from_center_size(tip + egui::vec2(0.0, dir * (tail + size.y / 2.0)), size);
+    let edge = if above {
+        pill.bottom() - 0.5
+    } else {
+        pill.top() + 0.5
+    };
     painter.rect_filled(
         pill.translate(egui::vec2(0.0, 2.0)),
         size.y / 2.0,
@@ -255,8 +269,8 @@ fn popup(painter: &egui::Painter, card: egui::Rect, kind: PlayPopup, t: f32) {
     painter.rect_filled(pill, size.y / 2.0, fill);
     painter.add(egui::Shape::convex_polygon(
         vec![
-            egui::pos2(tip.x - tail, pill.bottom() - 0.5),
-            egui::pos2(tip.x + tail, pill.bottom() - 0.5),
+            egui::pos2(tip.x - tail, edge),
+            egui::pos2(tip.x + tail, edge),
             tip,
         ],
         fill,
@@ -447,7 +461,7 @@ pub fn draw_playback(
         }
     }
     if let Some((kind, t)) = play::play_popup(&items, p.position) {
-        popup(painter, cr, kind, t);
+        popup(painter, play_bar_rect(clip, cr), clip, kind, t);
     }
 }
 
@@ -470,6 +484,22 @@ fn bar_button(ui: &mut egui::Ui, icon: &str, tip: &str) -> bool {
     .clicked()
 }
 
+/// Rect layar bilah kontrol untuk card `cr`: di atas card, dijepit ke dalam
+/// `clip`. Dipakai juga sebagai jangkar popup PLAY/END.
+fn play_bar_rect(clip: egui::Rect, cr: egui::Rect) -> egui::Rect {
+    let size = egui::vec2(262.0, 34.0);
+    let mut min = egui::pos2(cr.center().x - size.x / 2.0, cr.top() - size.y - 8.0);
+    min.x = min.x.clamp(
+        clip.left() + 8.0,
+        (clip.right() - size.x - 8.0).max(clip.left() + 8.0),
+    );
+    min.y = min.y.clamp(
+        clip.top() + 8.0,
+        (clip.bottom() - size.y - 8.0).max(clip.top() + 8.0),
+    );
+    egui::Rect::from_min_size(min, size)
+}
+
 /// Bilah kontrol melayang di atas card yang sedang diputar: Previous,
 /// Play/Pause, Next, kecepatan, Replay, posisi langkah, Close. `card` =
 /// rect layar card. Ukurannya tetap (tidak ikut zoom) supaya selalu bisa
@@ -484,17 +514,7 @@ pub fn render_play_controls(ui: &mut egui::Ui, state: &mut DiagramState, card: O
     let items = items_of(state, c);
     let duration = play::play_duration(&items);
     let clip = ui.clip_rect();
-    let size = egui::vec2(262.0, 34.0);
-    let mut min = egui::pos2(cr.center().x - size.x / 2.0, cr.top() - size.y - 8.0);
-    min.x = min.x.clamp(
-        clip.left() + 8.0,
-        (clip.right() - size.x - 8.0).max(clip.left() + 8.0),
-    );
-    min.y = min.y.clamp(
-        clip.top() + 8.0,
-        (clip.bottom() - size.y - 8.0).max(clip.top() + 8.0),
-    );
-    let bar = egui::Rect::from_min_size(min, size);
+    let bar = play_bar_rect(clip, cr);
     if !clip.intersects(bar) {
         return;
     }

@@ -37,6 +37,7 @@ enforced on the whole tree; format only the files you touch.
 | Agent / MCP layer | `src/agent/` | Headless; must never depend on `window_egui` |
 | Sync / collab | `src/sync/` | E2E encrypted vault; `collab` feature is optional |
 | Plugins | `src/plugin_runtime/` | Wasm plugins via `wasmi` |
+| Import / export / transfer | `src/data_transfer/` (headless), `src/window_egui/transfer_*.rs` (UI) | File formats, encrypted exports, Data Files workspace (SQLite, `data_files.sqlite`), table transfer, data compare; see `docs/DATA_TRANSFER.md` |
 | Git client | `src/git/` (headless), `src/window_egui/git_*.rs` (UI) | Runs the `git` CLI; Merge Review calls GitHub/GitLab REST; repo list merges diagram groups, HTTP API folders, projects and `git_repos.json` by normalized git URL. Sidebar state is per repository (`RepoUi`, keyed by repo key); Git Graph lane layout is pure in `git/graph.rs`, its tab data lives in `GitUiState::graphs` |
 
 ## Conventions

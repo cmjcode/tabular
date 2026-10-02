@@ -58,6 +58,9 @@ pub mod sidebar_tree;
 pub mod style;
 pub mod sync_tick;
 pub mod table_wizard;
+pub(crate) mod transfer_compare_ui;
+pub(crate) mod transfer_dialogs;
+pub mod transfer_ui;
 pub mod tree_loader;
 pub mod update;
 
@@ -495,6 +498,8 @@ pub struct Tabular {
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
     /// Dialog dan fetch latar belakang untuk aksi objek skema (lihat `schema_actions`).
     pub schema_ui: schema_actions::SchemaUiState,
+    /// Dialog import/ekspor/transfer (Data Files, Transfer To, Data Compare, …).
+    pub transfer_ui: transfer_ui::TransferUiState,
     // Pending drop database confirmation
     pub pending_drop_database: Option<models::structs::PendingDropDatabase>,
     // Pending delete connection confirmation

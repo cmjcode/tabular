@@ -49,13 +49,12 @@ impl BackupDialogState {
         let binary_info = match conn_type {
             DatabaseType::PostgreSQL => BinaryDetector::find_binary("pg_dump", None),
             DatabaseType::MySQL => BinaryDetector::find_binary("mysqldump", None),
+            DatabaseType::MongoDB => BinaryDetector::find_binary("mongodump", None),
+            DatabaseType::MsSQL => BinaryDetector::find_binary("sqlpackage", None),
             _ => None,
         };
 
-        let default_format = match conn_type {
-            DatabaseType::SQLite => BackupFormat::SqliteNative,
-            _ => BackupFormat::GzipSql,
-        };
+        let default_format = BackupFormat::default_for(&conn_type);
 
         let default_file_name = format!(
             "{}_{}.{}",
@@ -94,9 +93,11 @@ impl BackupDialogState {
 
     pub fn update_target_file_extension(&mut self) {
         if let Some(target) = &self.target_file {
+            // Ekstensi ganda (`.sql.gz`, `.archive.gz`) dibuang utuh.
             let stem = target
-                .file_stem()
-                .map_or("backup", |s| s.to_str().unwrap_or("backup"));
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map_or("backup", BackupFormat::strip_extension);
             let parent = target.parent().unwrap_or_else(|| std::path::Path::new(""));
             let new_filename = format!("{}.{}", stem, self.format.extension());
             self.target_file = Some(parent.join(new_filename));
@@ -134,6 +135,8 @@ impl RestoreDialogState {
             DatabaseType::PostgreSQL => BinaryDetector::find_binary("pg_restore", None)
                 .or_else(|| BinaryDetector::find_binary("psql", None)),
             DatabaseType::MySQL => BinaryDetector::find_binary("mysql", None),
+            DatabaseType::MongoDB => BinaryDetector::find_binary("mongorestore", None),
+            DatabaseType::MsSQL => BinaryDetector::find_binary("sqlpackage", None),
             _ => None,
         };
 
@@ -343,14 +346,11 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                 .selected_text(state.format.display_label())
                                                 .width(combo_width)
                                                 .show_ui(ui, |ui| {
-                                                    for fmt in [
-                                                        BackupFormat::GzipSql,
-                                                        BackupFormat::PlainSql,
-                                                        BackupFormat::PostgresCustom,
-                                                        BackupFormat::PostgresTar,
-                                                        BackupFormat::SqliteNative,
-                                                    ] {
-                                                        if fmt.supported_for(&state.connection_type)
+                                                    for fmt in BackupFormat::ALL {
+                                                        // Format direktori pg_dump tidak punya
+                                                        // satu file tujuan untuk dialog simpan.
+                                                        if fmt != BackupFormat::PostgresDirectory
+                                                            && fmt.supported_for(&state.connection_type)
                                                         {
                                                             ui.selectable_value(
                                                                 &mut state.format,
@@ -365,6 +365,12 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                             }
                                             ui.end_row();
 
+                                            // Arsip mongodump dan paket sqlpackage tidak punya
+                                            // pilihan cakupan; DACPAC/BACPAC dipilih lewat format.
+                                            if !matches!(
+                                                state.connection_type,
+                                                DatabaseType::MongoDB | DatabaseType::MsSQL
+                                            ) {
                                             ui.label(egui::RichText::new("Content").weak().small());
                                             egui::ComboBox::from_id_salt("backup_scope_combo")
                                                 .selected_text(match state.scope {
@@ -391,13 +397,19 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                     );
                                                 });
                                             ui.end_row();
+                                            }
                                         });
                                 },
                             );
 
                             ui.add_space(6.0);
 
-                            // Section 3: Advanced Options
+                            // Section 3: Advanced Options (opsi dump SQL; tidak berlaku
+                            // untuk arsip mongodump dan paket sqlpackage)
+                            if !matches!(
+                                state.connection_type,
+                                DatabaseType::MongoDB | DatabaseType::MsSQL
+                            ) {
                             crate::window_egui::style::render_modal_card(
                                 ui,
                                 Some("🛠️ Advanced Options"),
@@ -439,6 +451,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         });
                                 },
                             );
+                            }
 
                             ui.add_space(6.0);
 
@@ -734,7 +747,10 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         if let Some(path) = rfd::FileDialog::new()
                                             .add_filter(
                                                 "Database Backup Files",
-                                                &["sql", "gz", "dump", "pgdump", "tar", "sqlite", "db"],
+                                                &[
+                                                    "sql", "gz", "dump", "pgdump", "tar", "sqlite",
+                                                    "db", "archive", "bacpac", "dacpac",
+                                                ],
                                             )
                                             .pick_file()
                                         {

@@ -30,6 +30,7 @@ pub mod connection_env;
 pub mod curl_import;
 pub mod deeplink;
 pub mod data_table;
+pub mod data_transfer;
 pub mod dba_monitor;
 pub mod diagram_api_rail;
 pub mod diagram_api_rail_view;

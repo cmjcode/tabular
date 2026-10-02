@@ -77,8 +77,21 @@ pub async fn run_in_database(
     database: Option<&str>,
     sql: &str,
 ) -> Result<Vec<ResultSet>, String> {
-    let database = database.map(str::trim).filter(|d| !d.is_empty());
     let statements = split_for_engine(&conn.connection_type, sql);
+    run_statements_in_database(conn, pool, database, &statements).await
+}
+
+/// Seperti [`run_in_database`], tetapi `statements` sudah berupa unit eksekusi
+/// dan dikirim apa adanya tanpa dipecah lagi. Dipakai transfer/impor data yang
+/// menyusun `INSERT` sendiri: isi sel tidak boleh ikut ditafsirkan pemecah
+/// statement.
+pub async fn run_statements_in_database(
+    conn: &ConnectionConfig,
+    pool: Option<DatabasePool>,
+    database: Option<&str>,
+    statements: &[String],
+) -> Result<Vec<ResultSet>, String> {
+    let database = database.map(str::trim).filter(|d| !d.is_empty());
     if statements.is_empty() {
         return Err("Nothing to execute".to_string());
     }
@@ -91,7 +104,7 @@ pub async fn run_in_database(
         let mut cfg = conn.clone();
         cfg.database = db.to_string();
         let temp = create_connection_pool_for_config(&cfg).await?;
-        let result = run_statements(&temp, None, &statements).await;
+        let result = run_statements(&temp, None, statements).await;
         if let DatabasePool::PostgreSQL(p) = &temp {
             p.close().await;
         }
@@ -102,7 +115,7 @@ pub async fn run_in_database(
         Some(p) => p,
         None => create_connection_pool_for_config(conn).await?,
     };
-    run_statements(&pool, database, &statements).await
+    run_statements(&pool, database, statements).await
 }
 
 async fn run_statements(
@@ -116,7 +129,9 @@ async fn run_statements(
             let mut c = p.acquire().await.map_err(|e| e.to_string())?;
             if let Some(db) = database {
                 let use_stmt = format!("USE `{}`", db.replace('`', "``"));
-                sqlx::query(sqlx::AssertSqlSafe(use_stmt.as_str()))
+                // `USE` ditolak protokol prepared statement MySQL (error 1295),
+                // jadi dikirim lewat protokol teks.
+                sqlx::raw_sql(sqlx::AssertSqlSafe(use_stmt))
                     .execute(&mut *c)
                     .await
                     .map_err(|e| e.to_string())?;

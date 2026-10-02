@@ -285,6 +285,7 @@ impl super::Tabular {
                 // Auto-map by position (will be refined in the dialog)
                 let column_mappings = vec![];
                 self.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    source: Default::default(),
                     connection_id: conn_id,
                     database_name: db_name,
                     table_name,
@@ -3093,6 +3094,7 @@ impl super::Tabular {
                                 }
                                 super::schema_menus::database_menu_items(ui, node, db_type);
                             }
+                            super::transfer_ui::database_menu_items(ui, node, db_type);
 
                             let can_drop = matches!(
                                 db_type,
@@ -3256,6 +3258,11 @@ impl super::Tabular {
                                 node,
                                 node.connection_id.and_then(|id| params.connection_types.get(&id)),
                             );
+                            super::transfer_ui::table_menu_items(
+                                ui,
+                                node,
+                                node.connection_id.and_then(|id| params.connection_types.get(&id)),
+                            );
                         } else {
                             // MongoDB specific quick actions
                             if ui.button("🔍 Count Documents (Current Tab)").clicked() {
@@ -3280,7 +3287,7 @@ impl super::Tabular {
                             }
                         }
                         if !is_mongodb
-                            && ui.button("📥 Import CSV...").clicked() {
+                            && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked() {
                                 if let Some(conn_id) = node.connection_id {
                                     let actual_table_name =
                                         node.table_name.as_ref().unwrap_or(&node.name).clone();

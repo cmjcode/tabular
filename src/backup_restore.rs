@@ -28,9 +28,60 @@ pub enum BackupFormat {
     PostgresTar,
     PostgresDirectory,
     SqliteNative,
+    /// Arsip `mongodump --archive --gzip`.
+    MongoArchiveGzip,
+    /// Arsip `mongodump --archive` tanpa kompresi.
+    MongoArchive,
+    /// `sqlpackage /Action:Export`: skema + data SQL Server.
+    SqlServerBacpac,
+    /// `sqlpackage /Action:Extract`: skema SQL Server saja.
+    SqlServerDacpac,
 }
 
 impl BackupFormat {
+    /// Semua format, dalam urutan tampil di dialog.
+    pub const ALL: [BackupFormat; 10] = [
+        BackupFormat::GzipSql,
+        BackupFormat::PlainSql,
+        BackupFormat::PostgresCustom,
+        BackupFormat::PostgresTar,
+        BackupFormat::PostgresDirectory,
+        BackupFormat::SqliteNative,
+        BackupFormat::MongoArchiveGzip,
+        BackupFormat::MongoArchive,
+        BackupFormat::SqlServerBacpac,
+        BackupFormat::SqlServerDacpac,
+    ];
+
+    /// Format bawaan untuk engine.
+    pub fn default_for(db_type: &DatabaseType) -> Self {
+        match db_type {
+            DatabaseType::SQLite => BackupFormat::SqliteNative,
+            DatabaseType::MongoDB => BackupFormat::MongoArchiveGzip,
+            DatabaseType::MsSQL => BackupFormat::SqlServerBacpac,
+            _ => BackupFormat::GzipSql,
+        }
+    }
+
+    /// Nama file tanpa ekstensi format backup mana pun (`db.sql.gz` -> `db`).
+    pub fn strip_extension(file_name: &str) -> &str {
+        let mut longest: Option<&str> = None;
+        for fmt in Self::ALL {
+            let ext = fmt.extension();
+            if file_name.len() > ext.len() + 1
+                && file_name.ends_with(ext)
+                && file_name[..file_name.len() - ext.len()].ends_with('.')
+                && longest.is_none_or(|l| ext.len() > l.len())
+            {
+                longest = Some(ext);
+            }
+        }
+        match longest {
+            Some(ext) => &file_name[..file_name.len() - ext.len() - 1],
+            None => file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem),
+        }
+    }
+
     pub fn extension(&self) -> &'static str {
         match self {
             BackupFormat::PlainSql => "sql",
@@ -39,6 +90,10 @@ impl BackupFormat {
             BackupFormat::PostgresTar => "tar",
             BackupFormat::PostgresDirectory => "dir",
             BackupFormat::SqliteNative => "sqlite",
+            BackupFormat::MongoArchiveGzip => "archive.gz",
+            BackupFormat::MongoArchive => "archive",
+            BackupFormat::SqlServerBacpac => "bacpac",
+            BackupFormat::SqlServerDacpac => "dacpac",
         }
     }
 
@@ -50,6 +105,10 @@ impl BackupFormat {
             BackupFormat::PostgresTar => "PostgreSQL Tar Archive (.tar)",
             BackupFormat::PostgresDirectory => "PostgreSQL Directory (.dir)",
             BackupFormat::SqliteNative => "SQLite Database File (.sqlite)",
+            BackupFormat::MongoArchiveGzip => "MongoDB Archive, gzip (.archive.gz)",
+            BackupFormat::MongoArchive => "MongoDB Archive (.archive)",
+            BackupFormat::SqlServerBacpac => "SQL Server BACPAC, schema + data (.bacpac)",
+            BackupFormat::SqlServerDacpac => "SQL Server DACPAC, schema only (.dacpac)",
         }
     }
 
@@ -72,6 +131,14 @@ impl BackupFormat {
                     BackupFormat::SqliteNative | BackupFormat::GzipSql | BackupFormat::PlainSql
                 )
             }
+            DatabaseType::MongoDB => matches!(
+                self,
+                BackupFormat::MongoArchiveGzip | BackupFormat::MongoArchive
+            ),
+            DatabaseType::MsSQL => matches!(
+                self,
+                BackupFormat::SqlServerBacpac | BackupFormat::SqlServerDacpac
+            ),
             _ => false,
         }
     }
@@ -413,6 +480,25 @@ impl BinaryDetector {
 
     fn get_known_directories(binary_name: &str) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
+
+        // `dotnet tool install -g microsoft.sqlpackage` memasang ke sini di
+        // semua platform.
+        if binary_name == "sqlpackage" {
+            if let Some(home) = ::dirs::home_dir() {
+                dirs.push(home.join(".dotnet").join("tools"));
+            }
+            if cfg!(target_os = "windows") {
+                for v in [170, 160, 150] {
+                    dirs.push(PathBuf::from(format!(
+                        r"C:\Program Files\Microsoft SQL Server\{}\DAC\bin",
+                        v
+                    )));
+                }
+            }
+        }
+        if cfg!(target_os = "windows") && binary_name.starts_with("mongo") {
+            dirs.push(PathBuf::from(r"C:\Program Files\MongoDB\Tools\100\bin"));
+        }
 
         if cfg!(target_os = "macos") {
             dirs.push(PathBuf::from("/opt/homebrew/bin"));
@@ -820,6 +906,200 @@ impl SqliteBackupEngine {
     }
 }
 
+// ─── MongoDB & SQL Server command lines ────────────────────────────────────
+
+/// File konfigurasi sementara berisi password untuk `mongodump`/`mongorestore`
+/// (`--config`), supaya password tidak muncul di daftar proses. Dihapus saat
+/// di-drop.
+struct MongoPasswordFile {
+    path: PathBuf,
+}
+
+impl MongoPasswordFile {
+    fn create(password: &str) -> Result<Option<Self>, String> {
+        if password.is_empty() {
+            return Ok(None);
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "tabular-mongo-{}-{}.yaml",
+            std::process::id(),
+            nanos
+        ));
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut file = open
+            .open(&path)
+            .map_err(|e| format!("Failed to create MongoDB tools config: {}", e))?;
+        // String YAML berkutip ganda: hanya `\` dan `"` yang perlu di-escape.
+        let escaped = password.replace('\\', "\\\\").replace('"', "\\\"");
+        let guard = Self { path };
+        file.write_all(format!("password: \"{}\"\n", escaped).as_bytes())
+            .map_err(|e| format!("Failed to write MongoDB tools config: {}", e))?;
+        Ok(Some(guard))
+    }
+}
+
+impl Drop for MongoPasswordFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn mongo_connection_args(config: &ConnectionConfig, password_file: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "--host".to_string(),
+        config.host.clone(),
+        "--port".to_string(),
+        config.port.clone(),
+    ];
+    if !config.username.is_empty() {
+        args.push("--username".to_string());
+        args.push(config.username.clone());
+        args.push("--authenticationDatabase".to_string());
+        args.push("admin".to_string());
+    }
+    if let Some(path) = password_file {
+        args.push("--config".to_string());
+        args.push(path.display().to_string());
+    }
+    args
+}
+
+/// Argumen `mongodump` untuk satu database ke satu file arsip.
+pub fn mongodump_args(
+    config: &ConnectionConfig,
+    options: &BackupOptions,
+    password_file: Option<&Path>,
+) -> Vec<String> {
+    let mut args = mongo_connection_args(config, password_file);
+    args.push("--db".to_string());
+    args.push(options.database_name.clone());
+    args.push(format!("--archive={}", options.target_file.display()));
+    if options.format == BackupFormat::MongoArchiveGzip {
+        args.push("--gzip".to_string());
+    }
+    // `--collection` hanya menerima satu nama; selebihnya lewat pengecualian.
+    if let [only] = options.selected_tables.as_slice() {
+        args.push("--collection".to_string());
+        args.push(only.clone());
+    } else {
+        for collection in &options.excluded_tables {
+            args.push("--excludeCollection".to_string());
+            args.push(collection.clone());
+        }
+    }
+    args
+}
+
+/// Argumen `mongorestore` dari file arsip. Bila nama database tujuan diisi,
+/// semua namespace di arsip dipetakan ke database itu.
+pub fn mongorestore_args(
+    config: &ConnectionConfig,
+    options: &RestoreOptions,
+    password_file: Option<&Path>,
+) -> Vec<String> {
+    let mut args = mongo_connection_args(config, password_file);
+    args.push(format!("--archive={}", options.source_file.display()));
+    if options
+        .source_file
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
+    {
+        args.push("--gzip".to_string());
+    }
+    if options.clean_before_restore {
+        args.push("--drop".to_string());
+    }
+    if options.stop_on_error {
+        args.push("--stopOnError".to_string());
+    }
+    let target = options.target_database_name.trim();
+    if !target.is_empty() {
+        args.push("--nsFrom=$db$.$coll$".to_string());
+        args.push(format!("--nsTo={}.$coll$", target));
+    }
+    args
+}
+
+fn sqlpackage_connection_args(
+    config: &ConnectionConfig,
+    side: &str,
+    database: &str,
+) -> Vec<String> {
+    let server = if config.port.trim().is_empty() {
+        config.host.clone()
+    } else {
+        format!("{},{}", config.host, config.port.trim())
+    };
+    let mut args = vec![
+        format!("/{side}ServerName:{server}"),
+        format!("/{side}DatabaseName:{database}"),
+    ];
+    // Tanpa username: autentikasi terintegrasi (Windows / Kerberos).
+    if !config.username.is_empty() {
+        args.push(format!("/{side}User:{}", config.username));
+        args.push(format!("/{side}Password:{}", config.password));
+    }
+    let verify = config.ssl_enabled && config.ssl_verify_server;
+    args.push(format!(
+        "/{side}EncryptConnection:{}",
+        if config.ssl_enabled { "True" } else { "False" }
+    ));
+    args.push(format!(
+        "/{side}TrustServerCertificate:{}",
+        if verify { "False" } else { "True" }
+    ));
+    args
+}
+
+/// Argumen `sqlpackage` untuk backup: BACPAC (skema + data) atau DACPAC
+/// (skema saja).
+pub fn sqlpackage_export_args(config: &ConnectionConfig, options: &BackupOptions) -> Vec<String> {
+    let action = if options.format == BackupFormat::SqlServerDacpac {
+        "Extract"
+    } else {
+        "Export"
+    };
+    let mut args = vec![
+        format!("/Action:{action}"),
+        format!("/TargetFile:{}", options.target_file.display()),
+    ];
+    args.extend(sqlpackage_connection_args(
+        config,
+        "Source",
+        &options.database_name,
+    ));
+    args
+}
+
+/// Argumen `sqlpackage` untuk restore: `Import` untuk `.bacpac`, `Publish`
+/// untuk `.dacpac`.
+pub fn sqlpackage_import_args(config: &ConnectionConfig, options: &RestoreOptions) -> Vec<String> {
+    let is_dacpac = options
+        .source_file
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("dacpac"));
+    let mut args = vec![
+        format!("/Action:{}", if is_dacpac { "Publish" } else { "Import" }),
+        format!("/SourceFile:{}", options.source_file.display()),
+    ];
+    args.extend(sqlpackage_connection_args(
+        config,
+        "Target",
+        &options.target_database_name,
+    ));
+    args
+}
+
 // ─── Native Process Backup & Restore Runner ────────────────────────────────
 
 pub struct BackupRestoreRunner;
@@ -852,6 +1132,15 @@ impl BackupRestoreRunner {
                 DatabaseType::MySQL => {
                     Self::run_mysql_dump(&config_clone, &options, tracker.clone(), cancel_token)
                 }
+                DatabaseType::MongoDB => {
+                    Self::run_mongodump(&config_clone, &options, tracker.clone(), cancel_token)
+                }
+                DatabaseType::MsSQL => Self::run_sqlpackage(
+                    sqlpackage_export_args(&config_clone, &options),
+                    options.custom_binary_path.as_deref(),
+                    tracker.clone(),
+                    cancel_token,
+                ),
                 _ => {
                     let err = format!(
                         "Backup is not supported for {:?}",
@@ -899,6 +1188,15 @@ impl BackupRestoreRunner {
                 DatabaseType::MySQL => {
                     Self::run_mysql_restore(&config_clone, &options, tracker.clone(), cancel_token)
                 }
+                DatabaseType::MongoDB => {
+                    Self::run_mongorestore(&config_clone, &options, tracker.clone(), cancel_token)
+                }
+                DatabaseType::MsSQL => Self::run_sqlpackage(
+                    sqlpackage_import_args(&config_clone, &options),
+                    options.custom_binary_path.as_deref(),
+                    tracker.clone(),
+                    cancel_token,
+                ),
                 _ => {
                     let err = format!(
                         "Restore is not supported for {:?}",
@@ -970,6 +1268,124 @@ impl BackupRestoreRunner {
                 error!("Copy database job failed: {}", e);
             }
         });
+    }
+
+    // ─── MongoDB & SQL Server (mongodump / mongorestore / sqlpackage) ───────
+
+    fn require_binary(
+        name: &'static str,
+        custom: Option<&Path>,
+        hint: &str,
+        tracker: &Arc<Mutex<ProgressTracker>>,
+    ) -> Result<NativeBinaryInfo, String> {
+        BinaryDetector::find_binary(name, custom).ok_or_else(|| {
+            let msg = format!("{name} binary not found in PATH or standard directories. {hint}");
+            tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fail(&msg);
+            msg
+        })
+    }
+
+    fn announce(tracker: &Arc<Mutex<ProgressTracker>>, binary: &NativeBinaryInfo) {
+        let mut trk = tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        trk.start(format!("Spawning {} process...", binary.name));
+        trk.append_log(format!(
+            "Using {}: {} ({})",
+            binary.name,
+            binary.path.display(),
+            binary.version.as_deref().unwrap_or("unknown version")
+        ));
+    }
+
+    fn run_mongodump(
+        config: &ConnectionConfig,
+        options: &BackupOptions,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let binary = Self::require_binary(
+            "mongodump",
+            options.custom_binary_path.as_deref(),
+            "Install MongoDB Database Tools.",
+            &tracker,
+        )?;
+        Self::announce(&tracker, &binary);
+        if let Some(parent) = options.target_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let password_file = MongoPasswordFile::create(&config.password)?;
+        let mut cmd = Command::new(&binary.path);
+        cmd.args(mongodump_args(
+            config,
+            options,
+            password_file.as_ref().map(|f| f.path.as_path()),
+        ));
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn mongodump: {}", e))?;
+        Self::monitor_process_with_file_growth(
+            &mut child,
+            &options.target_file,
+            tracker,
+            cancel_token,
+        )
+    }
+
+    fn run_mongorestore(
+        config: &ConnectionConfig,
+        options: &RestoreOptions,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let binary = Self::require_binary(
+            "mongorestore",
+            options.custom_binary_path.as_deref(),
+            "Install MongoDB Database Tools.",
+            &tracker,
+        )?;
+        Self::announce(&tracker, &binary);
+        let password_file = MongoPasswordFile::create(&config.password)?;
+        let mut cmd = Command::new(&binary.path);
+        cmd.args(mongorestore_args(
+            config,
+            options,
+            password_file.as_ref().map(|f| f.path.as_path()),
+        ));
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn mongorestore: {}", e))?;
+        Self::monitor_process_simple(&mut child, tracker, cancel_token)
+    }
+
+    fn run_sqlpackage(
+        args: Vec<String>,
+        custom_binary: Option<&Path>,
+        tracker: Arc<Mutex<ProgressTracker>>,
+        cancel_token: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let binary = Self::require_binary(
+            "sqlpackage",
+            custom_binary,
+            "Install it with `dotnet tool install -g microsoft.sqlpackage`.",
+            &tracker,
+        )?;
+        Self::announce(&tracker, &binary);
+        let mut cmd = Command::new(&binary.path);
+        cmd.args(args);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn sqlpackage: {}", e))?;
+        Self::monitor_process_simple(&mut child, tracker, cancel_token)
     }
 
     // ─── PostgreSQL DUMP Runner ─────────────────────────────────────────────
@@ -1071,7 +1487,12 @@ impl BackupRestoreRunner {
                 cmd.arg("-F").arg("p");
                 // Stream output to stdout for compression pipe
             }
-            BackupFormat::SqliteNative => {}
+            // Format engine lain tidak ditawarkan untuk PostgreSQL.
+            BackupFormat::SqliteNative
+            | BackupFormat::MongoArchiveGzip
+            | BackupFormat::MongoArchive
+            | BackupFormat::SqlServerBacpac
+            | BackupFormat::SqlServerDacpac => {}
         }
 
         cmd.stdout(if is_piped_gzip {
@@ -2572,5 +2993,169 @@ mod tests {
         let snap2 = tracker.snapshot();
         assert_eq!(snap1.elapsed_secs, snap2.elapsed_secs);
         assert_eq!(snap1.bytes_per_sec, snap2.bytes_per_sec);
+    }
+
+    fn mongo_config() -> ConnectionConfig {
+        ConnectionConfig {
+            connection_type: DatabaseType::MongoDB,
+            host: "db.local".to_string(),
+            port: "27017".to_string(),
+            username: "root".to_string(),
+            password: "p\"w".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_formats_per_engine_and_extension_stripping() {
+        assert_eq!(
+            BackupFormat::default_for(&DatabaseType::MongoDB),
+            BackupFormat::MongoArchiveGzip
+        );
+        assert_eq!(
+            BackupFormat::default_for(&DatabaseType::MsSQL),
+            BackupFormat::SqlServerBacpac
+        );
+        assert!(BackupFormat::MongoArchive.supported_for(&DatabaseType::MongoDB));
+        assert!(!BackupFormat::GzipSql.supported_for(&DatabaseType::MongoDB));
+        assert!(BackupFormat::SqlServerDacpac.supported_for(&DatabaseType::MsSQL));
+        assert!(!BackupFormat::SqlServerBacpac.supported_for(&DatabaseType::PostgreSQL));
+
+        assert_eq!(BackupFormat::strip_extension("shop_2026.sql.gz"), "shop_2026");
+        assert_eq!(BackupFormat::strip_extension("shop.archive.gz"), "shop");
+        assert_eq!(BackupFormat::strip_extension("shop.v2.bacpac"), "shop.v2");
+        assert_eq!(BackupFormat::strip_extension("shop.unknown"), "shop");
+        assert_eq!(BackupFormat::strip_extension("shop"), "shop");
+    }
+
+    #[test]
+    fn test_mongodump_args_keep_password_off_command_line() {
+        let options = BackupOptions {
+            database_name: "shop".to_string(),
+            target_file: PathBuf::from("/tmp/shop.archive.gz"),
+            format: BackupFormat::MongoArchiveGzip,
+            excluded_tables: vec!["logs".to_string()],
+            ..Default::default()
+        };
+        let args = mongodump_args(&mongo_config(), &options, Some(Path::new("/tmp/cfg.yaml")));
+        assert_eq!(
+            args,
+            vec![
+                "--host",
+                "db.local",
+                "--port",
+                "27017",
+                "--username",
+                "root",
+                "--authenticationDatabase",
+                "admin",
+                "--config",
+                "/tmp/cfg.yaml",
+                "--db",
+                "shop",
+                "--archive=/tmp/shop.archive.gz",
+                "--gzip",
+                "--excludeCollection",
+                "logs",
+            ]
+        );
+        assert!(!args.iter().any(|a| a.contains("p\"w")));
+
+        let single = BackupOptions {
+            selected_tables: vec!["orders".to_string()],
+            format: BackupFormat::MongoArchive,
+            ..options
+        };
+        let args = mongodump_args(&mongo_config(), &single, None);
+        assert!(args.windows(2).any(|w| w == ["--collection", "orders"]));
+        assert!(!args.contains(&"--gzip".to_string()));
+    }
+
+    #[test]
+    fn test_mongo_password_file_is_private_and_removed() {
+        let file = MongoPasswordFile::create("p\"w\\x").unwrap().unwrap();
+        let path = file.path.clone();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "password: \"p\\\"w\\\\x\"\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        drop(file);
+        assert!(!path.exists());
+        assert!(MongoPasswordFile::create("").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_mongorestore_args_remap_namespace() {
+        let options = RestoreOptions {
+            target_database_name: "shop_copy".to_string(),
+            source_file: PathBuf::from("/tmp/shop.archive.gz"),
+            clean_before_restore: true,
+            ..Default::default()
+        };
+        let args = mongorestore_args(&mongo_config(), &options, None);
+        assert!(args.contains(&"--archive=/tmp/shop.archive.gz".to_string()));
+        assert!(args.contains(&"--gzip".to_string()));
+        assert!(args.contains(&"--drop".to_string()));
+        assert!(args.contains(&"--stopOnError".to_string()));
+        assert!(args.contains(&"--nsTo=shop_copy.$coll$".to_string()));
+    }
+
+    #[test]
+    fn test_sqlpackage_args() {
+        let config = ConnectionConfig {
+            connection_type: DatabaseType::MsSQL,
+            host: "sql.local".to_string(),
+            port: "1433".to_string(),
+            username: "sa".to_string(),
+            password: "secret".to_string(),
+            ..Default::default()
+        };
+        let backup = BackupOptions {
+            database_name: "shop".to_string(),
+            target_file: PathBuf::from("/tmp/shop.bacpac"),
+            format: BackupFormat::SqlServerBacpac,
+            ..Default::default()
+        };
+        assert_eq!(
+            sqlpackage_export_args(&config, &backup),
+            vec![
+                "/Action:Export",
+                "/TargetFile:/tmp/shop.bacpac",
+                "/SourceServerName:sql.local,1433",
+                "/SourceDatabaseName:shop",
+                "/SourceUser:sa",
+                "/SourcePassword:secret",
+                "/SourceEncryptConnection:False",
+                "/SourceTrustServerCertificate:True",
+            ]
+        );
+        let dacpac = BackupOptions {
+            format: BackupFormat::SqlServerDacpac,
+            ..backup
+        };
+        assert_eq!(sqlpackage_export_args(&config, &dacpac)[0], "/Action:Extract");
+
+        let verified = ConnectionConfig {
+            ssl_enabled: true,
+            ssl_verify_server: true,
+            username: String::new(),
+            ..config
+        };
+        let restore = RestoreOptions {
+            target_database_name: "shop2".to_string(),
+            source_file: PathBuf::from("/tmp/shop.dacpac"),
+            ..Default::default()
+        };
+        let args = sqlpackage_import_args(&verified, &restore);
+        assert_eq!(args[0], "/Action:Publish");
+        assert!(args.contains(&"/TargetDatabaseName:shop2".to_string()));
+        assert!(args.contains(&"/TargetEncryptConnection:True".to_string()));
+        assert!(args.contains(&"/TargetTrustServerCertificate:False".to_string()));
+        // Tanpa username: autentikasi terintegrasi, tidak ada argumen password.
+        assert!(!args.iter().any(|a| a.contains("Password")));
     }
 }

@@ -461,6 +461,7 @@ impl super::Tabular {
             pending_drop_collection: None,
             pending_drop_table: None,
             schema_ui: Default::default(),
+            transfer_ui: Default::default(),
             pending_drop_database: None,
             pending_delete_connection: None,
             pending_delete_http_request: None,

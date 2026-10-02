@@ -2622,8 +2622,31 @@ pub struct CsvColumnMapping {
     pub target_column: String, // "__skip__" = skip this column
 }
 
+/// Opsi baca file wizard impor di luar CSV polos: format lain, encoding,
+/// sheet spreadsheet, dan passphrase file terenkripsi.
+#[derive(Clone, Debug, Default)]
+pub struct ImportSourceOptions {
+    /// `None` = deteksi otomatis.
+    pub encoding: Option<crate::data_transfer::encoding::TextEncoding>,
+    pub detected_encoding: Option<crate::data_transfer::encoding::TextEncoding>,
+    pub sheets: Vec<String>,
+    pub sheet: Option<String>,
+    pub passphrase: String,
+    /// File terenkripsi dan passphrase belum benar.
+    pub needs_passphrase: bool,
+    /// Ringkasan format terdeteksi, mis. "JSON, gzip".
+    pub kind_label: String,
+    /// Format teks berpemisah: pilihan delimiter berlaku.
+    pub is_delimited: bool,
+    /// Format teks: pilihan encoding berlaku.
+    pub is_text: bool,
+    /// Nama kolom selalu berasal dari file (JSON, Parquet).
+    pub named_columns: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct CsvImportState {
+    pub source: ImportSourceOptions,
     pub connection_id: i64,
     pub database_name: Option<String>,
     pub table_name: String,

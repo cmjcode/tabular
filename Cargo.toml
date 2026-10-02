@@ -70,6 +70,24 @@ regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
 rust_xlsxwriter = "0.99"                                          # Pure-Rust xlsx writer (no libclang/C toolchain)
+# Import/Data Files (H1/H4): pembaca XLSX murni Rust.
+calamine = "0.36"
+# Parquet native (H1/H2) lewat API record/kolom, tanpa fitur `arrow` supaya
+# Arrow/DataFusion tidak ikut ditarik.
+parquet = { version = "60", default-features = false, features = [
+       "snap",
+       "flate2-zlib-rs",
+       "lz4",
+       "zstd",
+       "brotli",
+       "json",
+] }
+# Encoding teks ekspor/impor (H5); sudah ada di tree lewat reqwest.
+encoding_rs = "0.8"
+# Data Files terkompresi `.zst` dan buffer untuk pembaca Parquet; keduanya
+# sudah ada di tree lewat parquet.
+zstd = { version = "0.14", default-features = false }
+bytes = "1"
 hex = "0.4.3"
 rust_decimal = "1.43.0"
 wasmi = "2.0.0"

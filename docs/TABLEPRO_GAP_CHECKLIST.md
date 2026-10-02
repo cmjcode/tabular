@@ -185,27 +185,65 @@ Semua perubahan menampilkan SQL dulu (Execute / Open in Editor).
 
 ## H. Import, export, transfer
 
-- [ ] **H1. Data Files: buka CSV/TSV/JSON/XLSX/Parquet/compressed sebagai tabel tanpa import** · P1 · L · Belum
-  Engine in-memory DataFusion (keputusan 2 di `docs/NOTEBOOK_PLAN.md`). Hindari DuckDB karena
-  konflik `libsqlite3-sys` 0.37.
-- [ ] **H2. Export file: Markdown, HTML, XML, NDJSON, Parquet native** · P2 · S · Sebagian
-  `src/export.rs`; Parquet saat ini via Wasm plugin.
-- [ ] **H3. Encrypted export (AES-256-GCM)** · P3 · S · Belum
-  Pakai primitif `src/sync/vault_crypto.rs`.
-- [ ] **H4. Import JSON dan XLSX (perluas CSV wizard)** · P2 · M · Sebagian
-  `src/dialog.rs` (CSV Import Wizard).
-- [ ] **H5. Export encoding picker + BOM; import UTF-16/Windows-1252** · P4 · S · Belum
-- [ ] **H6. Max INSERT size untuk SQL export; index di post-data** · P4 · S · Belum
-- [ ] **H7. Export any object (view, routine, trigger, type, privilege) dalam pohon** · P3 · M · Sebagian
-- [ ] **H8. Transfer To: salin baris langsung antar koneksi terbuka** · P2 · M · Belum
-- [ ] **H9. Copy To lintas engine dengan aproksimasi tipe** · P3 · L · Sebagian
-  `src/dialog_copy_database.rs` sekarang satu engine.
-- [ ] **H10. Backup/restore: mongodump, sqlpackage (MSSQL)** · P3 · M · Sebagian
-  `src/backup_restore.rs` sudah pg_dump, mysqldump, sqlite.
-- [ ] **H11. Data Compare & Sync (per tabel, filter, row limit, highlight, apply script)** · P3 · L · Belum
-  Schema sync sudah ada di diagram.
-- [ ] **H12. Saved comparisons (pasangan endpoint + opsi)** · P4 · S · Belum
-  Bergantung H11.
+Status 2026-10-02: logika headless di `src/data_transfer/` (format, encoding, enkripsi, pembaca
+file, transfer, compare, ekspor objek, Data Files), GUI di `src/window_egui/transfer_ui.rs`,
+`transfer_dialogs.rs`, `transfer_compare_ui.rs`; panduan pengguna di `docs/DATA_TRANSFER.md`.
+Diverifikasi dengan unit test (termasuk transfer, compare, ekspor objek, dan Data Files di atas
+SQLite), clippy, dan screenshot tiap dialog dengan workspace Data Files. Belum diuji melawan
+server MySQL/PostgreSQL/SQL Server sungguhan (query katalog, DDL, transfer lintas engine), belum
+dijalankan dengan binary `mongodump`/`sqlpackage`, dan belum di-build untuk iOS.
+
+- [x] **H1. Data Files: buka CSV/TSV/JSON/XLSX/Parquet/compressed sebagai tabel tanpa import** · P1 · L · Selesai (workspace SQLite)
+  "Open Data File" (menu Settings, palet perintah, atau drop file ke jendela) memuat file ke
+  `data_files.sqlite` di data dir dan membukanya sebagai tabel koneksi "Data Files"; tipe kolom
+  diinferensi, satu tabel per file/sheet, JOIN antar file lewat editor. Juga NDJSON, ODS,
+  `.gz`/`.zip`/`.zst`, dan `.enc`. Menyimpang dari rencana DataFusion: SQLite bawaan dipakai
+  supaya tidak menambah engine kedua dan ratusan crate (keputusan 2 `docs/NOTEBOOK_PLAN.md`
+  masih DRAFT). Konsekuensi: file disalin saat dibuka (bukan query langsung ke file) dan dibaca
+  seluruhnya ke memori. Parquet dibaca lewat crate `parquet` tanpa Arrow.
+- [x] **H2. Export file: Markdown, HTML, XML, NDJSON, Parquet native** · P2 · S · Selesai
+  "Export with Options..." di menu grid: CSV, TSV, JSON, NDJSON, Markdown, HTML, XML, XLSX,
+  Parquet (Snappy, tanpa plugin Wasm), SQL INSERT. `src/data_transfer/formats.rs`.
+- [x] **H3. Encrypted export (AES-256-GCM)** · P3 · S · Selesai
+  Passphrase -> Argon2id (`vault_crypto::derive_kek`) -> AES-256-GCM, file `.enc` dengan header
+  terautentikasi. Berlaku untuk ekspor hasil dan ekspor objek; "Decrypt Exported File..." dan
+  pembaca Data Files/impor membukanya kembali.
+- [x] **H4. Import JSON dan XLSX (perluas CSV wizard)** · P2 · M · Selesai
+  Wizard impor menerima JSON, NDJSON, XLSX/XLS/ODS (pilih sheet), Parquet, juga terkompresi dan
+  terenkripsi; format dan delimiter dideteksi.
+- [x] **H5. Export encoding picker + BOM; import UTF-16/Windows-1252** · P4 · S · Selesai
+  Ekspor: UTF-8, UTF-16 LE/BE, Windows-1252 + BOM; karakter di luar Windows-1252 ditulis `?` dan
+  jumlahnya dilaporkan. Impor: deteksi otomatis (BOM, UTF-16 tanpa BOM, Windows-1252) atau pilih
+  manual.
+- [x] **H6. Max INSERT size untuk SQL export; index di post-data** · P4 · S · Selesai
+  Batas ukuran (KB) dan baris per statement di ekspor hasil dan ekspor objek; index sekunder dan
+  foreign key ditulis setelah data (MySQL: dipisah dari `SHOW CREATE TABLE` menjadi
+  `ALTER TABLE ... ADD`).
+- [x] **H7. Export any object (view, routine, trigger, type, privilege) dalam pohon** · P3 · M · Selesai
+  "Export Objects as SQL..." (menu tabel/database): pohon bercentang per jenis (type, table, view,
+  materialized view, function, procedure, trigger, event, privilege). Batasan: DDL tabel SQL
+  Server hanya kolom + primary key; nilai sequence PostgreSQL tidak diekspor.
+- [x] **H8. Transfer To: salin baris langsung antar koneksi terbuka** · P2 · M · Selesai
+  "Transfer To..." (menu tabel/database): pilih tabel, filter WHERE, batas baris, kosongkan
+  tujuan, buat tabel bila belum ada, progres + log, bisa dihentikan. Bukan satu transaksi.
+- [x] **H9. Copy To lintas engine dengan aproksimasi tipe** · P3 · L · Selesai (lewat Transfer Tables)
+  Tipe dipetakan lewat tipe logis (`src/data_transfer/types.rs`). Hanya kolom + primary key yang
+  dibuat; default, auto-increment, index, dan foreign key tidak dibawa. `dialog_copy_database`
+  (dump/restore) tetap satu engine.
+- [x] **H10. Backup/restore: mongodump, sqlpackage (MSSQL)** · P3 · M · Selesai (belum diuji dengan tool asli)
+  MongoDB: arsip `.archive(.gz)`, password lewat file config sementara (0600). SQL Server:
+  `.bacpac` / `.dacpac`; password terpaksa lewat argumen proses. Menu backup/restore kini muncul
+  di node database MongoDB.
+- [x] **H11. Data Compare & Sync (per tabel, filter, row limit, highlight, apply script)** · P3 · L · Selesai
+  "Compare Data..." : cocokkan baris per kunci (primary key atau kolom pilihan), filter, batas
+  baris, abaikan kolom, toleransi format antar engine; selisih berwarna; skrip sinkronisasi
+  (insert/update/delete) dibuka di editor, disalin, atau dijalankan dengan konfirmasi.
+  Mendukung mode **Structure**: perbandingan definisi kolom (kolom hilang di tiap sisi, beda tipe,
+  nullability, primary key) untuk satu tabel maupun database ("All tables"), normalisasi tipe
+  lintas engine, skrip sinkronisasi DDL (ADD/DROP/ALTER COLUMN, CREATE TABLE untuk tabel hilang)
+  dengan peringatan dan opsi konfirmasi Apply.
+- [x] **H12. Saved comparisons (pasangan endpoint + opsi)** · P4 · S · Selesai
+  Tabel `data_compare_saved` di `connections.db` (lokal, tidak ikut sync).
 
 ## I. Query history, insight, monitoring
 

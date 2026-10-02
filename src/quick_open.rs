@@ -959,6 +959,36 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ),
         ("Data: Import CSV", "Import CSV data into table", ""),
         (
+            "Data: Export with Options",
+            "Export the result as HTML, XML, NDJSON, Parquet and more, with encoding and encryption",
+            "",
+        ),
+        (
+            "Data: Open Data File",
+            "Open a CSV, JSON, Excel or Parquet file as a table without importing it",
+            "",
+        ),
+        (
+            "Data: Transfer Tables",
+            "Copy tables between connections, also across database engines",
+            "",
+        ),
+        (
+            "Data: Compare Data",
+            "Compare two tables row by row and generate a sync script",
+            "",
+        ),
+        (
+            "Data: Export Database Objects",
+            "Export tables, views, routines, triggers and privileges as SQL",
+            "",
+        ),
+        (
+            "Data: Decrypt Exported File",
+            "Decrypt an encrypted .enc export",
+            "",
+        ),
+        (
             "Transaction: Begin / Toggle",
             "Toggle transactional execution mode",
             "⌘ Shift+T",

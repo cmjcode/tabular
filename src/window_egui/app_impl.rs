@@ -2628,6 +2628,32 @@ impl Tabular {
 
                                             draw_menu_sep(ui);
 
+                                            {
+                                                use super::transfer_ui::TransferAction;
+                                                let none = || (None, None, None);
+                                                let mut picked = None;
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_FILE_OPEN.codepoint, "Open Data File...", None) {
+                                                    picked = Some(TransferAction::OpenDataFile(None));
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_SWAP_HORIZ.codepoint, "Transfer Tables...", None) {
+                                                    let (conn_id, database, table) = none();
+                                                    picked = Some(TransferAction::Transfer { conn_id, database, table });
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_COMPARE_ARROWS.codepoint, "Compare Data...", None) {
+                                                    let (conn_id, database, table) = none();
+                                                    picked = Some(TransferAction::CompareData { conn_id, database, table });
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_LOCK_OPEN.codepoint, "Decrypt Exported File...", None) {
+                                                    picked = Some(TransferAction::DecryptFile);
+                                                }
+                                                if let Some(action) = picked {
+                                                    self.transfer_ui.request(action);
+                                                    self.show_settings_menu = false;
+                                                }
+                                            }
+
+                                            draw_menu_sep(ui);
+
                                             // Hidden on iOS — the App Store is the only
                                             // update channel there (Guideline 2.5.2).
                                             if crate::self_update::SELF_UPDATE_SUPPORTED
@@ -3676,6 +3702,8 @@ impl Tabular {
                     self.render_drop_database_confirmation(ui.ctx());
                     // Dialog aksi objek skema (rename, comment, maintenance, …)
                     self.render_schema_ui(ui.ctx());
+                    // Dialog import/ekspor/transfer (bagian H)
+                    self.render_transfer_ui(ui.ctx());
                     self.render_clear_history_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());

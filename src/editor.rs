@@ -8451,6 +8451,12 @@ pub(crate) fn open_legacy_command_palette(tabular: &mut window_egui::Tabular) {
         "Data: Export SQL Inserts".to_string(),
         "Data: Export Markdown".to_string(),
         "Data: Import CSV".to_string(),
+        "Data: Export with Options".to_string(),
+        "Data: Open Data File".to_string(),
+        "Data: Transfer Tables".to_string(),
+        "Data: Compare Data".to_string(),
+        "Data: Export Database Objects".to_string(),
+        "Data: Decrypt Exported File".to_string(),
         "Transaction: Begin / Toggle   ⌘ Shift+T".to_string(),
         "Transaction: Commit".to_string(),
         "Transaction: Rollback".to_string(),
@@ -8939,6 +8945,47 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                 &tabular.current_table_name,
             );
         }
+        "Data: Export with Options" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::ExportResult);
+        }
+        "Data: Open Data File" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::OpenDataFile(None));
+        }
+        "Data: Decrypt Exported File" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::DecryptFile);
+        }
+        "Data: Transfer Tables" | "Data: Compare Data" | "Data: Export Database Objects" => {
+            use crate::window_egui::transfer_ui::TransferAction;
+            // Mulai dari koneksi dan database tab aktif bila ada.
+            let conn_id = tabular.current_connection_id;
+            let database = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .and_then(|tab| tab.database_name.clone());
+            tabular.transfer_ui.request(match key {
+                "Data: Transfer Tables" => TransferAction::Transfer {
+                    conn_id,
+                    database,
+                    table: None,
+                },
+                "Data: Compare Data" => TransferAction::CompareData {
+                    conn_id,
+                    database,
+                    table: None,
+                },
+                _ => TransferAction::ExportObjects {
+                    conn_id,
+                    database,
+                    preselect: None,
+                },
+            });
+        }
         "Export All Data (ZIP)" | "File: Export All Data (ZIP)" => {
             tabular.show_export_all_dialog = true;
         }
@@ -8955,6 +9002,7 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                     .unwrap_or(crate::models::enums::DatabaseType::MySQL);
                 tabular.show_csv_import_dialog = true;
                 tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    source: Default::default(),
                     connection_id: conn_id,
                     database_name: None,
                     table_name: tabular.current_table_name.clone(),

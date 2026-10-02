@@ -118,7 +118,7 @@ fn normalize_recovery_code(code: &str) -> String {
 
 /// Derive the 256-bit Key-Encryption-Key from a passphrase (or recovery code)
 /// and salt via Argon2id. Both use the same KDF; only the salt differs.
-fn derive_kek(secret: &str, salt: &[u8]) -> Result<SymKey, String> {
+pub(crate) fn derive_kek(secret: &str, salt: &[u8]) -> Result<SymKey, String> {
     let params = Params::new(
         ARGON2_M_COST_KIB,
         ARGON2_T_COST,
