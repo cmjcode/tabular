@@ -745,13 +745,16 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             && target_col != moving
                         {
                             let x = if after { r.max.x } else { r.min.x };
-                            hdr_ui.painter().with_clip_rect(header_alloc_rect).line_segment(
-                                [egui::pos2(x, r.min.y), egui::pos2(x, r.max.y)],
-                                egui::Stroke::new(
-                                    3.0,
-                                    crate::window_egui::style::theme_accent(hdr_ui.ctx()),
-                                ),
-                            );
+                            hdr_ui
+                                .painter()
+                                .with_clip_rect(header_alloc_rect)
+                                .line_segment(
+                                    [egui::pos2(x, r.min.y), egui::pos2(x, r.max.y)],
+                                    egui::Stroke::new(
+                                        3.0,
+                                        crate::window_egui::style::theme_accent(hdr_ui.ctx()),
+                                    ),
+                                );
                         }
                         hdr_ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     } else {

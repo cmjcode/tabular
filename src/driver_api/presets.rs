@@ -89,7 +89,10 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), all.len());
         for p in all {
-            assert!(matches!(p.based_on, DatabaseType::MySQL | DatabaseType::PostgreSQL));
+            assert!(matches!(
+                p.based_on,
+                DatabaseType::MySQL | DatabaseType::PostgreSQL
+            ));
             assert!(p.default_port.parse::<u16>().is_ok());
         }
     }

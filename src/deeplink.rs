@@ -59,7 +59,10 @@ pub enum DeepLink {
         run: bool,
     },
     /// Isi form koneksi baru dari DSN (atau buka koneksi yang cocok).
-    Import { dsn: ParsedDsn, name: Option<String> },
+    Import {
+        dsn: ParsedDsn,
+        name: Option<String>,
+    },
 }
 
 impl DeepLink {
@@ -248,8 +251,8 @@ pub fn parse_dsn(input: &str) -> Result<ParsedDsn, DeepLinkError> {
             .ok_or_else(|| DeepLinkError::InvalidUrl("missing scheme".into()))?,
     };
     let scheme = scheme_raw.to_ascii_lowercase();
-    let (db_type, scheme_ssl) = scheme_to_type(&scheme)
-        .ok_or_else(|| DeepLinkError::UnsupportedScheme(scheme.clone()))?;
+    let (db_type, scheme_ssl) =
+        scheme_to_type(&scheme).ok_or_else(|| DeepLinkError::UnsupportedScheme(scheme.clone()))?;
 
     if db_type == DatabaseType::SQLite {
         // sqlite:///abs/path.db → "/abs/path.db"; sqlite:relative.db → "relative.db"
@@ -465,10 +468,7 @@ fn is_loopback(host: &str) -> bool {
 
 /// Koneksi tersimpan yang menunjuk ke server/database yang sama dengan DSN.
 /// Dipakai `tabular open <dsn>` (mis. dari ddev) agar tidak membuat duplikat.
-pub fn find_matching_connection(
-    connections: &[ConnectionConfig],
-    dsn: &ParsedDsn,
-) -> Option<i64> {
+pub fn find_matching_connection(connections: &[ConnectionConfig], dsn: &ParsedDsn) -> Option<i64> {
     connections
         .iter()
         .find(|c| {
@@ -564,8 +564,7 @@ mod tests {
 
     #[test]
     fn parses_open_link() {
-        let link =
-            parse("tabular://open?connection=Prod%20DB&database=app&table=users").unwrap();
+        let link = parse("tabular://open?connection=Prod%20DB&database=app&table=users").unwrap();
         assert_eq!(
             link,
             DeepLink::Open {
@@ -644,10 +643,9 @@ mod tests {
 
     #[test]
     fn import_link_wraps_dsn() {
-        let link = parse(
-            "tabular://import?url=mysql%3A%2F%2Fdb%3Adb%40127.0.0.1%3A32768%2Fdb&name=ddev",
-        )
-        .unwrap();
+        let link =
+            parse("tabular://import?url=mysql%3A%2F%2Fdb%3Adb%40127.0.0.1%3A32768%2Fdb&name=ddev")
+                .unwrap();
         let DeepLink::Import { dsn, name } = link else {
             panic!("expected import");
         };

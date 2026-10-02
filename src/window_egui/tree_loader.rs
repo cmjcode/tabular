@@ -208,7 +208,11 @@ impl super::Tabular {
                 }
                 models::enums::DatabaseType::ApiHttp => {}
                 models::enums::DatabaseType::Plugin(_) => {
-                    crate::window_egui::plugin_tree::load_structure(connection_id, &connection, node);
+                    crate::window_egui::plugin_tree::load_structure(
+                        connection_id,
+                        &connection,
+                        node,
+                    );
                 }
             }
             node.is_loaded = true;
@@ -1431,7 +1435,9 @@ impl super::Tabular {
 
         use crate::schema_objects::catalog::PgObjectKind;
         let object_kind = match folder_type {
-            models::enums::NodeType::MaterializedViewsFolder => Some(PgObjectKind::MaterializedView),
+            models::enums::NodeType::MaterializedViewsFolder => {
+                Some(PgObjectKind::MaterializedView)
+            }
             models::enums::NodeType::TypesFolder => Some(PgObjectKind::UserType),
             models::enums::NodeType::UserFunctionsFolder => Some(PgObjectKind::Function),
             models::enums::NodeType::StoredProceduresFolder => Some(PgObjectKind::Procedure),

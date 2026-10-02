@@ -925,7 +925,339 @@ pub fn scan_routes(root: &Path, cancel: &AtomicBool) -> Result<RouteScan, RepoSc
         scan.hits
             .extend(scan_file(&rel, &String::from_utf8_lossy(&bytes)));
     }
+    scan_flexurio_routes(root, &mut scan);
     Ok(scan)
+}
+
+/// Deteksi route Flexurio NoCode API dari routes.json dan entity/*.json jika ada.
+fn scan_flexurio_routes(root: &Path, scan: &mut RouteScan) {
+    let Some(routes_file) = crate::flexurio_import::detect_flexurio_config(root) else {
+        return;
+    };
+    let Ok(data) = std::fs::read_to_string(&routes_file) else {
+        return;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return;
+    };
+    let Some(routes) = val.get("routes").and_then(|r| r.as_array()) else {
+        return;
+    };
+
+    scan.files_scanned += 1;
+    let config_dir = routes_file.parent().unwrap_or(root);
+    let entity_dir = config_dir.join("entity");
+    let rel_routes = routes_file
+        .strip_prefix(root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| routes_file.to_string_lossy().to_string());
+
+    for (idx, r) in routes.iter().enumerate() {
+        let Some(route) = r.as_str() else { continue };
+        let route = route.trim();
+        if route.is_empty() {
+            continue;
+        }
+
+        let entity_file = entity_dir.join(format!("{route}.json"));
+        let (rel_file, ent_opt) = if entity_file.is_file() {
+            let rel = entity_file
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| entity_file.to_string_lossy().to_string());
+            let parsed = std::fs::read_to_string(&entity_file).ok().and_then(|c| {
+                serde_json::from_str::<crate::flexurio_import::FlexurioEntity>(&c).ok()
+            });
+            (rel, parsed)
+        } else {
+            (rel_routes.clone(), None)
+        };
+
+        let mut add_hit = |method: &str, path: String| {
+            scan.hits.push(RouteHit {
+                method: method.to_string(),
+                path,
+                file: rel_file.clone(),
+                line: idx + 1,
+                framework: "flexurio",
+            });
+        };
+
+        if let Some(ent) = &ent_opt {
+            if ent
+                .get
+                .as_ref()
+                .and_then(|g| g.enable_method)
+                .unwrap_or(true)
+            {
+                add_hit("GET", format!("/{route}"));
+                add_hit("GET", format!("/{route}/{{id}}"));
+            }
+            if ent
+                .post
+                .as_ref()
+                .and_then(|p| p.enable_method)
+                .unwrap_or(true)
+            {
+                add_hit("POST", format!("/{route}"));
+            }
+            if ent
+                .put
+                .as_ref()
+                .and_then(|p| p.enable_method)
+                .unwrap_or(true)
+            {
+                add_hit("PUT", format!("/{route}/{{id}}"));
+            }
+            if ent
+                .del
+                .as_ref()
+                .and_then(|d| d.enable_method)
+                .unwrap_or(true)
+            {
+                add_hit("DELETE", format!("/{route}/{{id}}"));
+            }
+            if ent
+                .patch
+                .as_ref()
+                .and_then(|p| p.enable_method)
+                .unwrap_or(false)
+            {
+                add_hit("PATCH", format!("/{route}"));
+            }
+        } else {
+            add_hit("GET", format!("/{route}"));
+            add_hit("POST", format!("/{route}"));
+            add_hit("PUT", format!("/{route}/{{id}}"));
+            add_hit("DELETE", format!("/{route}/{{id}}"));
+        }
+    }
+
+    // Tambahkan public routes jika ada (contoh: login, auth/refresh)
+    if let Some(public_routes) = val.get("public").and_then(|p| p.as_array()) {
+        for (idx, p) in public_routes.iter().enumerate() {
+            let Some(pub_route) = p.as_str() else {
+                continue;
+            };
+            let pub_route = pub_route.trim().trim_start_matches('/');
+            if pub_route.is_empty() || routes.iter().any(|r| r.as_str() == Some(pub_route)) {
+                continue;
+            }
+            scan.hits.push(RouteHit {
+                method: "POST".to_string(),
+                path: format!("/{pub_route}"),
+                file: rel_routes.clone(),
+                line: idx + 1,
+                framework: "flexurio",
+            });
+        }
+    }
+}
+
+/// Memperkaya GeneratedEndpoint bertipe "flexurio" dengan detail skema tabel,
+/// query parameters, headers, authorization, dan contoh body JSON langsung dari
+/// entity/*.json dan .env.
+pub fn enrich_flexurio_endpoints(root: &Path, endpoints: &mut [GeneratedEndpoint]) {
+    let Some(routes_file) = crate::flexurio_import::detect_flexurio_config(root) else {
+        return;
+    };
+    let config_dir = routes_file.parent().unwrap_or(root);
+    let entity_dir = config_dir.join("entity");
+
+    let mut entity_cache: HashMap<String, Option<crate::flexurio_import::FlexurioEntity>> =
+        HashMap::new();
+
+    for ep in endpoints.iter_mut() {
+        if ep.framework != "flexurio" {
+            continue;
+        }
+
+        // Tentukan nama route dari path (contoh: /users -> users, /users/{id} -> users, /validate/users -> users)
+        let route = ep
+            .path
+            .trim_start_matches('/')
+            .split('/')
+            .find(|seg| *seg != "validate" && !seg.starts_with('{') && !seg.ends_with('}'))
+            .unwrap_or_default()
+            .to_string();
+
+        if route.is_empty() {
+            continue;
+        }
+
+        ep.group = route.clone();
+
+        // Autentikasi default Flexurio: Bearer Token
+        if ep.auth.is_empty() {
+            ep.auth = "bearer".to_string();
+        }
+        if ep.headers.is_empty() {
+            ep.headers.push(ParamSpec {
+                name: "Authorization".to_string(),
+                example: "Bearer {{token}}".to_string(),
+                required: true,
+                description: "Bearer authentication token".to_string(),
+            });
+        }
+
+        let ent_opt = entity_cache
+            .entry(route.clone())
+            .or_insert_with(|| {
+                let entity_file = entity_dir.join(format!("{route}.json"));
+                if entity_file.is_file() {
+                    std::fs::read_to_string(&entity_file)
+                        .ok()
+                        .and_then(|c| serde_json::from_str(&c).ok())
+                } else {
+                    None
+                }
+            })
+            .clone();
+
+        let is_detail_path = ep.path.contains("{id}") || ep.path.contains("/{");
+
+        if let Some(ent) = ent_opt {
+            let mut tables = Vec::new();
+            if !ent.table.is_empty() {
+                tables.push(ent.table.clone());
+            } else {
+                tables.push(route.clone());
+            }
+            for d in &ent.details {
+                if !d.target_table.is_empty() && !tables.contains(&d.target_table) {
+                    tables.push(d.target_table.clone());
+                }
+            }
+            ep.tables = tables;
+
+            let pk_field = ent
+                .primary_key
+                .as_ref()
+                .and_then(|k| k.columns.first())
+                .cloned()
+                .unwrap_or_else(|| "id".to_string());
+
+            match ep.method.as_str() {
+                "GET" => {
+                    if is_detail_path {
+                        if ep.name.is_empty() || ep.name.starts_with("GET") {
+                            ep.name = format!("Get {route} by ID");
+                        }
+                        if ep.description.is_empty() {
+                            ep.description = format!("Detail record `{route}` by {pk_field}.");
+                        }
+                        ep.status_codes = vec!["200".into(), "404".into(), "500".into()];
+                    } else {
+                        if ep.name.is_empty() || ep.name.starts_with("GET") {
+                            ep.name = format!("Get {route} List");
+                        }
+                        if ep.description.is_empty() {
+                            ep.description = format!("List & search records for `{route}`.");
+                        }
+                        ep.status_codes = vec!["200".into(), "500".into()];
+                        if ep.query_params.is_empty() {
+                            ep.query_params = vec![
+                                ParamSpec {
+                                    name: "page".to_string(),
+                                    example: "1".to_string(),
+                                    required: false,
+                                    description: "Halaman data".to_string(),
+                                },
+                                ParamSpec {
+                                    name: "per_page".to_string(),
+                                    example: "10".to_string(),
+                                    required: false,
+                                    description: "Jumlah item per halaman".to_string(),
+                                },
+                                ParamSpec {
+                                    name: "sort".to_string(),
+                                    example: format!("{pk_field}:desc"),
+                                    required: false,
+                                    description: "Urutan data".to_string(),
+                                },
+                                ParamSpec {
+                                    name: "filter".to_string(),
+                                    example: String::new(),
+                                    required: false,
+                                    description: "Pencarian umum / filter".to_string(),
+                                },
+                            ];
+                        }
+                    }
+                }
+                "POST" => {
+                    if ep.path.contains("validate") {
+                        if ep.name.is_empty() || ep.name.starts_with("POST") {
+                            ep.name = format!("Validate {route}");
+                        }
+                        if ep.description.is_empty() {
+                            ep.description =
+                                format!("Validasi payload record `{route}` tanpa simpan.");
+                        }
+                    } else {
+                        if ep.name.is_empty() || ep.name.starts_with("POST") {
+                            ep.name = format!("Create {route}");
+                        }
+                        if ep.description.is_empty() {
+                            ep.description = format!(
+                                "Tambah record baru `{route}` (mendukung transaksi atomik)."
+                            );
+                        }
+                    }
+                    ep.status_codes = vec!["201".into(), "400".into(), "500".into()];
+                    ep.body_type = "json".to_string();
+                    if ep.body_example.is_empty() {
+                        ep.body_example =
+                            crate::flexurio_import::build_entity_sample_body(&ent, true);
+                    }
+                }
+                "PUT" => {
+                    if ep.name.is_empty() || ep.name.starts_with("PUT") {
+                        ep.name = format!("Update {route}");
+                    }
+                    if ep.description.is_empty() {
+                        ep.description = format!("Perbarui record `{route}`.");
+                    }
+                    ep.status_codes = vec!["200".into(), "400".into(), "404".into(), "500".into()];
+                    ep.body_type = "json".to_string();
+                    if ep.body_example.is_empty() {
+                        ep.body_example =
+                            crate::flexurio_import::build_entity_sample_body(&ent, false);
+                    }
+                }
+                "DELETE" => {
+                    if ep.name.is_empty() || ep.name.starts_with("DELETE") {
+                        ep.name = format!("Delete {route}");
+                    }
+                    if ep.description.is_empty() {
+                        ep.description = format!("Hapus record `{route}`.");
+                    }
+                    ep.status_codes = vec!["200".into(), "404".into(), "500".into()];
+                }
+                "PATCH" => {
+                    if ep.name.is_empty() || ep.name.starts_with("PATCH") {
+                        ep.name = format!("Patch {route}");
+                    }
+                    if ep.description.is_empty() {
+                        ep.description = format!("Perbarui sebagian record `{route}`.");
+                    }
+                    ep.status_codes = vec!["200".into(), "400".into(), "500".into()];
+                    ep.body_type = "json".to_string();
+                    if ep.body_example.is_empty() {
+                        ep.body_example =
+                            crate::flexurio_import::build_entity_sample_body(&ent, false);
+                    }
+                }
+                _ => {}
+            }
+
+            ep.from_ai = true;
+        } else {
+            if ep.name.is_empty() {
+                ep.name = format!("{} {}", ep.method, ep.path);
+            }
+        }
+    }
 }
 
 /// Tebakan base URL dari framework yang paling banyak ditemukan.
@@ -942,7 +1274,7 @@ pub fn default_base_url(hits: &[RouteHit]) -> String {
     let port = match top {
         "fastapi" | "django" | "laravel" | "symfony" => 8000,
         "flask" | "aspnet" => 5000,
-        "go" | "spring" | "jaxrs" | "actix" | "rust" => 8080,
+        "go" | "spring" | "jaxrs" | "actix" | "rust" | "flexurio" => 8080,
         "sveltekit" => 5173,
         _ => 3000,
     };
@@ -1641,21 +1973,36 @@ fn run_endpoint_scan(
         scan.hits.len(),
         resolved.root.display()
     );
-    let text_endpoints = merge_endpoints(
+    let mut text_endpoints = merge_endpoints(
         Vec::new(),
         scan.hits.iter().map(GeneratedEndpoint::from_hit).collect(),
     );
-    let mut base_url = default_base_url(&scan.hits);
+    enrich_flexurio_endpoints(&resolved.root, &mut text_endpoints);
+
+    let mut base_url =
+        if let Some(url) = crate::flexurio_import::detect_flexurio_base_url(&resolved.root) {
+            url
+        } else {
+            default_base_url(&scan.hits)
+        };
 
     let Some(backend) = input.backend.as_ref() else {
+        let has_flexurio = text_endpoints.iter().any(|e| e.framework == "flexurio");
         return Ok(EndpointScanOutcome {
             base_url,
             endpoints: text_endpoints,
-            note: Some(
-                "No AI backend is ready, so only method and path from the text search are \
-                 available."
-                    .into(),
-            ),
+            note: if has_flexurio {
+                Some(
+                    "Endpoints, tables, parameters, and bodies loaded directly from Flexurio NoCode API configuration."
+                        .into(),
+                )
+            } else {
+                Some(
+                    "No AI backend is ready, so only method and path from the text search are \
+                     available."
+                        .into(),
+                )
+            },
             files_scanned: scan.files_scanned,
             route_hits: scan.hits.len(),
         });
@@ -1711,6 +2058,24 @@ fn run_endpoint_scan(
             base_url,
             endpoints: Vec::new(),
             note: Some(notes.join(" ")),
+            files_scanned: scan.files_scanned,
+            route_hits: scan.hits.len(),
+        });
+    }
+
+    // Jika semua endpoint berasal dari konfigurasi Flexurio yang sudah lengkap, tidak perlu batch AI
+    let non_flexurio_count = all.iter().filter(|e| e.framework != "flexurio").count();
+    if non_flexurio_count == 0 && !all.is_empty() {
+        let _ = tx.send(step(
+            5,
+            "Documenting endpoints from Flexurio NoCode API configuration".to_string(),
+            Some(format!("{} endpoint(s) fully documented", all.len())),
+            ProgressStatus::Done,
+        ));
+        return Ok(EndpointScanOutcome {
+            base_url,
+            endpoints: all,
+            note: Some("Loaded directly from Flexurio NoCode API configuration (routes.json & entity/*.json).".into()),
             files_scanned: scan.files_scanned,
             route_hits: scan.hits.len(),
         });
@@ -2526,5 +2891,74 @@ axios.get('/not-a-route');
         std::thread::sleep(Duration::from_millis(100));
         drop(held);
         assert!(waiter.join().expect("join"));
+    }
+
+    #[test]
+    fn test_enrich_flexurio_endpoints() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "flx_ep_test_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let cfg_dir = temp_dir.join("config");
+        let ent_dir = cfg_dir.join("entity");
+        std::fs::create_dir_all(&ent_dir).unwrap();
+
+        let routes_file = cfg_dir.join("routes.json");
+        std::fs::write(&routes_file, r#"{"routes": ["customers"]}"#).unwrap();
+
+        let customer_ent = ent_dir.join("customers.json");
+        std::fs::write(
+            &customer_ent,
+            r#"{
+                "table": "m_customers",
+                "primary_key": { "columns": ["id"] },
+                "columns": [
+                    { "name": "id", "type_data": "int", "auto_increment": true },
+                    { "name": "name", "type_data": "varchar(100)" }
+                ],
+                "details": [
+                    { "field": "contacts", "target_table": "m_customer_contacts", "columns": ["phone"] }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut endpoints = vec![
+            GeneratedEndpoint {
+                method: "GET".to_string(),
+                path: "/customers".to_string(),
+                framework: "flexurio".to_string(),
+                ..Default::default()
+            },
+            GeneratedEndpoint {
+                method: "POST".to_string(),
+                path: "/customers".to_string(),
+                framework: "flexurio".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        enrich_flexurio_endpoints(&temp_dir, &mut endpoints);
+
+        // GET endpoint
+        assert_eq!(endpoints[0].group, "customers");
+        assert_eq!(
+            endpoints[0].tables,
+            vec!["m_customers", "m_customer_contacts"]
+        );
+        assert_eq!(endpoints[0].auth, "bearer");
+        assert!(!endpoints[0].query_params.is_empty());
+        assert_eq!(endpoints[0].name, "Get customers List");
+
+        // POST endpoint
+        assert_eq!(endpoints[1].group, "customers");
+        assert_eq!(endpoints[1].body_type, "json");
+        assert!(
+            endpoints[1].body_example.contains("m_customers")
+                || endpoints[1].body_example.contains("name")
+        );
+        assert_eq!(endpoints[1].name, "Create customers");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

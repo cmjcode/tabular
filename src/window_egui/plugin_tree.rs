@@ -29,17 +29,36 @@ pub(crate) fn single_database(connection: &ConnectionConfig) -> String {
 
 fn object_folders(connection_id: i64, database: &str) -> Vec<TreeNode> {
     vec![
-        node("Tables", NodeType::TablesFolder, connection_id, Some(database)),
-        node("Views", NodeType::ViewsFolder, connection_id, Some(database)),
+        node(
+            "Tables",
+            NodeType::TablesFolder,
+            connection_id,
+            Some(database),
+        ),
+        node(
+            "Views",
+            NodeType::ViewsFolder,
+            connection_id,
+            Some(database),
+        ),
     ]
 }
 
 /// Kerangka awal selagi metadata dimuat di latar belakang.
-pub(crate) fn load_structure(connection_id: i64, connection: &ConnectionConfig, root: &mut TreeNode) {
+pub(crate) fn load_structure(
+    connection_id: i64,
+    connection: &ConnectionConfig,
+    root: &mut TreeNode,
+) {
     let engine_id = connection.connection_type.plugin_id().unwrap_or_default();
     let caps = driver_api::query::capabilities(engine_id);
     root.children = if caps.databases {
-        vec![node("Databases", NodeType::DatabasesFolder, connection_id, None)]
+        vec![node(
+            "Databases",
+            NodeType::DatabasesFolder,
+            connection_id,
+            None,
+        )]
     } else {
         object_folders(connection_id, &single_database(connection))
     };
@@ -68,7 +87,12 @@ pub(crate) fn structure_from_databases(
     vec![folder]
 }
 
-fn table_nodes(connection_id: i64, database: &str, names: Vec<String>, kind: NodeType) -> Vec<TreeNode> {
+fn table_nodes(
+    connection_id: i64,
+    database: &str,
+    names: Vec<String>,
+    kind: NodeType,
+) -> Vec<TreeNode> {
     let mut nodes: Vec<TreeNode> = names
         .into_iter()
         .map(|name| node(&name, kind.clone(), connection_id, Some(database)))
@@ -109,12 +133,12 @@ pub(crate) fn load_folder_content(
     }
 
     let rt = tabular.get_runtime();
-    let pool = rt.block_on(connection::pool_if_connected_or_start(tabular, connection_id));
+    let pool = rt.block_on(connection::pool_if_connected_or_start(
+        tabular,
+        connection_id,
+    ));
     let Some(DatabasePool::Plugin(pool)) = pool else {
-        folder.children = vec![TreeNode::new(
-            "Connecting…".to_string(),
-            NodeType::Column,
-        )];
+        folder.children = vec![TreeNode::new("Connecting…".to_string(), NodeType::Column)];
         return;
     };
     let caps = pool.capabilities.clone();
@@ -131,7 +155,10 @@ pub(crate) fn load_folder_content(
         };
         let mut out = Vec::new();
         for schema in schemas {
-            for t in pool.session.list_tables(db_arg.as_deref(), schema.as_deref())? {
+            for t in pool
+                .session
+                .list_tables(db_arg.as_deref(), schema.as_deref())?
+            {
                 out.push((
                     driver_api::cache::cache_table_name(schema.as_deref(), &t.name),
                     t.kind,
@@ -145,7 +172,11 @@ pub(crate) fn load_folder_content(
             let staged: Vec<(String, String)> = all
                 .iter()
                 .map(|(name, kind)| {
-                    let label = if *kind == TableKind::View { "view" } else { "table" };
+                    let label = if *kind == TableKind::View {
+                        "view"
+                    } else {
+                        "table"
+                    };
                     (name.clone(), label.to_string())
                 })
                 .collect();

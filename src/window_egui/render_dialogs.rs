@@ -965,11 +965,7 @@ impl super::Tabular {
         self.render_query_editor_with_split_inner(ui, context_id);
     }
 
-    fn render_query_editor_with_split_inner(
-        &mut self,
-        ui: &mut egui::Ui,
-        context_id: &str,
-    ) {
+    fn render_query_editor_with_split_inner(&mut self, ui: &mut egui::Ui, context_id: &str) {
         let avail = ui.available_height();
         let executed = self
             .query_tabs

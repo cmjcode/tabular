@@ -148,7 +148,9 @@ pub struct InstalledDriver {
 }
 
 pub fn drivers_dir() -> PathBuf {
-    crate::config::get_data_dir().join("plugins").join("drivers")
+    crate::config::get_data_dir()
+        .join("plugins")
+        .join("drivers")
 }
 
 pub fn read_state(dir: &Path) -> DriversState {
@@ -177,10 +179,7 @@ pub fn inspect(plugin_dir: &Path) -> DriverResult<(DriverManifest, PathBuf, Stri
     let manifest = DriverManifest::parse(&json)?;
     let entry_path = plugin_dir.join(manifest.entry_relative()?);
     let sha256 = sha256_file(&entry_path).map_err(|e| {
-        DriverError::Protocol(format!(
-            "cannot read entry '{}': {e}",
-            entry_path.display()
-        ))
+        DriverError::Protocol(format!("cannot read entry '{}': {e}", entry_path.display()))
     })?;
     Ok((manifest, entry_path, sha256))
 }

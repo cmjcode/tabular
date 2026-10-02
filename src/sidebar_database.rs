@@ -157,10 +157,12 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::SQLite => String::new(),
             models::enums::DatabaseType::MongoDB => "27017".into(),
             models::enums::DatabaseType::ApiHttp => String::new(),
-            models::enums::DatabaseType::Plugin(ref id) => crate::driver_api::registry::descriptor(id)
-                .and_then(|d| d.default_port)
-                .map(|p| p.to_string())
-                .unwrap_or_default(),
+            models::enums::DatabaseType::Plugin(ref id) => {
+                crate::driver_api::registry::descriptor(id)
+                    .and_then(|d| d.default_port)
+                    .map(|p| p.to_string())
+                    .unwrap_or_default()
+            }
         };
     }
 

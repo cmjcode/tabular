@@ -132,7 +132,11 @@ fn send(policy: &HttpPolicy, req: &HttpRequest) -> DriverResult<reqwest::blockin
     if let Some(body) = &req.body {
         builder = builder.body(body.clone());
     }
-    log::debug!("[DRIVER-PLUGIN] HTTP {} {}", req.method, redact_url(&req.url));
+    log::debug!(
+        "[DRIVER-PLUGIN] HTTP {} {}",
+        req.method,
+        redact_url(&req.url)
+    );
     builder
         .send()
         .map_err(|e| DriverError::Connect(format!("HTTP request failed: {e}")))

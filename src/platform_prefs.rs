@@ -166,6 +166,9 @@ mod tests {
         assert_eq!(partial.language, "ko");
         assert!(partial.update_auto_download);
 
-        assert_eq!(PlatformPrefs::from_json("garbage"), PlatformPrefs::default());
+        assert_eq!(
+            PlatformPrefs::from_json("garbage"),
+            PlatformPrefs::default()
+        );
     }
 }

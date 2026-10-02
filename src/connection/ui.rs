@@ -101,9 +101,7 @@ pub(crate) fn render_connection_selector(tabular: &mut Tabular, ctx: &egui::Cont
                         c.name.to_lowercase().contains(&f)
                             || c.host.to_lowercase().contains(&f)
                             || c.database.to_lowercase().contains(&f)
-                            || c.connection_type.display_name()
-                                .to_lowercase()
-                                .contains(&f)
+                            || c.connection_type.display_name().to_lowercase().contains(&f)
                     });
                 }
 

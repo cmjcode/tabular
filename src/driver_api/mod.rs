@@ -305,8 +305,11 @@ pub trait EngineDriver: Send + Sync {
 pub trait EngineSession: Send + Sync {
     fn list_databases(&self) -> DriverResult<Vec<String>>;
     fn list_schemas(&self, database: Option<&str>) -> DriverResult<Vec<String>>;
-    fn list_tables(&self, database: Option<&str>, schema: Option<&str>)
-    -> DriverResult<Vec<TableInfo>>;
+    fn list_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+    ) -> DriverResult<Vec<TableInfo>>;
     fn list_columns(
         &self,
         database: Option<&str>,

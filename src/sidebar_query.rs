@@ -475,8 +475,14 @@ pub(crate) fn open_query_file(
     tabular: &mut window_egui::Tabular,
     file_path: &str,
 ) -> Result<(), String> {
-    let content =
-        std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let content = match std::fs::read_to_string(file_path) {
+        Ok(s) => s,
+        Err(_) => {
+            let bytes =
+                std::fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+            String::from_utf8_lossy(&bytes).to_string()
+        }
+    };
 
     // Parse optional connection metadata from file content
     let file_meta = parse_query_metadata(&content);
@@ -686,11 +692,412 @@ pub(crate) fn find_query_file_by_hash(hash: i64) -> Option<String> {
     search_in_dir(&query_dir, hash)
 }
 
+/// Cari path file target yang unik jika file dengan nama sama sudah ada dengan konten berbeda.
+/// Jika file dengan nama sama sudah ada dan isinya identik, gunakan file tersebut langsung tanpa duplikasi.
+pub(crate) fn resolve_target_file_path(
+    target_dir: &std::path::Path,
+    clean_name: &str,
+    source_content: &[u8],
+) -> std::path::PathBuf {
+    let candidate = target_dir.join(clean_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    // Jika file sudah ada dan isinya persis sama, gunakan file yang ada
+    if let Ok(existing_bytes) = std::fs::read(&candidate) {
+        if existing_bytes == source_content {
+            return candidate;
+        }
+    }
+
+    let p = std::path::Path::new(clean_name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("query");
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("sql");
+
+    for counter in 1..=9999 {
+        let unique_name = format!("{} ({}).{}", stem, counter, ext);
+        let unique_candidate = target_dir.join(&unique_name);
+        if !unique_candidate.exists() {
+            return unique_candidate;
+        }
+        if let Ok(existing_bytes) = std::fs::read(&unique_candidate) {
+            if existing_bytes == source_content {
+                return unique_candidate;
+            }
+        }
+    }
+
+    candidate
+}
+
+/// Salin direktori secara rekursif ke direktori tujuan.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Import file .sql ke direktori queries (root atau subfolder tertentu) dan langsung buka di tab editor.
+/// Jika file sumber sudah berada di direktori target, langsung buka tanpa menduplikasi.
+pub(crate) fn import_and_open_sql_file(
+    tabular: &mut window_egui::Tabular,
+    source_path: &std::path::Path,
+    target_subfolder: Option<&str>,
+) -> Result<String, String> {
+    if !source_path.exists() {
+        return Err(format!("File does not exist: {}", source_path.display()));
+    }
+
+    let query_dir = directory::get_query_dir();
+    let target_dir = match target_subfolder {
+        Some(sub) if !sub.trim().is_empty() => {
+            let trimmed = sub.trim().trim_start_matches('/').trim_start_matches('\\');
+            query_dir.join(trimmed)
+        }
+        _ => query_dir.clone(),
+    };
+
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to create target directory: {}", e))?;
+
+    // Periksa apakah file sumber sudah berada di direktori target
+    let is_already_in_target = if let (Ok(canon_src), Ok(canon_target_dir)) =
+        (source_path.canonicalize(), target_dir.canonicalize())
+    {
+        canon_src.parent() == Some(canon_target_dir.as_path())
+    } else {
+        source_path.parent() == Some(target_dir.as_path())
+    };
+
+    if is_already_in_target {
+        let file_path_str = source_path.to_string_lossy().to_string();
+        load_queries_from_directory(tabular);
+        tabular.needs_refresh = true;
+        open_query_file(tabular, &file_path_str)?;
+        return Ok(file_path_str);
+    }
+
+    // Baca isi file sumber
+    let content_bytes = std::fs::read(source_path).map_err(|e| {
+        format!(
+            "Failed to read source file '{}': {}",
+            source_path.display(),
+            e
+        )
+    })?;
+
+    let raw_name = source_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("query.sql");
+
+    let clean_name = if !raw_name.ends_with(".sql") && !raw_name.ends_with(".SQL") {
+        format!("{}.sql", raw_name)
+    } else {
+        raw_name.to_string()
+    };
+
+    let target_file_path = resolve_target_file_path(&target_dir, &clean_name, &content_bytes);
+
+    if target_file_path != source_path {
+        std::fs::write(&target_file_path, &content_bytes).map_err(|e| {
+            format!(
+                "Failed to save query file to '{}': {}",
+                target_file_path.display(),
+                e
+            )
+        })?;
+    }
+
+    // Muat ulang daftar queries di sidebar agar file baru langsung muncul
+    load_queries_from_directory(tabular);
+    tabular.needs_refresh = true;
+
+    // Langsung buka file query di tab editor
+    let file_path_str = target_file_path.to_string_lossy().to_string();
+    open_query_file(tabular, &file_path_str)?;
+
+    Ok(file_path_str)
+}
+
+/// Import query dari memori / bytes ke direktori queries dan buka di tab editor.
+#[allow(dead_code)]
+pub(crate) fn import_and_open_sql_bytes(
+    tabular: &mut window_egui::Tabular,
+    raw_name: &str,
+    bytes: &[u8],
+    target_subfolder: Option<&str>,
+) -> Result<String, String> {
+    let query_dir = directory::get_query_dir();
+    let target_dir = match target_subfolder {
+        Some(sub) if !sub.trim().is_empty() => {
+            let trimmed = sub.trim().trim_start_matches('/').trim_start_matches('\\');
+            query_dir.join(trimmed)
+        }
+        _ => query_dir.clone(),
+    };
+
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to create target directory: {}", e))?;
+
+    let clean_name = if !raw_name.ends_with(".sql") && !raw_name.ends_with(".SQL") {
+        format!("{}.sql", raw_name)
+    } else {
+        raw_name.to_string()
+    };
+
+    let target_file_path = resolve_target_file_path(&target_dir, &clean_name, bytes);
+    std::fs::write(&target_file_path, bytes)
+        .map_err(|e| format!("Failed to save query file: {}", e))?;
+
+    load_queries_from_directory(tabular);
+    tabular.needs_refresh = true;
+
+    let file_path_str = target_file_path.to_string_lossy().to_string();
+    open_query_file(tabular, &file_path_str)?;
+
+    Ok(file_path_str)
+}
+
+/// Buka dialog pemilihan file .sql untuk di-import ke queries dan dibuka.
+pub(crate) fn prompt_open_sql_file(
+    tabular: &mut window_egui::Tabular,
+    target_subfolder: Option<String>,
+) {
+    let mut dialog = crate::rfd::FileDialog::new()
+        .set_title("Open SQL File")
+        .add_filter("SQL Files (*.sql)", &["sql"])
+        .add_filter("All Files (*.*)", &["*"]);
+
+    let query_dir = directory::get_query_dir();
+    dialog = dialog.set_directory(&query_dir);
+
+    if let Some(paths) = dialog.pick_files() {
+        if paths.is_empty() {
+            return;
+        }
+        let mut opened_count = 0;
+        let mut last_name = String::new();
+        let mut last_err = None;
+
+        for path in &paths {
+            match import_and_open_sql_file(tabular, path, target_subfolder.as_deref()) {
+                Ok(_) => {
+                    opened_count += 1;
+                    last_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("query.sql")
+                        .to_string();
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        if opened_count > 0 {
+            tabular.selected_menu = "Database".to_string();
+            tabular.selected_database_sub_menu = "Queries".to_string();
+            if opened_count == 1 {
+                tabular
+                    .toasts
+                    .info(format!("Saved to Queries & opened '{}'", last_name));
+            } else {
+                tabular
+                    .toasts
+                    .info(format!("Saved & opened {} query files", opened_count));
+            }
+        } else if let Some(err) = last_err {
+            tabular.toasts.error(err);
+        }
+    }
+}
+
+/// Tangani file .sql yang di-drop ke jendela Tabular.
+/// Otomatis simpan ke direktori queries (atau folder target) lalu langsung buka.
+pub(crate) fn handle_dropped_sql_files(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let dropped_paths: Vec<std::path::PathBuf> = ctx.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .filter(|p| {
+                let is_sql = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("sql"))
+                    .unwrap_or(false);
+                let is_dir = p.is_dir();
+                is_sql || is_dir
+            })
+            .collect()
+    });
+
+    if dropped_paths.is_empty() {
+        return;
+    }
+
+    // Ambil target folder jika sebelumnya pointer berada di atas folder query saat drop
+    let target_subfolder = tabular.query_drop_target_folder.take().or_else(|| {
+        ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("query_drop_folder_active")))
+    });
+
+    let mut opened_count = 0;
+    let mut last_name = String::new();
+    let mut last_err = None;
+
+    for path in dropped_paths {
+        if path.is_dir() {
+            let query_dir = directory::get_query_dir();
+            let folder_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Imported Queries");
+            let dest = query_dir.join(folder_name);
+            if let Err(e) = copy_dir_recursive(&path, &dest) {
+                last_err = Some(format!("Failed to copy folder: {}", e));
+            } else {
+                opened_count += 1;
+                last_name = folder_name.to_string();
+            }
+        } else {
+            match import_and_open_sql_file(tabular, &path, target_subfolder.as_deref()) {
+                Ok(_) => {
+                    opened_count += 1;
+                    last_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("query.sql")
+                        .to_string();
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+    }
+
+    if opened_count > 0 {
+        tabular.selected_menu = "Database".to_string();
+        tabular.selected_database_sub_menu = "Queries".to_string();
+        load_queries_from_directory(tabular);
+        tabular.needs_refresh = true;
+
+        if opened_count == 1 {
+            tabular
+                .toasts
+                .info(format!("Saved to Queries & opened '{}'", last_name));
+        } else {
+            tabular
+                .toasts
+                .info(format!("Saved & opened {} query files", opened_count));
+        }
+        ctx.request_repaint();
+    } else if let Some(err) = last_err {
+        tabular.toasts.error(err);
+    }
+}
+
+/// Gambar overlay visual area drop pada panel Queries sidebar saat file di-hover.
+pub(crate) fn render_queries_drop_zone(ui: &mut egui::Ui) {
+    let avail = ui.available_rect_before_wrap();
+    if avail.height() < 24.0 {
+        return;
+    }
+    let accent = crate::window_egui::style::theme_accent(ui.ctx());
+    let fill = if ui.visuals().dark_mode {
+        egui::Color32::from_rgba_unmultiplied(30, 65, 110, 80)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(210, 230, 255, 120)
+    };
+    ui.painter().rect_filled(avail, 6.0, fill);
+    ui.painter().rect_stroke(
+        avail,
+        6.0,
+        egui::Stroke::new(2.0, accent),
+        egui::StrokeKind::Inside,
+    );
+    let center = avail.center();
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "📥 Drop .sql to save in Queries & open",
+        egui::FontId::proportional(12.5),
+        accent,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::enums::NodeType;
     use crate::models::structs::TreeNode;
+
+    #[test]
+    fn test_resolve_target_file_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_test_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. File baru yang belum ada
+        let candidate1 = resolve_target_file_path(&temp_dir, "my_query.sql", b"SELECT 1;");
+        assert_eq!(candidate1, temp_dir.join("my_query.sql"));
+
+        // Buat file candidate1
+        std::fs::write(&candidate1, b"SELECT 1;").unwrap();
+
+        // 2. File sudah ada dengan konten persis sama -> tetap gunakan path yang sama (tidak diduplikasi)
+        let candidate2 = resolve_target_file_path(&temp_dir, "my_query.sql", b"SELECT 1;");
+        assert_eq!(candidate2, candidate1);
+
+        // 3. File sudah ada dengan konten berbeda -> buat nama unik "my_query (1).sql"
+        let candidate3 = resolve_target_file_path(&temp_dir, "my_query.sql", b"SELECT 2;");
+        assert_eq!(candidate3, temp_dir.join("my_query (1).sql"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_import_and_open_sql_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tabular_import_test_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let source_file = temp_dir.join("sample.sql");
+        std::fs::write(&source_file, b"SELECT * FROM test_users;").unwrap();
+
+        let mut tabular = window_egui::Tabular::default();
+        let result = import_and_open_sql_file(&mut tabular, &source_file, None);
+        assert!(result.is_ok());
+
+        let opened_path = result.unwrap();
+        assert!(std::path::Path::new(&opened_path).exists());
+        assert!(!tabular.query_tabs.is_empty());
+
+        let active_tab = &tabular.query_tabs[tabular.active_tab_index];
+        assert_eq!(active_tab.content, "SELECT * FROM test_users;");
+        assert_eq!(tabular.editor.text, "SELECT * FROM test_users;");
+        assert!(active_tab.is_saved);
+
+        // Bersihkan file yang di-import
+        let _ = std::fs::remove_file(opened_path);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     #[test]
     fn test_filter_queries_tree() {

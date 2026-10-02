@@ -29,10 +29,7 @@ static CURRENT: AtomicUsize = AtomicUsize::new(0);
 fn index_of(code: &str) -> Option<usize> {
     let code = code.trim().to_ascii_lowercase();
     // "id_ID.UTF-8", "zh-Hans-CN", "ko-KR" → "id", "zh", "ko"
-    let base = code
-        .split(['_', '-', '.', '@'])
-        .next()
-        .unwrap_or_default();
+    let base = code.split(['_', '-', '.', '@']).next().unwrap_or_default();
     // Kode lama "in" untuk bahasa Indonesia masih dipakai sebagian OS.
     let base = if base == "in" { "id" } else { base };
     LANGUAGES.iter().position(|(c, _)| *c == base)
@@ -248,10 +245,19 @@ mod tests {
     fn translate_and_fallback() {
         set_language("id");
         assert_eq!(tr("Preferences"), "Preferensi");
-        assert_eq!(tr("A string nobody translated"), "A string nobody translated");
-        assert_eq!(trf("Update {} available", &["1.2.0"]), "Pembaruan 1.2.0 tersedia");
+        assert_eq!(
+            tr("A string nobody translated"),
+            "A string nobody translated"
+        );
+        assert_eq!(
+            trf("Update {} available", &["1.2.0"]),
+            "Pembaruan 1.2.0 tersedia"
+        );
         set_language("en");
         assert_eq!(tr("Preferences"), "Preferences");
-        assert_eq!(trf("Update {} available", &["1.2.0"]), "Update 1.2.0 available");
+        assert_eq!(
+            trf("Update {} available", &["1.2.0"]),
+            "Update 1.2.0 available"
+        );
     }
 }

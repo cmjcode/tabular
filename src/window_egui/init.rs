@@ -316,6 +316,7 @@ impl super::Tabular {
             scroll_to_active_tab: true,
             last_active_tab_index: None,
             dragged_tab_index: None,
+            query_drop_target_folder: None,
             show_save_dialog: false,
             save_filename: String::new(),
             save_directory: String::new(),
@@ -808,6 +809,7 @@ impl super::Tabular {
             collection_just_saved_workspace: None,
             show_yaak_import_dialog: false,
             show_postman_import_dialog: false,
+            show_flexurio_import_dialog: false,
             queries_load_receiver: None,
             db_icons_receiver: None,
         };

@@ -260,7 +260,11 @@ pub async fn ensure_diagram_table(
     }
     info!(
         "[DIAGRAM_DB] diagram_by_tabular {} in '{db_name}'",
-        if create { "created" } else { "migrated (revision column)" }
+        if create {
+            "created"
+        } else {
+            "migrated (revision column)"
+        }
     );
     Ok(())
 }
@@ -351,7 +355,9 @@ pub async fn load_diagram_record(
             );
             let (_headers, rows) = crate::driver_mssql::execute_query(p.clone(), &q)
                 .await
-                .map_err(|e| DiagramStoreError::Db(format!("Failed to fetch MsSQL diagram: {e}")))?;
+                .map_err(|e| {
+                    DiagramStoreError::Db(format!("Failed to fetch MsSQL diagram: {e}"))
+                })?;
             let text = |s: Option<&String>| {
                 s.filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("NULL"))
                     .cloned()
@@ -422,7 +428,10 @@ pub async fn save_diagram_record(
     if let Some(rev) = expected_revision
         && update_if_revision(pool, db_name, &json, rev, &updated_by).await?
     {
-        debug!("[DIAGRAM_DB] saved diagram of '{db_name}' at revision {}", rev + 1);
+        debug!(
+            "[DIAGRAM_DB] saved diagram of '{db_name}' at revision {}",
+            rev + 1
+        );
         return Ok(rev + 1);
     }
     // Update tidak mengenai baris: baris belum ada, atau sudah diubah orang lain.
@@ -506,7 +515,9 @@ async fn update_if_revision(
             );
             let (_headers, rows) = crate::driver_mssql::execute_query(p.clone(), &q)
                 .await
-                .map_err(|e| DiagramStoreError::Db(format!("Failed to update MsSQL diagram: {e}")))?;
+                .map_err(|e| {
+                    DiagramStoreError::Db(format!("Failed to update MsSQL diagram: {e}"))
+                })?;
             rows.len() as u64
         }
         DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => {
@@ -576,7 +587,9 @@ async fn insert_record(
             );
             crate::driver_mssql::execute_query(p.clone(), &q)
                 .await
-                .map_err(|e| DiagramStoreError::Db(format!("Failed to insert MsSQL diagram: {e}")))?;
+                .map_err(|e| {
+                    DiagramStoreError::Db(format!("Failed to insert MsSQL diagram: {e}"))
+                })?;
         }
         DatabasePool::Redis(_) | DatabasePool::MongoDB(_) | DatabasePool::Plugin(_) => {
             return Err(DiagramStoreError::Unsupported);

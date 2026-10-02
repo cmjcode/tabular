@@ -141,9 +141,8 @@ impl Tabular {
                 let Some(conn_id) = conn.id else {
                     return;
                 };
-                let database = database.or_else(|| {
-                    (!conn.database.trim().is_empty()).then(|| conn.database.clone())
-                });
+                let database = database
+                    .or_else(|| (!conn.database.trim().is_empty()).then(|| conn.database.clone()));
                 let title = format!("{} — {}", tr("Opened from link"), conn.name);
                 let tab_id = editor::create_new_tab_with_connection_and_database(
                     self,
@@ -204,9 +203,8 @@ impl Tabular {
         let Some(conn_id) = conn.id else {
             return;
         };
-        let database = database.or_else(|| {
-            (!conn.database.trim().is_empty()).then(|| conn.database.clone())
-        });
+        let database =
+            database.or_else(|| (!conn.database.trim().is_empty()).then(|| conn.database.clone()));
         let kind = if table.is_some() {
             QuickOpenKind::Table
         } else {
@@ -298,11 +296,7 @@ impl Tabular {
         match decision {
             Some(true) => {
                 self.platform_ui.pending_run = None;
-                if let Some(idx) = self
-                    .query_tabs
-                    .iter()
-                    .position(|t| t.id == pending.tab_id)
-                {
+                if let Some(idx) = self.query_tabs.iter().position(|t| t.id == pending.tab_id) {
                     editor::switch_to_tab(self, idx);
                     self.pending_query = pending.sql;
                     editor::execute_query(self);
@@ -406,8 +400,8 @@ impl Tabular {
             self.platform_ui.handoff_receiver_installed = true;
             crate::platform_macos::install_handoff_receiver();
         }
-        let enabled = crate::platform_prefs::current().handoff_enabled
-            && allowed(NetCategory::Handoff);
+        let enabled =
+            crate::platform_prefs::current().handoff_enabled && allowed(NetCategory::Handoff);
         match enabled.then(|| self.handoff_payload()).flatten() {
             Some((title, url)) => {
                 crate::platform_macos::set_handoff_activity(Some((&title, &url)));

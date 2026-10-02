@@ -235,7 +235,10 @@ pub(crate) async fn fetch_databases_from_connection_async(
                         .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
-                            !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                            !crate::schema_objects::hide_database(
+                                &models::enums::DatabaseType::MySQL,
+                                db,
+                            )
                         })
                         .collect();
                     debug!(
@@ -258,7 +261,10 @@ pub(crate) async fn fetch_databases_from_connection_async(
                                     .into_iter()
                                     .map(|(db,)| db)
                                     .filter(|db| {
-                                        !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                                        !crate::schema_objects::hide_database(
+                                            &models::enums::DatabaseType::MySQL,
+                                            db,
+                                        )
                                     })
                                     .collect();
                                 debug!(
@@ -295,7 +301,10 @@ pub(crate) async fn fetch_databases_from_connection_async(
                                 .into_iter()
                                 .map(|(db,)| db)
                                 .filter(|db| {
-                                    !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                                    !crate::schema_objects::hide_database(
+                                        &models::enums::DatabaseType::MySQL,
+                                        db,
+                                    )
                                 })
                                 .collect();
                             debug!(
@@ -322,11 +331,10 @@ pub(crate) async fn fetch_databases_from_connection_async(
                 "[DB-FETCH] conn={} querying PostgreSQL pg_database...",
                 connection_id
             );
-            let result = sqlx::query_as::<_, (String,)>(
-                crate::schema_objects::pg_database_list_sql()
-            )
-            .fetch_all(pg_pool.as_ref())
-            .await;
+            let result =
+                sqlx::query_as::<_, (String,)>(crate::schema_objects::pg_database_list_sql())
+                    .fetch_all(pg_pool.as_ref())
+                    .await;
             match result {
                 Ok(rows) => {
                     let dbs: Vec<String> = rows.into_iter().map(|(db_name,)| db_name).collect();
@@ -433,10 +441,10 @@ pub(crate) async fn fetch_databases_from_connection_async(
                             .filter(|d| system.contains(&d.as_str()))
                             .collect();
                         // Database sistem hanya tampil bila diminta (atau bila tidak ada
-                            // database user sama sekali, agar koneksi tetap bisa dipakai).
-                            if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
-                                user_dbs.append(&mut sys_dbs);
-                            }
+                        // database user sama sekali, agar koneksi tetap bisa dipakai).
+                        if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
+                            user_dbs.append(&mut sys_dbs);
+                        }
                         Some(user_dbs)
                     }
                 }
@@ -653,7 +661,10 @@ pub async fn fetch_databases_background_task(
                         .into_iter()
                         .map(|(db_name,)| db_name)
                         .filter(|db| {
-                            !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                            !crate::schema_objects::hide_database(
+                                &models::enums::DatabaseType::MySQL,
+                                db,
+                            )
                         })
                         .collect();
                     debug!(
@@ -677,7 +688,10 @@ pub async fn fetch_databases_background_task(
                                     .into_iter()
                                     .map(|(db,)| db)
                                     .filter(|db| {
-                                        !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                                        !crate::schema_objects::hide_database(
+                                            &models::enums::DatabaseType::MySQL,
+                                            db,
+                                        )
                                     })
                                     .collect();
                                 debug!(
@@ -714,7 +728,10 @@ pub async fn fetch_databases_background_task(
                                 .into_iter()
                                 .map(|(db,)| db)
                                 .filter(|db| {
-                                    !crate::schema_objects::hide_database(&models::enums::DatabaseType::MySQL, db)
+                                    !crate::schema_objects::hide_database(
+                                        &models::enums::DatabaseType::MySQL,
+                                        db,
+                                    )
                                 })
                                 .collect();
                             debug!(
@@ -737,11 +754,10 @@ pub async fn fetch_databases_background_task(
             }
         }
         models::enums::DatabasePool::PostgreSQL(pg_pool) => {
-            let result = sqlx::query_as::<_, (String,)>(
-                crate::schema_objects::pg_database_list_sql()
-            )
-            .fetch_all(pg_pool.as_ref())
-            .await;
+            let result =
+                sqlx::query_as::<_, (String,)>(crate::schema_objects::pg_database_list_sql())
+                    .fetch_all(pg_pool.as_ref())
+                    .await;
             match result {
                 Ok(rows) => Some(rows.into_iter().map(|(db_name,)| db_name).collect()),
                 Err(e) => {
@@ -816,10 +832,10 @@ pub async fn fetch_databases_background_task(
                             .filter(|d| system.contains(&d.as_str()))
                             .collect();
                         // Database sistem hanya tampil bila diminta (atau bila tidak ada
-                            // database user sama sekali, agar koneksi tetap bisa dipakai).
-                            if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
-                                user_dbs.append(&mut sys_dbs);
-                            }
+                        // database user sama sekali, agar koneksi tetap bisa dipakai).
+                        if crate::schema_objects::show_system_objects() || user_dbs.is_empty() {
+                            user_dbs.append(&mut sys_dbs);
+                        }
                         Some(user_dbs)
                     }
                 }

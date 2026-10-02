@@ -10,8 +10,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 /// Asal driver, ditampilkan di Plugin Manager.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriverSource {
-    Wasm { path: std::path::PathBuf },
-    Sidecar { path: std::path::PathBuf },
+    Wasm {
+        path: std::path::PathBuf,
+    },
+    Sidecar {
+        path: std::path::PathBuf,
+    },
     /// Driver yang didaftarkan langsung dari kode (test, adapter internal).
     InProcess,
 }
@@ -111,7 +115,10 @@ pub fn entries() -> Vec<RegisteredDriver> {
 }
 
 pub fn is_installed(id: &str) -> bool {
-    global().read().map(|r| r.get(id).is_some()).unwrap_or(false)
+    global()
+        .read()
+        .map(|r| r.get(id).is_some())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

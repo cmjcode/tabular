@@ -65,7 +65,10 @@ fn adopt_merged(state: &mut DiagramState, merged: DiagramState, conn_id: i64, db
 
 impl super::Tabular {
     fn diagram_base_path(&self, conn_id: i64, db_name: &str) -> Option<std::path::PathBuf> {
-        let dir = self.get_diagram_path(conn_id, db_name)?.parent()?.to_path_buf();
+        let dir = self
+            .get_diagram_path(conn_id, db_name)?
+            .parent()?
+            .to_path_buf();
         Some(dir.join(crate::diagram_storage::base_diagram_file_name(
             conn_id, db_name,
         )))
@@ -142,7 +145,9 @@ impl super::Tabular {
                 state,
                 &updated_by,
                 announce,
-                Err(DiagramStoreError::Db("Tokio runtime unavailable".to_string())),
+                Err(DiagramStoreError::Db(
+                    "Tokio runtime unavailable".to_string(),
+                )),
             );
             return;
         };
@@ -203,7 +208,9 @@ impl super::Tabular {
                     st.db_status = DiagramDbStatus::Synced {
                         revision,
                         updated_by: Some(updated_by.to_string()),
-                        updated_at: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+                        updated_at: Some(
+                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        ),
                     };
                 }
                 if announce {

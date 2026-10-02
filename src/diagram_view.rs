@@ -179,6 +179,30 @@ fn export_flows_mermaid(state: &DiagramState) -> Option<DiagramAction> {
     })
 }
 
+/// Ekspor seluruh diagram skema ke file SVG beresolusi tinggi.
+fn export_svg(state: &DiagramState) -> Option<DiagramAction> {
+    let default_name = state
+        .diagram_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("{}.svg", t.replace(' ', "_")))
+        .unwrap_or_else(|| "schema-diagram.svg".to_string());
+
+    let path = rfd::FileDialog::new()
+        .add_filter("SVG Image", &["svg"])
+        .set_file_name(&default_name)
+        .save_file()?;
+    let svg = crate::diagram_svg::diagram_to_svg(
+        state,
+        &crate::diagram_svg::SvgOptions::from_state(state),
+    );
+    Some(match write_atomic(&path, svg.as_bytes()) {
+        Ok(()) => DiagramAction::Info(format!("SVG diagram exported to {}", path.display())),
+        Err(e) => DiagramAction::Error(format!("Export failed: {e}")),
+    })
+}
+
 fn import_json(state: &mut DiagramState) -> Option<DiagramAction> {
     let path = rfd::FileDialog::new()
         .add_filter("JSON", &["json"])
@@ -3496,6 +3520,21 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         if ui.button("Diagram layout (JSON)…").clicked() {
                             ui.close();
                             action = export_json(state);
+                        }
+                        if ui.button("SVG diagram (.svg)…").clicked() {
+                            ui.close();
+                            action = export_svg(state);
+                        }
+                        if ui.button("Copy SVG to clipboard").clicked() {
+                            ui.close();
+                            let svg = crate::diagram_svg::diagram_to_svg(
+                                state,
+                                &crate::diagram_svg::SvgOptions::from_state(state),
+                            );
+                            ui.ctx().copy_text(svg);
+                            action = Some(DiagramAction::Info(
+                                "SVG copied to clipboard".to_string(),
+                            ));
                         }
                         if ui.button("Mermaid erDiagram (.mmd / .md)…").clicked() {
                             ui.close();

@@ -78,9 +78,7 @@ fn stage_blocking(
             let tables = match session.list_tables(db_arg, schema.as_deref()) {
                 Ok(t) => t,
                 Err(e) => {
-                    log::warn!(
-                        "[DRIVER-PLUGIN] list_tables failed for {database}/{schema:?}: {e}"
-                    );
+                    log::warn!("[DRIVER-PLUGIN] list_tables failed for {database}/{schema:?}: {e}");
                     continue;
                 }
             };
@@ -123,7 +121,11 @@ pub async fn list_databases(pool: &Arc<PluginPool>, configured_db: &str) -> Opti
     let pool = pool.clone();
     let configured = configured_db.to_string();
     match run_blocking(move || {
-        databases_blocking(pool.session.as_ref(), pool.capabilities.databases, &configured)
+        databases_blocking(
+            pool.session.as_ref(),
+            pool.capabilities.databases,
+            &configured,
+        )
     })
     .await
     {
@@ -192,7 +194,10 @@ mod tests {
     fn table_name_roundtrip() {
         assert_eq!(cache_table_name(Some("public"), "t"), "public.t");
         assert_eq!(cache_table_name(None, "t"), "t");
-        assert_eq!(split_cache_table_name(true, "public.t"), (Some("public"), "t"));
+        assert_eq!(
+            split_cache_table_name(true, "public.t"),
+            (Some("public"), "t")
+        );
         assert_eq!(split_cache_table_name(false, "a.b"), (None, "a.b"));
     }
 
@@ -232,7 +237,9 @@ mod tests {
             session,
         });
         let p = plugin_pool.clone();
-        let staging = run_blocking(move || stage_blocking(9, &p, "")).await.unwrap();
+        let staging = run_blocking(move || stage_blocking(9, &p, ""))
+            .await
+            .unwrap();
         assert_eq!(staging.databases.len(), 1);
         let db = &staging.databases[0];
         assert_eq!(db.database_name, "default");

@@ -170,8 +170,14 @@ mod tests {
 
     #[test]
     fn detects_environment_from_name_tokens() {
-        assert_eq!(detect_from_name("Orders PROD"), Some(Environment::Production));
-        assert_eq!(detect_from_name("orders-preprod"), Some(Environment::Staging));
+        assert_eq!(
+            detect_from_name("Orders PROD"),
+            Some(Environment::Production)
+        );
+        assert_eq!(
+            detect_from_name("orders-preprod"),
+            Some(Environment::Staging)
+        );
         assert_eq!(detect_from_name("api_dev"), Some(Environment::Development));
         assert_eq!(detect_from_name("device registry"), None);
         assert_eq!(detect_from_name("QA replica"), Some(Environment::Testing));
@@ -187,7 +193,10 @@ mod tests {
         for e in Environment::ALL {
             assert_eq!(Environment::parse(e.key()), Some(e));
         }
-        assert_eq!(Environment::parse("PRODUCTION"), Some(Environment::Production));
+        assert_eq!(
+            Environment::parse("PRODUCTION"),
+            Some(Environment::Production)
+        );
         assert_eq!(Environment::parse("nope"), None);
     }
 

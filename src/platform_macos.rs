@@ -211,8 +211,13 @@ pub fn set_handoff_activity(activity: Option<(&str, &str)>) {
     });
 }
 
-type ContinueImp =
-    extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject) -> Bool;
+type ContinueImp = extern "C-unwind" fn(
+    *mut AnyObject,
+    Sel,
+    *mut AnyObject,
+    *mut AnyObject,
+    *mut AnyObject,
+) -> Bool;
 
 extern "C-unwind" fn continue_user_activity(
     _this: *mut AnyObject,

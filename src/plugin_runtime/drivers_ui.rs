@@ -56,10 +56,8 @@ pub fn render_drivers_tab(ui: &mut egui::Ui, state: &mut PluginModalState) {
             {
                 match manifest::install_from_dir(&src, &root) {
                     Ok(m) => {
-                        state.status_message = Some(format!(
-                            "Installed {} {}.",
-                            m.engine.name, m.version
-                        ));
+                        state.status_message =
+                            Some(format!("Installed {} {}.", m.engine.name, m.version));
                         state.error_message = None;
                     }
                     Err(e) => state.error_message = Some(e.to_string()),
@@ -136,7 +134,10 @@ fn render_driver_card(
         if !m.author.is_empty() {
             meta.push_str(&format!(" · by {}", m.author));
         }
-        meta.push_str(&format!(" · sha256 {}…", &driver.sha256[..12.min(driver.sha256.len())]));
+        meta.push_str(&format!(
+            " · sha256 {}…",
+            &driver.sha256[..12.min(driver.sha256.len())]
+        ));
         ui.label(egui::RichText::new(meta).small().weak());
         if m.kind == DriverKind::Wasm {
             let hosts = if m.permissions.http_hosts.is_empty() {
@@ -181,9 +182,7 @@ fn render_driver_card(
                             *action = Some(Box::new(move |st: &mut PluginModalState| {
                                 st.pending_sidecar_approval = None;
                                 match manifest::approve_sidecar(&id, &sha, &root) {
-                                    Ok(()) => {
-                                        st.status_message = Some(format!("Approved '{id}'."))
-                                    }
+                                    Ok(()) => st.status_message = Some(format!("Approved '{id}'.")),
                                     Err(e) => st.error_message = Some(e.to_string()),
                                 }
                             }));
@@ -229,16 +228,18 @@ fn render_driver_card(
             }
             if ui
                 .button("Uninstall")
-                .on_hover_text("Connections using this engine are kept and show 'Driver not installed'")
+                .on_hover_text(
+                    "Connections using this engine are kept and show 'Driver not installed'",
+                )
                 .clicked()
             {
                 let (id, root) = (id.clone(), root.to_path_buf());
-                *action = Some(Box::new(move |st: &mut PluginModalState| {
-                    match manifest::uninstall(&id, &root) {
+                *action = Some(Box::new(
+                    move |st: &mut PluginModalState| match manifest::uninstall(&id, &root) {
                         Ok(()) => st.status_message = Some(format!("Uninstalled '{id}'.")),
                         Err(e) => st.error_message = Some(e.to_string()),
-                    }
-                }));
+                    },
+                ));
             }
         });
     });

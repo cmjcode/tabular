@@ -1227,10 +1227,24 @@ impl Tabular {
                                     }
                                     ui.add_space(4.0);
 
+                                    if let Some(folder_path) = ui.ctx().data_mut(|d| {
+                                        d.remove_temp::<String>(egui::Id::new("query_import_folder_req"))
+                                    }) {
+                                        sidebar_query::prompt_open_sql_file(self, Some(folder_path));
+                                    }
+
                                     if self.queries_tree.is_empty() && !is_searching_queries {
                                         ui.add_space(8.0);
                                         ui.label("No saved queries yet");
-                                        ui.label("Click ➕ to create a new query");
+                                        ui.label("Click ➕ to create a new query or 📂 to open a .sql file");
+                                        ui.add_space(4.0);
+                                        if ui.button("📂 Open .sql File").clicked() {
+                                            sidebar_query::prompt_open_sql_file(self, None);
+                                        }
+                                    }
+
+                                    if ui.ctx().input(|i| !i.raw.hovered_files.is_empty()) {
+                                        sidebar_query::render_queries_drop_zone(ui);
                                     }
 
                                     // Empty bottom space context menu (without blocking tree click events)
@@ -1240,7 +1254,11 @@ impl Tabular {
                                             egui::Sense::click(),
                                         );
                                         empty_response.context_menu(|ui| {
-                                            if ui.button("📂 Create Folder").clicked() {
+                                            if ui.button("📂 Open .sql File…").clicked() {
+                                                sidebar_query::prompt_open_sql_file(self, None);
+                                                ui.close();
+                                            }
+                                            if ui.button("📁 Create Folder").clicked() {
                                                 self.show_create_folder_dialog = true;
                                                 ui.close();
                                             }
@@ -1438,6 +1456,16 @@ impl Tabular {
                                                 }
                                             }
                                             "Queries" => {
+                                                let open_btn = ui.add_sized(
+                                                    [24.0, 24.0],
+                                                    egui::Button::new(egui::RichText::new("📂").color(egui::Color32::WHITE))
+                                                        .fill(style::theme_accent(ctx)),
+                                                ).on_hover_text("Open .sql File (Cmd+O)");
+
+                                                if open_btn.clicked() {
+                                                    sidebar_query::prompt_open_sql_file(self, None);
+                                                }
+
                                                 let plus_btn = ui.add_sized(
                                                     [24.0, 24.0],
                                                     egui::Button::new(egui::RichText::new("➕").color(egui::Color32::WHITE))
@@ -1498,6 +1526,10 @@ impl Tabular {
                                                 }
                                                 if ui.button("⬇ Import Postman").clicked() {
                                                     self.show_postman_import_dialog = true;
+                                                    ui.close();
+                                                }
+                                                if ui.button("⬇ Import Flexurio NoCode").clicked() {
+                                                    self.show_flexurio_import_dialog = true;
                                                     ui.close();
                                                 }
                                             },
@@ -2272,6 +2304,21 @@ impl Tabular {
                                             } else {
                                                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
                                             }
+                                        }
+
+                                        if !is_http_active
+                                            && ui
+                                                .add_sized(
+                                                    [34.0, 34.0],
+                                                    egui::Button::new("📂")
+                                                        .fill(plus_bg)
+                                                        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
+                                                        .corner_radius(0.0),
+                                                )
+                                                .on_hover_text("Open .sql file (Cmd+O)")
+                                                .clicked()
+                                        {
+                                            sidebar_query::prompt_open_sql_file(self, None);
                                         }
 
                                         let mut any_tab_action = false;
@@ -4799,6 +4846,9 @@ impl App for Tabular {
             if consume(ctx, &self.keymap, Action::NewTab) {
                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
             }
+            if consume(ctx, &self.keymap, Action::OpenFile) {
+                sidebar_query::prompt_open_sql_file(self, None);
+            }
             if consume(ctx, &self.keymap, Action::OpenSettings) {
                 self.show_settings_window = true;
             }
@@ -5307,7 +5357,9 @@ impl App for Tabular {
                                 );
                                 // M8: bila "Install when quitting" aktif, cukup beri tahu.
                                 let hint = if crate::platform_prefs::effective_install_on_quit() {
-                                    crate::i18n::tr("Update ready. It will be installed when you quit.")
+                                    crate::i18n::tr(
+                                        "Update ready. It will be installed when you quit.",
+                                    )
                                 } else {
                                     crate::i18n::tr("Restart Tabular to apply the update.")
                                 };
@@ -5503,6 +5555,9 @@ impl App for Tabular {
         // M11: Split View / Slide Over iPad — sembunyikan panel samping saat sempit.
         self.apply_adaptive_layout(root_ui.ctx());
         self.render_left_sidebar(root_ui);
+
+        // Tangani file .sql yang di-drop ke jendela Tabular
+        sidebar_query::handle_dropped_sql_files(self, ctx);
 
         // ─── AI Assistant Right Panel ───────────────────────────────────────────────
         self.render_ai_right_panel(root_ui);

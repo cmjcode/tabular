@@ -925,6 +925,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ("Query: Close Tab", "Close current editor tab", "⌘W"),
         ("Query: Save Tab", "Save query to file", "⌘S"),
         (
+            "Query: Open SQL File...",
+            "Open .sql file, save to queries, and open in editor",
+            "⌘O",
+        ),
+        (
             "Editor: Go to Definition",
             "Navigate to symbol / table in tree",
             "F12",
@@ -2042,6 +2047,7 @@ fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
         "Query: New Tab" => Action::NewTab,
         "Query: Close Tab" => Action::CloseTab,
         "Query: Save Tab" => Action::SaveTab,
+        "Query: Open SQL File..." => Action::OpenFile,
         "Editor: Go to Definition" => Action::GoToDefinition,
         "Editor: Rename Symbol" => Action::RenameSymbol,
         "Editor: Toggle Find & Replace" => Action::FindReplace,

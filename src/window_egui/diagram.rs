@@ -295,7 +295,9 @@ impl super::Tabular {
                 group_id,
                 card_ids,
                 force,
-            } => self.start_flow_generation(conn_id, db_name, group_id.as_deref(), &card_ids, force),
+            } => {
+                self.start_flow_generation(conn_id, db_name, group_id.as_deref(), &card_ids, force)
+            }
             DiagramAction::OpenEndpointRequest { request_id, label } => match request_id {
                 Some(request_id) => crate::http_repo::perform(
                     self,
@@ -1052,7 +1054,11 @@ impl super::Tabular {
 
     /// Tab diagram penuh milik (conn, db). Tab subset (`scoped_to`) tidak
     /// termasuk: tidak menerima sinkron skema dan bukan sumber link.
-    pub(crate) fn is_diagram_host_tab(tab: &models::structs::QueryTab, conn_id: i64, db_name: &str) -> bool {
+    pub(crate) fn is_diagram_host_tab(
+        tab: &models::structs::QueryTab,
+        conn_id: i64,
+        db_name: &str,
+    ) -> bool {
         tab.diagram_state
             .as_ref()
             .is_some_and(|s| s.scoped_to.is_none())

@@ -91,10 +91,16 @@ fn candidate_paths() -> Vec<PathBuf> {
     {
         let bundle = "id.tabular.database.plist";
         if let Ok(user) = std::env::var("USER") {
-            paths.push(Path::new("/Library/Managed Preferences").join(user).join(bundle));
+            paths.push(
+                Path::new("/Library/Managed Preferences")
+                    .join(user)
+                    .join(bundle),
+            );
         }
         paths.push(Path::new("/Library/Managed Preferences").join(bundle));
-        paths.push(PathBuf::from("/Library/Application Support/Tabular/policy.json"));
+        paths.push(PathBuf::from(
+            "/Library/Application Support/Tabular/policy.json",
+        ));
     }
     #[cfg(target_os = "linux")]
     paths.push(PathBuf::from("/etc/tabular/policy.json"));

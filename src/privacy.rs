@@ -271,7 +271,13 @@ mod tests {
         crate::platform_prefs::update(|p| {
             p.network.insert(NetCategory::MapTiles.key().into(), false);
         });
-        assert!(check(NetCategory::MapTiles, "https://tile.openstreetmap.org/1/1/1.png").is_err());
+        assert!(
+            check(
+                NetCategory::MapTiles,
+                "https://tile.openstreetmap.org/1/1/1.png"
+            )
+            .is_err()
+        );
         let hit = recent()
             .into_iter()
             .find(|e| e.category == NetCategory::MapTiles)

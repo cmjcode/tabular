@@ -84,6 +84,7 @@ const STRONG_PREFIXES: &[&str] = &[
     "tablename",
     "__tablename__",
     "table_name",
+    "target_table",
     "db_table",
     "collection",
 ];
@@ -770,6 +771,70 @@ pub fn grep_tables(
                     *slot = item;
                 }
             });
+        }
+    }
+
+    // Deteksi dan periksa konfigurasi Flexurio NoCode API (routes.json & entity/*.json)
+    if let Some(routes_file) = crate::flexurio_import::detect_flexurio_config(root) {
+        if let Ok(data) = std::fs::read_to_string(&routes_file) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(routes) = val.get("routes").and_then(|r| r.as_array()) {
+                    let config_dir = routes_file.parent().unwrap_or(root);
+                    let entity_dir = config_dir.join("entity");
+
+                    for r in routes.iter().filter_map(|r| r.as_str()) {
+                        let entity_file = entity_dir.join(format!("{r}.json"));
+                        if !entity_file.is_file() {
+                            continue;
+                        }
+                        let Ok(ent_str) = std::fs::read_to_string(&entity_file) else {
+                            continue;
+                        };
+                        let Ok(ent) = serde_json::from_str::<crate::flexurio_import::FlexurioEntity>(
+                            &ent_str,
+                        ) else {
+                            continue;
+                        };
+                        let ent_rel = entity_file
+                            .strip_prefix(root)
+                            .unwrap_or(&entity_file)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+
+                        let mut entity_tables = Vec::new();
+                        if !ent.table.is_empty() {
+                            entity_tables.push(ent.table.clone());
+                        }
+                        for d in &ent.details {
+                            if !d.target_table.is_empty()
+                                && !entity_tables.contains(&d.target_table)
+                            {
+                                entity_tables.push(d.target_table.clone());
+                            }
+                        }
+
+                        for tbl in entity_tables {
+                            let tbl_lower = tbl.to_ascii_lowercase();
+                            if let Some(cands) = lookup.get(&tbl_lower) {
+                                for &cand in cands {
+                                    score[cand] += 10.0;
+                                    refs[cand] += 1;
+                                    let ev = &mut evidence[cand];
+                                    let item = Evidence {
+                                        path: ent_rel.clone(),
+                                        line: 1,
+                                        snippet: format!("Flexurio entity '{r}' -> table '{tbl}'"),
+                                        strong: true,
+                                    };
+                                    if ev.len() < MAX_EVIDENCE {
+                                        ev.push(item);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

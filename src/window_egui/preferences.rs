@@ -866,9 +866,13 @@ impl Tabular {
                             .selected_text(selected_text)
                             .width(200.0)
                             .show_ui(ui, |ui| {
-                                let mut changed =
-                                    ui.selectable_value(&mut code, String::new(), tr("System default"))
-                                        .changed();
+                                let mut changed = ui
+                                    .selectable_value(
+                                        &mut code,
+                                        String::new(),
+                                        tr("System default"),
+                                    )
+                                    .changed();
                                 for (c, name) in LANGUAGES {
                                     changed |= ui
                                         .selectable_value(&mut code, c.to_string(), *name)
@@ -1124,7 +1128,9 @@ impl Tabular {
                 ui,
                 &mut show_system,
                 "Show system databases and schemas",
-                Some("List information_schema, mysql, sys, postgres, master, msdb and similar in the sidebar."),
+                Some(
+                    "List information_schema, mysql, sys, postgres, master, msdb and similar in the sidebar.",
+                ),
             ) {
                 self.apply_show_system_objects(show_system);
             }
@@ -1334,7 +1340,9 @@ impl Tabular {
                     ui,
                     &mut self.auto_check_updates,
                     tr("Check automatically"),
-                    Some(tr("Look for a new version on startup (at most once a day).")),
+                    Some(tr(
+                        "Look for a new version on startup (at most once a day).",
+                    )),
                 ) {
                     self.save_prefs_now();
                 }
@@ -1654,7 +1662,9 @@ impl Tabular {
         page_header(
             ui,
             tr("Privacy"),
-            tr("See every connection Tabular makes outside your databases and turn off the ones you do not want."),
+            tr(
+                "See every connection Tabular makes outside your databases and turn off the ones you do not want.",
+            ),
         );
         if let Some(src) = &crate::managed_policy::current().source {
             callout(ui, Tone::Info, |ui| {

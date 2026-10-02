@@ -135,7 +135,8 @@ pub(crate) fn prepare_query_job(
 
     // `{{KEY}}` diisi dari environment aktif project pemilik koneksi (hanya
     // variabel non-secret, karena teks query masuk riwayat).
-    let project_vars = crate::window_egui::project_ui::sql_vars_for_connection(tabular, &connection);
+    let project_vars =
+        crate::window_egui::project_ui::sql_vars_for_connection(tabular, &connection);
     let query = crate::project::substitute(&query, &project_vars);
 
     let selected_database = tabular
@@ -337,8 +338,9 @@ pub(crate) async fn execute_query_job_all(job: QueryJob) -> Vec<QueryResultMessa
         }
         Ok(Ok(_)) => vec![message_for(Vec::new(), Vec::new())],
         Ok(Err(e)) => {
-            let (message, error_location) =
-                describe_execution_error(QueryExecutionError::Message(format!("Query error: {}", e)));
+            let (message, error_location) = describe_execution_error(QueryExecutionError::Message(
+                format!("Query error: {}", e),
+            ));
             let mut msg = message_for(vec!["Error".to_string()], vec![vec![message.clone()]]);
             msg.success = false;
             msg.error = Some(message);
@@ -366,30 +368,30 @@ pub(crate) async fn execute_query_job(job: QueryJob) -> QueryResultMessage {
 
     let (outcome, timing) = super::timing::with_probe(start, async {
         match job.options.connection.connection_type {
-        models::enums::DatabaseType::MySQL => {
-            execute_mysql_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::PostgreSQL => {
-            execute_postgres_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::SQLite => {
-            execute_sqlite_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::Redis => {
-            execute_redis_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::MsSQL => {
-            execute_mssql_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::MongoDB => {
-            execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
-        }
-        models::enums::DatabaseType::ApiHttp => Err(QueryExecutionError::Message(
-            "API-HTTP connections do not support SQL queries".to_string(),
-        )),
-        models::enums::DatabaseType::Plugin(_) => {
-            execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
-        }
+            models::enums::DatabaseType::MySQL => {
+                execute_mysql_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::PostgreSQL => {
+                execute_postgres_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::SQLite => {
+                execute_sqlite_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::Redis => {
+                execute_redis_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::MsSQL => {
+                execute_mssql_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::MongoDB => {
+                execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
+            }
+            models::enums::DatabaseType::ApiHttp => Err(QueryExecutionError::Message(
+                "API-HTTP connections do not support SQL queries".to_string(),
+            )),
+            models::enums::DatabaseType::Plugin(_) => {
+                execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
+            }
         }
     })
     .await;
@@ -1430,13 +1432,12 @@ async fn execute_plugin_query_job(
             "Invalid pool type for plugin engine".to_string(),
         ));
     };
-    let statements = if plugin_pool.capabilities.query_language
-        == crate::driver_api::QueryLanguage::Sql
-    {
-        job_statements(options)
-    } else {
-        vec![options.query.trim().to_string()]
-    };
+    let statements =
+        if plugin_pool.capabilities.query_language == crate::driver_api::QueryLanguage::Sql {
+            job_statements(options)
+        } else {
+            vec![options.query.trim().to_string()]
+        };
     // Job id dicatat sebagai "pid" supaya tombol cancel diteruskan ke plugin.
     let _pid_guard = plugin_pool.capabilities.cancel.then(|| {
         BackendPidGuard::register(&options.backend_pids, options.job_id, options.job_id as i64)

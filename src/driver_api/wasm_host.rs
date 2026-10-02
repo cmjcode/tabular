@@ -133,8 +133,7 @@ fn create_linker(engine: &Engine) -> DriverResult<Linker<HostState>> {
                 if ptr < 0 || len < 0 || (len as usize) < buf.len() {
                     return -1;
                 }
-                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory())
-                else {
+                let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
                     return -1;
                 };
                 let start = ptr as usize;
@@ -391,12 +390,10 @@ impl WasmSession {
         let mut instance = WasmInstance::new(&self.inner, self.policy.clone())?;
         let params =
             serde_json::to_value(&self.params).map_err(|e| DriverError::Protocol(e.to_string()))?;
-        instance
-            .invoke("connect", &params)
-            .map_err(|e| match e {
-                DriverError::Query(m) => DriverError::Connect(m),
-                other => other,
-            })?;
+        instance.invoke("connect", &params).map_err(|e| match e {
+            DriverError::Query(m) => DriverError::Connect(m),
+            other => other,
+        })?;
         Ok(instance)
     }
 
@@ -620,10 +617,8 @@ mod tests {
 
     #[test]
     fn rejects_wrong_abi_version() {
-        let wat = constant_guest(r#"{"ok":null}"#).replace(
-            "(result i32) (i32.const 1))",
-            "(result i32) (i32.const 2))",
-        );
+        let wat = constant_guest(r#"{"ok":null}"#)
+            .replace("(result i32) (i32.const 1))", "(result i32) (i32.const 2))");
         let err = WasmDriver::load(wat.as_bytes(), descriptor(), vec![])
             .err()
             .unwrap();
@@ -667,7 +662,8 @@ mod tests {
         // "list_databases" (bukan "connect") diteruskan guest ke host HTTP.
         let err = session.list_databases().err().unwrap();
         assert!(
-            err.to_string().contains("not in the plugin's allowed hosts"),
+            err.to_string()
+                .contains("not in the plugin's allowed hosts"),
             "{err}"
         );
     }
@@ -691,7 +687,10 @@ mod tests {
         let wat = constant_guest(r#"{"ok":null}"#);
         let driver = WasmDriver::load(wat.as_bytes(), descriptor(), vec![]).unwrap();
         let session = driver.connect(ConnectParams::default()).unwrap();
-        assert!(matches!(session.cancel(1), Err(DriverError::Unsupported(_))));
+        assert!(matches!(
+            session.cancel(1),
+            Err(DriverError::Unsupported(_))
+        ));
     }
 
     #[test]
