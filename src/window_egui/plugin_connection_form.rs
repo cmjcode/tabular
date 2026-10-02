@@ -6,12 +6,18 @@ use crate::driver_api::{OptionKind, registry};
 use crate::models::structs::ConnectionConfig;
 use eframe::egui;
 
-pub(crate) fn render_plugin_fields(ui: &mut egui::Ui, conn: &mut ConnectionConfig, engine_id: &str) {
+pub(crate) fn render_plugin_fields(
+    ui: &mut egui::Ui,
+    conn: &mut ConnectionConfig,
+    engine_id: &str,
+) {
     let Some(descriptor) = registry::descriptor(engine_id) else {
         ui.label("Driver:");
         ui.colored_label(
             egui::Color32::from_rgb(220, 120, 60),
-            format!("Driver '{engine_id}' is not installed. Install it from Plugins → Database Drivers."),
+            format!(
+                "Driver '{engine_id}' is not installed. Install it from Plugins → Database Drivers."
+            ),
         );
         ui.end_row();
         return;

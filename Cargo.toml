@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "1.1.4"
+version = "1.2.2"
 edition = "2024"
 
 [lib]
@@ -69,7 +69,7 @@ dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.99"                                          # Pure-Rust xlsx writer (no libclang/C toolchain)
+rust_xlsxwriter = "0.99"      # Pure-Rust xlsx writer (no libclang/C toolchain)
 # Import/Data Files (H1/H4): pembaca XLSX murni Rust.
 calamine = "0.36"
 # Parquet native (H1/H2) lewat API record/kolom, tanpa fitur `arrow` supaya

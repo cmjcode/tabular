@@ -1,5 +1,5 @@
 use crate::http_collection::{
-    SavedRequest, import_from_postman, import_from_yaak, save_workspaces,
+    SavedRequest, import_from_flexurio, import_from_postman, import_from_yaak, save_workspaces,
 };
 use crate::rfd;
 use crate::window_egui::Tabular;
@@ -13,9 +13,10 @@ use eframe::egui;
 
 /// Render the entire Collections sidebar content (called inside the ScrollArea).
 pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
-    // ── Yaak & Postman import dialogs ────────────────────────────────────
+    // ── Yaak, Postman & Flexurio import dialogs ──────────────────────────
     render_yaak_import_dialog(app, ui);
     render_postman_import_dialog(app, ui);
+    render_flexurio_import_dialog(app, ui);
 
     // ── Search box ────────────────────────────────────────────────────────
     crate::window_egui::style::render_search_field(
@@ -819,6 +820,56 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
             }
             Err(e) => {
                 app.toasts.error(format!("Postman import failed: {e}"));
+            }
+        }
+    }
+}
+
+// ─── Flexurio NoCode Import Dialog ──────────────────────────────────────────
+
+fn render_flexurio_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
+    if !app.show_flexurio_import_dialog {
+        return;
+    }
+    app.show_flexurio_import_dialog = false;
+
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Select Flexurio routes.json or config file/folder")
+        .add_filter("Flexurio JSON / Config", &["json"])
+        .pick_file()
+    {
+        match import_from_flexurio(&path) {
+            Ok(result) => {
+                let imported_ids: std::collections::HashSet<String> =
+                    result.workspaces.iter().map(|w| w.id.clone()).collect();
+
+                app.yaak_workspaces
+                    .retain(|w| !imported_ids.contains(&w.id));
+                app.yaak_workspaces.extend(result.workspaces.clone());
+                app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
+
+                let ws_name = result
+                    .workspaces
+                    .first()
+                    .map(|w| w.name.as_str())
+                    .unwrap_or("Flexurio API");
+
+                let msg = format!(
+                    "Imported {} endpoints across {} routes from Flexurio ({})",
+                    result.total_requests, result.total_routes, ws_name
+                );
+                app.toasts.success(msg);
+                for w in result.warnings {
+                    app.toasts.warning(w);
+                }
+
+                app.selected_menu = "APIs".to_string();
+            }
+            Err(e) => {
+                app.toasts.error(format!("Flexurio import failed: {e}"));
             }
         }
     }

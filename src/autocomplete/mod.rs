@@ -20,8 +20,8 @@ pub use engine::{
     CURSOR_MARK, Catalog, ColumnMeta, CompletionItem, ItemKind, Options, complete, fuzzy_match,
 };
 pub use index_advisor::{
-    AdviceLevel, ColumnStatus, ColumnUsage, IndexAdvice, IndexCatalog, IndexDef, QueryReport, advise,
-    report,
+    AdviceLevel, ColumnStatus, ColumnUsage, IndexAdvice, IndexCatalog, IndexDef, QueryReport,
+    advise, report,
 };
 pub use lexer::Dialect;
 pub use usage::UsageStats;

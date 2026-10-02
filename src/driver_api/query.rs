@@ -38,7 +38,12 @@ pub fn quote_ident(dialect: Option<&str>, ident: &str) -> String {
 }
 
 /// Query pratinjau isi tabel untuk engine plugin.
-pub fn preview_query(caps: &EngineCapabilities, database: &str, table: &str, limit: usize) -> String {
+pub fn preview_query(
+    caps: &EngineCapabilities,
+    database: &str,
+    table: &str,
+    limit: usize,
+) -> String {
     let quoted = quote_ident(caps.sql_dialect.as_deref(), table);
     match &caps.preview_template {
         Some(template) => template
@@ -94,14 +99,20 @@ mod tests {
             sql_dialect: Some("clickhouse".into()),
             ..Default::default()
         };
-        assert_eq!(preview_query(&caps, "db", "events", 100), "SELECT * FROM `events` LIMIT 100;");
+        assert_eq!(
+            preview_query(&caps, "db", "events", 100),
+            "SELECT * FROM `events` LIMIT 100;"
+        );
 
         let json = EngineCapabilities {
             query_language: QueryLanguage::Json,
             preview_template: Some(r#"{"index":"{raw_table}","size":{limit}}"#.into()),
             ..Default::default()
         };
-        assert_eq!(preview_query(&json, "", "logs", 5), r#"{"index":"logs","size":5}"#);
+        assert_eq!(
+            preview_query(&json, "", "logs", 5),
+            r#"{"index":"logs","size":5}"#
+        );
 
         let text = EngineCapabilities {
             query_language: QueryLanguage::Text,

@@ -147,7 +147,10 @@ fn run_connections(rest: &[String]) -> Result<(), String> {
     let items = runtime.block_on(async {
         let pool = open_cache_pool().await.map_err(|e| e.to_string())?;
         let session = HeadlessSession::new(pool.clone());
-        let list = session.list_connections().await.map_err(|e| e.to_string())?;
+        let list = session
+            .list_connections()
+            .await
+            .map_err(|e| e.to_string())?;
         let envs = crate::connection_env::load_all(&pool)
             .await
             .unwrap_or_default();

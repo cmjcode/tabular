@@ -675,7 +675,8 @@ pub(crate) async fn refresh_connection_background_async(
             };
             if connection.connection_type.plugin_id().is_some() {
                 connection.plugin_options =
-                    crate::driver_api::connect::load_plugin_options(cache_pool_arc.as_ref(), id).await;
+                    crate::driver_api::connect::load_plugin_options(cache_pool_arc.as_ref(), id)
+                        .await;
             }
 
             let existing_pool = if let Ok(shared) = shared_pools.lock() {

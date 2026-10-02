@@ -248,6 +248,24 @@ pub(crate) fn render_repo_fields(
             };
             ui.label(egui::RichText::new(msg).small().color(color));
 
+            if folder_exists
+                && let Some(flexurio_cfg) = crate::flexurio_import::detect_flexurio_config(&folder)
+            {
+                let rel = flexurio_cfg
+                    .strip_prefix(&folder)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "config/routes.json".to_string());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("⚡ Flexurio NoCode API detected")
+                            .small()
+                            .strong()
+                            .color(ui.visuals().hyperlink_color),
+                    );
+                    ui.label(egui::RichText::new(format!("({rel})")).small().weak());
+                });
+            }
+
             let can_clone = !folder_exists
                 && !cfg!(target_os = "ios")
                 && matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_)));
@@ -440,8 +458,16 @@ pub fn render_group_repo_editor(
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let valid = fields.valid(&clone);
+                    let folder_path = crate::repo_scan::expand_home(draft.path.trim());
+                    let is_flexurio =
+                        crate::flexurio_import::detect_flexurio_config(&folder_path).is_some();
+                    let scan_label = if is_flexurio {
+                        "⚡ Save & Suggest Flexurio Tables"
+                    } else {
+                        "Save & Suggest Tables"
+                    };
                     if ui
-                        .add_enabled(valid, accent_button(ui, "Save & Suggest Tables"))
+                        .add_enabled(valid, accent_button(ui, scan_label))
                         .clicked()
                     {
                         save = true;

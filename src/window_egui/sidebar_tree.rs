@@ -1445,7 +1445,10 @@ impl super::Tabular {
                                                 )
                                             } else {
                                                 crate::driver_api::query::preview_query(
-                                                    &caps, db_name, &table_name, 100,
+                                                    &caps,
+                                                    db_name,
+                                                    &table_name,
+                                                    100,
                                                 )
                                             }
                                         }
@@ -1985,14 +1988,16 @@ impl super::Tabular {
         }
 
         // M10: pilihan environment dari menu konteks koneksi.
-        let env_request: Option<(i64, String)> = ui
-            .ctx()
-            .data(|d| d.get_temp(egui::Id::new(ENV_REQUEST_ID)));
+        let env_request: Option<(i64, String)> =
+            ui.ctx().data(|d| d.get_temp(egui::Id::new(ENV_REQUEST_ID)));
         if let Some((conn_id, key)) = env_request {
             ui.ctx().data_mut(|d| {
                 d.remove_temp::<(i64, String)>(egui::Id::new(ENV_REQUEST_ID));
             });
-            self.set_connection_environment(conn_id, crate::connection_env::Environment::parse(&key));
+            self.set_connection_environment(
+                conn_id,
+                crate::connection_env::Environment::parse(&key),
+            );
         }
         let env_snapshot: std::collections::HashMap<i64, &'static str> = self
             .platform_ui
@@ -2870,9 +2875,52 @@ impl super::Tabular {
                     });
                 }
 
-                // Add context menu for folder nodes
+                // Add context menu and drop target for query folder nodes
                 if node.node_type == models::enums::NodeType::QueryFolder {
+                    let is_hovering_files = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+                    let has_dropped_files = ui.ctx().input(|i| !i.raw.dropped_files.is_empty());
+                    if (is_hovering_files || has_dropped_files) && ui.rect_contains_pointer(response.rect) {
+                        let rel_path = if let Some(full_path) = &node.file_path {
+                            let query_dir = directory::get_query_dir();
+                            std::path::Path::new(full_path)
+                                .strip_prefix(&query_dir)
+                                .unwrap_or(std::path::Path::new(&node.name))
+                                .to_string_lossy()
+                                .to_string()
+                        } else {
+                            node.name.clone()
+                        };
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("query_drop_folder_active"), rel_path);
+                        });
+                        if is_hovering_files {
+                            ui.painter().rect_stroke(
+                                response.rect,
+                                3.0,
+                                egui::Stroke::new(1.5, super::style::theme_accent(ui.ctx())),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
+
                     response.context_menu(|ui| {
+                        if ui.button("📂 Open .sql File Here…").clicked() {
+                            let rel_path = if let Some(full_path) = &node.file_path {
+                                let query_dir = directory::get_query_dir();
+                                std::path::Path::new(full_path)
+                                    .strip_prefix(&query_dir)
+                                    .unwrap_or(std::path::Path::new(&node.name))
+                                    .to_string_lossy()
+                                    .to_string()
+                            } else {
+                                node.name.clone()
+                            };
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("query_import_folder_req"), rel_path);
+                            });
+                            ui.close();
+                        }
+
                         if ui.button("📁 Create New Folder").clicked() {
                             // Store the parent folder name for creation
                             parent_folder_for_creation = Some(node.name.clone());
@@ -4034,10 +4082,14 @@ impl super::Tabular {
                         }
                         models::enums::NodeType::Trigger => egui_icons::icons::ICON_BOLT.codepoint,
                         models::enums::NodeType::Event => egui_icons::icons::ICON_EVENT.codepoint,
-                    models::enums::NodeType::MaterializedViewsFolder
-                    | models::enums::NodeType::MaterializedView => egui_icons::icons::ICON_VISIBILITY.codepoint,
-                    models::enums::NodeType::TypesFolder
-                    | models::enums::NodeType::UserType => egui_icons::icons::ICON_TAG.codepoint,
+                        models::enums::NodeType::MaterializedViewsFolder
+                        | models::enums::NodeType::MaterializedView => {
+                            egui_icons::icons::ICON_VISIBILITY.codepoint
+                        }
+                        models::enums::NodeType::TypesFolder
+                        | models::enums::NodeType::UserType => {
+                            egui_icons::icons::ICON_TAG.codepoint
+                        }
                         models::enums::NodeType::MySQLFolder
                         | models::enums::NodeType::PostgreSQLFolder
                         | models::enums::NodeType::SQLiteFolder
@@ -4312,7 +4364,8 @@ impl super::Tabular {
                     super::schema_menus::object_node_menu_items(
                         ui,
                         node,
-                        node.connection_id.and_then(|id| params.connection_types.get(&id)),
+                        node.connection_id
+                            .and_then(|id| params.connection_types.get(&id)),
                     );
                 });
             }

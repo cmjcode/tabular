@@ -78,7 +78,9 @@ impl BackupFormat {
         }
         match longest {
             Some(ext) => &file_name[..file_name.len() - ext.len() - 1],
-            None => file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem),
+            None => file_name
+                .rsplit_once('.')
+                .map_or(file_name, |(stem, _)| stem),
         }
     }
 
@@ -3021,7 +3023,10 @@ mod tests {
         assert!(BackupFormat::SqlServerDacpac.supported_for(&DatabaseType::MsSQL));
         assert!(!BackupFormat::SqlServerBacpac.supported_for(&DatabaseType::PostgreSQL));
 
-        assert_eq!(BackupFormat::strip_extension("shop_2026.sql.gz"), "shop_2026");
+        assert_eq!(
+            BackupFormat::strip_extension("shop_2026.sql.gz"),
+            "shop_2026"
+        );
         assert_eq!(BackupFormat::strip_extension("shop.archive.gz"), "shop");
         assert_eq!(BackupFormat::strip_extension("shop.v2.bacpac"), "shop.v2");
         assert_eq!(BackupFormat::strip_extension("shop.unknown"), "shop");
@@ -3137,7 +3142,10 @@ mod tests {
             format: BackupFormat::SqlServerDacpac,
             ..backup
         };
-        assert_eq!(sqlpackage_export_args(&config, &dacpac)[0], "/Action:Extract");
+        assert_eq!(
+            sqlpackage_export_args(&config, &dacpac)[0],
+            "/Action:Extract"
+        );
 
         let verified = ConnectionConfig {
             ssl_enabled: true,

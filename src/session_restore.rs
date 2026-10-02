@@ -647,8 +647,14 @@ mod tests {
     #[test]
     fn saved_content_with_headers_matches_editor_text() {
         let saved = "-- tabular: connection_id=4\n-- tabular: database=app\n\nSELECT 1;";
-        assert_eq!(strip_tabular_headers(saved), strip_tabular_headers("SELECT 1;"));
-        assert_ne!(strip_tabular_headers(saved), strip_tabular_headers("SELECT 2;"));
+        assert_eq!(
+            strip_tabular_headers(saved),
+            strip_tabular_headers("SELECT 1;")
+        );
+        assert_ne!(
+            strip_tabular_headers(saved),
+            strip_tabular_headers("SELECT 2;")
+        );
     }
 
     #[test]

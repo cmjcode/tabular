@@ -350,7 +350,9 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                         // Format direktori pg_dump tidak punya
                                                         // satu file tujuan untuk dialog simpan.
                                                         if fmt != BackupFormat::PostgresDirectory
-                                                            && fmt.supported_for(&state.connection_type)
+                                                            && fmt.supported_for(
+                                                                &state.connection_type,
+                                                            )
                                                         {
                                                             ui.selectable_value(
                                                                 &mut state.format,
@@ -371,32 +373,36 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                 state.connection_type,
                                                 DatabaseType::MongoDB | DatabaseType::MsSQL
                                             ) {
-                                            ui.label(egui::RichText::new("Content").weak().small());
-                                            egui::ComboBox::from_id_salt("backup_scope_combo")
-                                                .selected_text(match state.scope {
-                                                    BackupContentScope::Both => "Schema & Data",
-                                                    BackupContentScope::SchemaOnly => "Schema Only",
-                                                    BackupContentScope::DataOnly => "Data Only",
-                                                })
-                                                .width(combo_width)
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(
-                                                        &mut state.scope,
-                                                        BackupContentScope::Both,
-                                                        "Schema & Data",
-                                                    );
-                                                    ui.selectable_value(
-                                                        &mut state.scope,
-                                                        BackupContentScope::SchemaOnly,
-                                                        "Schema Only",
-                                                    );
-                                                    ui.selectable_value(
-                                                        &mut state.scope,
-                                                        BackupContentScope::DataOnly,
-                                                        "Data Only",
-                                                    );
-                                                });
-                                            ui.end_row();
+                                                ui.label(
+                                                    egui::RichText::new("Content").weak().small(),
+                                                );
+                                                egui::ComboBox::from_id_salt("backup_scope_combo")
+                                                    .selected_text(match state.scope {
+                                                        BackupContentScope::Both => "Schema & Data",
+                                                        BackupContentScope::SchemaOnly => {
+                                                            "Schema Only"
+                                                        }
+                                                        BackupContentScope::DataOnly => "Data Only",
+                                                    })
+                                                    .width(combo_width)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut state.scope,
+                                                            BackupContentScope::Both,
+                                                            "Schema & Data",
+                                                        );
+                                                        ui.selectable_value(
+                                                            &mut state.scope,
+                                                            BackupContentScope::SchemaOnly,
+                                                            "Schema Only",
+                                                        );
+                                                        ui.selectable_value(
+                                                            &mut state.scope,
+                                                            BackupContentScope::DataOnly,
+                                                            "Data Only",
+                                                        );
+                                                    });
+                                                ui.end_row();
                                             }
                                         });
                                 },
@@ -410,47 +416,49 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 state.connection_type,
                                 DatabaseType::MongoDB | DatabaseType::MsSQL
                             ) {
-                            crate::window_egui::style::render_modal_card(
-                                ui,
-                                Some("🛠️ Advanced Options"),
-                                None,
-                                |ui| {
-                                    egui::Grid::new("backup_advanced_grid")
-                                        .num_columns(2)
-                                        .spacing([24.0, 6.0])
-                                        .show(ui, |ui| {
-                                            ui.checkbox(
-                                                &mut state.single_transaction,
-                                                "Single Transaction",
-                                            );
-                                            ui.checkbox(
-                                                &mut state.include_triggers_routines,
-                                                "Include Triggers/Routines",
-                                            );
-                                            ui.end_row();
-
-                                            ui.checkbox(
-                                                &mut state.clean_before_recreate,
-                                                "DROP TABLE before CREATE",
-                                            );
-                                            if state.connection_type == DatabaseType::PostgreSQL {
+                                crate::window_egui::style::render_modal_card(
+                                    ui,
+                                    Some("🛠️ Advanced Options"),
+                                    None,
+                                    |ui| {
+                                        egui::Grid::new("backup_advanced_grid")
+                                            .num_columns(2)
+                                            .spacing([24.0, 6.0])
+                                            .show(ui, |ui| {
                                                 ui.checkbox(
-                                                    &mut state.no_owner,
-                                                    "No Owner (--no-owner)",
+                                                    &mut state.single_transaction,
+                                                    "Single Transaction",
                                                 );
-                                            }
-                                            ui.end_row();
-
-                                            if state.connection_type == DatabaseType::PostgreSQL {
                                                 ui.checkbox(
-                                                    &mut state.no_privileges,
-                                                    "No Privileges (--no-privileges)",
+                                                    &mut state.include_triggers_routines,
+                                                    "Include Triggers/Routines",
                                                 );
                                                 ui.end_row();
-                                            }
-                                        });
-                                },
-                            );
+
+                                                ui.checkbox(
+                                                    &mut state.clean_before_recreate,
+                                                    "DROP TABLE before CREATE",
+                                                );
+                                                if state.connection_type == DatabaseType::PostgreSQL
+                                                {
+                                                    ui.checkbox(
+                                                        &mut state.no_owner,
+                                                        "No Owner (--no-owner)",
+                                                    );
+                                                }
+                                                ui.end_row();
+
+                                                if state.connection_type == DatabaseType::PostgreSQL
+                                                {
+                                                    ui.checkbox(
+                                                        &mut state.no_privileges,
+                                                        "No Privileges (--no-privileges)",
+                                                    );
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    },
+                                );
                             }
 
                             ui.add_space(6.0);

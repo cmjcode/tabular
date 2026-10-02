@@ -432,8 +432,9 @@ fn render_touch_id_button(tabular: &mut Tabular, ui: &mut egui::Ui) {
     {
         #[cfg(target_os = "macos")]
         {
-            tabular.platform_ui.touch_id_rx =
-                Some(crate::platform_macos::authenticate("unlock your Tabular sync vault"));
+            tabular.platform_ui.touch_id_rx = Some(crate::platform_macos::authenticate(
+                "unlock your Tabular sync vault",
+            ));
         }
     }
     if waiting {
@@ -458,7 +459,8 @@ fn drain_touch_id(tabular: &mut Tabular) {
     tabular.platform_ui.touch_id_rx = None;
     match result {
         Ok(()) => {
-            let stored = biometric_secret_name(tabular).and_then(|n| crate::secrets::get_secret(&n));
+            let stored =
+                biometric_secret_name(tabular).and_then(|n| crate::secrets::get_secret(&n));
             match stored {
                 Some(passphrase) => {
                     tabular.vault_passphrase_input = passphrase;

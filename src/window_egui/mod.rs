@@ -8,10 +8,12 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use crate::{connection, models, query_tools};
 
+#[cfg(not(target_os = "ios"))]
+pub mod agent_access_ui;
 mod ai_cli_settings;
+pub mod ai_fix;
 pub mod ai_history_ui;
 pub mod ai_mcp_ui;
-pub mod ai_fix;
 pub mod app_impl;
 pub mod background_dock;
 pub mod background_tasks;
@@ -38,16 +40,14 @@ pub mod git_view;
 pub mod init;
 pub mod notifications;
 pub mod pagination;
-pub mod project_ui;
 pub mod platform_ui;
 pub(crate) mod plugin_connection_form;
 pub(crate) mod plugin_tree;
 pub(crate) mod preferences;
+pub mod project_ui;
 pub mod query_insight;
 pub mod query_jobs;
 pub mod query_stats_ui;
-#[cfg(not(target_os = "ios"))]
-pub mod agent_access_ui;
 pub mod render_dialogs;
 pub mod schema_actions;
 pub mod schema_menus;
@@ -263,6 +263,7 @@ pub struct Tabular {
     pub scroll_to_active_tab: bool,
     pub last_active_tab_index: Option<usize>,
     pub dragged_tab_index: Option<usize>,
+    pub query_drop_target_folder: Option<String>,
     // Save dialog
     pub show_save_dialog: bool,
     pub save_filename: String,
@@ -1022,6 +1023,8 @@ pub struct Tabular {
     pub show_yaak_import_dialog: bool,
     /// Flag: show the Postman import file-picker dialog next frame.
     pub show_postman_import_dialog: bool,
+    /// Flag: show the Flexurio NoCode import file/folder-picker dialog next frame.
+    pub show_flexurio_import_dialog: bool,
 
     // ─── Export & Import All Data (ZIP) ──────────────────────────────────────
     pub show_export_all_dialog: bool,

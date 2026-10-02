@@ -1397,12 +1397,8 @@ fn load_import_preview(
             }
             let named = state.has_header_row || state.source.named_columns;
             let table_cols = state.table_columns.clone();
-            state.column_mappings = build_auto_mappings(
-                &loaded.data.headers,
-                &loaded.data.rows,
-                named,
-                &table_cols,
-            );
+            state.column_mappings =
+                build_auto_mappings(&loaded.data.headers, &loaded.data.rows, named, &table_cols);
             state.preview_headers = loaded.data.headers;
             state.preview_rows = loaded.data.rows;
             Ok(())

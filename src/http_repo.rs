@@ -75,6 +75,7 @@ struct FolderRepoEditor {
     folder_name: String,
     draft: GroupRepoDraft,
     had_repo: bool,
+    auto_import_flexurio: bool,
 }
 
 /// Kemajuan job AI/pemindaian yang sedang ditampilkan.
@@ -737,6 +738,7 @@ impl HttpRepoUi {
         else {
             return;
         };
+        let is_empty = folder.all_requests().is_empty();
         self.editor = Some(FolderRepoEditor {
             folder_id: folder.id.clone(),
             folder_name: folder.name.clone(),
@@ -747,6 +749,7 @@ impl HttpRepoUi {
                 url_auto: false,
             },
             had_repo: folder.has_repository(),
+            auto_import_flexurio: is_empty,
         });
     }
 
@@ -1176,6 +1179,7 @@ impl HttpRepoUi {
         let mut close = false;
         let mut save = false;
         let mut generate_after = false;
+        let mut import_flexurio_after = false;
         let mut remove = false;
         let (clone, info) = crate::diagram_repo::RepoCloneState::poll(
             ctx,
@@ -1185,8 +1189,13 @@ impl HttpRepoUi {
         if let Some(msg) = info {
             app.toasts.success(msg);
         }
+
+        let folder_path = crate::repo_scan::expand_home(ed.draft.path.trim());
+        let flexurio_path_opt = crate::flexurio_import::detect_flexurio_config(&folder_path);
+        let is_flexurio = flexurio_path_opt.is_some();
+
         style::render_modal_backdrop(ctx, "http_folder_repo_backdrop", true);
-        let win_w = (ctx.content_rect().width() - 48.0).clamp(340.0, 560.0);
+        let win_w = (ctx.content_rect().width() - 48.0).clamp(340.0, 580.0);
         egui::Window::new("Folder Repository")
             .title_bar(false)
             .frame(style::modal_window_frame(ctx))
@@ -1219,6 +1228,13 @@ impl HttpRepoUi {
                     &clone,
                     "this HTTP collection",
                 );
+                if is_flexurio {
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut ed.auto_import_flexurio,
+                        egui::RichText::new("Import Flexurio routes into this folder on Save").small(),
+                    );
+                }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ed.had_repo
@@ -1231,10 +1247,32 @@ impl HttpRepoUi {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let valid = fields.valid(&clone);
+                        if is_flexurio {
+                            if ui
+                                .add_enabled(
+                                    valid,
+                                    crate::diagram_repo::accent_button(
+                                        ui,
+                                        "⚡ Save & Import Flexurio",
+                                    ),
+                                )
+                                .on_hover_text(
+                                    "Save repository and import all routes and endpoints directly from config/routes.json into this folder",
+                                )
+                                .clicked()
+                            {
+                                save = true;
+                                import_flexurio_after = true;
+                            }
+                        }
                         if ui
                             .add_enabled(
                                 valid,
-                                crate::diagram_repo::accent_button(ui, "Save & Generate Endpoints"),
+                                if is_flexurio {
+                                    egui::Button::new("Scan Endpoints…").min_size(egui::vec2(0.0, 28.0))
+                                } else {
+                                    crate::diagram_repo::accent_button(ui, "Save & Generate Endpoints")
+                                },
                             )
                             .clicked()
                         {
@@ -1249,6 +1287,9 @@ impl HttpRepoUi {
                             .clicked()
                         {
                             save = true;
+                            if is_flexurio && ed.auto_import_flexurio {
+                                import_flexurio_after = true;
+                            }
                         }
                         if ui
                             .add(egui::Button::new("Cancel").min_size(egui::vec2(0.0, 28.0)))
@@ -1289,7 +1330,29 @@ impl HttpRepoUi {
             if changed && let Err(e) = save_workspaces(&app.yaak_workspaces) {
                 app.toasts.error(e);
             }
-            if generate_after {
+            if import_flexurio_after && let Some(cfg_file) = &flexurio_path_opt {
+                match crate::flexurio_import::import_flexurio_into_folder(
+                    &mut app.yaak_workspaces,
+                    &ed.folder_id,
+                    cfg_file,
+                ) {
+                    Ok(res) => {
+                        if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                            app.toasts.error(e);
+                        }
+                        app.toasts.success(format!(
+                            "Imported {} endpoints across {} routes from Flexurio into '{}'",
+                            res.total_requests, res.total_routes, ed.folder_name
+                        ));
+                        for w in res.warnings {
+                            app.toasts.warning(w);
+                        }
+                    }
+                    Err(e) => {
+                        app.toasts.error(format!("Flexurio import failed: {e}"));
+                    }
+                }
+            } else if generate_after {
                 self.start_endpoints(app, &ed.folder_id, true);
             } else {
                 app.toasts.success(if remove {

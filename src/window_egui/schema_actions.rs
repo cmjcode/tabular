@@ -398,7 +398,8 @@ impl SchemaDialog {
                         sql::rename_sql(db, RenameTarget::Schema, schema, text, &[])
                     }
                     SchemaOp::Grant => {
-                        let sql = sql::alter_schema_sql(schema, None, std::slice::from_ref(grant), &[]);
+                        let sql =
+                            sql::alter_schema_sql(schema, None, std::slice::from_ref(grant), &[]);
                         if sql.is_empty() {
                             Err("Choose a role and at least one privilege".to_string())
                         } else {
@@ -409,7 +410,12 @@ impl SchemaDialog {
                         if text.trim().is_empty() {
                             Err("Choose the role to revoke from".to_string())
                         } else {
-                            Ok(sql::alter_schema_sql(schema, None, &[], std::slice::from_ref(text)))
+                            Ok(sql::alter_schema_sql(
+                                schema,
+                                None,
+                                &[],
+                                std::slice::from_ref(text),
+                            ))
                         }
                     }
                     SchemaOp::Drop => Ok(sql::drop_schema_sql(schema, *cascade)),

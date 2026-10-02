@@ -8441,6 +8441,7 @@ pub(crate) fn open_legacy_command_palette(tabular: &mut window_egui::Tabular) {
         "Query: New Tab                ⌘T".to_string(),
         "Query: Close Tab              ⌘W".to_string(),
         "Query: Save Tab               ⌘S".to_string(),
+        "Query: Open SQL File...          ⌘O".to_string(),
         "Editor: Go to Definition      F12".to_string(),
         "Editor: Rename Symbol         F2".to_string(),
         "Editor: Toggle Find & Replace ⌘F".to_string(),
@@ -8896,6 +8897,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         }
         "Query: Save Tab" => {
             let _ = save_current_tab(tabular);
+        }
+        "Query: Open SQL File..." => {
+            crate::sidebar_query::prompt_open_sql_file(tabular, None);
         }
         "Editor: Go to Definition" => {
             go_to_definition(tabular);

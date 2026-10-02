@@ -75,7 +75,11 @@ impl SqliteSession {
         Self { pool, handle }
     }
 
-    fn query_strings(&self, sql: &'static str, bind: &[&str]) -> DriverResult<Vec<Vec<Option<String>>>> {
+    fn query_strings(
+        &self,
+        sql: &'static str,
+        bind: &[&str],
+    ) -> DriverResult<Vec<Vec<Option<String>>>> {
         let mut q = sqlx::query(sql);
         for b in bind {
             q = q.bind(*b);
@@ -119,8 +123,10 @@ fn returns_rows(sql: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    matches!(head.as_str(), "select" | "with" | "pragma" | "values" | "explain")
-        || sql.to_ascii_lowercase().contains(" returning ")
+    matches!(
+        head.as_str(),
+        "select" | "with" | "pragma" | "values" | "explain"
+    ) || sql.to_ascii_lowercase().contains(" returning ")
 }
 
 impl EngineSession for SqliteSession {
@@ -182,7 +188,9 @@ impl EngineSession for SqliteSession {
         if !returns_rows(&request.query) {
             let done = self
                 .handle
-                .block_on(sqlx::query(sqlx::AssertSqlSafe(request.query.clone())).execute(&self.pool))
+                .block_on(
+                    sqlx::query(sqlx::AssertSqlSafe(request.query.clone())).execute(&self.pool),
+                )
                 .map_err(|e| DriverError::Query(e.to_string()))?;
             return Ok(ExecuteOutput {
                 affected_rows: Some(done.rows_affected()),
@@ -263,7 +271,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(tables, vec![TableInfo { name: "t".into(), kind: TableKind::Table }]);
+        assert_eq!(
+            tables,
+            vec![TableInfo {
+                name: "t".into(),
+                kind: TableKind::Table
+            }]
+        );
         assert_eq!(cols.len(), 3);
         assert!(cols[0].primary_key);
         assert!(!cols[1].nullable);

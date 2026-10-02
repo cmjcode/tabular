@@ -500,7 +500,10 @@ mod tests {
     fn plugin_type_round_trips() {
         let ty = DatabaseType::Plugin("clickhouse".into());
         assert_eq!(ty.as_db_str(), "plugin:clickhouse");
-        assert_eq!(DatabaseType::from_db_str("plugin:clickhouse"), Some(ty.clone()));
+        assert_eq!(
+            DatabaseType::from_db_str("plugin:clickhouse"),
+            Some(ty.clone())
+        );
         assert_eq!(ty.plugin_id(), Some("clickhouse"));
         // Driver tidak terpasang: nama jatuh ke id.
         assert_eq!(ty.display_name(), "clickhouse");

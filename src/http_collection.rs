@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::structs::{HttpAuthType, HttpBodyType, HttpClientState, HttpMethod};
 
+pub use crate::flexurio_import::{
+    FlexurioImportResult, build_entity_sample_body, detect_flexurio_base_url,
+    detect_flexurio_config, import_flexurio_into_folder, import_from_flexurio,
+    is_flexurio_routes_file,
+};
+
 // ─── Core Data Model ─────────────────────────────────────────────────────────
 
 /// A single saved HTTP request (mirrors HttpClientState, minus runtime fields).
