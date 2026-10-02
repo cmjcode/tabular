@@ -655,6 +655,9 @@ pub fn render_process_panel(
     let mut jump: Option<String> = None;
     let shown = egui::Area::new(ui.id().with(("diagram_flow_process", &card.id)))
         .fixed_pos(egui::pos2(card_rect.left(), top))
+        // Tanpa ini egui menggeser Area supaya tetap di dalam layar, sehingga
+        // isi bagian bawah lepas dari card saat card digeser melewati tepi.
+        .constrain(false)
         .order(egui::Order::Middle)
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(canvas);
@@ -916,6 +919,46 @@ mod tests {
         assert_eq!(state.selected_flow.as_deref(), Some("flw_1"));
         clear(&mut state);
         assert!(state.selected_flow.is_none() && state.flow_play.is_none());
+    }
+
+    #[test]
+    fn process_panel_stays_attached_to_card_past_canvas_edge() {
+        let ctx = egui::Context::default();
+        let mut state = fixture();
+        state.selected_flow = Some("flw_1".into());
+        // Card menjorok keluar dari tepi kiri kanvas.
+        let card = egui::Rect::from_min_size(egui::pos2(-120.0, 100.0), egui::vec2(300.0, 200.0));
+        for t in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                time: Some(t as f64),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let rect = ui.max_rect();
+                render_process_panel(ui, &mut state, Some(card), rect, 0.0);
+            });
+            out.textures_delta.clear();
+        }
+        let id = egui::Id::new(egui::Id::NULL); // placeholder agar tipe jelas
+        let _ = id;
+        let area = ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| l.order == egui::Order::Middle)
+                .find_map(|l| m.area_rect(l.id))
+        });
+        let area = area.expect("footer area");
+        assert!(
+            (area.left() - card.left()).abs() < 0.5,
+            "footer left {} != card left {}",
+            area.left(),
+            card.left()
+        );
     }
 
     #[test]

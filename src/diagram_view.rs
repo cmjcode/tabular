@@ -6984,7 +6984,7 @@ pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
 pub fn auto_arrange(state: &mut DiagramState) {
     auto_layout_host(state);
     compact_and_resolve_overlaps(&mut state.nodes, 20.0);
-    widen_to_landscape(&mut state.nodes, 20.0);
+    square_up(&mut state.nodes, 20.0);
 }
 
 /// Rapatkan isi group, pisahkan yang tumpang tindih, lalu rapatkan jarak
@@ -7012,11 +7012,11 @@ pub fn auto_layout_host(state: &mut DiagramState) {
     crate::diagram_links::restack_links(state);
 }
 
-/// Rasio lebar : tinggi minimal hasil auto-arrange (default landscape, cocok
-/// untuk layar lebar).
-pub const LANDSCAPE_ASPECT: f32 = 1.6;
-/// Pengali gravitasi sumbu Y agar simulasi menyebar ke samping, bukan ke bawah.
-const VERTICAL_GRAVITY_BOOST: f32 = 4.0;
+/// Rasio lebar : tinggi hasil auto-arrange: persegi.
+pub const ARRANGE_ASPECT: f32 = 1.0;
+/// Rasio dalam rentang `ARRANGE_ASPECT / tol ..= ARRANGE_ASPECT * tol`
+/// dianggap sudah persegi.
+pub const ARRANGE_ASPECT_TOLERANCE: f32 = 1.15;
 
 /// Kotak pembatas tabel host (tabel link database diabaikan).
 fn host_bounds(nodes: &[DiagramNode]) -> Option<egui::Rect> {
@@ -7027,17 +7027,22 @@ fn host_bounds(nodes: &[DiagramNode]) -> Option<egui::Rect> {
         .reduce(|a, b| a.union(b))
 }
 
-/// Regangkan posisi pusat tabel host (x membesar, y mengecil) bila kotak
-/// pembatasnya lebih sempit dari `LANDSCAPE_ASPECT`. Mengembalikan `false`
-/// bila sudah landscape. Tumpang tindih yang muncul diselesaikan pemanggil.
-fn stretch_to_landscape(nodes: &mut [DiagramNode]) -> bool {
+/// Skalakan posisi pusat tabel host (satu sumbu membesar, sumbu lain
+/// mengecil) bila kotak pembatasnya terlalu lebar atau terlalu tinggi.
+/// Mengembalikan `false` bila sudah persegi. Tumpang tindih yang muncul
+/// diselesaikan pemanggil.
+fn stretch_to_square(nodes: &mut [DiagramNode]) -> bool {
     let Some(bounds) = host_bounds(nodes) else {
         return false;
     };
-    if bounds.height() <= 0.0 || bounds.width() >= bounds.height() * LANDSCAPE_ASPECT {
+    if bounds.height() <= 0.0 || bounds.width() <= 0.0 {
         return false;
     }
-    let k = (LANDSCAPE_ASPECT * bounds.height() / bounds.width().max(1.0)).sqrt();
+    let ratio = bounds.width() / bounds.height() / ARRANGE_ASPECT;
+    if (1.0 / ARRANGE_ASPECT_TOLERANCE..=ARRANGE_ASPECT_TOLERANCE).contains(&ratio) {
+        return false;
+    }
+    let k = (1.0 / ratio).sqrt();
     let c = bounds.center();
     for n in nodes
         .iter_mut()
@@ -7050,12 +7055,12 @@ fn stretch_to_landscape(nodes: &mut [DiagramNode]) -> bool {
     true
 }
 
-/// Ulangi regangan + pemisahan tumpang tindih sampai hasil landscape.
-/// Pemisahan cenderung mendorong kembali ke atas/bawah, jadi satu regangan
+/// Ulangi penskalaan + pemisahan tumpang tindih sampai hasil persegi.
+/// Pemisahan cenderung mendorong kembali ke bentuk semula, jadi satu kali
 /// tidak cukup.
-fn widen_to_landscape(nodes: &mut [DiagramNode], padding: f32) {
+fn square_up(nodes: &mut [DiagramNode], padding: f32) {
     for _ in 0..8 {
-        if !stretch_to_landscape(nodes) {
+        if !stretch_to_square(nodes) {
             break;
         }
         compact_groups(nodes, GROUP_MAX_GAP.max(padding));
@@ -7183,12 +7188,9 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
                 continue;
             } // Don't move dragged node
 
-            // Tarikan ke pusat; sumbu Y lebih kuat agar hasil landscape
+            // Weaker center pull
             let center_pull = egui::Vec2::ZERO - node.pos.to_vec2();
-            *force += egui::vec2(
-                center_pull.x * center_gravity,
-                center_pull.y * center_gravity * VERTICAL_GRAVITY_BOOST,
-            );
+            *force += center_pull * center_gravity;
 
             // Limit max force to prevent explosion
             let max_force = 1000.0;
@@ -7200,7 +7202,7 @@ pub fn perform_auto_layout(state: &mut DiagramState) {
         }
     }
 
-    stretch_to_landscape(&mut state.nodes);
+    stretch_to_square(&mut state.nodes);
 
     // STRICT COLLISION RESOLUTION (Post-Process)
     // Pastikan semua tabel terpisah sempurna dengan padding aman; group yang
@@ -9102,7 +9104,7 @@ mod tests {
 
     /// Tabel mirip kasus nyata: beberapa tabel tinggi, relasi berpusat di
     /// `users` dan `user_data`.
-    fn landscape_fixture() -> DiagramState {
+    fn arrange_fixture() -> DiagramState {
         let sizes = [
             ("alert", 250.0, 280.0),
             ("users", 220.0, 520.0),
@@ -9137,8 +9139,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_arrange_defaults_to_landscape() {
-        let mut state = landscape_fixture();
+    fn auto_arrange_defaults_to_square() {
+        let mut state = arrange_fixture();
         auto_arrange(&mut state);
         let bounds = state
             .nodes
@@ -9146,9 +9148,11 @@ mod tests {
             .map(|n| egui::Rect::from_min_size(n.pos, n.size))
             .reduce(|a, b| a.union(b))
             .unwrap();
+        let ratio = bounds.width() / bounds.height() / ARRANGE_ASPECT;
+        let tol = ARRANGE_ASPECT_TOLERANCE * 1.1;
         assert!(
-            bounds.width() >= bounds.height() * LANDSCAPE_ASPECT * 0.95,
-            "layout {:?} tidak landscape",
+            (1.0 / tol..=tol).contains(&ratio),
+            "layout {:?} tidak persegi",
             bounds.size()
         );
         for (i, a) in state.nodes.iter().enumerate() {

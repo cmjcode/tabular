@@ -943,7 +943,8 @@ impl super::Tabular {
         table: &str,
     ) {
         let source = self.subset_source(conn_id, db_name.as_deref(), state);
-        let subset = crate::diagram_view::focus_subset_state(source, table);
+        let mut subset = crate::diagram_view::focus_subset_state(source, table);
+        crate::diagram_view::auto_arrange(&mut subset);
         let title = subset
             .nodes
             .iter()
@@ -960,8 +961,8 @@ impl super::Tabular {
         log::info!("[DIAGRAM] opened '{title}' with {count} related table(s) in a new tab");
     }
 
-    /// Buka tab baru berisi seluruh tabel anggota group `group_id`, dengan
-    /// posisi seperti di diagram sumber.
+    /// Buka tab baru berisi seluruh tabel anggota group `group_id`, sudah
+    /// ditata otomatis (Auto Arrange).
     fn open_group_subset_tab(
         &mut self,
         conn_id: Option<i64>,
@@ -974,10 +975,11 @@ impl super::Tabular {
         // di tab penuh (mis. sudah dihapus), pakai state tab ini.
         let subset = crate::diagram_view::group_subset_state(source, group_id)
             .or_else(|| crate::diagram_view::group_subset_state(state, group_id));
-        let Some(subset) = subset else {
+        let Some(mut subset) = subset else {
             self.toasts.info("This group has no tables to open");
             return;
         };
+        crate::diagram_view::auto_arrange(&mut subset);
         let title = subset
             .groups
             .first()
@@ -989,7 +991,7 @@ impl super::Tabular {
     }
 
     /// Buka tab baru berisi flow card endpoint `card_id` beserta semua tabel
-    /// yang tertaut dengannya.
+    /// yang tertaut dengannya, sudah ditata otomatis (Auto Arrange).
     fn open_flow_subset_tab(
         &mut self,
         conn_id: Option<i64>,
@@ -1000,11 +1002,12 @@ impl super::Tabular {
         let source = self.subset_source(conn_id, db_name.as_deref(), state);
         let subset = crate::diagram_view::flow_subset_state(source, card_id)
             .or_else(|| crate::diagram_view::flow_subset_state(state, card_id));
-        let Some(subset) = subset else {
+        let Some(mut subset) = subset else {
             self.toasts
                 .info("This endpoint is not linked to any table in the diagram");
             return;
         };
+        crate::diagram_view::auto_arrange(&mut subset);
         let title = subset.flow_cards.first().map_or_else(
             || card_id.to_string(),
             |c| format!("{} {}", c.trigger.method, c.trigger.target),
