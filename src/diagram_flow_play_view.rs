@@ -23,19 +23,14 @@ pub const READ_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 200, 255);
 pub const WRITE_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 220, 140);
 pub const DELETE_COLOR: egui::Color32 = egui::Color32::from_rgb(239, 83, 80);
 pub const UNKNOWN_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 150, 160);
-/// Warna request / respons di luar card.
-const REQUEST_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 196, 60);
 /// Warna pendar garis lintasan yang sedang dilewati partikel.
 const GLOW_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 48, 48);
 /// Popup PLAY di awal pemutaran.
 const POPUP_PLAY_COLOR: egui::Color32 = egui::Color32::from_rgb(34, 160, 76);
 /// Popup END setelah pemutaran selesai.
 const POPUP_END_COLOR: egui::Color32 = egui::Color32::from_rgb(214, 48, 49);
-/// Jarak (layar) asal partikel request dan tujuan partikel respons.
+/// Margin (layar) di sekitar card yang masih dianggap terlihat saat pemutaran.
 const OUTSIDE_PX: f32 = 90.0;
-/// Tinggi header card (koordinat diagram), sama dengan
-/// `diagram_flow_layout::CARD_HEADER_H`.
-const CARD_HEADER_H: f32 = 34.0;
 /// Interval repaint selama pemutaran terlihat (≈30 fps).
 const FRAME_MS: u64 = 33;
 /// Interval repaint selama pemutaran berjalan tetapi card di luar layar.
@@ -326,8 +321,7 @@ fn pulse_table(
     }
 }
 
-/// Gambar pemutaran yang sedang aktif: partikel request/respons, garis dan
-/// partikel langkah aktif, denyut tabel dan kolom target, caption langkah.
+/// Gambar pemutaran yang sedang aktif: garis dan partikel langkah aktif, denyut tabel dan kolom target, caption langkah.
 /// Dipanggil setelah tabel digambar. Meminta repaint hanya selama
 /// pemutaran berjalan; saat jeda atau `Done` tidak ada repaint.
 pub fn draw_playback(
@@ -361,18 +355,13 @@ pub fn draw_playback(
     let s = scale.max(0.6);
     let detail = lod_for_zoom(scale) == Lod::Detail;
     let k = if p.playing { pulse(now) } else { 1.0 };
-    let header_y = cr.top() + (CARD_HEADER_H * scale * 0.5).min(cr.height() * 0.5);
-    let entry = egui::pos2(cr.left(), header_y);
-    let outside = entry - egui::vec2(OUTSIDE_PX, 0.0);
 
     // Blok berlabel: langkah yang tidak bisa digambar keluar lebih awal,
     // popup PLAY/END tetap digambar paling atas sesudahnya.
     'phase: {
         match phase {
-            PlayPhase::Response(t) => {
-                glow_line(painter, vec![entry, outside], REQUEST_COLOR, s);
-                particle(painter, &|t| entry.lerp(outside, t), t, REQUEST_COLOR, s);
-            }
+            // Fase respons tidak digambar; akhir pemutaran ditandai popup END.
+            PlayPhase::Response(_) => {}
             PlayPhase::Step { index, t } => {
                 let Some(item) = items.get(index) else {
                     break 'phase;
@@ -481,7 +470,7 @@ fn bar_button(ui: &mut egui::Ui, icon: &str, tip: &str) -> bool {
     .clicked()
 }
 
-/// Bilah kontrol melayang di bawah card yang sedang diputar: Previous,
+/// Bilah kontrol melayang di atas card yang sedang diputar: Previous,
 /// Play/Pause, Next, kecepatan, Replay, posisi langkah, Close. `card` =
 /// rect layar card. Ukurannya tetap (tidak ikut zoom) supaya selalu bisa
 /// diklik.
@@ -496,7 +485,7 @@ pub fn render_play_controls(ui: &mut egui::Ui, state: &mut DiagramState, card: O
     let duration = play::play_duration(&items);
     let clip = ui.clip_rect();
     let size = egui::vec2(262.0, 34.0);
-    let mut min = egui::pos2(cr.center().x - size.x / 2.0, cr.bottom() + 8.0);
+    let mut min = egui::pos2(cr.center().x - size.x / 2.0, cr.top() - size.y - 8.0);
     min.x = min.x.clamp(
         clip.left() + 8.0,
         (clip.right() - size.x - 8.0).max(clip.left() + 8.0),
@@ -943,8 +932,6 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-        let id = egui::Id::new(egui::Id::NULL); // placeholder agar tipe jelas
-        let _ = id;
         let area = ctx.memory(|m| {
             m.areas()
                 .visible_layer_ids()

@@ -6933,6 +6933,76 @@ pub fn compact_groups(nodes: &mut [DiagramNode], max_gap: f32) {
 /// tabel tanpa group sebagai kotak sendiri. Tabel link database dan cluster
 /// yang memuatnya tidak digeser.
 pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
+    move_blocks(nodes, |rects| compact_rects(rects, max_gap));
+}
+
+/// Jarak antar blok (group atau tabel tanpa group) hasil "Auto Arrange".
+pub const ARRANGE_GAP: f32 = 40.0;
+
+/// Hitung pergeseran tiap kotak agar merapat ke pusat gabungannya: tiap
+/// kotak digeser per sumbu sampai tertahan kotak lain pada jarak `gap`.
+/// Kotak yang semula tidak bertumpuk tetap tidak bertumpuk.
+fn pack_rects(rects: &[egui::Rect], gap: f32) -> Vec<egui::Vec2> {
+    let mut r = rects.to_vec();
+    for _ in 0..40 {
+        let Some(center) = r
+            .iter()
+            .copied()
+            .reduce(|a, b| a.union(b))
+            .map(|b| b.center())
+        else {
+            break;
+        };
+        let mut order: Vec<usize> = (0..r.len()).collect();
+        order.sort_by(|&a, &b| {
+            r[a].center()
+                .distance_sq(center)
+                .total_cmp(&r[b].center().distance_sq(center))
+        });
+        let mut moved = false;
+        for &i in &order {
+            for axis in [0usize, 1] {
+                let other = 1 - axis;
+                let d = center[axis] - r[i].center()[axis];
+                let mut travel = d.abs();
+                for (j, o) in r.iter().enumerate() {
+                    // Hanya kotak yang berada di jalur geser (dalam jarak `gap`).
+                    if j == i
+                        || o.max[other] <= r[i].min[other] - gap
+                        || o.min[other] >= r[i].max[other] + gap
+                    {
+                        continue;
+                    }
+                    if d > 0.0 && o.center()[axis] > r[i].center()[axis] {
+                        travel = travel.min(o.min[axis] - gap - r[i].max[axis]);
+                    } else if d < 0.0 && o.center()[axis] < r[i].center()[axis] {
+                        travel = travel.min(r[i].min[axis] - gap - o.max[axis]);
+                    }
+                }
+                if travel > 0.5 {
+                    let mut off = egui::Vec2::ZERO;
+                    off[axis] = travel * d.signum();
+                    r[i] = r[i].translate(off);
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    r.iter().zip(rects).map(|(a, b)| a.min - b.min).collect()
+}
+
+/// Rapatkan semua blok ke pusat diagram dengan jarak `gap` (lihat
+/// [`pack_rects`]). Dipakai "Auto Arrange" agar hasilnya tidak renggang.
+pub fn pack_blocks(nodes: &mut [DiagramNode], gap: f32) {
+    move_blocks(nodes, |rects| pack_rects(rects, gap));
+}
+
+/// Geser blok (cluster group utuh, atau tabel tanpa group) sebesar offset
+/// yang dihitung `offsets_of` dari kotak tiap blok.
+fn move_blocks(nodes: &mut [DiagramNode], offsets_of: impl Fn(&[egui::Rect]) -> Vec<egui::Vec2>) {
     let (group_cluster, node_cluster) = group_clusters(nodes);
     let cluster_count = group_cluster.values().max().map_or(0, |m| m + 1);
     let pinned = pinned_clusters(nodes, &node_cluster, cluster_count);
@@ -6964,7 +7034,7 @@ pub fn compact_blocks(nodes: &mut [DiagramNode], max_gap: f32) {
         return;
     }
 
-    let offsets = compact_rects(&rects, max_gap);
+    let offsets = offsets_of(&rects);
     let mut cluster_off = vec![egui::Vec2::ZERO; cluster_count];
     for (&(c, i), off) in blocks.iter().zip(offsets) {
         match c {
@@ -7060,12 +7130,14 @@ fn stretch_to_square(nodes: &mut [DiagramNode]) -> bool {
 /// tidak cukup.
 fn square_up(nodes: &mut [DiagramNode], padding: f32) {
     for _ in 0..8 {
+        pack_blocks(nodes, ARRANGE_GAP.max(padding));
         if !stretch_to_square(nodes) {
             break;
         }
         compact_groups(nodes, GROUP_MAX_GAP.max(padding));
         resolve_all_overlaps(nodes, padding, None);
     }
+    pack_blocks(nodes, ARRANGE_GAP.max(padding));
 }
 
 pub fn perform_auto_layout(state: &mut DiagramState) {
@@ -9162,6 +9234,26 @@ mod tests {
                 let inter = ra.intersect(rb);
                 assert!(inter.width() <= 0.0 || inter.height() <= 0.0);
             }
+        }
+        // Tiap tabel punya tetangga pada jarak rapat.
+        for a in &state.nodes {
+            let ra = egui::Rect::from_min_size(a.pos, a.size);
+            let nearest = state
+                .nodes
+                .iter()
+                .filter(|b| b.id != a.id)
+                .map(|b| {
+                    let rb = egui::Rect::from_min_size(b.pos, b.size);
+                    let dx = (rb.left() - ra.right()).max(ra.left() - rb.right());
+                    let dy = (rb.top() - ra.bottom()).max(ra.top() - rb.bottom());
+                    dx.max(dy)
+                })
+                .fold(f32::MAX, f32::min);
+            assert!(
+                nearest <= ARRANGE_GAP + 1.0,
+                "{} terlalu jauh: {nearest}",
+                a.id
+            );
         }
     }
 }
