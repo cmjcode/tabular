@@ -1,4 +1,4 @@
-use tabular::editor::{get_search_matches, EditorSearchMatch};
+use tabular::editor::{EditorSearchMatch, get_search_matches};
 
 #[test]
 fn test_plain_text_search_case_insensitive() {
@@ -53,7 +53,16 @@ fn test_in_selection_search() {
     // Select range covering only the middle query "SELECT name FROM b;"
     let sel_start = 20;
     let sel_end = 39;
-    let matches = get_search_matches(sql, "name", false, false, false, true, Some((sel_start, sel_end))).unwrap();
+    let matches = get_search_matches(
+        sql,
+        "name",
+        false,
+        false,
+        false,
+        true,
+        Some((sel_start, sel_end)),
+    )
+    .unwrap();
     assert_eq!(matches.len(), 1);
     assert_eq!(&sql[matches[0].start..matches[0].end], "name");
     assert!(matches[0].start >= sel_start && matches[0].end <= sel_end);

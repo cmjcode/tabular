@@ -8,9 +8,7 @@
 use log::{info, warn};
 use std::collections::HashMap;
 
-use super::api_client::{
-    ApiClient, KeyEnvelopeItemReq, PutKeyEnvelopesReq, RemoteSharedFolder,
-};
+use super::api_client::{ApiClient, KeyEnvelopeItemReq, PutKeyEnvelopesReq, RemoteSharedFolder};
 use super::vault_crypto::{self, SymKey, UnlockedVault};
 
 /// Resolve which key should encrypt/decrypt a resource filed under
@@ -25,13 +23,25 @@ pub fn resolve_key_for_folder<'a>(
     resource_type: &str,
     folder_path: &str,
 ) -> Option<&'a SymKey> {
+    // Folder yang dibagikan juga mencakup subfoldernya; share terdalam menang.
     match shared_folders
         .iter()
-        .find(|f| f.resource_type == resource_type && f.folder_path == folder_path)
+        .filter(|f| f.resource_type == resource_type && folder_covers(&f.folder_path, folder_path))
+        .max_by_key(|f| f.folder_path.len())
     {
         Some(folder) => team_keys.get(&folder.team_id),
         None => Some(account_key),
     }
+}
+
+/// Folder bersama `shared` mencakup `path`: sama persis atau subfoldernya.
+/// Share `/` hanya mencakup `/` (sama seperti server).
+pub fn folder_covers(shared: &str, path: &str) -> bool {
+    path == shared
+        || (shared != "/"
+            && path
+                .strip_prefix(shared)
+                .is_some_and(|r| r.starts_with('/')))
 }
 
 /// Unseal this user's key envelope for every Team they belong to, building
@@ -48,16 +58,24 @@ pub async fn unlock_all_team_keys(
     let mut out = HashMap::new();
     for team_id in team_ids {
         match client.get_my_key_envelope(token, team_id).await {
-            Ok(Some(envelope)) => match vault_crypto::unwrap_team_key(vault, &envelope.wrapped_team_key) {
-                Ok(key) => {
-                    out.insert(team_id.clone(), key);
+            Ok(Some(envelope)) => {
+                match vault_crypto::unwrap_team_key(vault, &envelope.wrapped_team_key) {
+                    Ok(key) => {
+                        out.insert(team_id.clone(), key);
+                    }
+                    Err(e) => warn!("[vault_sync] Failed to unseal Team {} key: {}", team_id, e),
                 }
-                Err(e) => warn!("[vault_sync] Failed to unseal Team {} key: {}", team_id, e),
-            },
-            Ok(None) => {
-                info!("[vault_sync] No key envelope yet for Team {} — waiting for a grant", team_id);
             }
-            Err(e) => warn!("[vault_sync] Failed to fetch key envelope for Team {}: {}", team_id, e),
+            Ok(None) => {
+                info!(
+                    "[vault_sync] No key envelope yet for Team {} — waiting for a grant",
+                    team_id
+                );
+            }
+            Err(e) => warn!(
+                "[vault_sync] Failed to fetch key envelope for Team {}: {}",
+                team_id, e
+            ),
         }
     }
     out
@@ -87,7 +105,10 @@ pub async fn ensure_own_team_key(
 
     // First time anything is shared with this Team: mint a key and self-grant.
     let team_key = SymKey::generate();
-    let my_pub_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, vault.x25519_public_bytes);
+    let my_pub_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        vault.x25519_public_bytes,
+    );
     let sealed = vault_crypto::wrap_team_key(&my_pub_b64, &team_key)
         .map_err(|e| anyhow::anyhow!("failed to seal Team key for self: {e}"))?;
 
@@ -147,6 +168,9 @@ pub async fn grant_pending_team_key_envelopes(
     client
         .put_key_envelopes(token, team_id, &PutKeyEnvelopesReq { envelopes })
         .await?;
-    info!("[vault_sync] Granted Team {} key to {} pending member(s)", team_id, granted);
+    info!(
+        "[vault_sync] Granted Team {} key to {} pending member(s)",
+        team_id, granted
+    );
     Ok(granted)
 }

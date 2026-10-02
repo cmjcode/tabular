@@ -37,7 +37,10 @@ pub fn analyze_safety(sql: &str) -> Option<UnsafeDmlReport> {
             // Check if top-level WHERE keyword exists (not inside subqueries or quotes)
             if !has_top_level_where(&clean) {
                 let table_name = extract_target_table(&clean, kind);
-                warn!("⚠️ Safety Guard: Unsafe {} detected without WHERE clause (table: {:?})", kind, table_name);
+                warn!(
+                    "⚠️ Safety Guard: Unsafe {} detected without WHERE clause (table: {:?})",
+                    kind, table_name
+                );
                 return Some(UnsafeDmlReport {
                     statement_type: kind,
                     table_name,
@@ -59,6 +62,59 @@ fn has_top_level_where(sql: &str) -> bool {
 
     while i < len {
         let b = bytes[i];
+
+        // Skip single-quoted string literals: '...' (with '' or \' escape)
+        if b == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'\'' {
+                    if i + 1 < len && bytes[i + 1] == b'\'' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip double-quoted identifiers or string literals: "..."
+        if b == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    if i + 1 < len && bytes[i + 1] == b'"' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip backtick identifiers: `...`
+        if b == b'`' {
+            i += 1;
+            while i < len && bytes[i] != b'`' {
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
+            continue;
+        }
+
         if b == b'(' {
             depth += 1;
             i += 1;
@@ -97,24 +153,26 @@ fn extract_target_table(sql: &str, kind: &str) -> Option<String> {
         let mut iter = tokens.iter();
         while let Some(tok) = iter.next() {
             if tok.eq_ignore_ascii_case("DELETE")
-                && let Some(next) = iter.next() {
-                    if next.eq_ignore_ascii_case("FROM") {
-                        if let Some(tbl) = iter.next() {
-                            return Some(clean_table_name(tbl));
-                        }
-                    } else {
-                        return Some(clean_table_name(next));
+                && let Some(next) = iter.next()
+            {
+                if next.eq_ignore_ascii_case("FROM") {
+                    if let Some(tbl) = iter.next() {
+                        return Some(clean_table_name(tbl));
                     }
+                } else {
+                    return Some(clean_table_name(next));
                 }
+            }
         }
     } else if kind == "UPDATE" {
         // UPDATE <table> SET ...
         let mut iter = tokens.iter();
         while let Some(tok) = iter.next() {
             if tok.eq_ignore_ascii_case("UPDATE")
-                && let Some(tbl) = iter.next() {
-                    return Some(clean_table_name(tbl));
-                }
+                && let Some(tbl) = iter.next()
+            {
+                return Some(clean_table_name(tbl));
+            }
         }
     }
     None
@@ -229,5 +287,30 @@ mod tests {
     fn test_safe_update_with_where() {
         let sql = "UPDATE orders SET status = 'cancelled' WHERE total = 0;";
         assert!(analyze_safety(sql).is_none());
+    }
+    #[test]
+    fn test_unsafe_update_with_where_in_string_literal() {
+        let sql = "UPDATE users SET bio = 'I live WHERE the sun shines';";
+        let report = analyze_safety(sql);
+        assert!(
+            report.is_some(),
+            "Should detect lack of WHERE clause when WHERE is inside string literal"
+        );
+        let r = report.unwrap();
+        assert_eq!(r.statement_type, "UPDATE");
+        assert_eq!(r.table_name.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn test_safe_update_with_where_in_literal_and_real_where() {
+        let sql = "UPDATE users SET bio = 'I live WHERE the sun shines' WHERE id = 42;";
+        assert!(analyze_safety(sql).is_none());
+    }
+
+    #[test]
+    fn test_unsafe_update_with_escaped_quotes_and_where() {
+        let sql = "UPDATE users SET bio = 'don''t know WHERE to go';";
+        let report = analyze_safety(sql);
+        assert!(report.is_some());
     }
 }

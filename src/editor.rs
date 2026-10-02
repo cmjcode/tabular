@@ -3,16 +3,38 @@ use eframe::egui::text_edit::TextEditState;
 use egui::text::{CCursor, CCursorRange};
 // Using adapter for cursor state (removes direct TextEditState dependency from rest of file)
 // syntax highlighting module temporarily disabled
-use log::debug;
+use log::{debug, info};
 use sqlformat::{QueryParams, format as sqlfmt};
 
+use crate::spreadsheet::SpreadsheetOperations;
 use crate::{
     connection, data_table, directory, editor, editor_autocomplete, models, query_tools,
     sidebar_history, sidebar_query, window_egui,
 };
-use crate::spreadsheet::SpreadsheetOperations;
 use std::borrow::Cow;
 use std::time::Instant;
+
+/// Pindahkan filter global (WHERE + visual filter) ke tab aktif dan kosongkan
+/// state global. Dipakai sebelum tab lain menjadi aktif.
+pub(crate) fn stash_active_tab_filter(tabular: &mut window_egui::Tabular) {
+    let sql_filter = std::mem::take(&mut tabular.sql_filter_text);
+    let visual_filter = std::mem::take(&mut tabular.visual_filter);
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.sql_filter_text = sql_filter;
+        tab.visual_filter = visual_filter;
+    }
+}
+
+/// Muat filter milik tab aktif ke state global.
+fn restore_active_tab_filter(tabular: &mut window_egui::Tabular) {
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tabular.sql_filter_text = std::mem::take(&mut tab.sql_filter_text);
+        tabular.visual_filter = std::mem::take(&mut tab.visual_filter);
+    } else {
+        tabular.sql_filter_text.clear();
+        tabular.visual_filter = Default::default();
+    }
+}
 
 // Tab management methods
 pub(crate) fn create_new_tab(
@@ -24,6 +46,7 @@ pub(crate) fn create_new_tab(
     tabular.next_tab_id += 1;
 
     let new_tab = models::structs::QueryTab {
+        id: tab_id,
         title,
         content: content.clone(),
         file_path: None,
@@ -56,12 +79,21 @@ pub(crate) fn create_new_tab(
         redis_browser_state: None,
         dba_monitor_state: None,
         user_manager_state: None,
+        git_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,
         pinned_columns: std::collections::HashSet::new(),
+        is_pinned: false,
+        last_executed_sql: String::new(),
+        last_statement_type: models::structs::StatementType::Select,
+        last_affected_rows: None,
+        sql_filter_text: String::new(),
+        visual_filter: models::structs::VisualFilterState::default(),
     };
 
+    // Filter tab sebelumnya dititipkan ke tab itu sendiri; tab baru mulai tanpa filter.
+    stash_active_tab_filter(tabular);
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
@@ -140,7 +172,9 @@ pub(crate) fn open_dba_monitor_tab(
     initial_tab: models::enums::DbaMonitorTab,
 ) -> usize {
     let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
-    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let conn_name = conn
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "DB".to_string());
     let title = format!("⚡ Monitor: {}", conn_name);
 
     // If an existing monitor tab for this connection is already open, just switch to it
@@ -156,15 +190,12 @@ pub(crate) fn open_dba_monitor_tab(
         }
     }
 
-    let mut monitor_state = models::structs::DbaMonitorState::default();
-    monitor_state.selected_tab = initial_tab;
+    let monitor_state = models::structs::DbaMonitorState {
+        selected_tab: initial_tab,
+        ..Default::default()
+    };
 
-    let tab_id = create_new_tab_with_connection(
-        tabular,
-        title,
-        String::new(),
-        Some(conn_id),
-    );
+    let tab_id = create_new_tab_with_connection(tabular, title, String::new(), Some(conn_id));
 
     crate::connection::ensure_background_pool_creation(tabular, conn_id);
 
@@ -182,7 +213,9 @@ pub(crate) fn open_user_manager_tab(
     initial_tab: crate::user_manager::UserManagerTab,
 ) -> usize {
     let conn = tabular.connections.iter().find(|c| c.id == Some(conn_id));
-    let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "DB".to_string());
+    let conn_name = conn
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "DB".to_string());
     let title = format!("👥 Users: {}", conn_name);
 
     // If an existing user manager tab for this connection is already open, just switch to it
@@ -198,15 +231,12 @@ pub(crate) fn open_user_manager_tab(
         }
     }
 
-    let mut user_mgr_state = crate::user_manager::UserManagerState::default();
-    user_mgr_state.selected_tab = initial_tab;
+    let user_mgr_state = crate::user_manager::UserManagerState {
+        selected_tab: initial_tab,
+        ..Default::default()
+    };
 
-    let tab_id = create_new_tab_with_connection(
-        tabular,
-        title,
-        String::new(),
-        Some(conn_id),
-    );
+    let tab_id = create_new_tab_with_connection(tabular, title, String::new(), Some(conn_id));
 
     crate::connection::ensure_background_pool_creation(tabular, conn_id);
 
@@ -217,8 +247,8 @@ pub(crate) fn open_user_manager_tab(
     tab_id
 }
 
-
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
     if tabular.query_tabs.len() <= 1 {
         // Don't close the last tab, just clear it
         if let Some(tab) = tabular.query_tabs.get_mut(0) {
@@ -227,6 +257,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tab.file_path = None;
             tab.is_saved = false;
             tab.is_modified = false;
+            tab.is_pinned = false;
             tab.connection_id = None; // Clear connection as well
             tab.database_name = None; // Clear database as well
             // Clear per-tab result state as well
@@ -259,10 +290,13 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
         tabular.current_base_query.clear();
         tabular.current_connection_id = None;
         tabular.current_object_ddl = None;
+        tabular.sql_filter_text.clear();
+        tabular.visual_filter = Default::default();
         return;
     }
 
     if tab_index < tabular.query_tabs.len() {
+        let closing_active = tab_index == tabular.active_tab_index;
         // End the tab's manual-commit session (implicit rollback), if any.
         if let Some(session) = tabular.query_tabs[tab_index].session.take() {
             session.close();
@@ -276,6 +310,11 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.active_tab_index -= 1;
         }
 
+        // Filter tab yang ditutup tidak boleh nyangkut ke tab yang kini aktif.
+        if closing_active {
+            restore_active_tab_filter(tabular);
+        }
+
         // Update editor with active tab content
         if let Some(active_tab) = tabular.query_tabs.get(tabular.active_tab_index) {
             tabular.editor.set_text(active_tab.content.clone());
@@ -284,6 +323,279 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.sql_semantic_snapshot = None;
         }
         tabular.current_object_ddl = None;
+    }
+}
+
+/// Move a tab from `from` index to `to` index directly.
+/// Automatically updates active_tab_index and syncs pinned status if crossing the pinned boundary.
+pub(crate) fn move_tab(tabular: &mut window_egui::Tabular, from: usize, to: usize) {
+    tabular.dragged_tab_index = None;
+    let tab_count = tabular.query_tabs.len();
+    if from == to || from >= tab_count || to >= tab_count {
+        log::debug!(
+            "[TabEditor] move_tab: ignored no-op or out-of-bounds (from={}, to={}, tab_count={})",
+            from,
+            to,
+            tab_count
+        );
+        return;
+    }
+
+    let pinned_count_before = tabular.query_tabs.iter().filter(|t| t.is_pinned).count();
+    let was_pinned = tabular.query_tabs[from].is_pinned;
+    let tab_title = tabular.query_tabs[from].title.clone();
+
+    let mut tab = tabular.query_tabs.remove(from);
+
+    // If moved into pinned region (< pinned_count_before), pin it.
+    // If moved out of pinned region (>= pinned_count_before), unpin it.
+    if !was_pinned && to < pinned_count_before {
+        tab.is_pinned = true;
+        log::debug!(
+            "[TabEditor] move_tab: tab '{}' moved into pinned zone -> auto-pinned",
+            tab_title
+        );
+    } else if was_pinned && to >= pinned_count_before {
+        tab.is_pinned = false;
+        log::debug!(
+            "[TabEditor] move_tab: tab '{}' moved out of pinned zone -> auto-unpinned",
+            tab_title
+        );
+    }
+
+    tabular.query_tabs.insert(to, tab);
+
+    // Adjust active_tab_index
+    let prev_active = tabular.active_tab_index;
+    if tabular.active_tab_index == from {
+        tabular.active_tab_index = to;
+    } else if from < to {
+        if tabular.active_tab_index > from && tabular.active_tab_index <= to {
+            tabular.active_tab_index -= 1;
+        }
+    } else {
+        if tabular.active_tab_index >= to && tabular.active_tab_index < from {
+            tabular.active_tab_index += 1;
+        }
+    }
+    eprintln!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
+    info!(
+        "[TabEditor] move_tab: tab '{}' moved from {} to {}. active_tab: {} -> {}",
+        tab_title, from, to, prev_active, tabular.active_tab_index
+    );
+}
+
+/// Reorder a tab dragged from `from` index and dropped at insertion slot `insert_at` (0..=tab_count).
+/// Automatically updates active_tab_index and syncs pinned status if crossing the pinned boundary.
+pub(crate) fn reorder_tab(tabular: &mut window_egui::Tabular, from: usize, insert_at: usize) {
+    let tab_count = tabular.query_tabs.len();
+    if from >= tab_count {
+        log::debug!(
+            "[TabEditor] reorder_tab: ignored out-of-bounds (from={}, tab_count={})",
+            from,
+            tab_count
+        );
+        tabular.dragged_tab_index = None;
+        return;
+    }
+    let to = if insert_at > from {
+        (insert_at - 1).min(tab_count - 1)
+    } else {
+        insert_at.min(tab_count - 1)
+    };
+    log::debug!(
+        "[TabEditor] reorder_tab: from {} to slot {} (computed target index {})",
+        from,
+        insert_at,
+        to
+    );
+    move_tab(tabular, from, to);
+}
+
+/// Pin a tab by index and move it to the end of the pinned section.
+pub(crate) fn pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        log::debug!(
+            "[TabEditor] pin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
+        return;
+    }
+    tabular.query_tabs[tab_index].is_pinned = true;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
+    let first_unpinned = tabular
+        .query_tabs
+        .iter()
+        .position(|t| !t.is_pinned)
+        .unwrap_or(tabular.query_tabs.len());
+    if tab_index > first_unpinned {
+        let tab = tabular.query_tabs.remove(tab_index);
+        tabular.query_tabs.insert(first_unpinned, tab);
+
+        let prev_active = tabular.active_tab_index;
+        if tabular.active_tab_index == tab_index {
+            tabular.active_tab_index = first_unpinned;
+        } else if tabular.active_tab_index >= first_unpinned && tabular.active_tab_index < tab_index
+        {
+            tabular.active_tab_index += 1;
+        }
+        eprintln!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: pinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+            tab_title, tab_index, first_unpinned, prev_active, tabular.active_tab_index
+        );
+    } else {
+        eprintln!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] pin_tab: tab '{}' at index {} marked as pinned (already in position)",
+            tab_title, tab_index
+        );
+    }
+}
+
+/// Unpin a tab by index and move it after all remaining pinned tabs if needed.
+pub(crate) fn unpin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        log::debug!(
+            "[TabEditor] unpin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
+        return;
+    }
+    tabular.query_tabs[tab_index].is_pinned = false;
+    let tab_title = tabular.query_tabs[tab_index].title.clone();
+    let last_pinned_idx = tabular.query_tabs.iter().rposition(|t| t.is_pinned);
+    if let Some(last_p) = last_pinned_idx {
+        if tab_index < last_p {
+            let tab = tabular.query_tabs.remove(tab_index);
+            tabular.query_tabs.insert(last_p, tab);
+
+            let prev_active = tabular.active_tab_index;
+            if tabular.active_tab_index == tab_index {
+                tabular.active_tab_index = last_p;
+            } else if tabular.active_tab_index > tab_index && tabular.active_tab_index <= last_p {
+                tabular.active_tab_index -= 1;
+            }
+            eprintln!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: unpinned tab '{}' moved from {} to {}. active_tab: {} -> {}",
+                tab_title, tab_index, last_p, prev_active, tabular.active_tab_index
+            );
+        } else {
+            eprintln!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
+            info!(
+                "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (already after pinned tabs)",
+                tab_title, tab_index
+            );
+        }
+    } else {
+        eprintln!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
+        info!(
+            "[TabEditor] unpin_tab: tab '{}' at index {} marked as unpinned (no pinned tabs remaining)",
+            tab_title, tab_index
+        );
+    }
+}
+
+/// Toggle pinned status for a tab.
+pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        log::debug!(
+            "[TabEditor] toggle_pin_tab: ignored out-of-bounds tab_index {}",
+            tab_index
+        );
+        return;
+    }
+    let is_pinned = tabular.query_tabs[tab_index].is_pinned;
+    log::debug!(
+        "[TabEditor] toggle_pin_tab: tab #{} ('{}', is_pinned={}) -> toggling",
+        tab_index,
+        tabular.query_tabs[tab_index].title,
+        is_pinned
+    );
+    if is_pinned {
+        unpin_tab(tabular, tab_index);
+    } else {
+        pin_tab(tabular, tab_index);
+    }
+}
+
+/// Close all tabs except `keep_index` and any pinned tabs.
+pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: usize) {
+    tabular.dragged_tab_index = None;
+    if keep_index >= tabular.query_tabs.len() {
+        return;
+    }
+    if tabular.active_tab_index != keep_index {
+        switch_to_tab(tabular, keep_index);
+    }
+    let mut i = 0;
+    while i < tabular.query_tabs.len() {
+        if i != tabular.active_tab_index && !tabular.query_tabs[i].is_pinned {
+            if let Some(session) = tabular.query_tabs[i].session.take() {
+                session.close();
+            }
+            tabular.query_tabs.remove(i);
+            if tabular.active_tab_index > i {
+                tabular.active_tab_index -= 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
+    }
+}
+
+/// Close all unpinned tabs to the right of `tab_index`.
+pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    tabular.dragged_tab_index = None;
+    if tab_index >= tabular.query_tabs.len() {
+        return;
+    }
+    if tabular.active_tab_index > tab_index
+        && !tabular.query_tabs[tabular.active_tab_index].is_pinned
+    {
+        switch_to_tab(tabular, tab_index);
+    }
+    let mut i = tab_index + 1;
+    while i < tabular.query_tabs.len() {
+        if !tabular.query_tabs[i].is_pinned {
+            if let Some(session) = tabular.query_tabs[i].session.take() {
+                session.close();
+            }
+            tabular.query_tabs.remove(i);
+            if tabular.active_tab_index > i {
+                tabular.active_tab_index -= 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if tabular.active_tab_index >= tabular.query_tabs.len() {
+        tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
     }
 }
 
@@ -363,6 +675,7 @@ pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<u
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {
+        stash_active_tab_filter(tabular);
         // Save current tab content
         if let Some(current_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
             if current_tab.content != tabular.editor.text {
@@ -397,14 +710,18 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             );
             std::mem::swap(&mut current_tab.object_ddl, &mut tabular.current_object_ddl);
             std::mem::swap(&mut current_tab.pinned_columns, &mut tabular.pinned_columns);
-            // Save query message state
+            // Save query message and execution state
             current_tab.query_message = tabular.query_message.clone();
             current_tab.query_message_is_error = tabular.query_message_is_error;
+            current_tab.last_executed_sql = tabular.last_executed_sql.clone();
+            current_tab.last_statement_type = tabular.last_statement_type;
+            current_tab.last_affected_rows = tabular.last_affected_rows;
             // dba_special_mode already resides on current_tab; no action required here
         }
 
         // Switch to new tab
         tabular.active_tab_index = tab_index;
+        restore_active_tab_filter(tabular);
         if let Some(new_tab) = tabular.query_tabs.get_mut(tab_index) {
             tabular.editor.set_text(new_tab.content.clone());
             tabular.highlight_cache.clear();
@@ -434,10 +751,13 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             std::mem::swap(&mut tabular.pinned_columns, &mut new_tab.pinned_columns);
             // IMPORTANT: kembalikan connection id aktif sesuai tab baru
             tabular.current_connection_id = new_tab.connection_id;
-            // Restore query message state
+            // Restore query message and execution state
             tabular.query_message = new_tab.query_message.clone();
             tabular.query_message_is_error = new_tab.query_message_is_error;
             tabular.show_message_panel = !tabular.query_message.is_empty();
+            tabular.last_executed_sql = new_tab.last_executed_sql.clone();
+            tabular.last_statement_type = new_tab.last_statement_type;
+            tabular.last_affected_rows = new_tab.last_affected_rows;
             // dba_special_mode automatically follows with new_tab
 
             // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation
@@ -479,14 +799,38 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         && tab.http_client_state.is_some()
     {
         let conn_id = tab.connection_id;
+        let mut new_tab_title = None;
+        let mut saved_ws_id = None;
+        let mut saved_folder_id = None;
+        let mut workspaces_changed = false;
         if let Some(http_state) = tab.http_client_state.as_mut() {
-            let workspaces_changed = crate::http_client::save_or_update_http_tab(
+            workspaces_changed = crate::http_client::save_or_update_http_tab(
                 conn_id,
                 http_state,
                 &mut tabular.toasts,
             );
             if workspaces_changed {
-                tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+                saved_ws_id = http_state.saved_workspace_id.clone();
+                saved_folder_id = http_state.saved_folder_id.clone();
+                if !http_state.save_dialog_name.trim().is_empty() {
+                    new_tab_title = Some(http_state.save_dialog_name.trim().to_string());
+                }
+            }
+        }
+        if workspaces_changed {
+            tabular.yaak_workspaces = crate::http_collection::load_workspaces();
+            tabular.selected_menu = "APIs".to_string();
+            if let Some(ws_id) = saved_ws_id {
+                tabular.collection_just_saved_workspace = Some(ws_id);
+            }
+            if let Some(f_id) = saved_folder_id {
+                tabular.collection_expanded_folders.insert(f_id);
+            }
+            if let Some(title) = new_tab_title {
+                tab.title = title;
+            }
+            if tabular.sync_account.is_some() {
+                tabular.sync_trigger_http = true;
             }
         }
         return Ok(());
@@ -585,7 +929,6 @@ pub(crate) fn save_current_tab(tabular: &mut window_egui::Tabular) -> Result<(),
         }
 
         if let Some(path) = &tab.file_path {
-
             // File already exists, save directly
             let file_path = path.clone();
             std::fs::write(&file_path, &tab.content)
@@ -923,60 +1266,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let editor_id = ui.make_persistent_id("sql_editor");
 
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
-    let mut trigger_format_sql = false;
-    ui.input(|i| {
-        // Accept platform command (command on macOS, control elsewhere)
-        if (i.modifiers.mac_cmd || i.modifiers.command)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::F)
-        {
-            trigger_format_sql = true;
-        }
-    });
+    let trigger_format_sql =
+        crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::FormatSql);
     if trigger_format_sql {
-        // Consume the key event so TextEdit doesn't see it
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::F,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         reformat_current_sql(tabular, ui);
         request_scroll_to_cursor = true;
         // Early repaint for snappy UX
         ui.ctx().request_repaint();
     }
-    
+
     // Shortcut: Toggle Comment (Cmd/Ctrl + /)
-    let mut trigger_toggle_comment = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command)
-            && !i.modifiers.shift
-            && i.key_pressed(egui::Key::Slash)
-        {
-            trigger_toggle_comment = true;
-        }
-    });
+    let trigger_toggle_comment = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ToggleComment,
+    );
     if trigger_toggle_comment {
-        // Consume the key event so TextEdit doesn't see it
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Slash,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         toggle_line_comment(tabular);
         request_scroll_to_cursor = true;
         // Early repaint for snappy UX
@@ -984,28 +1289,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Toggle AI Panel (Cmd/Ctrl + Shift + A)
-    let mut trigger_toggle_ai = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::A)
-        {
-            trigger_toggle_ai = true;
-        }
-    });
+    let trigger_toggle_ai = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ToggleAiPanel,
+    );
     if trigger_toggle_ai {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         tabular.show_ai_panel = !tabular.show_ai_panel;
         if tabular.show_ai_panel && tabular.ai_input.is_empty() {
             // Pre-fill the AI prompt with selected text or the whole editor content (capped)
@@ -1026,33 +1315,23 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Explain Query (Cmd/Ctrl + Shift + E)
-    let mut trigger_explain_query = false;
-    ui.input(|i| {
-        if (i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl)
-            && i.modifiers.shift
-            && i.key_pressed(egui::Key::E)
-        {
-            trigger_explain_query = true;
-        }
-    });
+    let trigger_explain_query = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::ExplainQuery,
+    );
     if trigger_explain_query {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::E,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
         let id = egui::Id::new("sql_editor");
         let mut direct_selected = String::new();
-        if let Some(range) = crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id) {
+        if let Some(range) =
+            crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
+        {
             let to_byte_index = |s: &str, char_idx: usize| -> usize {
-                s.char_indices().map(|(b, _)| b).chain(std::iter::once(s.len())).nth(char_idx).unwrap_or(s.len())
+                s.char_indices()
+                    .map(|(b, _)| b)
+                    .chain(std::iter::once(s.len()))
+                    .nth(char_idx)
+                    .unwrap_or(s.len())
             };
             let start_b = to_byte_index(&tabular.editor.text, range.start);
             let end_b = to_byte_index(&tabular.editor.text, range.end);
@@ -1097,37 +1376,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
 
     // Shortcut: Find (Cmd/Ctrl + F)
-    let mut trigger_find = false;
-    ui.input(|i| {
-        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
-        if cmd_or_ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::F) {
-            trigger_find = true;
-        }
-    });
-    if trigger_find {
-        ui.ctx().input_mut(|ri| {
-            ri.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::F,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
+    let trigger_find = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::FindReplace,
+    );
+    // Saat grid hasil yang terakhir diklik, ⌘F membuka Find in results.
+    if trigger_find && tabular.table_recently_clicked && !tabular.current_table_headers.is_empty() {
+        tabular.grid_ext.find.open = true;
+        tabular.grid_ext.find.focus_request = true;
+        ui.ctx().request_repaint();
+    } else if trigger_find {
         tabular.advanced_editor.show_find_replace = true;
         tabular.advanced_editor.focus_find_input = true;
         if tabular.selection_start < tabular.selection_end
             && tabular.selection_end <= tabular.editor.text.len()
         {
-            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            let sel =
+                tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
             if !sel.contains('\n') && !sel.is_empty() {
                 tabular.advanced_editor.find_text = sel;
             }
             if tabular.advanced_editor.in_selection {
-                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                tabular.advanced_editor.selection_range =
+                    Some((tabular.selection_start, tabular.selection_end));
             }
         }
         ui.ctx().request_repaint();
@@ -1160,27 +1432,16 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         if tabular.selection_start < tabular.selection_end
             && tabular.selection_end <= tabular.editor.text.len()
         {
-            let sel = tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
+            let sel =
+                tabular.editor.text[tabular.selection_start..tabular.selection_end].to_string();
             if !sel.contains('\n') && !sel.is_empty() {
                 tabular.advanced_editor.find_text = sel;
             }
             if tabular.advanced_editor.in_selection {
-                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                tabular.advanced_editor.selection_range =
+                    Some((tabular.selection_start, tabular.selection_end));
             }
         }
-        ui.ctx().request_repaint();
-    }
-
-    // Shortcut: Plugins & Code Generators (Cmd/Ctrl + Shift + P)
-    let mut trigger_plugins = false;
-    ui.input(|i| {
-        let cmd_or_ctrl = i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl;
-        if cmd_or_ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P) {
-            trigger_plugins = true;
-        }
-    });
-    if trigger_plugins {
-        tabular.plugin_modal_state.is_open = !tabular.plugin_modal_state.is_open;
         ui.ctx().request_repaint();
     }
 
@@ -1202,6 +1463,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     if trigger_find_prev_key {
         find_previous_match(tabular, ui);
+    }
+
+    // Ghost text AI inline: Tab / Cmd|Ctrl+→ / Esc ditangani sebelum logika Tab
+    // editor lain, hanya saat saran sedang tampil dan popup autocomplete tertutup.
+    if crate::editor_ghost::handle_keys_pre_render(tabular, ui, editor_id) {
+        request_scroll_to_cursor = true;
     }
 
     // ----- Pre-widget key handling & indentation (no active borrow of editor_text) -----
@@ -1406,6 +1673,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     }
     // Defer actual accept application until after TextEdit is rendered to avoid borrow conflicts
     let mut defer_accept_autocomplete = false;
+    // Popup basi (teks/kursor berubah sejak saran dihitung) tidak boleh
+    // mencegat panah/Enter/Tab.
+    if tabular.show_autocomplete && !editor_autocomplete::is_popup_current(tabular) {
+        tabular.show_autocomplete = false;
+        tabular.autocomplete_suggestions.clear();
+    }
     if tabular.show_autocomplete {
         ui.ctx().input_mut(|ri| {
             // Drain & filter events: buang ArrowUp/ArrowDown pressed supaya TextEdit tidak memproses
@@ -1437,32 +1710,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         pressed: true,
                         ..
                     } => {
-                        // Heuristic: accept on Enter if user navigated OR
-                        //  - there is only one suggestion OR
-                        //  - selected suggestion extends current prefix (case-insensitive)
-                        let mut should_accept = tabular.autocomplete_navigated;
-
-                        if !should_accept {
-                            let sugg_count = tabular.autocomplete_suggestions.len();
-                            if sugg_count == 1 {
-                                should_accept = true;
-                            } else {
-                                let prefix = tabular.autocomplete_prefix.clone();
-                                if let Some(sugg) = tabular
-                                    .autocomplete_suggestions
-                                    .get(tabular.selected_autocomplete_index)
-                                    && !prefix.is_empty()
-                                {
-                                    let p = prefix.to_lowercase();
-                                    let s = sugg.to_lowercase();
-                                    if s.starts_with(&p) {
-                                        should_accept = true;
-                                    }
-                                }
-                            }
-                        }
-
-                        if should_accept {
+                        // Enter menerima saran hanya bila user bernavigasi atau
+                        // kata yang diketik adalah awal saran terpilih.
+                        if editor_autocomplete::should_accept_on_enter(tabular) {
                             enter_pressed_pre = true; // we'll accept suggestion
                             _enter_consumed = true;
                         } else {
@@ -1494,8 +1744,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // VSCode-like word navigation & line operations (pre-TextEdit)
     // Helper: compute previous and next word boundaries using Unicode segmentation (UAX#29)
 
-
-
     // Helper: convert byte index -> char index for egui CCursor
     let to_char_index = |s: &str, byte_idx: usize| -> usize {
         let b = byte_idx.min(s.len());
@@ -1523,20 +1771,22 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             let cursor = tabular.cursor_position;
             let text_len = tabular.editor.text.len();
             let safe_cursor = cursor.min(text_len);
-            
+
             // Check character valid for auto-close (at end, or before whitespace/closer)
             let next_char = tabular.editor.text[safe_cursor..].chars().next();
             // Allow auto-close if next char is whitespace/empty or closing punctuation
             let should_autoclose = match next_char {
                 None => true, // End of file
-                Some(c) => c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+                Some(c) => {
+                    c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
+                }
             };
-            
+
             // Special Overtype case: cursor is before matching quote
             let is_overtype = if let Some(c) = next_char {
-                 c.to_string() == quote_char
+                c.to_string() == quote_char
             } else {
-                 false
+                false
             };
 
             let mut handled = false;
@@ -1552,8 +1802,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             } else if should_autoclose {
                 // Insert quote pair: quote + quote
                 let pair = format!("{}{}", quote_char, quote_char);
-                tabular.editor.apply_single_replace(safe_cursor..safe_cursor, &pair);
-                
+                tabular
+                    .editor
+                    .apply_single_replace(safe_cursor..safe_cursor, &pair);
+
                 // Move cursor between them
                 tabular.cursor_position += 1;
                 tabular.selection_start = tabular.cursor_position;
@@ -1565,17 +1817,21 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if handled {
                 // Sync egui state
                 let id = editor_id;
-                
+
                 // FORCE UPDATE of egui TextEdit state immediately
                 // We must update the internal state so TextEdit knows the cursor moved
                 if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), id) {
-                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-                     state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(ci))));
-                     state.store(ui.ctx(), id);
+                    let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(ci),
+                        )));
+                    state.store(ui.ctx(), id);
                 } else {
-                     // Fallback if state doesn't exist yet (first frame?)
-                     let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
-                     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
+                    // Fallback if state doesn't exist yet (first frame?)
+                    let ci = to_char_index(&tabular.editor.text, tabular.cursor_position);
+                    crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, ci);
                 }
 
                 // Consume the text event so TextEdit doesn't insert another quote
@@ -1583,24 +1839,24 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     let mut consumed = false;
                     ri.events.retain(|e| {
                         if !consumed {
-                             match e {
+                            match e {
                                 egui::Event::Text(t) if t == &quote_char => {
                                     consumed = true;
                                     return false;
                                 }
                                 _ => {}
-                             }
+                            }
                         }
                         true
                     });
                 });
-                
+
                 // Mark modified
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                     tab.content = tabular.editor.text.clone();
-                     tab.is_modified = true;
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
                 } else {
-                     tabular.editor.mark_text_modified();
+                    tabular.editor.mark_text_modified();
                 }
 
                 ui.ctx().request_repaint();
@@ -2915,7 +3171,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tab_pressed_pre = true;
         log::debug!("Raw Tab event captured before editor render");
     }
-    let accept_via_tab_pre = tab_pressed_pre && tabular.show_autocomplete;
+    let accept_via_tab_pre = tab_pressed_pre && editor_autocomplete::should_accept_on_tab(tabular);
     // Only accept via Enter if popup shown AND acceptance criteria met
     // Only intercept Enter for autocomplete when popup is visible AND there are suggestions
     let accept_via_enter_pre = enter_pressed_pre
@@ -2988,7 +3244,8 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Record text length before TextEdit renders (O(1)) — used in response.changed() to detect insertions
     let pre_text_len = tabular.editor.text.len();
 
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let metrics =
+        crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
     let effective_font_size = if metrics.is_touch && tabular.advanced_editor.font_size <= 14.0 {
         metrics.font_monospace_size.max(16.0)
     } else {
@@ -3087,7 +3344,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Right-click Context Menu on SQL Editor
     response.context_menu(|ui| {
-        if ui.button("🔍 Go to DDL / Structure (F12 / Cmd+B)").clicked() {
+        if ui
+            .button("🔍 Go to DDL / Structure (F12 / Cmd+B)")
+            .clicked()
+        {
             jump_to_definition_at_cursor(tabular);
             ui.close();
         }
@@ -3099,6 +3359,43 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         if ui.button("🧹 Format SQL (Cmd+Shift+F)").clicked() {
             reformat_current_sql(tabular, ui);
             ui.close();
+        }
+        // Diagram alur query + saran optimasi AI di panel kanan.
+        let is_sql = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .is_none_or(crate::ai_assistant::is_sql_tab);
+        if is_sql {
+            ui.separator();
+            let label = format!(
+                "{}  Show Query Diagram",
+                String::from(egui_icons::icons::ICON_ACCOUNT_TREE)
+            );
+            if ui
+                .button(label)
+                .on_hover_text(
+                    "Explain the selected statement (or the one at the cursor) as an animated diagram, with AI suggestions to make it faster",
+                )
+                .clicked()
+            {
+                crate::window_egui::query_insight::open_query_insight(tabular);
+                ui.close();
+            }
+            let label = format!(
+                "{}  Review with AI",
+                String::from(egui_icons::icons::ICON_RATE_REVIEW)
+            );
+            if ui
+                .button(label)
+                .on_hover_text(
+                    "Send the selected SQL (or the statement at the cursor) to the AI Assistant for a correctness, performance, safety and style review",
+                )
+                .clicked()
+            {
+                let selected = tabular.selected_text.clone();
+                ai_review_sql(tabular, selected);
+                ui.close();
+            }
         }
     });
 
@@ -3127,7 +3424,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let placed_row = &galley.rows[layout.row];
                 let row_min_y = galley_pos.y + placed_row.min_y();
                 let row_max_y = galley_pos.y + placed_row.max_y();
-                
+
                 let rect = egui::Rect::from_min_max(
                     egui::pos2(response.rect.left(), row_min_y),
                     egui::pos2(response.rect.right(), row_max_y),
@@ -3135,85 +3432,85 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
                 ui.painter().rect_filled(rect, 0.0, col);
             }
-        } else {
+        } else if text_len <= 50_000 {
             // Block highlight for statements
             // Quick parse to find statement boundaries with robust comment handling
             // Only run if text is reasonably sized to avoid lags on huge files every frame
             let (start_byte, end_byte) = {
-               let mut stmt_start = 0;
-               let mut found_range = (0, text_len);
-               
-               let mut chars = text.char_indices().peekable();
-               let mut in_quote = None; // None, Some('\''), Some('"'), Some('`')
-               let mut in_line_comment = false;
-               let mut in_block_comment = false;
-               let mut found = false;
-               
-               while let Some((i, c)) = chars.next() {
-                   // 1. Handle String Literals
-                   if let Some(q) = in_quote {
-                       if c == '\\' {
-                           // Skip next char (escape)
-                           let _ = chars.next();
-                       } else if c == q {
-                           in_quote = None;
-                       }
-                       continue;
-                   }
+                let mut stmt_start = 0;
+                let mut found_range = (0, text_len);
 
-                   // 2. Handle Block Comments
-                   if in_block_comment && c == '*' {
+                let mut chars = text.char_indices().peekable();
+                let mut in_quote = None; // None, Some('\''), Some('"'), Some('`')
+                let mut in_line_comment = false;
+                let mut in_block_comment = false;
+                let mut found = false;
+
+                while let Some((i, c)) = chars.next() {
+                    // 1. Handle String Literals
+                    if let Some(q) = in_quote {
+                        if c == '\\' {
+                            // Skip next char (escape)
+                            let _ = chars.next();
+                        } else if c == q {
+                            in_quote = None;
+                        }
+                        continue;
+                    }
+
+                    // 2. Handle Block Comments
+                    if in_block_comment && c == '*' {
                         if let Some(&(_, '/')) = chars.peek() {
                             chars.next(); // consume '/'
                             in_block_comment = false;
                         }
-                       continue;
-                   }
+                        continue;
+                    }
 
-                   // 3. Handle Line Comments
-                   if in_line_comment {
-                       if c == '\n' || c == '\r' {
-                           in_line_comment = false;
-                       }
-                       continue;
-                   }
+                    // 3. Handle Line Comments
+                    if in_line_comment {
+                        if c == '\n' || c == '\r' {
+                            in_line_comment = false;
+                        }
+                        continue;
+                    }
 
-                   // 4. Normal Mode
-                   match c {
-                       '\'' | '"' | '`' => in_quote = Some(c),
-                       '-' => {
-                           if let Some(&(_, '-')) = chars.peek() {
-                               chars.next(); // consume second '-'
-                               in_line_comment = true;
-                           }
-                       }
-                       '#' => in_line_comment = true,
-                       '/' => {
-                           if let Some(&(_, '*')) = chars.peek() {
-                               chars.next(); // consume '*'
-                               in_block_comment = true;
-                           }
-                       }
-                       ';' => {
-                           // Statement ends here
-                           let stmt_end = i + 1; 
-                           if cur >= stmt_start && cur <= stmt_end {
-                               found_range = (stmt_start, stmt_end);
-                               found = true;
-                               break;
-                           }
-                           stmt_start = stmt_end;
-                       }
-                       _ => {}
-                   }
-               }
-               // Handle last statement if cursor is past the last semicolon
-               if !found && cur >= stmt_start {
-                   found_range = (stmt_start, text_len);
-               }
-               found_range
+                    // 4. Normal Mode
+                    match c {
+                        '\'' | '"' | '`' => in_quote = Some(c),
+                        '-' => {
+                            if let Some(&(_, '-')) = chars.peek() {
+                                chars.next(); // consume second '-'
+                                in_line_comment = true;
+                            }
+                        }
+                        '#' => in_line_comment = true,
+                        '/' => {
+                            if let Some(&(_, '*')) = chars.peek() {
+                                chars.next(); // consume '*'
+                                in_block_comment = true;
+                            }
+                        }
+                        ';' => {
+                            // Statement ends here
+                            let stmt_end = i + 1;
+                            if cur >= stmt_start && cur <= stmt_end {
+                                found_range = (stmt_start, stmt_end);
+                                found = true;
+                                break;
+                            }
+                            stmt_start = stmt_end;
+                        }
+                        _ => {}
+                    }
+                }
+                // Handle last statement if cursor is past the last semicolon
+                if !found && cur >= stmt_start {
+                    found_range = (stmt_start, text_len);
+                }
+                found_range
             };
-            
+
             let (raw_start, raw_end) = (start_byte, end_byte);
             // Trim leading whitespace so highlight starts at text
             let start_byte = text[raw_start..raw_end]
@@ -3229,29 +3526,29 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
             let start_cursor = CCursor::new(start_char_idx);
             let end_cursor = CCursor::new(end_char_idx);
-            
+
             let start_layout = galley.layout_from_cursor(start_cursor);
             let end_layout = galley.layout_from_cursor(end_cursor);
-            
+
             // Paint the block from start row to end row
             // We use min/max to be safe, though start should be <= end
             let first_row_idx = start_layout.row.min(galley.rows.len().saturating_sub(1));
             let last_row_idx = end_layout.row.min(galley.rows.len().saturating_sub(1));
 
             if first_row_idx < galley.rows.len() && last_row_idx < galley.rows.len() {
-                 let first_row = &galley.rows[first_row_idx];
-                 let last_row = &galley.rows[last_row_idx];
-                 
-                 let block_top = galley_pos.y + first_row.min_y();
-                 let block_bottom = galley_pos.y + last_row.max_y();
+                let first_row = &galley.rows[first_row_idx];
+                let last_row = &galley.rows[last_row_idx];
 
-                 let rect = egui::Rect::from_min_max(
-                     egui::pos2(response.rect.left(), block_top),
-                     egui::pos2(response.rect.right(), block_bottom),
-                 );
-                 
-                 let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
-                 ui.painter().rect_filled(rect, 0.0, col);
+                let block_top = galley_pos.y + first_row.min_y();
+                let block_bottom = galley_pos.y + last_row.max_y();
+
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.left(), block_top),
+                    egui::pos2(response.rect.right(), block_bottom),
+                );
+
+                let col = egui::Color32::from_rgba_unmultiplied(100, 100, 140, 30);
+                ui.painter().rect_filled(rect, 0.0, col);
             }
         }
     }
@@ -3378,6 +3675,28 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Active line highlight (faint subtle background on cursor row)
+    if tabular.advanced_editor.highlight_active_line {
+        if let Some(cr) = cursor_range_after {
+            let layout = galley.layout_from_cursor(cr.primary);
+            let row_idx = layout.row;
+            if row_idx < galley.rows.len() {
+                let row = &galley.rows[row_idx];
+                let row_rect = row.rect().translate(galley_pos.to_vec2());
+                let hl_rect = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.min.x, row_rect.min.y),
+                    egui::pos2(response.rect.max.x, row_rect.max.y),
+                );
+                let hl_color = if ui.visuals().dark_mode {
+                    egui::Color32::from_white_alpha(12)
+                } else {
+                    egui::Color32::from_black_alpha(10)
+                };
+                ui.painter().rect_filled(hl_rect, 0.0, hl_color);
+            }
+        }
+    }
+
     // Handle multi-cursor typing - apply changes to all cursors
     // Multi-selection typing compensations handled later in response.changed() branch now.
     if tabular.advanced_editor.show_line_numbers
@@ -3387,7 +3706,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         let total_lines = tabular.editor.line_count().max(1);
         let editor_height = response.rect.height();
         let painter = ui.painter();
-        
+
         // Use galley to get actual line positions for perfect alignment
         let final_rect = egui::Rect::from_min_size(
             gutter_rect.min,
@@ -3400,7 +3719,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         for row in &galley.rows {
             // Use galley_pos to get the actual vertical position of each row
             let y = galley_pos.y + row.rect().min.y;
-            
+
             // Only render if within visible gutter area
             if y >= final_rect.top() && y <= final_rect.bottom() + 20.0 {
                 painter.text(
@@ -3411,7 +3730,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                     ui.visuals().weak_text_color(),
                 );
             }
-            
+
             // Increment line number after rendering each row that ends with newline
             // This ensures wrapped lines show the same line number
             if row.ends_with_newline {
@@ -3463,15 +3782,30 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                                 if row_idx < galley.rows.len() {
                                     let placed_row = &galley.rows[row_idx];
                                     let row = &placed_row.row;
-                                    let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
-                                    let right_local = if row_idx == max_l.row { row.x_offset(max_l.column) } else { row.size.x };
+                                    let left_local = if row_idx == min_l.row {
+                                        row.x_offset(min_l.column)
+                                    } else {
+                                        0.0
+                                    };
+                                    let right_local = if row_idx == max_l.row {
+                                        row.x_offset(max_l.column)
+                                    } else {
+                                        row.size.x
+                                    };
                                     let row_top = galley_pos.y + placed_row.min_y();
                                     let row_bottom = galley_pos.y + placed_row.max_y();
                                     let left = galley_pos.x + placed_row.pos.x + left_local;
                                     let right = galley_pos.x + placed_row.pos.x + right_local;
-                                    let scope_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                                    let scope_rect = egui::Rect::from_min_max(
+                                        egui::pos2(left, row_top),
+                                        egui::pos2(right, row_bottom),
+                                    );
                                     if scope_rect.is_positive() {
-                                        match_painter.rect_filled(scope_rect, 1.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 30));
+                                        match_painter.rect_filled(
+                                            scope_rect,
+                                            1.0,
+                                            egui::Color32::from_rgba_unmultiplied(59, 130, 246, 30),
+                                        );
                                     }
                                 }
                             }
@@ -3504,11 +3838,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                         if row_idx < galley.rows.len() {
                             let placed_row = &galley.rows[row_idx];
                             let row = &placed_row.row;
-                            let left_local = if row_idx == min_l.row { row.x_offset(min_l.column) } else { 0.0 };
+                            let left_local = if row_idx == min_l.row {
+                                row.x_offset(min_l.column)
+                            } else {
+                                0.0
+                            };
                             let right_local = if row_idx == max_l.row {
                                 row.x_offset(max_l.column)
                             } else {
-                                let newline_size = if placed_row.ends_with_newline { row.height() / 2.0 } else { 0.0 };
+                                let newline_size = if placed_row.ends_with_newline {
+                                    row.height() / 2.0
+                                } else {
+                                    0.0
+                                };
                                 row.size.x + newline_size
                             };
 
@@ -3517,9 +3859,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                             let left = galley_pos.x + placed_row.pos.x + left_local;
                             let right = galley_pos.x + placed_row.pos.x + right_local;
 
-                            let h_rect = egui::Rect::from_min_max(egui::pos2(left, row_top), egui::pos2(right, row_bottom));
+                            let h_rect = egui::Rect::from_min_max(
+                                egui::pos2(left, row_top),
+                                egui::pos2(right, row_bottom),
+                            );
                             if h_rect.is_positive() {
-                                match_painter.rect(h_rect, 2.0, fill_color, stroke, egui::StrokeKind::Outside);
+                                match_painter.rect(
+                                    h_rect,
+                                    2.0,
+                                    fill_color,
+                                    stroke,
+                                    egui::StrokeKind::Outside,
+                                );
                             }
                         }
                     }
@@ -3995,19 +4346,26 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Just inserted a newline? Force scroll to the new cursor position.
         if just_inserted_newline {
-             inserted_newline_this_frame = true;
-             request_scroll_to_cursor = true;
+            inserted_newline_this_frame = true;
+            request_scroll_to_cursor = true;
         }
         log::debug!(
             "edit: newline={} insertion={} cursor->{} sel {}..{}",
-            just_inserted_newline, is_insertion, post_cursor_b_for_diff,
-            post_sel_start_b, post_sel_end_b
+            just_inserted_newline,
+            is_insertion,
+            post_cursor_b_for_diff,
+            post_sel_start_b,
+            post_sel_end_b
         );
         // Apply multi-cursor editing only when there are truly multiple cursors
         // (avoid interfering with normal single-caret Delete/Backspace behavior)
         if !multi_edit_pre_applied {
             let multi_len = tabular.multi_selection.len();
-            log::debug!("[multi] response.changed multi_len={} is_insertion={}", multi_len, is_insertion);
+            log::debug!(
+                "[multi] response.changed multi_len={} is_insertion={}",
+                multi_len,
+                is_insertion
+            );
             let multi_count = tabular.multi_selection.len();
             if multi_count > 1 {
                 let caret_positions_before = tabular.multi_selection.caret_positions();
@@ -4143,39 +4501,38 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
         // Scan for new --AI ... -- blocks to process (only when no inline AI request already in flight)
         // TRIGGER: only when user just pressed Enter (completing the closing --)
-        if just_inserted_newline && tabular.ai_inline_receiver.is_none() && !tabular.ai_api_key.is_empty()
-            && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular) {
-                let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
-                let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
+        let default_target = tabular.effective_default_target();
+        if just_inserted_newline
+            && tabular.ai_inline_receiver.is_none()
+            && crate::ai_assistant::backend_ready_for(tabular, default_target).is_ok()
+            && let Some((block_hash, prompt)) = detect_ai_block_closed_by_enter(tabular)
+        {
+            let backend = crate::ai_assistant::chat_backend_for(tabular, default_target);
+            let schema_context =
+                crate::ai_assistant::build_schema_context_for_prompt(tabular, &prompt, 30);
+            let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
 
-                // Insert a loading placeholder at the current cursor position (new empty line after --)
-                let placeholder = "-- ✨ AI: Thinking...\n";
-                let cursor_pos = tabular.cursor_position.min(tabular.editor.text.len());
-                tabular.editor.text.insert_str(cursor_pos, placeholder);
-                let placeholder_start = cursor_pos;
-                let placeholder_end = cursor_pos + placeholder.len();
-                // Advance cursor past the placeholder
-                tabular.cursor_position = placeholder_end;
-                tabular.selection_start = placeholder_end;
-                tabular.selection_end = placeholder_end;
-                tabular.editor.mark_text_modified();
-                tabular.highlight_cache.clear();
-                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                    tab.content = tabular.editor.text.clone();
-                    tab.is_modified = true;
-                }
+            // Insert a loading placeholder at the current cursor position (new empty line after --)
+            let placeholder = "-- ✨ AI: Thinking...\n";
+            let cursor_pos = tabular.cursor_position.min(tabular.editor.text.len());
+            tabular.editor.text.insert_str(cursor_pos, placeholder);
+            let placeholder_start = cursor_pos;
+            let placeholder_end = cursor_pos + placeholder.len();
+            // Advance cursor past the placeholder
+            tabular.cursor_position = placeholder_end;
+            tabular.selection_start = placeholder_end;
+            tabular.selection_end = placeholder_end;
+            tabular.editor.mark_text_modified();
+            tabular.highlight_cache.clear();
+            if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                tab.content = tabular.editor.text.clone();
+                tab.is_modified = true;
+            }
 
-                let rx = crate::ai_assistant::request_ai_suggestion(
-                    tabular.ai_provider,
-                    tabular.ai_api_key.clone(),
-                    tabular.ai_model.clone(),
-                    tabular.ai_base_url.clone(),
-                    system,
-                    prompt,
-                );
-                tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
-                request_scroll_to_cursor = true;
-                ui.ctx().request_repaint();
+            let rx = crate::ai_assistant::request_text(&backend, system, prompt);
+            tabular.ai_inline_receiver = Some((block_hash, placeholder_start, placeholder_end, rx));
+            request_scroll_to_cursor = true;
+            ui.ctx().request_repaint();
         }
 
         // Force a repaint after text changes to ensure visual sync (avoids any lingering glyphs)
@@ -4208,7 +4565,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.editor.apply_single_replace(start..cur, "");
             tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
             log::debug!("Detected tab character insertion -> triggering autocomplete accept");
-            editor_autocomplete::accept_current_suggestion(tabular);
+            if !editor_autocomplete::accept_current_suggestion(tabular) {
+                // Popup basi: kembalikan indentasi yang tadi dihapus
+                tabular.editor.apply_single_replace(start..start, "\t");
+                tabular.cursor_position = start + 1;
+            }
             // Immediately set caret to new position and refocus
             let id = response.id;
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
@@ -4226,7 +4587,11 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             tabular.editor.apply_single_replace(start..cur, "");
             tabular.cursor_position = tabular.cursor_position.saturating_sub(4);
             log::debug!("Detected 4-space indentation -> triggering autocomplete accept");
-            editor_autocomplete::accept_current_suggestion(tabular);
+            if !editor_autocomplete::accept_current_suggestion(tabular) {
+                // Popup basi: kembalikan indentasi yang tadi dihapus
+                tabular.editor.apply_single_replace(start..start, "    ");
+                tabular.cursor_position = start + 4;
+            }
             // Immediately set caret to new position and refocus
             let id = response.id;
             let clamped = tabular.cursor_position.min(tabular.editor.text.len());
@@ -4249,38 +4614,15 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             editor_autocomplete::navigate(tabular, -1);
         }
         let mut accepted = false;
-        if input.key_pressed(egui::Key::Enter) && !accept_via_enter_pre {
-            // Apply same heuristic as pre-render
-            let mut should_accept = tabular.autocomplete_navigated;
-            if !should_accept {
-                let sugg_count = tabular.autocomplete_suggestions.len();
-                if sugg_count == 1 {
-                    should_accept = true;
-                } else {
-                    let prefix = tabular.autocomplete_prefix.clone();
-                    if let Some(sugg) = tabular
-                        .autocomplete_suggestions
-                        .get(tabular.selected_autocomplete_index)
-                        && !prefix.is_empty()
-                    {
-                        let p = prefix.to_lowercase();
-                        let s = sugg.to_lowercase();
-                        if s.starts_with(&p) {
-                            should_accept = true;
-                        }
-                    }
-                }
-            }
-
-            if should_accept {
-                editor_autocomplete::accept_current_suggestion(tabular);
-                accepted = true;
-            }
+        if input.key_pressed(egui::Key::Enter)
+            && !accept_via_enter_pre
+            && editor_autocomplete::should_accept_on_enter(tabular)
+        {
+            accepted = editor_autocomplete::accept_current_suggestion(tabular);
         }
         // Skip Tab acceptance here if already processed earlier
         if tab_pressed_pre && !accept_via_tab_pre {
-            editor_autocomplete::accept_current_suggestion(tabular);
-            accepted = true;
+            accepted |= editor_autocomplete::accept_current_suggestion(tabular);
         }
         if accepted {
             log::debug!(
@@ -4342,6 +4684,35 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         tabular.suppress_editor_arrow_once = false;
     }
 
+    // Index Check: status index statement di kursor (panel terpisah dari autocomplete)
+    {
+        let cursor_char_idx = {
+            let s = &tabular.editor.text;
+            let clamp = tabular.cursor_position.min(s.len());
+            s[..clamp].chars().count()
+        };
+        let caret_line_rect = galley
+            .pos_from_cursor(CCursor::new(cursor_char_idx))
+            .translate(galley_pos.to_vec2());
+        let line_h = ui.text_style_height(&egui::TextStyle::Monospace);
+        let anchor = egui::pos2(
+            response.rect.left() + 48.0,
+            caret_line_rect.top() + line_h + 6.0,
+        );
+        // Offset dari frame sebelumnya; abaikan bila teks sudah berubah bentuk
+        let stmt_line_end = crate::index_check::statement_start(tabular)
+            .filter(|&b| tabular.editor.text.is_char_boundary(b))
+            .map(|b| {
+                let ci = tabular.editor.text[..b].chars().count();
+                galley
+                    .pos_from_cursor(CCursor::new(ci))
+                    .translate(galley_pos.to_vec2())
+                    .left_top()
+            });
+        let visible = response.rect.intersect(ui.clip_rect());
+        crate::index_check::show(tabular, ui, anchor, stmt_line_end, line_h, visible);
+    }
+
     // Render autocomplete popup positioned under cursor
     if tabular.show_autocomplete && !tabular.autocomplete_suggestions.is_empty() {
         let cursor_char_idx = {
@@ -4364,19 +4735,35 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Ghost text AI inline: lacak ketikan, debounce, poll respons, gambar saran.
+    crate::editor_ghost::update_after_render(
+        tabular,
+        ui,
+        &galley,
+        galley_pos,
+        text_clip_rect,
+        egui::FontId::monospace(effective_font_size),
+        response.has_focus(),
+    );
+
     // ── Inline AI block response polling ──────────────────────────────────────
     // Check if an in-flight inline AI request has a response ready and replace the placeholder.
     let inline_result = {
-        if let Some((block_hash, placeholder_start, placeholder_end, ref rx)) = tabular.ai_inline_receiver {
+        if let Some((block_hash, placeholder_start, placeholder_end, ref rx)) =
+            tabular.ai_inline_receiver
+        {
             match rx.try_recv() {
                 Ok(result) => Some((block_hash, placeholder_start, placeholder_end, result)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     ui.ctx().request_repaint();
                     None
                 }
-                Err(_) => {
-                    Some((block_hash, placeholder_start, placeholder_end, Err("Inline AI channel closed".to_string())))
-                }
+                Err(_) => Some((
+                    block_hash,
+                    placeholder_start,
+                    placeholder_end,
+                    Err("Inline AI channel closed".to_string()),
+                )),
             }
         } else {
             None
@@ -4391,7 +4778,10 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         };
         let start = placeholder_start.min(tabular.editor.text.len());
         let end = placeholder_end.min(tabular.editor.text.len());
-        tabular.editor.text.replace_range(start..end, &response_text);
+        tabular
+            .editor
+            .text
+            .replace_range(start..end, &response_text);
         let new_cursor = start + response_text.len();
         tabular.cursor_position = new_cursor;
         tabular.selection_start = new_cursor;
@@ -4435,13 +4825,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         // but the galley visual layout thinks it's still on the old line or somewhere else.
         // We heuristically shift the target rect DOWN by one line height to ensure the scroll view accommodates the new line.
         if inserted_newline_this_frame {
-             caret_rect = caret_rect.translate(egui::vec2(0.0, line_height));
-             log::debug!("↵ Enter pressed: Shifting scroll target down by {}px to compensate for layout lag", line_height);
+            caret_rect = caret_rect.translate(egui::vec2(0.0, line_height));
+            log::debug!(
+                "↵ Enter pressed: Shifting scroll target down by {}px to compensate for layout lag",
+                line_height
+            );
         }
 
         // Using Align::Center usually gives better context than Bottom/Top which might auto-shrink weirdly
         ui.scroll_to_rect(caret_rect, None);
-        log::debug!("📜 Requesting scroll to {:?} (newline={})", caret_rect, inserted_newline_this_frame);
+        log::debug!(
+            "📜 Requesting scroll to {:?} (newline={})",
+            caret_rect,
+            inserted_newline_this_frame
+        );
     }
 
     // Render floating Find & Replace panel overlay
@@ -4470,7 +4867,10 @@ fn detect_ai_block_closed_by_enter(tabular: &window_egui::Tabular) -> Option<(u6
     let prev_nl = cursor - 1; // byte index of the '\n' we just inserted
     // Find the line before that '\n'
     let prev_line_end = prev_nl;
-    let prev_line_start = text[..prev_line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prev_line_start = text[..prev_line_end]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let prev_line = &text[prev_line_start..prev_line_end];
 
     // The closing marker must be exactly "--"
@@ -4575,248 +4975,2590 @@ fn format_ai_response_as_sql(text: &str) -> String {
 }
 
 // ─── AI Assistant Panel ───────────────────────────────────────────────────────
+//
+// Panel chat di sisi kanan. Backend (HTTP API atau CLI agent) dipilih di
+// Settings; panel hanya mem-poll `AgentEvent` dan menerapkan blok live edit
+// (`sql tabular:tab=…`) ke tab editor saat streaming.
 
-pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
-    // Poll for pending AI response
-    if tabular.ai_is_loading
-        && let Some(rx) = &tabular.ai_suggestion_receiver {
-            if let Ok(result) = rx.try_recv() {
-                tabular.ai_is_loading = false;
-                tabular.ai_suggestion_receiver = None;
-                match result {
-                    Ok(text) => {
-                        tabular.ai_suggestion = text;
-                        tabular.ai_error = None;
+/// Aksi yang dikumpulkan saat menggambar transkrip dan dijalankan setelahnya,
+/// karena transkrip dipinjam selama render.
+enum AiPanelAction {
+    Copy(String),
+    InsertAtCursor(String),
+    ApplyEdit(usize, usize),
+    RevertEdit(usize, usize),
+    /// Isi input composer (contoh prompt di empty state).
+    SetInput(String),
+    /// Simpan jawaban (index pesan) sebagai catatan memory di vault Obsidian.
+    SaveToVault(usize),
+    /// Approve / Deny pemanggilan tool MCP luar: (call_id, approve).
+    ToolDecision(String, bool),
+}
+
+/// Judul + isi catatan memory dari satu jawaban assistant: pertanyaan user
+/// yang mendahuluinya jadi judul dan ikut disimpan sebagai konteks.
+fn ai_memory_note_from_chat(
+    chat: &[crate::models::structs::AiChatMessage],
+    mi: usize,
+) -> Option<(String, String)> {
+    use crate::models::structs::AiChatRole;
+
+    let answer = chat.get(mi)?.text.trim();
+    if answer.is_empty() {
+        return None;
+    }
+    let question = chat[..mi]
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, AiChatRole::User))
+        .map(|m| m.text.trim())
+        .unwrap_or_default();
+    let title: String = question
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(60)
+        .collect();
+    let content = if question.is_empty() {
+        answer.to_string()
+    } else {
+        format!(
+            "> [!question] Asked in Tabular\n> {}\n\n{answer}",
+            question.replace('\n', "\n> ")
+        )
+    };
+    Some((title, content))
+}
+
+fn ai_tab_index_by_id(tabular: &window_egui::Tabular, id: usize) -> Option<usize> {
+    tabular.query_tabs.iter().position(|t| t.id == id)
+}
+
+fn ai_current_tab_text(tabular: &window_egui::Tabular, idx: usize) -> String {
+    if idx == tabular.active_tab_index {
+        tabular.editor.text.clone()
+    } else {
+        tabular
+            .query_tabs
+            .get(idx)
+            .map(|t| t.content.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Tulis isi baru ke tab; bila tab itu aktif, buffer editor ikut diperbarui.
+/// `record_undo` = true memakai `set_text` (satu entri undo); false menulis
+/// langsung tanpa entri undo (dipakai saat streaming supaya undo stack tidak
+/// penuh oleh potongan-potongan kecil).
+pub(crate) fn ai_write_tab_content(
+    tabular: &mut window_egui::Tabular,
+    tab_index: usize,
+    new_text: String,
+    record_undo: bool,
+) {
+    if tab_index == tabular.active_tab_index {
+        if record_undo {
+            tabular.editor.set_text(new_text.clone());
+        } else {
+            tabular.editor.text = new_text.clone();
+            tabular.editor.mark_text_modified();
+        }
+        let end = tabular.editor.text.len();
+        tabular.cursor_position = end;
+        tabular.selection_start = end;
+        tabular.selection_end = end;
+        tabular.highlight_cache.clear();
+        tabular.last_highlight_hash = None;
+        tabular.sql_semantic_snapshot = None;
+    }
+    if let Some(tab) = tabular.query_tabs.get_mut(tab_index) {
+        tab.content = new_text;
+        tab.is_modified = true;
+    }
+}
+
+fn ai_handle_live_edit_event(
+    tabular: &mut window_egui::Tabular,
+    ev: crate::agent::live_edit::LiveEditEvent,
+) {
+    use crate::agent::live_edit::{LiveEditEvent, LiveEditMode, LiveEditRecord, compose};
+    use crate::models::structs::ActiveLiveEdit;
+
+    match ev {
+        LiveEditEvent::Begin { tab_id, mode } => {
+            let idx = ai_tab_index_by_id(tabular, tab_id)
+                .filter(|&i| crate::ai_assistant::is_sql_tab(&tabular.query_tabs[i]));
+            let active = match idx {
+                Some(i) => {
+                    let is_active = i == tabular.active_tab_index;
+                    let original = ai_current_tab_text(tabular, i);
+                    let selection = if is_active {
+                        (tabular.selection_start, tabular.selection_end)
+                    } else {
+                        (0, 0)
+                    };
+                    let mut mode = mode;
+                    let mut note = None;
+                    if mode == LiveEditMode::Selection && (!is_active || selection.0 >= selection.1)
+                    {
+                        mode = LiveEditMode::Replace;
+                        note = Some(
+                            "No selection in that tab; the whole tab was replaced instead."
+                                .to_string(),
+                        );
                     }
-                    Err(e) => {
-                        tabular.ai_error = Some(e);
+                    let auto = tabular.ai_cli_auto_apply_edits;
+                    if !auto {
+                        note = Some(
+                            "Live edit is off; press Apply to write it into the tab.".to_string(),
+                        );
+                    }
+                    ActiveLiveEdit {
+                        tab_id,
+                        tab_title: tabular.query_tabs[i].title.clone(),
+                        mode,
+                        original: original.clone(),
+                        selection,
+                        last_applied: original,
+                        aborted: !auto,
+                        note,
                     }
                 }
-                ui.ctx().request_repaint();
-            } else {
-                // Still loading — keep repainting so spinner animates
-                ui.ctx().request_repaint();
+                None => ActiveLiveEdit {
+                    tab_id,
+                    tab_title: format!("tab {tab_id}"),
+                    mode,
+                    original: String::new(),
+                    selection: (0, 0),
+                    last_applied: String::new(),
+                    aborted: true,
+                    note: Some("Tab not found or not a SQL tab.".to_string()),
+                },
+            };
+            tabular.ai_live_edit_active = Some(active);
+        }
+        LiveEditEvent::Progress { tab_id, body } => {
+            let Some(mut active) = tabular.ai_live_edit_active.take() else {
+                return;
+            };
+            if active.tab_id == tab_id && !active.aborted {
+                match ai_tab_index_by_id(tabular, tab_id) {
+                    Some(idx) => {
+                        if ai_current_tab_text(tabular, idx) != active.last_applied {
+                            active.aborted = true;
+                            active.note = Some(
+                                "Stopped writing: the tab was edited while the agent was streaming.".to_string(),
+                            );
+                            tabular.toasts.warning(format!(
+                                "AI edit to \"{}\" paused: tab changed during streaming",
+                                active.tab_title
+                            ));
+                        } else {
+                            let new_text =
+                                compose(active.mode, &active.original, active.selection, &body);
+                            ai_write_tab_content(tabular, idx, new_text.clone(), false);
+                            active.last_applied = new_text;
+                        }
+                    }
+                    None => {
+                        active.aborted = true;
+                        active.note =
+                            Some("Tab was closed while the agent was writing.".to_string());
+                    }
+                }
             }
+            tabular.ai_live_edit_active = Some(active);
+        }
+        LiveEditEvent::End { tab_id, body, .. } => {
+            let Some(active) = tabular.ai_live_edit_active.take() else {
+                return;
+            };
+            let final_text = compose(active.mode, &active.original, active.selection, &body);
+            let mut applied = false;
+            if !active.aborted
+                && let Some(idx) = ai_tab_index_by_id(tabular, tab_id)
+                && ai_current_tab_text(tabular, idx) == active.last_applied
+            {
+                // Kembalikan dulu ke isi awal secara diam-diam supaya seluruh
+                // edit tercatat sebagai satu entri undo.
+                if idx == tabular.active_tab_index {
+                    tabular.editor.text = active.original.clone();
+                    tabular.editor.mark_text_modified();
+                }
+                ai_write_tab_content(tabular, idx, final_text.clone(), true);
+                applied = true;
+            }
+            let record = LiveEditRecord {
+                tab_id,
+                tab_title: active.tab_title,
+                mode: active.mode,
+                original: active.original,
+                applied_text: final_text,
+                applied,
+                reverted: false,
+                note: active.note,
+            };
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.edits.push(record);
+            }
+        }
     }
+}
 
-    let no_api_key = tabular.ai_api_key.is_empty();
-    let accent = crate::window_egui::style::theme_accent(ui.ctx());
-    let panel_bg = if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(28, 30, 40)
+fn ai_feed_live_edit(tabular: &mut window_egui::Tabular, delta: &str) {
+    let Some(mut parser) = tabular.ai_live_edit_parser.take() else {
+        return;
+    };
+    let events = parser.feed(delta);
+    tabular.ai_live_edit_parser = Some(parser);
+    for ev in events {
+        ai_handle_live_edit_event(tabular, ev);
+    }
+}
+
+/// Terapkan satu event backend. Mengembalikan `true` bila giliran selesai.
+fn ai_handle_agent_event(
+    tabular: &mut window_egui::Tabular,
+    ev: crate::agent::harness::AgentEvent,
+) -> bool {
+    use crate::agent::harness::AgentEvent;
+    match ev {
+        AgentEvent::Session(id) => {
+            if let Some(crate::config::ChatTarget::Cli(kind)) = tabular.ai_turn_target {
+                tabular.ai_session = Some(crate::models::structs::AgentSession { kind, id });
+            }
+            false
+        }
+        AgentEvent::TextDelta(delta) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.text.push_str(&delta);
+            }
+            ai_feed_live_edit(tabular, &delta);
+            false
+        }
+        AgentEvent::ToolUse(name) => {
+            if let Some(msg) = tabular.ai_chat.last_mut()
+                && msg.tool_activity.last() != Some(&name)
+            {
+                msg.tool_activity.push(name);
+            }
+            false
+        }
+        AgentEvent::Progress(step) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                let existing_idx = msg.progress_steps.iter().position(|s| {
+                    if let (Some(a), Some(b)) = (s.step_index, step.step_index) {
+                        a == b
+                            && (s.tool_name == step.tool_name || s.description == step.description)
+                    } else {
+                        s.description == step.description
+                    }
+                });
+
+                if let Some(idx) = existing_idx {
+                    msg.progress_steps[idx].status = step.status;
+                    msg.progress_steps[idx].description = step.description;
+                    if step.detail.is_some() {
+                        msg.progress_steps[idx].detail = step.detail;
+                    }
+                } else {
+                    if step.status == crate::agent::harness::ProgressStatus::Active {
+                        for prev in &mut msg.progress_steps {
+                            if prev.status == crate::agent::harness::ProgressStatus::Active {
+                                prev.status = crate::agent::harness::ProgressStatus::Done;
+                            }
+                        }
+                    }
+                    msg.progress_steps.push(step);
+                }
+            }
+            false
+        }
+        AgentEvent::Done { text, usage } => {
+            let mut late_text: Option<String> = None;
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                if msg.text.trim().is_empty() && !text.trim().is_empty() {
+                    msg.text = text.clone();
+                    late_text = Some(text);
+                }
+                msg.usage = usage;
+                msg.streaming = false;
+                for step in &mut msg.progress_steps {
+                    if step.status == crate::agent::harness::ProgressStatus::Active {
+                        step.status = crate::agent::harness::ProgressStatus::Done;
+                    }
+                }
+            }
+            if let Some(t) = late_text {
+                ai_feed_live_edit(tabular, &t);
+            }
+            true
+        }
+        AgentEvent::Error(e) => {
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.error = Some(e.clone());
+                msg.streaming = false;
+                if let Some(step) = msg
+                    .progress_steps
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.status == crate::agent::harness::ProgressStatus::Active)
+                {
+                    step.status = crate::agent::harness::ProgressStatus::Error;
+                    if step.detail.is_none() {
+                        step.detail = Some(e);
+                    }
+                }
+            }
+            true
+        }
+    }
+}
+
+fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
+    crate::window_egui::ai_mcp_ui::poll_tool_updates(tabular);
+    crate::window_egui::ai_mcp_ui::end_tool_turn(tabular);
+    tabular.ai_turn_target = None;
+    if let Some(mut parser) = tabular.ai_live_edit_parser.take() {
+        for ev in parser.finish() {
+            ai_handle_live_edit_event(tabular, ev);
+        }
+    }
+    tabular.ai_live_edit_active = None;
+    tabular.ai_cancel = None;
+    tabular.ai_stream_receiver = None;
+    tabular.ai_is_loading = false;
+    if let Some(msg) = tabular.ai_chat.last_mut() {
+        msg.streaming = false;
+        for step in &mut msg.progress_steps {
+            if step.status == crate::agent::harness::ProgressStatus::Active {
+                step.status = crate::agent::harness::ProgressStatus::Done;
+            }
+        }
+    }
+    // K6: simpan sesi setelah tiap giliran selesai.
+    tabular.ai_history_autosave();
+}
+
+fn ai_poll_stream(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let Some(rx) = tabular.ai_stream_receiver.take() else {
+        return;
+    };
+    crate::window_egui::ai_mcp_ui::poll_tool_updates(tabular);
+    let mut finished = false;
+    loop {
+        match rx.try_recv() {
+            Ok(ev) => {
+                if ai_handle_agent_event(tabular, ev) {
+                    finished = true;
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(msg) = tabular.ai_chat.last_mut()
+                    && msg.streaming
+                {
+                    msg.error
+                        .get_or_insert_with(|| "The AI backend stopped unexpectedly.".to_string());
+                }
+                finished = true;
+                break;
+            }
+        }
+    }
+    if finished {
+        ai_finish_turn(tabular);
     } else {
-        egui::Color32::from_rgb(242, 244, 255)
+        tabular.ai_stream_receiver = Some(rx);
+        ctx.request_repaint_after(std::time::Duration::from_millis(40));
+    }
+}
+
+fn ai_send_message(tabular: &mut window_egui::Tabular) {
+    use crate::models::structs::{AiChatMessage, AiChatRole};
+
+    let text = tabular.ai_input.trim().to_string();
+    if text.is_empty() || tabular.ai_stream_receiver.is_some() {
+        return;
+    }
+    let target = tabular.effective_chat_target();
+    if let Err(e) = crate::ai_assistant::backend_ready_for(tabular, target) {
+        tabular.ai_error = Some(e);
+        return;
+    }
+    tabular.ai_obsidian_save_message = None;
+    let cfg = crate::ai_assistant::chat_backend_for(tabular, target);
+    let native_session = crate::ai_assistant::session_for(tabular.ai_session.as_ref(), target);
+    let has_native_session = native_session.is_some();
+    let (system, user) =
+        crate::ai_assistant::build_chat_prompts(tabular, &cfg, &text, has_native_session);
+    let agent_label = crate::ai_assistant::backend_label_for(tabular, target);
+
+    let initial_step = match cfg.backend {
+        crate::config::AiBackend::Api => crate::agent::harness::ProgressStep {
+            step_index: Some(1),
+            description: format!("Connecting to {}…", cfg.provider.display_name()),
+            detail: None,
+            status: crate::agent::harness::ProgressStatus::Active,
+            tool_name: Some("api_call".to_string()),
+        },
+        crate::config::AiBackend::Cli => crate::agent::harness::ProgressStep {
+            step_index: Some(0),
+            description: format!("Starting {} agent…", cfg.cli.kind.display_name()),
+            detail: None,
+            status: crate::agent::harness::ProgressStatus::Active,
+            tool_name: None,
+        },
     };
 
+    tabular.ai_chat.push(AiChatMessage {
+        role: AiChatRole::User,
+        text,
+        ..Default::default()
+    });
+    tabular.ai_chat.push(AiChatMessage {
+        role: AiChatRole::Assistant,
+        streaming: true,
+        agent_label: Some(agent_label),
+        progress_steps: vec![initial_step],
+        ..Default::default()
+    });
+    tabular.ai_input.clear();
+    tabular.ai_error = None;
+    tabular.ai_turn_target = Some(target);
+
+    let session_id = native_session.map(|s| s.to_string());
+    match crate::window_egui::ai_mcp_ui::start_chat_turn(tabular, &cfg, system, user, session_id) {
+        Ok((rx, cancel)) => {
+            tabular.ai_stream_receiver = Some(rx);
+            tabular.ai_cancel = cancel;
+            tabular.ai_is_loading = true;
+            tabular.ai_live_edit_parser = Some(crate::agent::live_edit::LiveEditParser::default());
+            tabular.ai_live_edit_active = None;
+        }
+        Err(e) => {
+            tabular.ai_turn_target = None;
+            log::warn!("[AGENT] failed to start chat turn: {e}");
+            if let Some(msg) = tabular.ai_chat.last_mut() {
+                msg.streaming = false;
+                msg.error = Some(e);
+            }
+        }
+    }
+}
+
+/// "Review with AI" (K8): kirim SQL terpilih (atau statement di kursor, atau
+/// seluruh tab) ke panel AI Assistant dengan prompt review, memakai backend
+/// chat yang sedang dipilih. Panel dibuka bila tertutup.
+pub(crate) fn ai_review_sql(tabular: &mut window_egui::Tabular, selected: String) {
+    let mut sql = selected.trim().to_string();
+    if sql.is_empty() {
+        sql = extract_query_from_cursor(tabular).trim().to_string();
+    }
+    if sql.is_empty() {
+        sql = tabular.editor.text.trim().to_string();
+    }
+    if sql.is_empty() {
+        tabular.toasts.info("Write or select some SQL to review.");
+        return;
+    }
+    let engine = window_egui::ai_fix::active_engine(tabular);
+    tabular.show_ai_panel = true;
+    tabular.ai_input = crate::ai_query_fix::review_prompt(&sql, engine);
+    if tabular.ai_stream_receiver.is_some() {
+        // Giliran lain masih berjalan: prompt disiapkan, user kirim sendiri.
+        tabular.toasts.info(
+            "The AI Assistant is still answering. The review request is ready in the chat box.",
+        );
+        return;
+    }
+    log::info!("[AI] review SQL dikirim ke panel AI Assistant");
+    ai_send_message(tabular);
+}
+
+fn ai_stop_turn(tabular: &mut window_egui::Tabular) {
+    if let Some(cancel) = &tabular.ai_cancel {
+        // Thread pembaca akan mengirim Error("Stopped by user.") lalu selesai.
+        cancel.cancel();
+    } else if tabular.ai_stream_receiver.is_some() {
+        if let Some(msg) = tabular.ai_chat.last_mut()
+            && msg.streaming
+        {
+            msg.error = Some("Stopped by user.".to_string());
+        }
+        ai_finish_turn(tabular);
+    }
+}
+
+pub(crate) fn ai_new_chat(tabular: &mut window_egui::Tabular) {
+    ai_stop_turn(tabular);
+    tabular.ai_history_detach();
+    tabular.ai_chat.clear();
+    tabular.ai_session = None;
+    tabular.ai_turn_target = None;
+    tabular.ai_error = None;
+}
+
+/// Ambil semua blok ```sql dari jawaban (termasuk blok live edit); bila tidak
+/// ada, kembalikan teks apa adanya.
+fn ai_extract_sql_blocks(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !in_block && trimmed.starts_with("```") {
+            let info = trimmed.trim_start_matches('`').trim().to_ascii_lowercase();
+            if info.is_empty() || info.starts_with("sql") || info.contains("tabular:tab=") {
+                in_block = true;
+            }
+            continue;
+        }
+        if in_block && trimmed == "```" {
+            in_block = false;
+            if !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            continue;
+        }
+        if in_block {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    let out = out.trim_end().to_string();
+    if out.is_empty() {
+        text.trim().to_string()
+    } else {
+        out
+    }
+}
+
+fn ai_apply_edit_record(
+    tabular: &mut window_egui::Tabular,
+    msg_idx: usize,
+    edit_idx: usize,
+    revert: bool,
+) {
+    let Some(rec) = tabular
+        .ai_chat
+        .get(msg_idx)
+        .and_then(|m| m.edits.get(edit_idx))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(idx) = ai_tab_index_by_id(tabular, rec.tab_id) else {
+        tabular
+            .toasts
+            .error(format!("Tab \"{}\" is no longer open", rec.tab_title));
+        return;
+    };
+    let new_text = if revert {
+        rec.original.clone()
+    } else {
+        rec.applied_text.clone()
+    };
+    ai_write_tab_content(tabular, idx, new_text, true);
+    if let Some(r) = tabular
+        .ai_chat
+        .get_mut(msg_idx)
+        .and_then(|m| m.edits.get_mut(edit_idx))
+    {
+        r.applied = !revert;
+        r.reverted = revert;
+    }
+    if revert {
+        tabular
+            .toasts
+            .info(format!("Reverted AI edit in \"{}\"", rec.tab_title));
+    } else {
+        tabular
+            .toasts
+            .success(format!("Applied AI edit to \"{}\"", rec.tab_title));
+    }
+}
+
+// ─── Rapikan markdown jawaban (khusus tampilan) ─────────────────────────────
+
+/// Rapikan markdown jawaban AI khusus untuk tampilan; `msg.text` asli tidak
+/// diubah (live edit, Copy, Insert SQL, dan export tetap memakai teks mentah).
+///
+/// `egui_commonmark` merender isi list item di dalam `horizontal_wrapped`,
+/// sehingga code block di dalam bullet hanya mendapat sisa lebar baris dan
+/// terpotong menjadi kolom sempit. Karena itu:
+/// 1. fenced code block yang ter-indent (di dalam list) di-dedent ke kolom 0,
+///    begitu juga lanjutan item setelahnya, agar blok mendapat lebar penuh;
+/// 2. inline code SQL yang panjang dipromosikan menjadi blok ```sql.
+fn ai_normalize_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 32);
+    // (karakter fence, panjang fence, indentasi pembuka)
+    let mut fence: Option<(char, usize, usize)> = None;
+    // Indentasi yang ikut dibuang dari baris lanjutan setelah blok di-dedent.
+    let mut carry: Option<usize> = None;
+
+    for raw in text.lines() {
+        let body = raw.trim_start();
+
+        if let Some((ch, len, indent)) = fence {
+            if ai_is_fence_close(body, ch, len) {
+                out.push_str(body.trim_end());
+                out.push('\n');
+                if indent > 0 {
+                    out.push('\n');
+                    carry = Some(indent);
+                }
+                fence = None;
+            } else {
+                out.push_str(ai_strip_indent(raw, indent));
+                out.push('\n');
+            }
+            continue;
+        }
+
+        if let Some((ch, len)) = ai_fence_open(body) {
+            let indent = ai_indent_width(raw);
+            if indent > 0 && !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(body.trim_end());
+            out.push('\n');
+            fence = Some((ch, len, indent));
+            continue;
+        }
+
+        let mut line = raw;
+        if let Some(c) = carry
+            && !raw.trim().is_empty()
+        {
+            if ai_indent_width(raw) >= c {
+                line = ai_strip_indent(raw, c);
+            } else {
+                carry = None;
+            }
+        }
+
+        match ai_promote_inline_sql(line) {
+            Some(promoted) => out.push_str(&promoted),
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Lebar indentasi awal baris (tab dihitung 4 kolom).
+fn ai_indent_width(line: &str) -> usize {
+    let mut col = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => col += 1,
+            '\t' => col += 4,
+            _ => break,
+        }
+    }
+    col
+}
+
+/// Buang indentasi awal hingga `width` kolom.
+fn ai_strip_indent(line: &str, width: usize) -> &str {
+    let mut col = 0;
+    for (i, c) in line.char_indices() {
+        if col >= width {
+            return &line[i..];
+        }
+        match c {
+            ' ' => col += 1,
+            '\t' => col += 4,
+            _ => return &line[i..],
+        }
+    }
+    ""
+}
+
+/// Pembuka fence: (karakter, panjang) bila `body` diawali ``` atau ~~~.
+fn ai_fence_open(body: &str) -> Option<(char, usize)> {
+    let ch = body.chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let len = body.chars().take_while(|c| *c == ch).count();
+    if len < 3 || (ch == '`' && body[len..].contains('`')) {
+        return None;
+    }
+    Some((ch, len))
+}
+
+fn ai_is_fence_close(body: &str, ch: char, len: usize) -> bool {
+    let run = body.chars().take_while(|c| *c == ch).count();
+    run >= len && body[run..].trim().is_empty()
+}
+
+/// Inline code yang layak jadi blok: statement SQL utuh yang panjang.
+/// Potongan pendek (nama tabel, `SELECT id FROM t`) tetap inline.
+fn ai_is_long_sql(code: &str) -> bool {
+    const MIN_CHARS: usize = 80;
+    code.trim().chars().count() >= MIN_CHARS && ai_starts_with_sql_keyword(code)
+}
+
+/// Kata pertama `code` adalah keyword pembuka statement SQL.
+fn ai_starts_with_sql_keyword(code: &str) -> bool {
+    const KEYWORDS: [&str; 12] = [
+        "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE",
+        "EXPLAIN", "SHOW", "SET",
+    ];
+    let first = code.split_whitespace().next().unwrap_or("");
+    KEYWORDS.iter().any(|k| first.eq_ignore_ascii_case(k))
+}
+
+// ─── Render markdown berwarna ───────────────────────────────────────────────
+
+/// Potongan jawaban untuk dirender. Judul dan code block tingkat atas digambar
+/// sendiri (berwarna, dengan syntax highlight); sisanya ke `egui_commonmark`.
+#[derive(Debug, PartialEq)]
+enum AiMdBlock {
+    Prose(String),
+    Heading { level: u8, text: String },
+    Code { lang: String, code: String },
+}
+
+/// Pecah markdown (yang sudah dinormalisasi) menjadi prosa, judul, dan code
+/// block. Hanya fence/judul di kolom 0 yang dipisah; blok di dalam list atau
+/// blockquote tetap bagian dari prosa. Fence yang belum tertutup (masih
+/// streaming) tetap menjadi `Code`.
+fn ai_split_markdown_blocks(text: &str) -> Vec<AiMdBlock> {
+    fn flush(prose: &mut String, blocks: &mut Vec<AiMdBlock>) {
+        let trimmed = prose.trim_matches('\n');
+        if !trimmed.trim().is_empty() {
+            blocks.push(AiMdBlock::Prose(trimmed.to_string()));
+        }
+        prose.clear();
+    }
+
+    let mut blocks = Vec::new();
+    let mut prose = String::new();
+    // (karakter fence, panjang fence, bahasa, isi)
+    let mut code: Option<(char, usize, String, String)> = None;
+
+    for line in text.lines() {
+        if let Some((ch, len, lang, body)) = &mut code {
+            if ai_is_fence_close(line.trim_start(), *ch, *len) {
+                blocks.push(AiMdBlock::Code {
+                    lang: std::mem::take(lang),
+                    code: std::mem::take(body),
+                });
+                code = None;
+            } else {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str(line);
+            }
+            continue;
+        }
+        if let Some((ch, len)) = ai_fence_open(line) {
+            flush(&mut prose, &mut blocks);
+            let lang = line[len..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            code = Some((ch, len, lang, String::new()));
+            continue;
+        }
+        if let Some((level, title)) = ai_parse_heading(line) {
+            flush(&mut prose, &mut blocks);
+            if !title.is_empty() {
+                blocks.push(AiMdBlock::Heading { level, text: title });
+            }
+            continue;
+        }
+        prose.push_str(line);
+        prose.push('\n');
+    }
+    if let Some((_, _, lang, body)) = code {
+        blocks.push(AiMdBlock::Code { lang, code: body });
+    }
+    flush(&mut prose, &mut blocks);
+    blocks
+}
+
+/// Judul ATX (`# Judul`) di kolom 0 → (level, teks tanpa penanda inline).
+fn ai_parse_heading(line: &str) -> Option<(u8, String)> {
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = &line[hashes..];
+    if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let title = rest.trim().trim_end_matches('#').trim();
+    // Judul digambar sebagai teks biasa, jadi penanda inline dibuang.
+    let title = title.replace("**", "").replace("__", "").replace('`', "");
+    Some((hashes as u8, title))
+}
+
+/// Bahasa code block diperlakukan sebagai SQL (label eksplisit, atau tanpa
+/// label tetapi isinya diawali keyword SQL).
+fn ai_is_sql_lang(lang: &str, code: &str) -> bool {
+    matches!(
+        lang,
+        "sql"
+            | "mysql"
+            | "mariadb"
+            | "postgres"
+            | "postgresql"
+            | "pgsql"
+            | "plsql"
+            | "tsql"
+            | "sqlite"
+            | "mssql"
+    ) || (lang.is_empty() && ai_starts_with_sql_keyword(code))
+}
+
+/// Label dan warna badge bahasa di bilah judul code block.
+fn ai_code_lang_badge(ctx: &egui::Context, lang: &str, code: &str) -> (String, egui::Color32) {
+    use crate::window_egui::style;
+    if ai_is_sql_lang(lang, code) {
+        return ("SQL".to_string(), style::theme_info(ctx));
+    }
+    match lang {
+        "" => ("CODE".to_string(), style::theme_muted_text(ctx)),
+        "json" => ("JSON".to_string(), style::theme_warning(ctx)),
+        "bash" | "sh" | "shell" | "zsh" | "console" | "curl" => {
+            ("SHELL".to_string(), style::theme_success(ctx))
+        }
+        other => (other.to_ascii_uppercase(), style::ai_heading_color(ctx, 3)),
+    }
+}
+
+/// Syntax highlight code block memakai highlighter yang sudah ada di app
+/// (SQL = warna editor, JSON/kode = highlighter HTTP client).
+fn ai_highlight_code(ui: &egui::Ui, lang: &str, code: &str) -> egui::text::LayoutJob {
+    use crate::models::structs::CodeLang;
+
+    let dark = ui.visuals().dark_mode;
+    let font = egui::FontId::monospace(12.0);
+    if ai_is_sql_lang(lang, code) {
+        let mut job =
+            crate::syntax_ts::highlight_text(code, crate::syntax_ts::LanguageKind::Sql, dark);
+        for section in &mut job.sections {
+            section.format.font_id = font.clone();
+        }
+        return job;
+    }
+    let code_lang = match lang {
+        "json" => return crate::http_client::highlight_body_json(code, dark, font),
+        "python" | "py" => Some(CodeLang::Python),
+        "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" => Some(CodeLang::JavaScript),
+        "go" | "golang" => Some(CodeLang::Go),
+        "php" => Some(CodeLang::Php),
+        "rust" | "rs" => Some(CodeLang::Rust),
+        "bash" | "sh" | "shell" | "zsh" | "console" | "curl" => Some(CodeLang::Curl),
+        _ => None,
+    };
+    match code_lang {
+        Some(cl) => crate::http_client::highlight_code(code, &cl, dark, font),
+        None => egui::text::LayoutJob::simple(
+            code.to_string(),
+            font,
+            ui.visuals().text_color(),
+            f32::INFINITY,
+        ),
+    }
+}
+
+/// Code block sebagai kartu: bilah judul (bahasa + Copy/Insert) dan isi
+/// ber-highlight yang bisa di-scroll ke samping alih-alih di-wrap.
+fn ai_render_code_block(
+    ui: &mut egui::Ui,
+    id: (usize, usize),
+    lang: &str,
+    code: &str,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let ctx = ui.ctx().clone();
+    let (label, badge) = ai_code_lang_badge(&ctx, lang, code);
+    let is_sql = ai_is_sql_lang(lang, code);
+
+    ui.add_space(4.0);
     egui::Frame::new()
-        .fill(panel_bg)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(if ui.visuals().dark_mode { 55 } else { 200 })))
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .fill(style::ai_code_bg(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(8.0)
         .show(ui, |ui| {
-            // Header row
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("✨ AI Assistant")
-                        .strong()
-                        .color(accent)
-                        .size(13.0),
-                );
-                let provider_label = tabular.ai_provider.display_name();
-                ui.label(
-                    egui::RichText::new(format!("({provider_label})"))
-                        .size(11.0)
-                        .color(crate::window_egui::style::theme_muted_text(ui.ctx())),
-                );
-                // Schema context indicator
-                let schema_preview = crate::ai_assistant::build_schema_context(tabular, 30);
-                if schema_preview.is_empty() {
-                    ui.label(
-                        egui::RichText::new("⚠ no schema")
-                            .size(10.0)
-                            .color(crate::window_egui::style::theme_warning(ui.ctx())),
-                    ).on_hover_text("No table schema found in cache. Browse a table first to populate the schema cache.");
-                } else {
-                    let table_count = schema_preview.lines()
-                        .filter(|l| l.starts_with("CREATE TABLE") || l.starts_with("-- Table:"))
-                        .count();
-                    ui.label(
-                        egui::RichText::new(format!("🗄 {table_count} tables"))
-                            .size(10.0)
-                            .color(crate::window_egui::style::theme_success(ui.ctx())),
-                    ).on_hover_text(format!("Schema context will be sent with every prompt:\n\n{}", &schema_preview.chars().take(600).collect::<String>()));
-                };
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(egui_icons::icons::ICON_CLOSE.codepoint).on_hover_text("Close panel (Cmd+Shift+A)").clicked() {
-                        tabular.show_ai_panel = false;
-                    }
-                    if ui.small_button(egui_icons::icons::ICON_SETTINGS.codepoint).on_hover_text("Open AI settings").clicked() {
-                        tabular.show_settings_window = true;
-                        tabular.settings_active_pref_tab = crate::window_egui::PrefTab::AiAssistant;
-                    }
-                });
-            });
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
 
-            if no_api_key {
-                ui.label(
-                    egui::RichText::new("⚠ No API key configured. Open Settings → AI Assistant to add one.")
-                        .color(crate::window_egui::style::theme_warning(ui.ctx()))
-                        .size(12.0),
-                );
-                return;
-            }
-
-            ui.add_space(4.0);
-
-            // Prompt input
-            ui.label(egui::RichText::new("Prompt:").size(12.0));
-            let input_resp = ui.add(
-                egui::TextEdit::multiline(&mut tabular.ai_input)
-                    .desired_rows(3)
-                    .hint_text("Ask something about SQL, databases, or your current query…")
-                    .font(egui::TextStyle::Body)
-                    .desired_width(f32::INFINITY),
-            );
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let can_send = !tabular.ai_input.trim().is_empty() && !tabular.ai_is_loading;
-                let send_btn = ui.add_enabled(
-                    can_send,
-                    egui::Button::new(egui::RichText::new("Send ↵").color(egui::Color32::WHITE))
-                        .fill(if can_send { accent } else { crate::window_egui::style::theme_muted_text(ui.ctx()) }),
-                );
-                let send_via_enter = input_resp.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-
-                if (send_btn.clicked() || send_via_enter) && can_send {
-                    let context_sql = if tabular.selection_start < tabular.selection_end
-                        && tabular.selection_end <= tabular.editor.text.len()
-                    {
-                        tabular.editor.text[tabular.selection_start..tabular.selection_end]
-                            .to_string()
-                    } else {
-                        // Provide up to 2000 chars of editor context if no selection
-                        let t = &tabular.editor.text;
-                        if t.len() > 2000 {
-                            t[..2000].to_string()
-                        } else {
-                            t.clone()
-                        }
-                    };
-
-                    let schema_context = crate::ai_assistant::build_schema_context(tabular, 30);
-                    let system = crate::ai_assistant::sql_system_prompt_with_schema(&schema_context);
-                    let user = if context_sql.is_empty() {
-                        tabular.ai_input.clone()
-                    } else {
-                        format!(
-                            "Current SQL context:\n```sql\n{context_sql}\n```\n\n{}",
-                            tabular.ai_input
-                        )
-                    };
-
-                    let rx = crate::ai_assistant::request_ai_suggestion(
-                        tabular.ai_provider,
-                        tabular.ai_api_key.clone(),
-                        tabular.ai_model.clone(),
-                        tabular.ai_base_url.clone(),
-                        system,
-                        user,
-                    );
-                    tabular.ai_suggestion_receiver = Some(rx);
-                    tabular.ai_is_loading = true;
-                    tabular.ai_suggestion.clear();
-                    tabular.ai_error = None;
-                    ui.ctx().request_repaint();
-                }
-
-                if tabular.ai_is_loading {
-                    ui.spinner();
-                    ui.label(
-                        egui::RichText::new("Thinking…")
-                            .size(11.0)
-                            .color(egui::Color32::from_gray(160)),
-                    );
-                }
-
-                if (!tabular.ai_suggestion.is_empty() || tabular.ai_error.is_some())
-                    && ui.small_button("🗑 Clear").clicked() {
-                        tabular.ai_suggestion.clear();
-                        tabular.ai_error = None;
-                }
-            });
-
-            // Error display
-            if let Some(ref err) = tabular.ai_error.clone() {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!("Error: {err}"))
-                        .color(egui::Color32::from_rgb(255, 80, 80))
-                        .size(12.0),
-                );
-            }
-
-            // Response display
-            if !tabular.ai_suggestion.is_empty() {
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Response:").size(12.0).strong());
-
-                egui::ScrollArea::vertical()
-                    .id_salt("ai_response_scroll")
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut tabular.ai_suggestion.clone())
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace)
-                                .interactive(false),
-                        );
+            egui::Frame::new()
+                .fill(style::ai_code_header_bg(&ctx))
+                .corner_radius(egui::CornerRadius {
+                    nw: 8,
+                    ne: 8,
+                    sw: 0,
+                    se: 0,
+                })
+                .inner_margin(egui::Margin {
+                    left: 10,
+                    right: 4,
+                    top: 1,
+                    bottom: 1,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(label).size(10.5).strong().color(badge));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if style::ai_icon_button(
+                                ui,
+                                icons::ICON_CONTENT_COPY.codepoint,
+                                "Copy code",
+                            )
+                            .clicked()
+                            {
+                                actions.push(AiPanelAction::Copy(code.to_string()));
+                            }
+                            if is_sql
+                                && style::ai_icon_button(
+                                    ui,
+                                    icons::ICON_INPUT.codepoint,
+                                    "Insert at the cursor of the active tab",
+                                )
+                                .clicked()
+                            {
+                                actions.push(AiPanelAction::InsertAtCursor(code.to_string()));
+                            }
+                        });
                     });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("📋 Copy").clicked() {
-                        ui.ctx().copy_text(tabular.ai_suggestion.clone());
-                    }
-                    if ui.button("⬆ Insert at cursor").clicked() {
-                        let insert_text = tabular.ai_suggestion.clone();
-                        let pos = tabular.cursor_position.min(tabular.editor.text.len());
-                        tabular.editor.text.insert_str(pos, &insert_text);
-                        let new_cursor = pos + insert_text.len();
-                        tabular.cursor_position = new_cursor;
-                        tabular.selection_start = new_cursor;
-                        tabular.selection_end = new_cursor;
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.content = tabular.editor.text.clone();
-                            tab.is_modified = true;
-                        }
-                        ui.ctx().request_repaint();
-                    }
-                    if ui.button("📝 Replace selection").on_hover_text(
-                        "Replace the currently selected text with this response"
-                    ).clicked() && tabular.selection_start < tabular.selection_end {
-                        let insert_text = tabular.ai_suggestion.clone();
-                        let s = tabular.selection_start;
-                        let e = tabular.selection_end.min(tabular.editor.text.len());
-                        tabular.editor.text.replace_range(s..e, &insert_text);
-                        let new_cursor = s + insert_text.len();
-                        tabular.cursor_position = new_cursor;
-                        tabular.selection_start = new_cursor;
-                        tabular.selection_end = new_cursor;
-                        if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
-                            tab.content = tabular.editor.text.clone();
-                            tab.is_modified = true;
-                        }
-                        ui.ctx().request_repaint();
-                    }
                 });
-            }
-        });
 
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_salt(("ai_code_block", id.0, id.1))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(ai_highlight_code(ui, lang, code)).extend());
+                        });
+                });
+        });
+    ui.add_space(6.0);
+}
+
+fn ai_render_heading(ui: &mut egui::Ui, level: u8, text: &str, first: bool) {
+    let color = crate::window_egui::style::ai_heading_color(ui.ctx(), level);
+    let size = match level {
+        1 => 17.0,
+        2 => 15.5,
+        3 => 14.0,
+        _ => 13.0,
+    };
+    if !first {
+        ui.add_space(if level <= 2 { 10.0 } else { 6.0 });
+    }
+    ui.add(egui::Label::new(egui::RichText::new(text).size(size).strong().color(color)).wrap());
+    if level <= 2 {
+        // Garis bawah tipis sewarna judul untuk memisahkan bagian.
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 0.0, color.gamma_multiply(0.35));
+    }
     ui.add_space(4.0);
 }
 
+/// Warnai elemen inline prosa: link biru, **tebal** amber, `inline code` berlatar ungu tipis.
+fn ai_tint_markdown_visuals(ui: &mut egui::Ui) {
+    let dark = ui.visuals().dark_mode;
+    let v = ui.visuals_mut();
+    v.hyperlink_color = if dark {
+        egui::Color32::from_rgb(96, 165, 250)
+    } else {
+        egui::Color32::from_rgb(37, 99, 235)
+    };
+    v.code_bg_color = if dark {
+        egui::Color32::from_rgb(50, 40, 72)
+    } else {
+        egui::Color32::from_rgb(240, 233, 252)
+    };
+    // `RichText::strong()` memakai warna teks widget "active".
+    v.widgets.active.fg_stroke.color = if dark {
+        egui::Color32::from_rgb(251, 191, 36)
+    } else {
+        egui::Color32::from_rgb(180, 83, 9)
+    };
+}
+
+/// Render jawaban: prosa lewat `egui_commonmark`, judul dan code block digambar sendiri.
+fn ai_render_markdown(
+    ui: &mut egui::Ui,
+    mi: usize,
+    text: &str,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    for (bi, block) in ai_split_markdown_blocks(text).iter().enumerate() {
+        match block {
+            AiMdBlock::Prose(md) => {
+                ui.scope(|ui| {
+                    ai_tint_markdown_visuals(ui);
+                    egui_commonmark::CommonMarkViewer::new()
+                        .max_image_width(Some(320))
+                        .show(ui, cache, md);
+                });
+            }
+            AiMdBlock::Heading { level, text } => ai_render_heading(ui, *level, text, bi == 0),
+            AiMdBlock::Code { lang, code } => {
+                ai_render_code_block(ui, (mi, bi), lang, code, actions)
+            }
+        }
+    }
+}
+
+/// Pecah baris yang berisi inline code SQL panjang menjadi teks + blok ```sql.
+/// `None` bila tidak ada yang dipromosikan.
+fn ai_promote_inline_sql(line: &str) -> Option<String> {
+    // Baris tabel markdown dibiarkan: blok kode akan merusak tabelnya.
+    if line.trim_start().starts_with('|') {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let mut out = String::new();
+    let mut last = 0;
+    let mut promoted = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let open_start = i;
+        while i < bytes.len() && bytes[i] == b'`' {
+            i += 1;
+        }
+        let run = i - open_start;
+        // Penutup code span = deret backtick dengan panjang yang sama.
+        let mut j = i;
+        let mut close = None;
+        while j < bytes.len() {
+            if bytes[j] == b'`' {
+                let s = j;
+                while j < bytes.len() && bytes[j] == b'`' {
+                    j += 1;
+                }
+                if j - s == run {
+                    close = Some((s, j));
+                    break;
+                }
+            } else {
+                j += 1;
+            }
+        }
+        let Some((close_start, close_end)) = close else {
+            continue;
+        };
+        let code = &line[i..close_start];
+        if ai_is_long_sql(code) {
+            let seg = &line[last..open_start];
+            // Segmen pertama mempertahankan indentasi/penanda list.
+            let seg = if promoted { seg.trim() } else { seg.trim_end() };
+            if !seg.trim().is_empty() {
+                out.push_str(seg);
+                out.push_str("\n\n");
+            }
+            out.push_str("```sql\n");
+            out.push_str(code.trim());
+            out.push_str("\n```\n\n");
+            last = close_end;
+            promoted = true;
+        }
+        i = close_end;
+    }
+    if !promoted {
+        return None;
+    }
+    let rest = line[last..].trim();
+    // Sisa yang hanya tanda baca (mis. titik penutup kalimat) dibuang.
+    if rest.chars().any(char::is_alphanumeric) {
+        out.push_str(rest);
+    }
+    Some(out.trim_end().to_string())
+}
+
+// ─── Panel UI ───────────────────────────────────────────────────────────────
+
+/// Id input composer (dipakai untuk fokus setelah memilih contoh prompt).
+const AI_COMPOSER_INPUT_ID: &str = "ai_composer_input";
+/// Tinggi maksimum area ketik sebelum input mulai di-scroll.
+const AI_COMPOSER_MAX_HEIGHT: f32 = 160.0;
+/// Masa berlaku cache badge skema.
+const AI_SCHEMA_BADGE_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+/// Jendela konfirmasi tombol "New chat".
+const AI_CONFIRM_CLEAR_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// Contoh prompt di empty state: (label tombol, isi input).
+const AI_PROMPT_SUGGESTIONS: [(&str, &str); 3] = [
+    (
+        "Explain this query",
+        "Explain what the query in the active tab does, step by step.",
+    ),
+    (
+        "Optimize this query",
+        "Review the query in the active tab for performance problems and suggest an optimized version.",
+    ),
+    (
+        "Review table structure",
+        "Analyze the structure of the tables in this database and suggest missing indexes or schema improvements.",
+    ),
+];
+
+/// Hitung jumlah tabel dari keluaran `build_schema_context`
+/// (termasuk baris ringkasan "-- ... and N more tables").
+fn ai_count_schema_tables(schema: &str) -> usize {
+    schema
+        .lines()
+        .map(|line| {
+            if line.starts_with("-- Table") {
+                1
+            } else if let Some(rest) = line.strip_prefix("-- ... and ") {
+                rest.split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+/// Jumlah tabel + pratinjau skema untuk badge header. Di-cache karena
+/// `build_schema_context` menjalankan query SQLite yang blocking di UI thread.
+fn ai_schema_badge(tabular: &mut window_egui::Tabular) -> (usize, String) {
+    let key = (
+        tabular.current_connection_id,
+        tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .and_then(|t| t.database_name.clone())
+            .unwrap_or_default(),
+    );
+    let fresh = tabular
+        .ai_schema_badge
+        .as_ref()
+        .is_some_and(|b| b.key == key && b.computed_at.elapsed() < AI_SCHEMA_BADGE_TTL);
+    if !fresh {
+        let schema = crate::ai_assistant::build_schema_context(tabular, 30);
+        tabular.ai_schema_badge = Some(crate::models::structs::AiSchemaBadge {
+            key,
+            table_count: ai_count_schema_tables(&schema),
+            preview: schema.chars().take(600).collect(),
+            computed_at: std::time::Instant::now(),
+        });
+    }
+    tabular
+        .ai_schema_badge
+        .as_ref()
+        .map(|b| (b.table_count, b.preview.clone()))
+        .unwrap_or_default()
+}
+
+/// Potong label panjang (judul tab) dengan elipsis.
+fn ai_short_label(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
+/// Nama tool unik (urutan pertama kali dipakai), tanpa prefiks MCP Tabular.
+fn ai_unique_tools(tools: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for t in tools {
+        let t = t.trim_start_matches("mcp__tabular__");
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+fn ai_export_chat(tabular: &mut window_egui::Tabular) {
+    let target = tabular.effective_chat_target();
+    let mut meta: Vec<(&str, String)> = vec![
+        (
+            "Exported",
+            chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        ),
+        (
+            "Backend",
+            crate::ai_assistant::backend_label_for(tabular, target),
+        ),
+    ];
+    if let Some(conn) = tabular
+        .current_connection_id
+        .and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id)))
+    {
+        meta.push(("Connection", conn.name.clone()));
+    }
+    if let Some(db) = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .filter(|d| !d.is_empty())
+    {
+        meta.push(("Database", db));
+    }
+    match crate::export::export_ai_chat_to_markdown(&tabular.ai_chat, &meta) {
+        Ok(Some(path)) => tabular
+            .toasts
+            .success(format!("Chat exported to {}", path.display())),
+        Ok(None) => {}
+        Err(e) => tabular.toasts.error(e),
+    }
+}
+
+fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy: bool) {
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let accent = style::theme_accent(ui.ctx());
+    let muted = style::theme_muted_text(ui.ctx());
+    let has_chat = !tabular.ai_chat.is_empty();
+
+    // Baris 1: judul + aksi
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(icons::ICON_AUTO_AWESOME.codepoint)
+                .size(16.0)
+                .color(accent),
+        );
+        ui.label(egui::RichText::new("AI Assistant").strong().size(13.5));
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if style::ai_icon_button(ui, icons::ICON_CLOSE.codepoint, "Close panel (Cmd+Shift+A)")
+                .clicked()
+            {
+                tabular.show_ai_panel = false;
+            }
+            if style::ai_icon_button(ui, icons::ICON_SETTINGS.codepoint, "AI settings").clicked() {
+                tabular.show_settings_window = true;
+                tabular.settings_active_pref_tab = crate::window_egui::PrefTab::AiAssistant;
+            }
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(2.0);
+
+            tabular.render_ai_history_button(ui, busy);
+
+            let export = ui
+                .add_enabled_ui(has_chat && !busy, |ui| {
+                    style::ai_icon_button(
+                        ui,
+                        icons::ICON_FILE_DOWNLOAD.codepoint,
+                        "Export chat as Markdown (.md)",
+                    )
+                })
+                .inner;
+            if export.clicked() {
+                ai_export_chat(tabular);
+            }
+
+            // "New chat" butuh dua klik agar percakapan tidak terhapus tanpa sengaja.
+            let confirming = tabular
+                .ai_confirm_clear_until
+                .is_some_and(|t| std::time::Instant::now() < t);
+            if confirming {
+                let danger = style::theme_danger(ui.ctx());
+                let clear = ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear chat?")
+                                .size(11.5)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(danger)
+                        .corner_radius(5.0),
+                    )
+                    .on_hover_text("Click again to clear this conversation");
+                if clear.clicked() {
+                    tabular.ai_confirm_clear_until = None;
+                    ai_new_chat(tabular);
+                }
+                ui.ctx().request_repaint_after(AI_CONFIRM_CLEAR_WINDOW);
+            } else {
+                tabular.ai_confirm_clear_until = None;
+                let new_chat = ui
+                    .add_enabled_ui(has_chat, |ui| {
+                        style::ai_icon_button(ui, icons::ICON_ADD_COMMENT.codepoint, "New chat")
+                    })
+                    .inner;
+                if new_chat.clicked() {
+                    tabular.ai_confirm_clear_until =
+                        Some(std::time::Instant::now() + AI_CONFIRM_CLEAR_WINDOW);
+                }
+            }
+        });
+    });
+
+    // Baris 2: status backend + konteks skema
+    let (table_count, schema_preview) = ai_schema_badge(tabular);
+    let enabled_targets = tabular.enabled_chat_targets();
+    let current_target = tabular.effective_chat_target();
+    let backend = crate::ai_assistant::backend_label_for(tabular, current_target);
+    let (backend_icon, backend_tip) = match current_target {
+        crate::config::ChatTarget::Api => {
+            (icons::ICON_CLOUD.codepoint, "Backend: HTTP API".to_string())
+        }
+        crate::config::ChatTarget::Cli(kind) => (
+            icons::ICON_TERMINAL.codepoint,
+            format!(
+                "Backend: CLI agent ({}). Live edit: {}",
+                kind.display_name(),
+                if tabular.ai_cli_auto_apply_edits {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+        ),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        if enabled_targets.len() > 1 {
+            let mut selected = current_target;
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::ComboBox::from_id_salt("ai_chat_target_picker")
+                    .selected_text(format!("{backend_icon} {backend}"))
+                    .show_ui(ui, |ui| {
+                        for target in &enabled_targets {
+                            let icon = match target {
+                                crate::config::ChatTarget::Api => icons::ICON_CLOUD.codepoint,
+                                crate::config::ChatTarget::Cli(_) => icons::ICON_TERMINAL.codepoint,
+                            };
+                            let label = crate::ai_assistant::backend_label_for(tabular, *target);
+                            ui.selectable_value(&mut selected, *target, format!("{icon} {label}"));
+                        }
+                    });
+            });
+            if selected != tabular.ai_chat_target {
+                tabular.ai_chat_target = selected;
+                tabular.save_ai_prefs();
+            }
+        } else {
+            style::ai_chip(
+                ui,
+                egui::RichText::new(format!("{backend_icon} {backend}")).color(muted),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(backend_tip);
+        }
+        if table_count == 0 {
+            style::ai_chip(
+                ui,
+                egui::RichText::new(format!("{} No schema", icons::ICON_WARNING.codepoint))
+                    .color(style::theme_warning(ui.ctx())),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(
+                "No table schema found in cache. Browse a table first to populate the schema cache.",
+            );
+        } else {
+            style::ai_chip(
+                ui,
+                egui::RichText::new(format!(
+                    "{} {table_count} tables",
+                    icons::ICON_STORAGE.codepoint
+                ))
+                .color(style::theme_success(ui.ctx())),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(format!(
+                "Schema context sent with every prompt:\n\n{schema_preview}"
+            ));
+        }
+    });
+}
+
+fn ai_render_empty_state(ui: &mut egui::Ui, actions: &mut Vec<AiPanelAction>) {
+    use crate::window_egui::style;
+
+    let accent = style::theme_accent(ui.ctx());
+    let muted = style::theme_muted_text(ui.ctx());
+    let surface = style::ai_surface(ui.ctx());
+    let border = style::ai_border(ui.ctx());
+
+    ui.add_space(28.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new(egui_icons::icons::ICON_AUTO_AWESOME.codepoint)
+                .size(30.0)
+                .color(accent),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("How can I help with your database?")
+                .size(14.0)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "The active tab and your schema are sent as context. Ask a question, or tell the agent to write a query into a tab.",
+                )
+                .size(11.5)
+                .color(muted),
+            )
+            .wrap(),
+        );
+        ui.add_space(14.0);
+        let width = (ui.available_width() - 16.0).clamp(160.0, 260.0);
+        for (label, prompt) in AI_PROMPT_SUGGESTIONS {
+            let btn = ui.add(
+                egui::Button::new(egui::RichText::new(label).size(12.0))
+                    .fill(surface)
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .corner_radius(14.0)
+                    .min_size(egui::vec2(width, 28.0)),
+            );
+            if btn.clicked() {
+                actions.push(AiPanelAction::SetInput(prompt.to_string()));
+            }
+            ui.add_space(4.0);
+        }
+    });
+}
+
+fn ai_render_user_message(ui: &mut egui::Ui, msg: &crate::models::structs::AiChatMessage) {
+    let bubble = crate::window_egui::style::ai_user_bubble(ui.ctx());
+    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+        let max_w = (ui.available_width() * 0.85 - 20.0).max(120.0);
+        egui::Frame::new()
+            .fill(bubble)
+            .corner_radius(egui::CornerRadius {
+                nw: 12,
+                ne: 12,
+                sw: 12,
+                se: 4,
+            })
+            .inner_margin(egui::Margin::symmetric(10, 7))
+            .show(ui, |ui| {
+                ui.set_max_width(max_w);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&msg.text).size(12.5))
+                        .wrap()
+                        .halign(egui::Align::Min),
+                );
+            });
+    });
+}
+
+fn ai_render_tool_chips(ui: &mut egui::Ui, tools: &[String]) {
+    const MAX_CHIPS: usize = 4;
+    let muted = crate::window_egui::style::theme_muted_text(ui.ctx());
+    let unique = ai_unique_tools(tools);
+    let resp = ui
+        .horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            for t in unique.iter().take(MAX_CHIPS) {
+                crate::window_egui::style::ai_chip(
+                    ui,
+                    egui::RichText::new(format!("{} {t}", egui_icons::icons::ICON_BUILD.codepoint))
+                        .size(10.5)
+                        .color(muted),
+                    egui::Sense::hover(),
+                );
+            }
+            if unique.len() > MAX_CHIPS {
+                crate::window_egui::style::ai_chip(
+                    ui,
+                    egui::RichText::new(format!("+{}", unique.len() - MAX_CHIPS)).color(muted),
+                    egui::Sense::hover(),
+                );
+            }
+        })
+        .response;
+    resp.on_hover_text(format!(
+        "Tools used ({} calls):\n{}",
+        tools.len(),
+        unique.join("\n")
+    ));
+}
+
+fn ai_render_edit_card(
+    ui: &mut egui::Ui,
+    mi: usize,
+    ei: usize,
+    rec: &crate::agent::live_edit::LiveEditRecord,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    use crate::window_egui::style;
+
+    let ctx = ui.ctx().clone();
+    let muted = style::theme_muted_text(&ctx);
+    let (status, status_color) = if rec.reverted {
+        ("Reverted", muted)
+    } else if rec.applied {
+        ("Applied", style::theme_success(&ctx))
+    } else {
+        ("Not applied", style::theme_warning(&ctx))
+    };
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let apply = !rec.applied || rec.reverted;
+                if ui
+                    .small_button(if apply { "Apply" } else { "Revert" })
+                    .clicked()
+                {
+                    actions.push(if apply {
+                        AiPanelAction::ApplyEdit(mi, ei)
+                    } else {
+                        AiPanelAction::RevertEdit(mi, ei)
+                    });
+                }
+                ui.label(
+                    egui::RichText::new(status)
+                        .size(10.5)
+                        .strong()
+                        .color(status_color),
+                );
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(egui_icons::icons::ICON_EDIT_NOTE.codepoint)
+                            .size(14.0)
+                            .color(muted),
+                    );
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&rec.tab_title).size(12.0).strong())
+                            .truncate(),
+                    )
+                    .on_hover_text(format!(
+                        "{} · {}",
+                        rec.tab_title,
+                        rec.mode.label()
+                    ));
+                });
+            });
+            if let Some(note) = &rec.note {
+                ui.add(egui::Label::new(egui::RichText::new(note).size(10.5).color(muted)).wrap());
+            }
+        });
+    ui.add_space(4.0);
+}
+
+fn ai_render_progress_steps(
+    ui: &mut egui::Ui,
+    msg_idx: usize,
+    msg: &crate::models::structs::AiChatMessage,
+) {
+    use crate::agent::harness::ProgressStatus;
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let ctx = ui.ctx().clone();
+    let accent = style::theme_accent(&ctx);
+    let muted = style::theme_muted_text(&ctx);
+    let success = style::theme_success(&ctx);
+    let danger = style::theme_danger(&ctx);
+
+    if msg.progress_steps.is_empty() {
+        return;
+    }
+
+    let total = msg.progress_steps.len();
+    let active = msg
+        .progress_steps
+        .iter()
+        .find(|s| s.status == ProgressStatus::Active);
+
+    let id = ui.make_persistent_id(format!("ai_msg_progress_{}", msg_idx));
+    let user_toggled = ui.data(|d| d.get_temp::<bool>(id));
+    let is_open = user_toggled.unwrap_or(msg.streaming);
+
+    let header_text = if msg.streaming {
+        if let Some(act) = active {
+            if let Some(idx) = act.step_index {
+                format!("Step {idx}: {}", act.description)
+            } else {
+                act.description.clone()
+            }
+        } else {
+            "Thinking…".to_string()
+        }
+    } else {
+        let done_count = msg
+            .progress_steps
+            .iter()
+            .filter(|s| s.status == ProgressStatus::Done)
+            .count();
+        format!(
+            "{done_count} step{} completed",
+            if done_count == 1 { "" } else { "s" }
+        )
+    };
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if msg.streaming {
+                    ui.add(egui::Spinner::new().size(11.0));
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&header_text)
+                                .size(11.5)
+                                .strong()
+                                .color(accent),
+                        )
+                        .truncate(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(icons::ICON_CHECK.codepoint)
+                            .size(12.0)
+                            .color(success),
+                    );
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&header_text).size(11.5).color(muted))
+                            .truncate(),
+                    );
+                }
+
+                if total > 1 || !msg.streaming {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let toggle_icon = if is_open {
+                            icons::ICON_KEYBOARD_ARROW_DOWN.codepoint
+                        } else {
+                            icons::ICON_CHEVRON_RIGHT.codepoint
+                        };
+                        let btn_text = format!("{} {total} steps", toggle_icon);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(btn_text).size(10.5).color(muted),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Click to toggle steps list")
+                            .clicked()
+                        {
+                            ui.data_mut(|d| d.insert_temp(id, !is_open));
+                        }
+                    });
+                }
+            });
+
+            if is_open && (total > 1 || !msg.streaming) {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(2.0);
+
+                for step in &msg.progress_steps {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        match step.status {
+                            ProgressStatus::Active => {
+                                ui.add(egui::Spinner::new().size(10.0));
+                            }
+                            ProgressStatus::Done => {
+                                ui.label(
+                                    egui::RichText::new(icons::ICON_CHECK.codepoint)
+                                        .size(10.5)
+                                        .color(success),
+                                );
+                            }
+                            ProgressStatus::Error => {
+                                ui.label(
+                                    egui::RichText::new(icons::ICON_CLOSE.codepoint)
+                                        .size(10.5)
+                                        .color(danger),
+                                );
+                            }
+                        }
+
+                        let prefix = step
+                            .step_index
+                            .map(|idx| format!("Step {idx}: "))
+                            .unwrap_or_default();
+                        let text = format!("{}{}", prefix, step.description);
+                        let color = match step.status {
+                            ProgressStatus::Active => accent,
+                            ProgressStatus::Done => muted,
+                            ProgressStatus::Error => danger,
+                        };
+                        let label_resp = ui.add(
+                            egui::Label::new(egui::RichText::new(&text).size(11.0).color(color))
+                                .truncate(),
+                        );
+                        if let Some(detail) = &step.detail {
+                            label_resp.on_hover_text(detail);
+                        }
+                    });
+                }
+            }
+        });
+    ui.add_space(4.0);
+}
+
+fn ai_render_assistant_message(
+    ui: &mut egui::Ui,
+    mi: usize,
+    msg: &crate::models::structs::AiChatMessage,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    can_save_note: bool,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let ctx = ui.ctx().clone();
+    let accent = style::theme_accent(&ctx);
+    let muted = style::theme_muted_text(&ctx);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(icons::ICON_AUTO_AWESOME.codepoint)
+                .size(13.0)
+                .color(accent),
+        );
+        let title = match &msg.agent_label {
+            Some(label) => format!("Assistant ({label})"),
+            None => "Assistant".to_string(),
+        };
+        ui.label(egui::RichText::new(title).size(11.5).strong().color(accent));
+        if msg.streaming {
+            ui.add(egui::Spinner::new().size(12.0));
+        }
+    });
+
+    if !msg.progress_steps.is_empty() {
+        ui.add_space(3.0);
+        ai_render_progress_steps(ui, mi, msg);
+    } else if !msg.tool_activity.is_empty() {
+        ui.add_space(2.0);
+        ai_render_tool_chips(ui, &msg.tool_activity);
+    }
+    if !msg.tool_calls.is_empty() {
+        ui.add_space(3.0);
+        let mut decisions = Vec::new();
+        crate::window_egui::ai_mcp_ui::render_tool_calls(ui, mi, &msg.tool_calls, &mut decisions);
+        actions.extend(
+            decisions
+                .into_iter()
+                .map(|(id, ok)| AiPanelAction::ToolDecision(id, ok)),
+        );
+    }
+    ui.add_space(2.0);
+
+    if !msg.text.is_empty() {
+        let display = ai_normalize_markdown(&msg.text);
+        ai_render_markdown(ui, mi, &display, cache, actions);
+    } else if msg.streaming && msg.progress_steps.is_empty() {
+        // Satu-satunya indikator status selama giliran berjalan.
+        let status = msg
+            .tool_activity
+            .last()
+            .map(|t| format!("Running {}…", t.trim_start_matches("mcp__tabular__")))
+            .unwrap_or_else(|| "Thinking…".to_string());
+        ui.label(
+            egui::RichText::new(status)
+                .size(11.5)
+                .italics()
+                .color(muted),
+        );
+    }
+
+    if let Some(err) = &msg.error {
+        let danger = style::theme_danger(&ctx);
+        ui.add_space(4.0);
+        style::ai_notice_frame(danger).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{} {err}", icons::ICON_ERROR_OUTLINE.codepoint))
+                        .size(11.5)
+                        .color(danger),
+                )
+                .wrap(),
+            );
+        });
+    }
+
+    if !msg.edits.is_empty() {
+        ui.add_space(4.0);
+        for (ei, rec) in msg.edits.iter().enumerate() {
+            ai_render_edit_card(ui, mi, ei, rec, actions);
+        }
+    }
+
+    if !msg.streaming && !msg.text.trim().is_empty() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if style::ai_icon_button(ui, icons::ICON_CONTENT_COPY.codepoint, "Copy answer (Markdown)")
+                .clicked()
+            {
+                actions.push(AiPanelAction::Copy(msg.text.clone()));
+            }
+            if style::ai_icon_button(
+                ui,
+                icons::ICON_INPUT.codepoint,
+                "Insert the SQL code blocks of this answer at the cursor of the active tab",
+            )
+            .clicked()
+            {
+                actions.push(AiPanelAction::InsertAtCursor(ai_extract_sql_blocks(&msg.text)));
+            }
+            if can_save_note
+                && style::ai_icon_button(
+                    ui,
+                    icons::ICON_BOOKMARK_ADD.codepoint,
+                    "Save this answer as a note in your Obsidian vault (Tabular Memory) so the AI remembers it",
+                )
+                .clicked()
+            {
+                actions.push(AiPanelAction::SaveToVault(mi));
+            }
+            if let Some(usage) = &msg.usage {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(usage).size(10.0).color(muted));
+            }
+        });
+    }
+}
+
+fn ai_render_transcript(
+    tabular: &mut window_egui::Tabular,
+    ui: &mut egui::Ui,
+    actions: &mut Vec<AiPanelAction>,
+) {
+    use crate::models::structs::AiChatRole;
+
+    let chat = std::mem::take(&mut tabular.ai_chat);
+    let mut cache = std::mem::take(&mut tabular.ai_markdown_cache);
+    // Tombol ini aksi eksplisit user, jadi cukup vault aktif (tidak perlu izin
+    // "Allow AI to save notes" yang mengatur tool `save_note` milik agent).
+    let can_save_note = tabular.obsidian_root().is_some();
+
+    if chat.is_empty() {
+        ai_render_empty_state(ui, actions);
+    }
+
+    for (mi, msg) in chat.iter().enumerate() {
+        match msg.role {
+            AiChatRole::User => ai_render_user_message(ui, msg),
+            AiChatRole::Assistant => {
+                ai_render_assistant_message(ui, mi, msg, &mut cache, can_save_note, actions)
+            }
+        }
+        ui.add_space(14.0);
+    }
+
+    if let Some(result) = &tabular.ai_obsidian_save_message {
+        let ctx = ui.ctx().clone();
+        let (color, text) = match result {
+            Ok(path) => (
+                crate::window_egui::style::theme_muted_text(&ctx),
+                format!("Saved to vault: {path}"),
+            ),
+            Err(e) => (
+                crate::window_egui::style::theme_danger(&ctx),
+                format!("Could not save note: {e}"),
+            ),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(text).size(11.0).color(color)).wrap());
+        ui.add_space(6.0);
+    }
+
+    tabular.ai_chat = chat;
+    tabular.ai_markdown_cache = cache;
+}
+
+/// Chip konteks di bagian atas composer: tab aktif, tab lampiran, dan "+ Add tab".
+fn ai_render_context_row(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    const MAX_TITLE: usize = 24;
+    let muted = style::theme_muted_text(ui.ctx());
+    let active_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
+    let mut remove: Option<usize> = None;
+    let mut toggles: Vec<(usize, bool)> = Vec::new();
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        match tabular.query_tabs.get(tabular.active_tab_index) {
+            Some(active) if crate::ai_assistant::is_sql_tab(active) => {
+                style::ai_chip(
+                    ui,
+                    egui::RichText::new(format!(
+                        "{} {}",
+                        icons::ICON_DESCRIPTION.codepoint,
+                        ai_short_label(&active.title, MAX_TITLE)
+                    )),
+                    egui::Sense::hover(),
+                )
+                .on_hover_text(format!(
+                    "{}\nActive tab — always included (with the current selection, if any)",
+                    active.title
+                ));
+            }
+            _ => {
+                style::ai_chip(
+                    ui,
+                    egui::RichText::new("No SQL tab active").color(muted),
+                    egui::Sense::hover(),
+                );
+            }
+        }
+        for id in &tabular.ai_attached_tab_ids {
+            if Some(*id) == active_id {
+                continue;
+            }
+            if let Some(tab) = tabular.query_tabs.iter().find(|t| t.id == *id) {
+                if style::ai_chip(
+                    ui,
+                    egui::RichText::new(format!(
+                        "{} {}  {}",
+                        icons::ICON_ATTACH_FILE.codepoint,
+                        ai_short_label(&tab.title, MAX_TITLE),
+                        icons::ICON_CLOSE.codepoint
+                    )),
+                    egui::Sense::click(),
+                )
+                .on_hover_text(format!("{}\nClick to remove from the context", tab.title))
+                .clicked()
+                {
+                    remove = Some(*id);
+                }
+            } else {
+                // Tab sudah ditutup; bersihkan diam-diam.
+                remove = Some(*id);
+            }
+        }
+        ui.menu_button(
+            egui::RichText::new(format!("{} Add tab", icons::ICON_ADD.codepoint))
+                .size(11.0)
+                .color(muted),
+            |ui| {
+                let mut any = false;
+                for tab in tabular.query_tabs.iter() {
+                    if Some(tab.id) == active_id || !crate::ai_assistant::is_sql_tab(tab) {
+                        continue;
+                    }
+                    any = true;
+                    let mut checked = tabular.ai_attached_tab_ids.contains(&tab.id);
+                    if ui.checkbox(&mut checked, &tab.title).changed() {
+                        toggles.push((tab.id, checked));
+                    }
+                }
+                if !any {
+                    ui.label(
+                        egui::RichText::new("No other SQL tabs open")
+                            .size(11.0)
+                            .color(muted),
+                    );
+                }
+            },
+        )
+        .response
+        .on_hover_text("Attach another SQL tab as context");
+    });
+
+    if let Some(id) = remove {
+        tabular.ai_attached_tab_ids.retain(|t| *t != id);
+    }
+    for (id, checked) in toggles {
+        if checked {
+            if !tabular.ai_attached_tab_ids.contains(&id) {
+                tabular.ai_attached_tab_ids.push(id);
+            }
+        } else {
+            tabular.ai_attached_tab_ids.retain(|t| *t != id);
+        }
+    }
+}
+
+/// Composer: chip konteks, input yang tumbuh sesuai isi, dan satu tombol
+/// Send/Stop. Enter mengirim, Shift+Enter menambah baris.
+fn ai_render_composer(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy: bool) {
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    let ctx = ui.ctx().clone();
+    let accent = style::theme_accent(&ctx);
+    let muted = style::theme_muted_text(&ctx);
+    let input_id = egui::Id::new(AI_COMPOSER_INPUT_ID);
+    let focused = ctx.memory(|m| m.has_focus(input_id));
+    let border = if focused {
+        accent.gamma_multiply(0.7)
+    } else {
+        style::ai_border(&ctx)
+    };
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ai_render_context_row(tabular, ui);
+            ui.add_space(4.0);
+
+            let input = egui::ScrollArea::vertical()
+                .id_salt("ai_composer_scroll")
+                .max_height(AI_COMPOSER_MAX_HEIGHT)
+                .auto_shrink([false, true])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut tabular.ai_input)
+                            .id(input_id)
+                            .frame(egui::Frame::NONE)
+                            .margin(egui::Margin::symmetric(2, 2))
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Ask anything about your SQL or schema…")
+                            .font(egui::TextStyle::Body)
+                            // Shift+Enter = baris baru; Enter polos dipakai untuk mengirim.
+                            .return_key(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            )),
+                    )
+                })
+                .inner;
+            let enter_send = input.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+
+            ui.add_space(2.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let round = egui::vec2(28.0, 28.0);
+                if busy {
+                    let stop = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(icons::ICON_STOP.codepoint)
+                                    .size(16.0)
+                                    .color(style::ai_panel_bg(&ctx)),
+                            )
+                            .fill(ui.visuals().strong_text_color())
+                            .corner_radius(14.0)
+                            .min_size(round),
+                        )
+                        .on_hover_text("Stop generating");
+                    if stop.clicked() {
+                        ai_stop_turn(tabular);
+                    }
+                } else {
+                    let can_send = !tabular.ai_input.trim().is_empty();
+                    let send = ui
+                        .add_enabled(
+                            can_send,
+                            egui::Button::new(
+                                egui::RichText::new(icons::ICON_ARROW_UPWARD.codepoint)
+                                    .size(16.0)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(if can_send {
+                                accent
+                            } else {
+                                muted.gamma_multiply(0.35)
+                            })
+                            .corner_radius(14.0)
+                            .min_size(round),
+                        )
+                        .on_hover_text("Send (Enter)");
+                    if (send.clicked() || enter_send) && can_send {
+                        ai_send_message(tabular);
+                        ctx.memory_mut(|m| m.request_focus(input_id));
+                        ctx.request_repaint();
+                    }
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let hint = if busy {
+                        "Working… press Stop to cancel"
+                    } else {
+                        "Enter to send · Shift+Enter for new line"
+                    };
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(hint).size(10.0).color(muted))
+                            .truncate(),
+                    );
+                });
+            });
+        });
+}
+
+pub(crate) fn render_ai_panel(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    use crate::config::ChatTarget;
+    use crate::window_egui::style;
+    use egui_icons::icons;
+
+    ui.set_min_width(ui.available_width().max(280.0));
+    ui.take_available_width();
+
+    let target = tabular.effective_chat_target();
+    ai_poll_stream(tabular, ui.ctx());
+    if let ChatTarget::Cli(kind) = target {
+        tabular.ensure_ai_mcp_check(kind);
+    }
+    tabular.poll_ai_cli_background(ui.ctx());
+
+    let ready = crate::ai_assistant::backend_ready_for(tabular, target);
+    let busy = tabular.ai_stream_receiver.is_some();
+    let mut actions: Vec<AiPanelAction> = Vec::new();
+
+    egui::Frame::new()
+        .fill(style::ai_panel_bg(ui.ctx()))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width().max(280.0));
+            ui.take_available_width();
+
+            ai_render_header(tabular, ui, busy);
+            ui.add_space(4.0);
+            ui.separator();
+
+            let warning = style::theme_warning(ui.ctx());
+            if let Err(e) = &ready {
+                ui.add_space(6.0);
+                style::ai_notice_frame(warning).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{} {e}", icons::ICON_WARNING.codepoint))
+                                .size(12.0)
+                                .color(warning),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(4.0);
+                    if ui.button("Open AI settings").clicked() {
+                        tabular.show_settings_window = true;
+                        tabular.settings_active_pref_tab =
+                            crate::window_egui::PrefTab::AiAssistant;
+                    }
+                });
+                return;
+            }
+
+            // Peringatan MCP untuk CLI yang butuh registrasi global.
+            if let ChatTarget::Cli(kind) = target {
+                if kind.needs_global_mcp_registration() && tabular.mcp_registered(kind) == Some(false) {
+                    ui.add_space(6.0);
+                    style::ai_notice_frame(warning).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "{} Tabular MCP server is not registered in this CLI — the agent cannot query your database.",
+                                    icons::ICON_WARNING.codepoint
+                                ))
+                                .size(11.0)
+                                .color(warning),
+                            )
+                            .wrap(),
+                        );
+                        if ui
+                            .small_button("Register")
+                            .on_hover_text("Runs `<cli> mcp add tabular …`")
+                            .clicked()
+                        {
+                            tabular.start_ai_mcp_register(kind);
+                        }
+                    });
+                }
+            }
+
+            // Composer dipin di bawah; transkrip mengisi sisa ruang di atasnya.
+            egui::Panel::bottom("ai_composer_panel")
+                .frame(egui::Frame::new().inner_margin(egui::Margin {
+                    left: 0,
+                    right: 0,
+                    top: 8,
+                    bottom: 0,
+                }))
+                .resizable(false)
+                .show_separator_line(false)
+                .show(ui, |ui| {
+                    if let Some(err) = tabular.ai_error.clone() {
+                        let danger = style::theme_danger(ui.ctx());
+                        style::ai_notice_frame(danger).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{} {err}",
+                                        icons::ICON_ERROR_OUTLINE.codepoint
+                                    ))
+                                    .size(11.5)
+                                    .color(danger),
+                                )
+                                .wrap(),
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new("Dismiss").size(10.5))
+                                        .frame(false),
+                                )
+                                .clicked()
+                            {
+                                tabular.ai_error = None;
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                    ai_render_composer(tabular, ui, busy);
+                });
+
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .id_salt("ai_chat_scroll")
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width().max(260.0));
+                    ui.take_available_width();
+                    ai_render_transcript(tabular, ui, &mut actions);
+                });
+        });
+
+    for action in actions {
+        match action {
+            AiPanelAction::Copy(text) => ui.ctx().copy_text(text),
+            AiPanelAction::InsertAtCursor(text) => {
+                let pos = tabular.cursor_position.min(tabular.editor.text.len());
+                let pos = (0..=pos)
+                    .rev()
+                    .find(|&i| tabular.editor.text.is_char_boundary(i))
+                    .unwrap_or(0);
+                tabular.editor.text.insert_str(pos, &text);
+                let new_cursor = pos + text.len();
+                tabular.cursor_position = new_cursor;
+                tabular.selection_start = new_cursor;
+                tabular.selection_end = new_cursor;
+                tabular.editor.mark_text_modified();
+                tabular.highlight_cache.clear();
+                if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+                    tab.content = tabular.editor.text.clone();
+                    tab.is_modified = true;
+                }
+                ui.ctx().request_repaint();
+            }
+            AiPanelAction::SaveToVault(mi) => {
+                if let Some((title, content)) = ai_memory_note_from_chat(&tabular.ai_chat, mi) {
+                    tabular.save_chat_to_vault(&title, &content);
+                }
+            }
+            AiPanelAction::ApplyEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, false),
+            AiPanelAction::RevertEdit(mi, ei) => ai_apply_edit_record(tabular, mi, ei, true),
+            AiPanelAction::ToolDecision(call_id, approve) => {
+                crate::window_egui::ai_mcp_ui::send_tool_decision(tabular, &call_id, approve);
+            }
+            AiPanelAction::SetInput(text) => {
+                tabular.ai_input = text;
+                ui.ctx()
+                    .memory_mut(|m| m.request_focus(egui::Id::new(AI_COMPOSER_INPUT_ID)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ai_panel_tests {
+    use super::{
+        AiMdBlock, ai_count_schema_tables, ai_extract_sql_blocks, ai_is_sql_lang,
+        ai_normalize_markdown, ai_parse_heading, ai_split_markdown_blocks,
+    };
+
+    #[test]
+    fn memory_note_uses_preceding_question_as_title_and_context() {
+        use crate::models::structs::{AiChatMessage, AiChatRole};
+        let mk = |role, text: &str| AiChatMessage {
+            role,
+            text: text.to_string(),
+            ..Default::default()
+        };
+        let chat = vec![
+            mk(AiChatRole::User, "what does status 3 mean?\nin trx_h"),
+            mk(AiChatRole::Assistant, "Status 3 = void."),
+            mk(AiChatRole::Assistant, "   "),
+        ];
+        let (title, content) = super::ai_memory_note_from_chat(&chat, 1).expect("note");
+        assert_eq!(title, "what does status 3 mean?");
+        assert_eq!(
+            content,
+            "> [!question] Asked in Tabular\n> what does status 3 mean?\n> in trx_h\n\nStatus 3 = void."
+        );
+        // Jawaban kosong atau index di luar jangkauan tidak menghasilkan catatan.
+        assert!(super::ai_memory_note_from_chat(&chat, 2).is_none());
+        assert!(super::ai_memory_note_from_chat(&chat, 9).is_none());
+    }
+
+    #[test]
+    fn split_separates_headings_prose_and_code_in_order() {
+        let text = "## 1. **Indexes**\nSome *text*.\n\n```sql tabular:tab=3 mode=replace\nSELECT 1;\nSELECT 2;\n```\nAfter.\n";
+        assert_eq!(
+            ai_split_markdown_blocks(text),
+            vec![
+                AiMdBlock::Heading {
+                    level: 2,
+                    text: "1. Indexes".to_string()
+                },
+                AiMdBlock::Prose("Some *text*.".to_string()),
+                AiMdBlock::Code {
+                    lang: "sql".to_string(),
+                    code: "SELECT 1;\nSELECT 2;".to_string()
+                },
+                AiMdBlock::Prose("After.".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_keeps_unclosed_fence_and_nested_blocks() {
+        // Masih streaming: fence belum ditutup.
+        assert_eq!(
+            ai_split_markdown_blocks("Intro\n```json\n{\"a\": 1"),
+            vec![
+                AiMdBlock::Prose("Intro".to_string()),
+                AiMdBlock::Code {
+                    lang: "json".to_string(),
+                    code: "{\"a\": 1".to_string()
+                },
+            ]
+        );
+        // Fence di dalam blockquote/indentasi tetap bagian dari prosa.
+        let nested = "> ```sql\n> SELECT 1;\n> ```";
+        assert_eq!(
+            ai_split_markdown_blocks(nested),
+            vec![AiMdBlock::Prose(nested.to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_only_real_atx_headings() {
+        assert_eq!(
+            ai_parse_heading("# Title #"),
+            Some((1, "Title".to_string()))
+        );
+        assert_eq!(
+            ai_parse_heading("### `idx` fix"),
+            Some((3, "idx fix".to_string()))
+        );
+        assert_eq!(ai_parse_heading("#hashtag"), None);
+        assert_eq!(ai_parse_heading("####### seven"), None);
+        assert_eq!(ai_parse_heading("plain"), None);
+    }
+
+    #[test]
+    fn detects_sql_code_blocks() {
+        assert!(ai_is_sql_lang("sql", "anything"));
+        assert!(ai_is_sql_lang("mysql", ""));
+        assert!(ai_is_sql_lang("", "  select * from t"));
+        assert!(!ai_is_sql_lang("", "npm install"));
+        assert!(!ai_is_sql_lang("python", "SELECT = 1"));
+    }
+
+    #[test]
+    fn normalize_dedents_fenced_code_inside_list_items() {
+        let text = "1. Missing index:\n   - Fix:\n     ```sql\n     CREATE INDEX a ON t (x);\n     ```\n2. Next item";
+        let out = ai_normalize_markdown(text);
+        assert!(out.starts_with("1. Missing index:\n   - Fix:\n"));
+        assert!(
+            out.contains("\n\n```sql\nCREATE INDEX a ON t (x);\n```\n\n"),
+            "{out}"
+        );
+        assert!(out.contains("\n2. Next item\n"));
+    }
+
+    #[test]
+    fn normalize_dedents_item_continuation_after_block() {
+        // Tanpa ini, lanjutan ber-indent 5 spasi akan jadi indented code block.
+        let text = "1. Item\n     ```sql\n     SELECT 1;\n     ```\n     Explanation text\n2. Next";
+        let out = ai_normalize_markdown(text);
+        assert!(out.contains("```\n\nExplanation text\n2. Next"), "{out}");
+    }
+
+    #[test]
+    fn normalize_keeps_live_edit_blocks_and_plain_text_intact() {
+        let live = "Done:\n```sql tabular:tab=3 mode=replace\nSELECT 1;\n```\n";
+        assert_eq!(ai_normalize_markdown(live), live);
+        let plain = "No code here.\n\n- a\n- b\n";
+        assert_eq!(ai_normalize_markdown(plain), plain);
+    }
+
+    #[test]
+    fn normalize_promotes_only_long_inline_sql() {
+        let long = "CREATE INDEX idx_panen_histories_project_id ON panen_histories (kandang_project_id, created_at);";
+        let text = format!("   - Fix: `{long}` done");
+        let out = ai_normalize_markdown(&text);
+        assert!(
+            out.contains(&format!("   - Fix:\n\n```sql\n{long}\n```\n\ndone")),
+            "{out}"
+        );
+
+        // Potongan pendek dan inline non-SQL tetap apa adanya.
+        let short =
+            "Query `SELECT id FROM products WHERE type = ? AND deleted_at IS NULL` is slow.\n";
+        assert_eq!(ai_normalize_markdown(short), short);
+        let prose = format!("Use `{}` here.\n", "x".repeat(120));
+        assert_eq!(ai_normalize_markdown(&prose), prose);
+    }
+
+    #[test]
+    fn normalize_drops_trailing_punctuation_after_promoted_sql() {
+        let long =
+            "ALTER TABLE stock_opnames DROP FOREIGN KEY stock_opnames_ibfk_5, ADD INDEX idx_x (x);";
+        let out = ai_normalize_markdown(&format!("Run `{long}`."));
+        assert_eq!(out, format!("Run\n\n```sql\n{long}\n```\n"));
+    }
+
+    #[test]
+    fn counts_schema_tables_including_truncated_rest() {
+        let schema = "-- Database: shop\n-- Table: a\nCREATE TABLE a (\n  id int\n);\n\n-- Table b: (columns not cached yet — browse the table first)\n\n-- ... and 12 more tables (showing first 2)\n";
+        assert_eq!(ai_count_schema_tables(schema), 14);
+        assert_eq!(ai_count_schema_tables(""), 0);
+    }
+
+    #[test]
+    fn extracts_sql_fences_including_live_edit_blocks() {
+        let text = "Here:\n```sql tabular:tab=3 mode=replace\nSELECT 1;\n```\nand\n```sql\nSELECT 2;\n```\n";
+        assert_eq!(ai_extract_sql_blocks(text), "SELECT 1;\n\nSELECT 2;");
+        assert_eq!(ai_extract_sql_blocks("no code here"), "no code here");
+        let other = "```python\nprint(1)\n```";
+        assert_eq!(ai_extract_sql_blocks(other), other);
+    }
+
+    #[test]
+    fn test_panel_width_behavior() {
+        let ctx = eframe::egui::Context::default();
+        let mut recorded_widths = Vec::new();
+        let mut cache = egui_commonmark::CommonMarkCache::default();
+
+        let mut chat: Vec<crate::models::structs::AiChatMessage> = Vec::new();
+
+        for frame_idx in 0..15 {
+            if frame_idx == 1 {
+                chat.push(crate::models::structs::AiChatMessage {
+                    role: crate::models::structs::AiChatRole::User,
+                    text: "how to clean database".to_string(),
+                    ..Default::default()
+                });
+                chat.push(crate::models::structs::AiChatMessage {
+                    role: crate::models::structs::AiChatRole::Assistant,
+                    text: "".to_string(),
+                    streaming: true,
+                    ..Default::default()
+                });
+            } else if frame_idx > 1 && frame_idx < 10 {
+                if let Some(msg) = chat.last_mut() {
+                    msg.text.push_str(" some token");
+                }
+            }
+
+            let mut out = ctx.run_ui(eframe::egui::RawInput::default(), |root_ui| {
+                // Left sidebar
+                eframe::egui::Panel::left("sidebar")
+                    .resizable(true)
+                    .default_size(340.0)
+                    .min_size(260.0)
+                    .max_size(600.0)
+                    .show(root_ui, |ui| {
+                        ui.allocate_exact_size(eframe::egui::vec2(ui.available_width(), 28.0), eframe::egui::Sense::hover());
+                    });
+
+                // Right panel
+                eframe::egui::Panel::right("ai_right_panel")
+                    .resizable(true)
+                    .default_size(350.0)
+                    .min_size(280.0)
+                    .max_size(600.0)
+                    .show(root_ui, |ui| {
+                        recorded_widths.push(ui.available_width());
+                        let panel_bg = eframe::egui::Color32::from_rgb(28, 30, 40);
+                        eframe::egui::Frame::new()
+                            .fill(panel_bg)
+                            .inner_margin(eframe::egui::Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("✨ AI Assistant");
+                                    ui.with_layout(eframe::egui::Layout::right_to_left(eframe::egui::Align::Center), |ui| {
+                                        let _ = ui.small_button("✕");
+                                    });
+                                });
+
+                                let transcript_height = 200.0;
+                                eframe::egui::ScrollArea::vertical()
+                                    .id_salt("ai_chat_scroll")
+                                    .max_height(transcript_height)
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(true)
+                                    .show(ui, |ui| {
+                                        if chat.is_empty() {
+                                            ui.label("Ask about your SQL, your schema, or tell the agent to write a query into a tab.");
+                                        } else {
+                                            for msg in &chat {
+                                                eframe::egui::Frame::new()
+                                                    .fill(eframe::egui::Color32::from_rgb(32, 34, 44))
+                                                    .show(ui, |ui| {
+                                                        ui.set_width(ui.available_width());
+                                                        if !msg.text.is_empty() {
+                                                            egui_commonmark::CommonMarkViewer::new()
+                                                                .max_image_width(Some(320))
+                                                                .show(ui, &mut cache, &msg.text);
+                                                        }
+                                                    });
+                                            }
+                                        }
+                                    });
+
+                                ui.add(
+                                    eframe::egui::TextEdit::multiline(&mut String::new())
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                    });
+
+                // Central panel
+                eframe::egui::CentralPanel::default().show(root_ui, |ui| {
+                    ui.label("central");
+                });
+            });
+            out.textures_delta.clear();
+        }
+        for w in &recorded_widths {
+            assert!(*w >= 280.0, "Panel width dropped below 280px: {}", w);
+        }
+    }
+}
 
 /// Preserves caret and selection where possible.
 pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
@@ -4849,8 +7591,12 @@ pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui
         (0, text_len)
     };
     let original = &tabular.editor.text[range_start..range_end];
-    // Apply sqlformat with sane defaults: 4-space indent, uppercase keywords, 1 line between queries
-    let opts = crate::query_tools::default_sqlformat_options();
+    let mut opts = crate::query_tools::default_sqlformat_options();
+    match tabular.advanced_editor.keyword_casing {
+        crate::models::enums::KeywordCasing::Upper => opts.uppercase = Some(true),
+        crate::models::enums::KeywordCasing::Lower => opts.uppercase = Some(false),
+        crate::models::enums::KeywordCasing::Preserve => opts.uppercase = None,
+    }
     let formatted = sqlfmt(original, &QueryParams::None, &opts);
     if formatted == original {
         return; // no change
@@ -4900,127 +7646,19 @@ pub(crate) fn toggle_line_comment(tabular: &mut window_egui::Tabular) {
         return;
     }
 
-    // Get selection range
-    let sel_start = tabular.selection_start.min(text_len);
-    let sel_end = tabular.selection_end.min(text_len);
-    let (range_start, range_end) = if sel_start < sel_end {
-        (sel_start, sel_end)
-    } else {
-        // No selection, use cursor position to find current line
-        let cursor = tabular.cursor_position.min(text_len);
-        (cursor, cursor)
-    };
+    let (new_text, new_start, new_end) = crate::query_tools::text_actions::toggle_line_comments(
+        &tabular.editor.text,
+        tabular.selection_start,
+        tabular.selection_end,
+    );
 
-    // Find the start of the first line
-    let mut line_start = range_start;
-    while line_start > 0 && tabular.editor.text.as_bytes()[line_start - 1] != b'\n' {
-        line_start -= 1;
+    if new_text == tabular.editor.text {
+        return;
     }
 
-    // Find the end of the last line (include the line with cursor if no selection)
-    let mut line_end = if range_end > range_start {
-        range_end
-    } else {
-        // Single line: find end of current line
-        let mut end = range_start;
-        while end < text_len && tabular.editor.text.as_bytes()[end] != b'\n' {
-            end += 1;
-        }
-        end
-    };
-    
-    // Clamp to text length
-    line_end = line_end.min(text_len);
+    tabular.editor.apply_single_replace(0..text_len, &new_text);
 
-    // Extract the block of lines
-    let block = &tabular.editor.text[line_start..line_end];
-    
-    // Check if all non-empty lines are commented
-    let mut all_commented = true;
-    let mut has_content_lines = false;
-    
-    for line in block.lines() {
-        let trimmed = line.trim_start();
-        if !trimmed.is_empty() {
-            has_content_lines = true;
-            if !trimmed.starts_with("--") {
-                all_commented = false;
-                break;
-            }
-        }
-    }
-
-    // If no content lines, treat as uncommented
-    if !has_content_lines {
-        all_commented = false;
-    }
-
-    // Build the new block
-    let mut new_block = String::with_capacity(block.len() + 100);
-    
-    if all_commented {
-        // Uncomment: remove "-- " or "--" from start of each line
-        for line in block.split_inclusive('\n') {
-            if line == "\n" {
-                new_block.push('\n');
-                continue;
-            }
-            
-            let (content, nl) = if let Some(p) = line.rfind('\n') {
-                (&line[..p], &line[p..])
-            } else {
-                (line, "")
-            };
-            
-            let trimmed = content.trim_start();
-            let indent_len = content.len() - trimmed.len();
-            let indent = &content[..indent_len];
-            
-            if let Some(rest) = trimmed.strip_prefix("-- ") {
-                new_block.push_str(indent);
-                new_block.push_str(rest);
-            } else if let Some(rest) = trimmed.strip_prefix("--") {
-                new_block.push_str(indent);
-                new_block.push_str(rest);
-            } else {
-                new_block.push_str(content);
-            }
-            new_block.push_str(nl);
-        }
-    } else {
-        // Comment: add "-- " to start of each line
-        for line in block.split_inclusive('\n') {
-            if line == "\n" {
-                new_block.push('\n');
-                continue;
-            }
-            
-            let (content, nl) = if let Some(p) = line.rfind('\n') {
-                (&line[..p], &line[p..])
-            } else {
-                (line, "")
-            };
-            
-            let trimmed = content.trim_start();
-            let indent_len = content.len() - trimmed.len();
-            let indent = &content[..indent_len];
-            
-            // Add comment marker
-            new_block.push_str(indent);
-            new_block.push_str("-- ");
-            new_block.push_str(trimmed);
-            new_block.push_str(nl);
-        }
-    }
-
-    // Apply the change
-    tabular
-        .editor
-        .apply_single_replace(line_start..line_end, &new_block);
-
-    // Update selection to cover the modified block
-    let new_end = line_start + new_block.len();
-    tabular.selection_start = line_start;
+    tabular.selection_start = new_start;
     tabular.selection_end = new_end;
     tabular.cursor_position = new_end;
 
@@ -5285,7 +7923,10 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
         return;
     }
 
-    let cur_idx = tabular.advanced_editor.current_match_index.min(matches.len() - 1);
+    let cur_idx = tabular
+        .advanced_editor
+        .current_match_index
+        .min(matches.len() - 1);
     let target = &matches[cur_idx];
 
     let replacement = if tabular.advanced_editor.use_regex {
@@ -5294,7 +7935,8 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
             .build()
         {
             let matched_slice = &tabular.editor.text[target.start..target.end];
-            re.replace(matched_slice, &tabular.advanced_editor.replace_text).to_string()
+            re.replace(matched_slice, &tabular.advanced_editor.replace_text)
+                .to_string()
         } else {
             tabular.advanced_editor.replace_text.clone()
         }
@@ -5321,7 +7963,8 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
         tabular.advanced_editor.use_regex,
         tabular.advanced_editor.in_selection,
         tabular.advanced_editor.selection_range,
-    ).unwrap_or_default();
+    )
+    .unwrap_or_default();
 
     tabular.advanced_editor.match_count = new_matches.len();
     if !new_matches.is_empty() {
@@ -5436,7 +8079,8 @@ pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
             tabular.advanced_editor.use_regex,
             tabular.advanced_editor.in_selection,
             tabular.advanced_editor.selection_range,
-        ).unwrap_or_default();
+        )
+        .unwrap_or_default();
         if !matches.is_empty() {
             let next_idx = (tabular.advanced_editor.current_match_index + 1) % matches.len();
             tabular.advanced_editor.current_match_index = next_idx;
@@ -5550,24 +8194,39 @@ pub(crate) fn render_find_replace_floating_panel(
                             egui_icons::icons::ICON_CHEVRON_RIGHT
                         };
                         let chevron_btn = egui::Button::new(
-                            chevron_icon.rich_text().size(13.0).color(ui.visuals().weak_text_color())
+                            chevron_icon
+                                .rich_text()
+                                .size(13.0)
+                                .color(ui.visuals().weak_text_color()),
                         )
                         .fill(egui::Color32::TRANSPARENT)
                         .stroke(egui::Stroke::NONE)
                         .min_size(egui::vec2(16.0, 20.0));
 
-                        if ui.add(chevron_btn).on_hover_text("Toggle Replace (Cmd+H)").clicked() {
-                            tabular.advanced_editor.show_replace_row = !tabular.advanced_editor.show_replace_row;
+                        if ui
+                            .add(chevron_btn)
+                            .on_hover_text("Toggle Replace (Cmd+H)")
+                            .clicked()
+                        {
+                            tabular.advanced_editor.show_replace_row =
+                                !tabular.advanced_editor.show_replace_row;
                         }
 
                         // Find Input Field
                         let find_input_id = ui.make_persistent_id("editor_find_input");
-                        let find_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.find_text)
-                            .id(find_input_id)
-                            .hint_text("Find")
-                            .desired_width(150.0);
-
-                        let find_resp = ui.add(find_edit);
+                        let find_resp = window_egui::style::commit_search_on_enter(
+                            ui,
+                            find_input_id,
+                            &mut tabular.advanced_editor.find_text,
+                            |ui, draft| {
+                                ui.add(
+                                    egui::TextEdit::singleline(draft)
+                                        .id(find_input_id)
+                                        .hint_text("Find")
+                                        .desired_width(150.0),
+                                )
+                            },
+                        );
 
                         if tabular.advanced_editor.focus_find_input {
                             find_resp.request_focus();
@@ -5589,14 +8248,36 @@ pub(crate) fn render_find_replace_floating_panel(
                         }
 
                         // Toggle Buttons (Aa, \b, .*, ☵)
-                        render_toggle_button(ui, &mut tabular.advanced_editor.case_sensitive, "Aa", "Match Case (Alt+C)");
-                        render_toggle_button(ui, &mut tabular.advanced_editor.whole_word, "\\b", "Match Whole Word (Alt+W)");
-                        render_toggle_button(ui, &mut tabular.advanced_editor.use_regex, ".*", "Use Regular Expression (Alt+R)");
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.case_sensitive,
+                            "Aa",
+                            "Match Case (Alt+C)",
+                        );
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.whole_word,
+                            "\\b",
+                            "Match Whole Word (Alt+W)",
+                        );
+                        render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.use_regex,
+                            ".*",
+                            "Use Regular Expression (Alt+R)",
+                        );
 
-                        let in_sel_changed = render_toggle_button(ui, &mut tabular.advanced_editor.in_selection, "☵", "Find in Selection (Alt+L)").changed();
+                        let in_sel_changed = render_toggle_button(
+                            ui,
+                            &mut tabular.advanced_editor.in_selection,
+                            "☵",
+                            "Find in Selection (Alt+L)",
+                        )
+                        .changed();
                         if in_sel_changed && tabular.advanced_editor.in_selection {
                             if tabular.selection_start < tabular.selection_end {
-                                tabular.advanced_editor.selection_range = Some((tabular.selection_start, tabular.selection_end));
+                                tabular.advanced_editor.selection_range =
+                                    Some((tabular.selection_start, tabular.selection_end));
                             } else {
                                 tabular.advanced_editor.selection_range = None;
                             }
@@ -5604,7 +8285,9 @@ pub(crate) fn render_find_replace_floating_panel(
 
                         // Match Count or Status
                         let count_text = if tabular.advanced_editor.regex_error.is_some() {
-                            egui::RichText::new("⚠️ Regex error").size(11.0).color(egui::Color32::from_rgb(239, 68, 68))
+                            egui::RichText::new("⚠️ Regex error")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(239, 68, 68))
                         } else if tabular.advanced_editor.find_text.is_empty() {
                             egui::RichText::new("").size(11.0)
                         } else if tabular.advanced_editor.match_count > 0 {
@@ -5625,23 +8308,40 @@ pub(crate) fn render_find_replace_floating_panel(
                         }
 
                         // Previous / Next buttons
-                        let prev_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_UP.rich_text().size(13.0))
-                            .min_size(egui::vec2(22.0, 20.0));
-                        if ui.add(prev_btn).on_hover_text("Previous Match (Shift+Enter)").clicked() {
+                        let prev_btn = egui::Button::new(
+                            egui_icons::icons::ICON_KEYBOARD_ARROW_UP
+                                .rich_text()
+                                .size(13.0),
+                        )
+                        .min_size(egui::vec2(22.0, 20.0));
+                        if ui
+                            .add(prev_btn)
+                            .on_hover_text("Previous Match (Shift+Enter)")
+                            .clicked()
+                        {
                             find_prev_requested = true;
                         }
 
-                        let next_btn = egui::Button::new(egui_icons::icons::ICON_KEYBOARD_ARROW_DOWN.rich_text().size(13.0))
-                            .min_size(egui::vec2(22.0, 20.0));
-                        if ui.add(next_btn).on_hover_text("Next Match (Enter)").clicked() {
+                        let next_btn = egui::Button::new(
+                            egui_icons::icons::ICON_KEYBOARD_ARROW_DOWN
+                                .rich_text()
+                                .size(13.0),
+                        )
+                        .min_size(egui::vec2(22.0, 20.0));
+                        if ui
+                            .add(next_btn)
+                            .on_hover_text("Next Match (Enter)")
+                            .clicked()
+                        {
                             find_next_requested = true;
                         }
 
                         // Close Button
-                        let close_btn = egui::Button::new(egui_icons::icons::ICON_CLOSE.rich_text().size(12.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE)
-                            .min_size(egui::vec2(20.0, 20.0));
+                        let close_btn =
+                            egui::Button::new(egui_icons::icons::ICON_CLOSE.rich_text().size(12.0))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE)
+                                .min_size(egui::vec2(20.0, 20.0));
                         if ui.add(close_btn).on_hover_text("Close (Escape)").clicked() {
                             close_requested = true;
                         }
@@ -5654,19 +8354,20 @@ pub(crate) fn render_find_replace_floating_panel(
                             ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
 
                             let replace_input_id = ui.make_persistent_id("editor_replace_input");
-                            let replace_edit = egui::TextEdit::singleline(&mut tabular.advanced_editor.replace_text)
-                                .id(replace_input_id)
-                                .hint_text("Replace")
-                                .desired_width(150.0);
+                            let replace_edit = egui::TextEdit::singleline(
+                                &mut tabular.advanced_editor.replace_text,
+                            )
+                            .id(replace_input_id)
+                            .hint_text("Replace")
+                            .desired_width(150.0);
 
                             let replace_resp = ui.add(replace_edit);
 
                             if replace_resp.has_focus() {
                                 let alt_pressed = ui.input(|i| i.modifiers.alt);
-                                let cmd_pressed = ui.input(|i| i.modifiers.mac_cmd || i.modifiers.command || i.modifiers.ctrl);
 
                                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    if alt_pressed || (cmd_pressed && alt_pressed) {
+                                    if alt_pressed {
                                         replace_all_requested = true;
                                     } else {
                                         replace_current_requested = true;
@@ -5678,15 +8379,21 @@ pub(crate) fn render_find_replace_floating_panel(
                             }
 
                             // Replace buttons
-                            let rep_btn = egui::Button::new(egui::RichText::new("Replace").size(11.0))
-                                .min_size(egui::vec2(58.0, 20.0));
+                            let rep_btn =
+                                egui::Button::new(egui::RichText::new("Replace").size(11.0))
+                                    .min_size(egui::vec2(58.0, 20.0));
                             if ui.add(rep_btn).on_hover_text("Replace (Enter)").clicked() {
                                 replace_current_requested = true;
                             }
 
-                            let rep_all_btn = egui::Button::new(egui::RichText::new("Replace All").size(11.0))
-                                .min_size(egui::vec2(76.0, 20.0));
-                            if ui.add(rep_all_btn).on_hover_text("Replace All (Alt+Enter)").clicked() {
+                            let rep_all_btn =
+                                egui::Button::new(egui::RichText::new("Replace All").size(11.0))
+                                    .min_size(egui::vec2(76.0, 20.0));
+                            if ui
+                                .add(rep_all_btn)
+                                .on_hover_text("Replace All (Alt+Enter)")
+                                .clicked()
+                            {
                                 replace_all_requested = true;
                             }
                         });
@@ -5744,6 +8451,12 @@ pub(crate) fn open_legacy_command_palette(tabular: &mut window_egui::Tabular) {
         "Data: Export SQL Inserts".to_string(),
         "Data: Export Markdown".to_string(),
         "Data: Import CSV".to_string(),
+        "Data: Export with Options".to_string(),
+        "Data: Open Data File".to_string(),
+        "Data: Transfer Tables".to_string(),
+        "Data: Compare Data".to_string(),
+        "Data: Export Database Objects".to_string(),
+        "Data: Decrypt Exported File".to_string(),
         "Transaction: Begin / Toggle   ⌘ Shift+T".to_string(),
         "Transaction: Commit".to_string(),
         "Transaction: Rollback".to_string(),
@@ -5858,8 +8571,17 @@ pub(crate) fn select_current_theme(tabular: &mut window_egui::Tabular) {
     tabular.show_theme_selector = false;
 }
 
+/// Id field pencarian command palette (dipakai juga oleh handler Enter global).
+pub(crate) fn command_palette_search_id() -> egui::Id {
+    egui::Id::new("command_palette_search_field")
+}
+
 pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-    let progress = window_egui::style::render_modal_backdrop(ctx, "command_palette", tabular.show_command_palette);
+    let progress = window_egui::style::render_modal_backdrop(
+        ctx,
+        "command_palette",
+        tabular.show_command_palette,
+    );
     if progress <= 0.01 {
         return;
     }
@@ -5912,12 +8634,20 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
                                     );
                                     ui.add_space(4.0);
 
-                                    let text_edit = egui::TextEdit::singleline(&mut tabular.command_palette_input)
-                                        .hint_text("Type a command or search tables... (⌘P / ⌘K)")
-                                        .frame(egui::Frame::NONE)
-                                        .font(egui::FontId::proportional(15.0));
-
-                                    let response = ui.add_sized([modal_width - 80.0, 26.0], text_edit);
+                                    let search_id = command_palette_search_id();
+                                    let response = window_egui::style::commit_search_on_enter(
+                                        ui,
+                                        search_id,
+                                        &mut tabular.command_palette_input,
+                                        |ui, draft| {
+                                            let text_edit = egui::TextEdit::singleline(draft)
+                                                .id(search_id)
+                                                .hint_text("Type a command or search tables... (⌘P / ⌘K)")
+                                                .frame(egui::Frame::NONE)
+                                                .font(egui::FontId::proportional(15.0));
+                                            ui.add_sized([modal_width - 80.0, 26.0], text_edit)
+                                        },
+                                    );
 
                                     if response.changed() {
                                         tabular.command_palette_selected_index = 0;
@@ -6112,7 +8842,11 @@ pub(crate) fn render_command_palette(tabular: &mut window_egui::Tabular, ctx: &e
 pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str) {
     // Strip trailing shortcut hint (everything after first "  " sequence of spaces) for matching
     let cmd = command.trim_end();
-    let key = if let Some(pos) = cmd.find("  ") { cmd[..pos].trim() } else { cmd };
+    let key = if let Some(pos) = cmd.find("  ") {
+        cmd[..pos].trim()
+    } else {
+        cmd
+    };
 
     tabular.show_command_palette = false;
     tabular.command_palette_input.clear();
@@ -6157,7 +8891,7 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         "Query: Close Tab" => {
             if !tabular.query_tabs.is_empty() {
                 let idx = tabular.active_tab_index;
-                close_tab(tabular, idx);
+                crate::session_restore::request_close_tab(tabular, idx);
             }
         }
         "Query: Save Tab" => {
@@ -6193,7 +8927,8 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             );
         }
         "Data: Export SQL Inserts" => {
-            let db_type = tabular.current_connection_id
+            let db_type = tabular
+                .current_connection_id
                 .and_then(|id| tabular.connections.iter().find(|c| c.id == Some(id)))
                 .map(|c| c.connection_type.clone());
             crate::export::export_to_sql_inserts(
@@ -6210,14 +8945,64 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
                 &tabular.current_table_name,
             );
         }
+        "Data: Export with Options" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::ExportResult);
+        }
+        "Data: Open Data File" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::OpenDataFile(None));
+        }
+        "Data: Decrypt Exported File" => {
+            tabular
+                .transfer_ui
+                .request(crate::window_egui::transfer_ui::TransferAction::DecryptFile);
+        }
+        "Data: Transfer Tables" | "Data: Compare Data" | "Data: Export Database Objects" => {
+            use crate::window_egui::transfer_ui::TransferAction;
+            // Mulai dari koneksi dan database tab aktif bila ada.
+            let conn_id = tabular.current_connection_id;
+            let database = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .and_then(|tab| tab.database_name.clone());
+            tabular.transfer_ui.request(match key {
+                "Data: Transfer Tables" => TransferAction::Transfer {
+                    conn_id,
+                    database,
+                    table: None,
+                },
+                "Data: Compare Data" => TransferAction::CompareData {
+                    conn_id,
+                    database,
+                    table: None,
+                },
+                _ => TransferAction::ExportObjects {
+                    conn_id,
+                    database,
+                    preselect: None,
+                },
+            });
+        }
+        "Export All Data (ZIP)" | "File: Export All Data (ZIP)" => {
+            tabular.show_export_all_dialog = true;
+        }
+        "Import All Data (ZIP)" | "File: Import All Data (ZIP)" => {
+            tabular.show_import_all_dialog = true;
+        }
         "Data: Import CSV" => {
             if let Some(conn_id) = tabular.current_connection_id {
-                let db_type = tabular.connections.iter()
+                let db_type = tabular
+                    .connections
+                    .iter()
                     .find(|c| c.id == Some(conn_id))
                     .map(|c| c.connection_type.clone())
                     .unwrap_or(crate::models::enums::DatabaseType::MySQL);
                 tabular.show_csv_import_dialog = true;
                 tabular.csv_import_state = Some(crate::models::structs::CsvImportState {
+                    source: Default::default(),
                     connection_id: conn_id,
                     database_name: None,
                     table_name: tabular.current_table_name.clone(),
@@ -6250,7 +9035,22 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             if let Some(conn_id) = tabular.current_connection_id {
                 open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::Processlist);
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_dba_monitor_tab(tabular, first_conn, models::enums::DbaMonitorTab::Processlist);
+                open_dba_monitor_tab(
+                    tabular,
+                    first_conn,
+                    models::enums::DbaMonitorTab::Processlist,
+                );
+            }
+        }
+        "Query: Insights (Most Run / Slowest)" => {
+            tabular.open_query_insights();
+        }
+        "DBA: Server Dashboard" => {
+            if let Some(conn_id) = tabular
+                .current_connection_id
+                .or_else(|| tabular.connections.first().and_then(|c| c.id))
+            {
+                open_dba_monitor_tab(tabular, conn_id, models::enums::DbaMonitorTab::Dashboard);
             }
         }
         "DBA: Deadlock & Lock Tree" => {
@@ -6264,18 +9064,31 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             if let Some(conn_id) = tabular.current_connection_id {
                 open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::Users);
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::Users);
+                open_user_manager_tab(
+                    tabular,
+                    first_conn,
+                    crate::user_manager::UserManagerTab::Users,
+                );
             }
         }
         "DBA: Create New User" => {
             if let Some(conn_id) = tabular.current_connection_id {
-                open_user_manager_tab(tabular, conn_id, crate::user_manager::UserManagerTab::CreateUser);
+                open_user_manager_tab(
+                    tabular,
+                    conn_id,
+                    crate::user_manager::UserManagerTab::CreateUser,
+                );
             } else if let Some(first_conn) = tabular.connections.first().and_then(|c| c.id) {
-                open_user_manager_tab(tabular, first_conn, crate::user_manager::UserManagerTab::CreateUser);
+                open_user_manager_tab(
+                    tabular,
+                    first_conn,
+                    crate::user_manager::UserManagerTab::CreateUser,
+                );
             }
         }
         "Plugins: Extensibility & Wasm Automation" | "Plugins: Open Plugins Manager" => {
-            tabular.plugin_modal_state.is_open = true;
+            tabular.settings_active_pref_tab = crate::window_egui::PrefTab::Plugins;
+            tabular.show_settings_window = true;
         }
         "View: Refresh" => {
             crate::data_table::refresh_current_table_data(tabular);
@@ -6286,6 +9099,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         }
         "Preferences: Settings" => {
             tabular.show_settings_window = true;
+        }
+        "Help: Keyboard Shortcuts" => {
+            tabular.show_shortcuts_window = true;
         }
         _ => {
             debug!("Unknown command: {}", key);
@@ -6307,7 +9123,11 @@ fn word_at_cursor(text: &str, pos: usize) -> Option<&str> {
         return None;
     }
     let start = (0..=p).rev().take_while(|&i| is_ident(bytes[i])).last()?;
-    let end = (p..len).take_while(|&i| is_ident(bytes[i])).last().map(|i| i + 1).unwrap_or(p + 1);
+    let end = (p..len)
+        .take_while(|&i| is_ident(bytes[i]))
+        .last()
+        .map(|i| i + 1)
+        .unwrap_or(p + 1);
     Some(&text[start..end])
 }
 
@@ -6338,7 +9158,9 @@ pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
     let word = match word_at_cursor(&text, cursor) {
         Some(w) => w.to_string(),
         None => {
-            tabular.toasts.info("Go to definition: no identifier at cursor");
+            tabular
+                .toasts
+                .info("Go to definition: no identifier at cursor");
             return;
         }
     };
@@ -6353,9 +9175,13 @@ pub(crate) fn go_to_definition(tabular: &mut window_egui::Tabular) {
         tabular.current_table_name = node.name.clone();
         // Expand the tree to reveal the node
         expand_tree_to_table(&mut tabular.items_tree, &word);
-        tabular.toasts.info(format!("Go to definition: navigated to '{}'", word));
+        tabular
+            .toasts
+            .info(format!("Go to definition: navigated to '{}'", word));
     } else {
-        tabular.toasts.info(format!("Go to definition: '{}' not found in schema", word));
+        tabular
+            .toasts
+            .info(format!("Go to definition: '{}' not found in schema", word));
     }
 }
 
@@ -6427,7 +9253,9 @@ pub(crate) fn commit_rename_symbol(tabular: &mut window_egui::Tabular) {
     }
 
     tabular.editor.text = result;
-    tabular.toasts.info(format!("Renamed '{}' → '{}'", old, new));
+    tabular
+        .toasts
+        .info(format!("Renamed '{}' → '{}'", old, new));
 }
 
 /// Render the floating rename-symbol dialog.
@@ -6449,7 +9277,10 @@ pub(crate) fn render_rename_symbol_dialog(tabular: &mut window_egui::Tabular, ct
                 .inner_margin(egui::Margin::same(16))
                 .show(ui, |ui| {
                     ui.set_min_width(400.0);
-                    ui.label(egui::RichText::new(format!("Rename '{}'", tabular.rename_symbol_old)).strong());
+                    ui.label(
+                        egui::RichText::new(format!("Rename '{}'", tabular.rename_symbol_old))
+                            .strong(),
+                    );
                     ui.add_space(8.0);
                     let resp = ui.add_sized(
                         [380.0, 24.0],
@@ -6654,10 +9485,7 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
 /// Run the engine-appropriate EXPLAIN for the current statement
 /// (selection > statement at cursor > full editor text). The plan comes
 /// back through the normal result grid.
-pub(crate) fn explain_current_query(
-    tabular: &mut window_egui::Tabular,
-    selected_text: String,
-) {
+pub(crate) fn explain_current_query(tabular: &mut window_egui::Tabular, selected_text: String) {
     tabular.is_table_browse_mode = false;
     tabular.extend_query_icon_hold();
 
@@ -6693,7 +9521,9 @@ pub(crate) fn explain_current_query(
         .map(|c| c.connection_type.clone());
 
     let prefix = match connection_type {
-        Some(crate::models::enums::DatabaseType::PostgreSQL) => "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ",
+        Some(crate::models::enums::DatabaseType::PostgreSQL) => {
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+        }
         Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
         Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
         Some(crate::models::enums::DatabaseType::MsSQL) => "SET STATISTICS XML ON; ",
@@ -6781,6 +9611,9 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     tabular.actual_total_rows = None;
 
     tabular.lint_messages = query_tools::lint_sql(&query);
+    // Rekomendasi index/performa (kolom JOIN/WHERE/GROUP BY tanpa index, dsb.)
+    let index_advice = editor_autocomplete::index_advice_for_execution(tabular, &query);
+    tabular.lint_messages.extend(index_advice);
     if tabular.lint_messages.is_empty() {
         tabular.show_lint_panel = false;
     }
@@ -6814,14 +9647,15 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
 
     // Safety Guard: Check for unsafe UPDATE or DELETE without WHERE clause
     if !tabular.show_unsafe_dml_dialog
-        && let Some(kind) = is_unsafe_dml_query(&query) {
-            tabular.show_unsafe_dml_dialog = true;
-            tabular.unsafe_dml_query = query;
-            tabular.unsafe_dml_type = kind.to_string();
-            tabular.query_execution_in_progress = false;
-            tabular.extend_query_icon_hold();
-            return;
-        }
+        && let Some(kind) = is_unsafe_dml_query(&query)
+    {
+        tabular.show_unsafe_dml_dialog = true;
+        tabular.unsafe_dml_query = query;
+        tabular.unsafe_dml_type = kind.to_string();
+        tabular.query_execution_in_progress = false;
+        tabular.extend_query_icon_hold();
+        return;
+    }
 
     // Parameter Prompt: Check if query contains parameter placeholders
     if !tabular.show_parameter_dialog {
@@ -6884,14 +9718,25 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
             .connections
             .iter()
             .find(|c| c.id == Some(connection_id))
-            .map(|c| {
-                matches!(
-                    c.connection_type,
-                    crate::models::enums::DatabaseType::MySQL
-                )
-            })
+            .map(|c| matches!(c.connection_type, crate::models::enums::DatabaseType::MySQL))
             .unwrap_or(false);
-        let mut statements = connection::split_sql_statements(&query, hash_is_comment);
+        let is_mssql = tabular
+            .connections
+            .iter()
+            .find(|c| c.id == Some(connection_id))
+            .map(|c| matches!(c.connection_type, crate::models::enums::DatabaseType::MsSQL))
+            .unwrap_or(false);
+        // MsSQL: script dengan separator `GO` dijalankan per batch utuh (body
+        // procedure/IF tidak dipecah di `;`), seperti SSMS/sqlcmd.
+        let go_batches = if is_mssql {
+            connection::sql::split_mssql_go_batches(&query)
+        } else {
+            None
+        };
+        let mut statements = match go_batches {
+            Some(batches) => batches,
+            None => connection::split_sql_statements(&query, hash_is_comment),
+        };
 
         if statements.is_empty() {
             // Should not happen as we checked query.is_empty() above
@@ -6899,7 +9744,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
         }
 
         tabular.query_execution_in_progress = true;
-        
+
         // If a pool creation is already in progress for this connection, show loading and queue the query
         if tabular.pending_connection_pools.contains(&connection_id) {
             log::debug!(
@@ -6922,7 +9767,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 "🔧 Pool not ready for {}, triggering background creation and queuing",
                 connection_id
             );
-            
+
             // Trigger creation (safe to call multiple times, handles dedup)
             crate::connection::ensure_background_pool_creation(tabular, connection_id);
 
@@ -6937,7 +9782,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
 
         debug!("=== EXECUTING {} QUERIES ===", statements.len());
         debug!("Connection ID: {}", connection_id);
-        
+
         // Manual-commit mode: route statements to the tab's dedicated session
         // connection so BEGIN/COMMIT and session state persist across runs.
         let tx_mode_active = tabular
@@ -6969,7 +9814,8 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 tabular.use_server_pagination = true;
                 tabular.current_base_query = base_query.clone();
                 tabular.current_page = 0;
-                tabular.actual_total_rows = Some(10_000);
+                // Total belum diketahui; dihitung hanya jika user meminta (Count rows).
+                tabular.actual_total_rows = None;
 
                 if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
                     tab.base_query = base_query;
@@ -6977,13 +9823,14 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                     tab.page_size = tabular.page_size;
                 }
 
-                debug!("🚀 Auto server-pagination enabled (simple SELECT). Executing first page...");
+                debug!(
+                    "🚀 Auto server-pagination enabled (simple SELECT). Executing first page..."
+                );
                 tabular.execute_paginated_query();
                 return;
             }
 
-            let job_id = tabular.next_query_job_id;
-            tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+            let job_id = tabular.jobs.allocate_id();
 
             match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
                 Ok(job) => {
@@ -6994,22 +9841,25 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                         started_at: Instant::now(),
                         completed: false,
                     };
-                    tabular.active_query_jobs.insert(job_id, status);
+                    tabular.jobs.active.insert(job_id, status);
 
-                    match connection::spawn_query_job(tabular, job, tabular.query_result_sender.clone())
-                    {
+                    match connection::spawn_query_job(
+                        tabular,
+                        job,
+                        tabular.query_result_sender.clone(),
+                    ) {
                         Ok(handle) => {
-                            tabular.active_query_handles.insert(job_id, handle);
+                            tabular.jobs.handles.insert(job_id, handle);
                             tabular.current_table_name = "Running query…".to_string();
                         }
                         Err(err) => {
-                            tabular.active_query_jobs.remove(&job_id);
-                            debug!("Failed to spawn async job: {:?}", err);
+                            tabular.jobs.active.remove(&job_id);
+                            report_query_start_failure(tabular, &err);
                         }
                     }
                 }
                 Err(err) => {
-                    debug!("Failed to prepare async job: {:?}", err);
+                    report_query_start_failure(tabular, &err);
                 }
             }
         } else {
@@ -7023,8 +9873,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
 
             for (idx, stmt) in statements.into_iter().enumerate() {
                 debug!("Preparing statement {}/{}: {}", idx + 1, total, stmt);
-                let job_id = tabular.next_query_job_id;
-                tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+                let job_id = tabular.jobs.allocate_id();
 
                 match connection::prepare_query_job(tabular, connection_id, stmt.clone(), job_id) {
                     Ok(job) => {
@@ -7036,12 +9885,24 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                             started_at: Instant::now(),
                             completed: false,
                         };
-                        tabular.active_query_jobs.insert(job_id, status);
+                        tabular.jobs.active.insert(job_id, status);
                         job_ids.push(job_id);
                         jobs.push(job);
                     }
                     Err(err) => {
-                        debug!("Failed to prepare statement {}/{}: {:?}", idx + 1, total, err);
+                        // Tanpa statement ini urutan script jadi tidak utuh,
+                        // jadi batalkan seluruh batch daripada menjalankan sebagian.
+                        for job_id in &job_ids {
+                            tabular.jobs.active.remove(job_id);
+                        }
+                        log::warn!(
+                            "Failed to prepare statement {}/{}: {:?}",
+                            idx + 1,
+                            total,
+                            err
+                        );
+                        report_query_start_failure(tabular, &err);
+                        return;
                     }
                 }
             }
@@ -7051,27 +9912,52 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 return;
             }
 
-            match connection::spawn_query_job_batch(tabular, jobs, tabular.query_result_sender.clone())
-            {
+            match connection::spawn_query_job_batch(
+                tabular,
+                jobs,
+                tabular.query_result_sender.clone(),
+            ) {
                 Ok(handle) => {
                     // The whole batch runs on one task; cancelling any member
                     // job id aborts the entire batch (see cancel_active_query_job).
                     let last_id = *job_ids.last().expect("jobs not empty");
-                    tabular
-                        .query_job_batches
-                        .push((job_ids, handle.abort_handle()));
-                    tabular.active_query_handles.insert(last_id, handle);
+                    tabular.jobs.batches.push((job_ids, handle.abort_handle()));
+                    tabular.jobs.handles.insert(last_id, handle);
                     tabular.current_table_name = format!("Running {} queries…", total);
                 }
                 Err(err) => {
                     for job_id in &job_ids {
-                        tabular.active_query_jobs.remove(job_id);
+                        tabular.jobs.active.remove(job_id);
                     }
-                    tabular.query_execution_in_progress = false;
-                    debug!("Failed to spawn batch job: {:?}", err);
+                    report_query_start_failure(tabular, &err);
                 }
             }
         }
+    }
+}
+
+/// Tampilkan alasan query gagal dimulai dan kembalikan status eksekusi ke idle.
+/// Sebelumnya kegagalan ini hanya masuk ke log debug, sehingga tombol Run
+/// terlihat tidak melakukan apa-apa dan spinner bisa terus berputar.
+fn report_query_start_failure(
+    tabular: &mut window_egui::Tabular,
+    err: &connection::types::QueryPreparationError,
+) {
+    use connection::types::QueryPreparationError as E;
+    let reason = match err {
+        E::ConnectionNotFound => "the connection for this tab no longer exists",
+        E::PoolUnavailable => "the database connection is not open yet — try again in a moment",
+        E::RuntimeUnavailable => "the background runtime is not available",
+        E::UnsupportedDatabase => "this database type does not support running queries here",
+    };
+    log::warn!("Query could not be started: {:?}", err);
+    tabular
+        .toasts
+        .error(format!("Query could not be started: {}", reason));
+    if tabular.jobs.active.is_empty() {
+        tabular.query_execution_in_progress = false;
+        tabular.current_table_name.clear();
+        tabular.extend_query_icon_hold();
     }
 }
 
@@ -7115,17 +10001,16 @@ fn execute_statements_in_session(
         .get(tabular.active_tab_index)
         .and_then(|t| t.session.clone())
     else {
-        tabular.error_message =
-            "Cannot start a session connection for manual-commit mode".to_string();
-        tabular.show_error_message = true;
+        tabular
+            .toasts
+            .error("Cannot start a session connection for manual-commit mode".to_string());
         tabular.query_execution_in_progress = false;
         return;
     };
 
     let total = statements.len();
     for (idx, stmt) in statements.into_iter().enumerate() {
-        let job_id = tabular.next_query_job_id;
-        tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+        let job_id = tabular.jobs.allocate_id();
         let preview: String = stmt.chars().take(72).collect();
         let status = connection::QueryJobStatus {
             job_id,
@@ -7138,16 +10023,14 @@ fn execute_statements_in_session(
             started_at: Instant::now(),
             completed: false,
         };
-        tabular.active_query_jobs.insert(job_id, status);
+        tabular.jobs.active.insert(job_id, status);
 
-        if !session.send(crate::connection::session::SessionCommand::Execute {
-            job_id,
-            sql: stmt,
-        }) {
-            tabular.active_query_jobs.remove(&job_id);
-            tabular.error_message =
-                "Session connection is gone; toggle manual commit off and on again".to_string();
-            tabular.show_error_message = true;
+        if !session.send(crate::connection::session::SessionCommand::Execute { job_id, sql: stmt })
+        {
+            tabular.jobs.active.remove(&job_id);
+            tabular.toasts.error(
+                "Session connection is gone; toggle manual commit off and on again".to_string(),
+            );
             tabular.query_execution_in_progress = false;
             return;
         }
@@ -7172,8 +10055,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
     else {
         return;
     };
-    let job_id = tabular.next_query_job_id;
-    tabular.next_query_job_id = tabular.next_query_job_id.wrapping_add(1);
+    let job_id = tabular.jobs.allocate_id();
     let verb = if commit { "COMMIT" } else { "ROLLBACK" };
     let status = connection::QueryJobStatus {
         job_id,
@@ -7182,7 +10064,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
         started_at: Instant::now(),
         completed: false,
     };
-    tabular.active_query_jobs.insert(job_id, status);
+    tabular.jobs.active.insert(job_id, status);
     tabular.query_execution_in_progress = true;
 
     let command = if commit {
@@ -7191,7 +10073,7 @@ pub(crate) fn send_session_tx_command(tabular: &mut window_egui::Tabular, commit
         crate::connection::session::SessionCommand::Rollback { job_id }
     };
     if !session.send(command) {
-        tabular.active_query_jobs.remove(&job_id);
+        tabular.jobs.active.remove(&job_id);
         tabular.query_execution_in_progress = false;
     }
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
@@ -7208,7 +10090,11 @@ pub(crate) fn process_query_result(
 ) {
     if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
         tab.has_executed_query = true;
+        tab.last_executed_sql = query.to_string();
+        tab.last_statement_type = models::structs::StatementType::from_sql(query);
     }
+    tabular.last_executed_sql = query.to_string();
+    tabular.last_statement_type = models::structs::StatementType::from_sql(query);
 
     if let Some((headers, data)) = result {
         let is_error_result = headers.first().map(|h| h == "Error").unwrap_or(false);
@@ -7226,7 +10112,14 @@ pub(crate) fn process_query_result(
         data_table::update_pagination_data(tabular, data);
 
         if tabular.total_rows == 0 {
-            tabular.current_table_name = "Query executed successfully (no results)".to_string();
+            if tabular.last_statement_type.is_mutation() {
+                tabular.current_table_name = format!(
+                    "{} completed successfully",
+                    tabular.last_statement_type.as_str()
+                );
+            } else {
+                tabular.current_table_name = "Query executed successfully (0 rows)".to_string();
+            }
         } else {
             tabular.current_table_name = format!(
                 "Query Results ({} total rows, showing page {} of {})",
@@ -7285,16 +10178,28 @@ pub(crate) fn process_query_result(
             debug!("Skip saving to history karena hasil error");
         }
         // Detect EXPLAIN output JSON/XML/text and set active view to Explain
-        let first_cell = tabular.current_table_data.first().and_then(|r| r.first()).cloned().unwrap_or_default();
+        let first_cell = tabular
+            .current_table_data
+            .first()
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap_or_default();
         let all_text = if tabular.current_table_data.len() > 1 {
-            tabular.current_table_data.iter().map(|r| r.first().map(|s| s.as_str()).unwrap_or("")).collect::<Vec<_>>().join("\n")
+            tabular
+                .current_table_data
+                .iter()
+                .map(|r| r.first().map(|s| s.as_str()).unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             first_cell.clone()
         };
         let is_explain = query.trim_start().to_uppercase().starts_with("EXPLAIN")
             || query.to_uppercase().contains("STATISTICS XML")
             || query.to_uppercase().contains("SHOWPLAN_XML")
-            || tabular.current_table_headers.iter().any(|h| h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN"))
+            || tabular.current_table_headers.iter().any(|h| {
+                h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN")
+            })
             || first_cell.trim().starts_with('[')
             || first_cell.trim().starts_with('{')
             || first_cell.trim().contains("<ShowPlanXML")
@@ -7304,6 +10209,10 @@ pub(crate) fn process_query_result(
             tabular.table_bottom_view = models::structs::TableBottomView::Explain;
             tabular.show_message_panel = false;
             tabular.show_lint_panel = false;
+            // Riwayat plan per query untuk view Compare.
+            if data_table::looks_like_plan(query, &all_text) {
+                data_table::record_explain_plan(tabular, connection_id, query, &all_text);
+            }
         }
 
         // Persist into tab state
@@ -7360,6 +10269,12 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
         return String::new();
     }
 
+    if let Some(stmt) =
+        crate::query_tools::statement_parser::find_statement_at_cursor(text, cursor_pos)
+    {
+        return stmt.text;
+    }
+
     let statements = split_sql_statements_with_spans(text);
     if statements.is_empty() {
         return text.trim().to_string();
@@ -7374,16 +10289,6 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
             return trimmed.to_string();
         }
     }
-
-    if let Some((_, _, first_stmt)) = statements.first()
-        && cursor_pos < statements[0].0 && !first_stmt.trim().is_empty() {
-            return first_stmt.trim().to_string();
-        }
-
-    if let Some((_, _, last_stmt)) = statements.last()
-        && cursor_pos >= statements.last().unwrap().1 && !last_stmt.trim().is_empty() {
-            return last_stmt.trim().to_string();
-        }
 
     text.trim().to_string()
 }
@@ -7403,7 +10308,11 @@ pub(crate) fn split_sql_statements_with_spans(text: &str) -> Vec<(usize, usize, 
 
     while i < len {
         let b = bytes[i];
-        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+        let next_b = if i + 1 < len {
+            Some(bytes[i + 1])
+        } else {
+            None
+        };
 
         if in_line_comment {
             if b == b'\n' {
@@ -7524,7 +10433,11 @@ pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
 
     while i < len {
         let b = bytes[i];
-        let next_b = if i + 1 < len { Some(bytes[i + 1]) } else { None };
+        let next_b = if i + 1 < len {
+            Some(bytes[i + 1])
+        } else {
+            None
+        };
 
         if in_line_comment {
             if b == b'\n' {
@@ -7681,13 +10594,19 @@ pub(crate) fn is_unsafe_dml_query(sql: &str) -> Option<&'static str> {
     let upper = trimmed.to_ascii_uppercase();
 
     if upper.starts_with("DELETE") {
-        if !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
+        if !upper
+            .split_whitespace()
+            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
+        {
             return Some("DELETE");
         }
     } else if upper.starts_with("UPDATE")
-        && !upper.split_whitespace().any(|w| w == "WHERE" || w.starts_with("WHERE;")) {
-            return Some("UPDATE");
-        }
+        && !upper
+            .split_whitespace()
+            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
+    {
+        return Some("UPDATE");
+    }
     None
 }
 
@@ -7715,44 +10634,52 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     }
 
     // Prefer active selection if present; otherwise extract word at cursor
-    let raw_symbol = if tabular.selection_start < tabular.selection_end
-        && tabular.selection_end <= text_len
-    {
-        text[tabular.selection_start..tabular.selection_end].to_string()
-    } else {
-        let cursor = tabular.cursor_position.min(text_len);
-        let bytes = text.as_bytes();
-
-        let mut start = cursor;
-        while start > 0 {
-            let b = bytes[start - 1];
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
-                start -= 1;
-            } else {
-                break;
-            }
-        }
-        let mut end = cursor;
-        while end < bytes.len() {
-            let b = bytes[end];
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        if start < end {
-            text[start..end].to_string()
+    let raw_symbol =
+        if tabular.selection_start < tabular.selection_end && tabular.selection_end <= text_len {
+            text[tabular.selection_start..tabular.selection_end].to_string()
         } else {
-            String::new()
-        }
-    };
+            let cursor = tabular.cursor_position.min(text_len);
+            let bytes = text.as_bytes();
+
+            let mut start = cursor;
+            while start > 0 {
+                let b = bytes[start - 1];
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let mut end = cursor;
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if start < end {
+                text[start..end].to_string()
+            } else {
+                String::new()
+            }
+        };
 
     let symbol = raw_symbol
         .split('.')
         .next_back()
         .unwrap_or(&raw_symbol)
-        .trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']' || c == '\'' || c == ';' || c == '(' || c == ')')
+        .trim_matches(|c| {
+            c == '"'
+                || c == '`'
+                || c == '['
+                || c == ']'
+                || c == '\''
+                || c == ';'
+                || c == '('
+                || c == ')'
+        })
         .trim();
 
     if symbol.is_empty() {
@@ -7775,11 +10702,13 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
         Some(cid) => {
             let mut found = None;
             for tt in &["BASE TABLE", "TABLE", "VIEW"] {
-                if let Some(tables) = crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt)
-                    && let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol)) {
-                        found = Some(m);
-                        break;
-                    }
+                if let Some(tables) =
+                    crate::cache_data::get_tables_from_cache(tabular, cid, &active_db, tt)
+                    && let Some(m) = tables.into_iter().find(|t| t.eq_ignore_ascii_case(symbol))
+                {
+                    found = Some(m);
+                    break;
+                }
             }
             if found.is_none() {
                 let all = crate::editor_autocomplete_new::get_all_tables(tabular);
@@ -7793,11 +10722,19 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     };
 
     let Some(target_table) = target_table else {
-        log::debug!("🔍 [Go-To-Definition] Symbol '{}' is not a known table/view, ignoring", symbol);
+        log::debug!(
+            "🔍 [Go-To-Definition] Symbol '{}' is not a known table/view, ignoring",
+            symbol
+        );
         return;
     };
 
-    log::info!("🔍 [Go-To-Definition] Opening DDL / Structure for table '{}' (cid: {:?}, db: '{}')", target_table, active_cid, active_db);
+    log::info!(
+        "🔍 [Go-To-Definition] Opening DDL / Structure for table '{}' (cid: {:?}, db: '{}')",
+        target_table,
+        active_cid,
+        active_db
+    );
 
     let tab_title = format!("Table: {}", target_table);
     let view_tab_title = format!("View: {}", target_table);
@@ -7816,7 +10753,11 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
             tab_title.clone(),
             query_content,
             active_cid,
-            if active_db.is_empty() { None } else { Some(active_db.clone()) },
+            if active_db.is_empty() {
+                None
+            } else {
+                Some(active_db.clone())
+            },
         );
     }
 
@@ -7825,7 +10766,11 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
         let formatted_name = format!(
             "Table: {} (Database: {})",
             target_table,
-            if active_db.is_empty() { "Unknown" } else { &active_db }
+            if active_db.is_empty() {
+                "Unknown"
+            } else {
+                &active_db
+            }
         );
         tab.result_table_name = formatted_name.clone();
         tabular.current_table_name = formatted_name;
@@ -7840,7 +10785,9 @@ pub(crate) fn jump_to_definition_at_cursor(tabular: &mut window_egui::Tabular) {
     tabular.last_structure_target = None;
     data_table::load_structure_info_for_current_table(tabular);
 
-    tabular.toasts.info(format!("Opened Structure for table '{}'", target_table));
+    tabular
+        .toasts
+        .info(format!("Opened Structure for table '{}'", target_table));
 }
 
 #[cfg(test)]
@@ -7863,15 +10810,346 @@ mod tests {
     fn test_extract_query_parameters() {
         let sql = "SELECT * FROM users WHERE status = :status AND id = $1 AND name = ?;";
         let params = extract_query_parameters(sql);
-        assert_eq!(params, vec![":status".to_string(), "$1".to_string(), "? (Param 3)".to_string()]);
+        assert_eq!(
+            params,
+            vec![
+                ":status".to_string(),
+                "$1".to_string(),
+                "? (Param 3)".to_string()
+            ]
+        );
     }
 
     #[test]
     fn test_is_unsafe_dml_query() {
         assert_eq!(is_unsafe_dml_query("DELETE FROM users;"), Some("DELETE"));
-        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'inactive';"), Some("UPDATE"));
+        assert_eq!(
+            is_unsafe_dml_query("UPDATE users SET status = 'inactive';"),
+            Some("UPDATE")
+        );
         assert_eq!(is_unsafe_dml_query("DELETE FROM users WHERE id = 1;"), None);
-        assert_eq!(is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"), None);
+        assert_eq!(
+            is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_move_tab_and_active_index() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Tab 0".to_string(), "0".to_string());
+        create_new_tab(&mut tabular, "Tab 1".to_string(), "1".to_string());
+        create_new_tab(&mut tabular, "Tab 2".to_string(), "2".to_string());
+        create_new_tab(&mut tabular, "Tab 3".to_string(), "3".to_string());
+
+        tabular.active_tab_index = 1; // Tab 1 is active
+
+        // Move Tab 0 to index 2: [Tab 1, Tab 2, Tab 0, Tab 3]
+        move_tab(&mut tabular, 0, 2);
+        assert_eq!(tabular.query_tabs[0].title, "Tab 1");
+        assert_eq!(tabular.query_tabs[1].title, "Tab 2");
+        assert_eq!(tabular.query_tabs[2].title, "Tab 0");
+        assert_eq!(tabular.query_tabs[3].title, "Tab 3");
+        // Active tab was Tab 1 (index 1), shifted to index 0
+        assert_eq!(tabular.active_tab_index, 0);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "Tab 1");
+
+        // Move active tab (Tab 1 at index 0) to index 3: [Tab 2, Tab 0, Tab 3, Tab 1]
+        move_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.query_tabs[3].title, "Tab 1");
+        assert_eq!(tabular.active_tab_index, 3);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "Tab 1");
+    }
+
+    #[test]
+    fn test_reorder_tab_with_insert_slots() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "A".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "B".to_string());
+        create_new_tab(&mut tabular, "C".to_string(), "C".to_string());
+
+        // Reorder B (from = 1) to insert_at = 3 (end): [A, C, B]
+        reorder_tab(&mut tabular, 1, 3);
+        assert_eq!(tabular.query_tabs[0].title, "A");
+        assert_eq!(tabular.query_tabs[1].title, "C");
+        assert_eq!(tabular.query_tabs[2].title, "B");
+
+        // Reorder B (from = 2) to insert_at = 0 (beginning): [B, A, C]
+        reorder_tab(&mut tabular, 2, 0);
+        assert_eq!(tabular.query_tabs[0].title, "B");
+        assert_eq!(tabular.query_tabs[1].title, "A");
+        assert_eq!(tabular.query_tabs[2].title, "C");
+    }
+
+    #[test]
+    fn test_pin_and_unpin_tab() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "0".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "1".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "2".to_string());
+
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert!(!tabular.query_tabs[2].is_pinned);
+
+        // Pin T2: should become pinned and move to front (index 0)
+        pin_tab(&mut tabular, 2);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T2");
+        assert_eq!(tabular.query_tabs[1].title, "T0");
+        assert_eq!(tabular.query_tabs[2].title, "T1");
+
+        // Pin T1 (currently at index 2): should become pinned and move to index 1
+        pin_tab(&mut tabular, 2);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T1");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "T0");
+
+        // Unpin T2 (at index 0): should unpin and move after pinned T1 (index 1)
+        unpin_tab(&mut tabular, 0);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "T1");
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T2");
+
+        // Toggle pin on T2: should pin it again
+        toggle_pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "T2");
+    }
+
+    #[test]
+    fn test_close_other_tabs_protects_pinned() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+
+        // Close others keeping U2 (index 3)
+        close_other_tabs(&mut tabular, 3);
+
+        // P1 and P2 should be preserved because they are pinned, U2 kept
+        assert_eq!(tabular.query_tabs.len(), 3);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "U2");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.active_tab_index, 2);
+
+        // Close tabs to right of P1 (index 0)
+        // P2 is pinned so it is not closed; U2 is unpinned so it closes
+        close_tabs_to_the_right(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs.len(), 2);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+    }
+
+    #[test]
+    fn test_filter_is_per_tab_and_cleared_on_close() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Table: a".to_string(), "".to_string());
+        tabular.sql_filter_text = "`address` = 'x'".to_string();
+        tabular
+            .visual_filter
+            .conditions
+            .push(models::structs::FilterCondition::default());
+        tabular.visual_filter.is_open = true;
+
+        // Tab baru mulai tanpa filter.
+        create_new_tab(&mut tabular, "Table: b".to_string(), "".to_string());
+        assert!(tabular.sql_filter_text.is_empty());
+        assert!(tabular.visual_filter.conditions.is_empty());
+
+        // Kembali ke tab a: filternya dipulihkan.
+        switch_to_tab(&mut tabular, 0);
+        assert_eq!(tabular.sql_filter_text, "`address` = 'x'");
+        assert_eq!(tabular.visual_filter.conditions.len(), 1);
+
+        // Tutup tab a yang aktif: filter tidak nyangkut ke tab b.
+        close_tab(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs[0].title, "Table: b");
+        assert!(tabular.sql_filter_text.is_empty());
+        assert!(tabular.visual_filter.conditions.is_empty());
+        assert!(!tabular.visual_filter.is_open);
+    }
+
+    #[test]
+    fn test_pin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        // Active tab is U1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Pin U3 (index 3). It should move to index 1 (end of pinned group).
+        // Since active tab was at index 1 (>= first_unpinned and < tab_index),
+        // active_tab_index should shift to 2 to remain pointing to U1.
+        pin_tab(&mut tabular, 3);
+        assert_eq!(tabular.query_tabs[0].title, "P0");
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "U1");
+        assert_eq!(tabular.query_tabs[3].title, "U2");
+        assert_eq!(tabular.active_tab_index, 2);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "U1");
+    }
+
+    #[test]
+    fn test_unpin_tab_shifts_active_index_correctly() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        pin_tab(&mut tabular, 2);
+
+        // Active tab is P1 at index 1
+        tabular.active_tab_index = 1;
+
+        // Unpin P0 (index 0). It moves to index 2 (after all remaining pinned tabs P1, P2).
+        // Active tab was at index 1 (> tab_index and <= last_p),
+        // active_tab_index should shift from 1 to 0 to remain pointing to P1.
+        unpin_tab(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs[0].title, "P1");
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "P2");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[2].title, "P0");
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert_eq!(tabular.active_tab_index, 0);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "P1");
+    }
+
+    #[test]
+    fn test_close_tabs_to_the_right_active_tab_switch() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        // Active tab is T2 (index 2)
+        tabular.active_tab_index = 2;
+
+        // Close tabs to right of T0 (index 0)
+        // Since active tab (T2) is to the right and unpinned, it switches to T0 first,
+        // then removes T1 and T2.
+        close_tabs_to_the_right(&mut tabular, 0);
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "T0");
+        assert_eq!(tabular.active_tab_index, 0);
+    }
+
+    #[test]
+    fn test_move_tab_crossing_pinned_boundary_both_ways() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "P0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "P1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U2".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "U3".to_string(), "".to_string());
+
+        pin_tab(&mut tabular, 0);
+        pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert!(!tabular.query_tabs[2].is_pinned);
+        assert!(!tabular.query_tabs[3].is_pinned);
+
+        // Move unpinned U3 (index 3) into pinned territory at index 1 (< pinned_count 2)
+        // It must automatically become pinned.
+        move_tab(&mut tabular, 3, 1);
+        assert_eq!(tabular.query_tabs[1].title, "U3");
+        assert!(tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 3);
+
+        // Move pinned P0 (index 0) into unpinned territory at index 3 (>= pinned_count 3)
+        // It must automatically become unpinned.
+        move_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.query_tabs[3].title, "P0");
+        assert!(!tabular.query_tabs[3].is_pinned);
+        assert_eq!(tabular.query_tabs.iter().filter(|t| t.is_pinned).count(), 2);
+    }
+
+    #[test]
+    fn test_tab_bounds_safety() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Tab0".to_string(), "".to_string());
+
+        // Out of bounds operations should no-op safely without panicking
+        move_tab(&mut tabular, 0, 10);
+        move_tab(&mut tabular, 10, 0);
+        move_tab(&mut tabular, 0, 0);
+        reorder_tab(&mut tabular, 10, 0);
+        pin_tab(&mut tabular, 10);
+        unpin_tab(&mut tabular, 10);
+        toggle_pin_tab(&mut tabular, 10);
+        close_other_tabs(&mut tabular, 10);
+        close_tabs_to_the_right(&mut tabular, 10);
+
+        assert_eq!(tabular.query_tabs.len(), 1);
+        assert_eq!(tabular.query_tabs[0].title, "Tab0");
+    }
+
+    #[test]
+    fn test_reorder_tab_clears_dragged_tab_index() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "T0".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T1".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "T2".to_string(), "".to_string());
+
+        tabular.dragged_tab_index = Some(0);
+        reorder_tab(&mut tabular, 0, 3);
+        assert_eq!(tabular.dragged_tab_index, None);
+        assert_eq!(tabular.query_tabs[2].title, "T0");
+    }
+
+    #[test]
+    fn test_toggle_pin_tab_full_cycle() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "".to_string());
+
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
+
+        // Toggle B: pins B and moves it to front
+        toggle_pin_tab(&mut tabular, 1);
+        assert!(tabular.query_tabs[0].is_pinned);
+        assert_eq!(tabular.query_tabs[0].title, "B");
+        assert!(!tabular.query_tabs[1].is_pinned);
+        assert_eq!(tabular.query_tabs[1].title, "A");
+
+        // Toggle B again: unpins B
+        toggle_pin_tab(&mut tabular, 0);
+        assert!(!tabular.query_tabs[0].is_pinned);
+        assert!(!tabular.query_tabs[1].is_pinned);
     }
 }
-

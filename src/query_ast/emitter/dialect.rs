@@ -267,5 +267,15 @@ pub fn get_dialect(db_type: &DatabaseType) -> Box<dyn SqlDialect> {
         DatabaseType::MongoDB => Box::new(MongoDialect),
         DatabaseType::Redis => Box::new(RedisDialect),
         DatabaseType::ApiHttp => Box::new(RedisDialect),
+        DatabaseType::Plugin(id) => {
+            use crate::driver_api::query::{DialectFamily, capabilities, dialect_family};
+            match dialect_family(&capabilities(id)) {
+                Some(DialectFamily::MySql) => Box::new(MySqlDialect),
+                Some(DialectFamily::Sqlite) => Box::new(SqliteDialect),
+                Some(DialectFamily::MsSql) => Box::new(MssqlDialect),
+                Some(DialectFamily::Postgres | DialectFamily::Generic) => Box::new(PostgresDialect),
+                None => Box::new(RedisDialect),
+            }
+        }
     }
 }

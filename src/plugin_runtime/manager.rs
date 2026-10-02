@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::plugin_runtime::engine::{PluginExecutionContext, WasmPluginEngine};
@@ -8,7 +8,7 @@ use crate::plugin_runtime::host_api::{
     PluginExportPayload, PluginLogEntry, PluginSelectionData, PluginTableSchema,
 };
 use crate::plugin_runtime::templates::{
-    generate_duckdb_script, generate_orm_code, OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER,
+    OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER, generate_duckdb_script, generate_orm_code,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,11 +23,11 @@ pub enum PluginCategory {
 impl PluginCategory {
     pub fn display_name(&self) -> &'static str {
         match self {
-            PluginCategory::Export => "📦 Export & Storage",
-            PluginCategory::OrmCodeGen => "🏗 ORM & Models",
-            PluginCategory::DataTransform => "🔄 Data Transformation",
-            PluginCategory::Analytics => "📊 Analytics",
-            PluginCategory::Custom => "🧩 Custom Wasm",
+            PluginCategory::Export => "Export & Storage",
+            PluginCategory::OrmCodeGen => "ORM & Models",
+            PluginCategory::DataTransform => "Data Transformation",
+            PluginCategory::Analytics => "Analytics",
+            PluginCategory::Custom => "Custom Wasm",
         }
     }
 }
@@ -52,6 +52,7 @@ pub enum PluginModalTab {
     StarterTemplates,
     CustomWasmRunner,
     ExecutionOutput,
+    DatabaseDrivers,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +72,10 @@ pub struct PluginModalState {
     pub execution_exports: Vec<PluginExportPayload>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
+    /// Daftar driver engine terpasang; `None` = perlu dipindai ulang.
+    pub installed_drivers: Option<Vec<crate::driver_api::manifest::InstalledDriver>>,
+    /// Sidecar yang sedang menunggu konfirmasi persetujuan pengguna.
+    pub pending_sidecar_approval: Option<String>,
 }
 
 impl Default for PluginModalState {
@@ -91,6 +96,8 @@ impl Default for PluginModalState {
             execution_exports: Vec::new(),
             error_message: None,
             status_message: None,
+            installed_drivers: None,
+            pending_sidecar_approval: None,
         }
     }
 }
@@ -130,7 +137,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates high-performance Snappy-compressed Parquet export scripts and in-memory DuckDB schemas for analytical workloads.".to_string(),
                 category: PluginCategory::Export,
-                icon: "🦆".to_string(),
+                icon: egui_icons::icons::MDI_DATABASE_EXPORT.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_PARQUET_STARTER.to_string()),
                 wasm_file_path: None,
@@ -147,7 +154,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates Diesel table! schemas, Queryable, Selectable, and Insertable model structs with complete type mappings.".to_string(),
                 category: PluginCategory::OrmCodeGen,
-                icon: "🦀".to_string(),
+                icon: egui_icons::icons::MDI_LANGUAGE_RUST.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_ORM_STARTER.to_string()),
                 wasm_file_path: None,
@@ -164,7 +171,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates async SeaORM Entity Models with Relations, PrimaryKeys, and ActiveModelBehavior.".to_string(),
                 category: PluginCategory::OrmCodeGen,
-                icon: "🌊".to_string(),
+                icon: egui_icons::icons::MDI_LANGUAGE_RUST.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_ORM_STARTER.to_string()),
                 wasm_file_path: None,
@@ -181,7 +188,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates Prisma Schema model definitions with @id, autoincrement, default values, and column maps.".to_string(),
                 category: PluginCategory::OrmCodeGen,
-                icon: "💎".to_string(),
+                icon: egui_icons::icons::MDI_LANGUAGE_TYPESCRIPT.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_ORM_STARTER.to_string()),
                 wasm_file_path: None,
@@ -198,7 +205,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates TypeORM @Entity() classes with @PrimaryGeneratedColumn, @Column, and TypeScript interfaces.".to_string(),
                 category: PluginCategory::OrmCodeGen,
-                icon: "🔷".to_string(),
+                icon: egui_icons::icons::MDI_LANGUAGE_TYPESCRIPT.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_ORM_STARTER.to_string()),
                 wasm_file_path: None,
@@ -215,7 +222,7 @@ impl PluginManager {
                 author: "Tabular Core".to_string(),
                 description: "Generates modern Python 3.10+ SQLAlchemy 2.0 type-annotated Mapped[T] and mapped_column definitions.".to_string(),
                 category: PluginCategory::OrmCodeGen,
-                icon: "🐍".to_string(),
+                icon: egui_icons::icons::MDI_LANGUAGE_PYTHON.codepoint.to_string(),
                 is_builtin: true,
                 wat_content: Some(WAT_ORM_STARTER.to_string()),
                 wasm_file_path: None,
@@ -224,7 +231,18 @@ impl PluginManager {
     }
 
     /// Load user-installed .wasm or .wat plugins from ~/.tabular/plugins directory
+    ///
+    /// Disabled on iOS. `UIFileSharingEnabled` lets anyone drop files into the
+    /// app's Documents folder from the Files app — which is how a user brings
+    /// their own `.db` in, so it stays on — but that same door would let a
+    /// `.wasm` module in, and executing downloaded code is exactly what App
+    /// Store Review Guideline 2.5.2 prohibits. Built-in plugins are compiled
+    /// into the binary and keep working.
     pub fn load_plugins_from_disk(&mut self) {
+        if cfg!(target_os = "ios") {
+            return;
+        }
+
         let plugins_dir = config::get_data_dir().join("plugins");
         if !plugins_dir.exists() {
             let _ = std::fs::create_dir_all(&plugins_dir);
@@ -249,9 +267,12 @@ impl PluginManager {
                                 name: format!("User Plugin: {}", file_stem),
                                 version: "1.0.0".to_string(),
                                 author: "Local User".to_string(),
-                                description: format!("Custom WebAssembly plugin loaded from {:?}", path),
+                                description: format!(
+                                    "Custom WebAssembly plugin loaded from {:?}",
+                                    path
+                                ),
                                 category: PluginCategory::Custom,
-                                icon: "🔌".to_string(),
+                                icon: egui_icons::icons::MDI_FILE_CODE.codepoint.to_string(),
                                 is_builtin: false,
                                 wat_content: None,
                                 wasm_file_path: Some(path),
@@ -266,9 +287,12 @@ impl PluginManager {
                                     name: format!("WAT Plugin: {}", file_stem),
                                     version: "1.0.0".to_string(),
                                     author: "Local User".to_string(),
-                                    description: format!("Custom WebAssembly Text plugin loaded from {:?}", path),
+                                    description: format!(
+                                        "Custom WebAssembly Text plugin loaded from {:?}",
+                                        path
+                                    ),
                                     category: PluginCategory::Custom,
-                                    icon: "📄".to_string(),
+                                    icon: egui_icons::icons::ICON_DESCRIPTION.codepoint.to_string(),
                                     is_builtin: false,
                                     wat_content: Some(wat_content),
                                     wasm_file_path: None,
@@ -312,8 +336,14 @@ impl PluginManager {
                 // Generate script
                 let script = generate_duckdb_script(schema, selection, parquet_output_path);
                 // Also run through Wasm sandboxed engine to verify host APIs
-                if let Some(wat) = self.plugins.get(plugin_id).and_then(|p| p.wat_content.as_deref()) {
-                    let _ = self.engine.execute(wat.as_bytes(), "tabular_main", ctx.clone());
+                if let Some(wat) = self
+                    .plugins
+                    .get(plugin_id)
+                    .and_then(|p| p.wat_content.as_deref())
+                {
+                    let _ = self
+                        .engine
+                        .execute(wat.as_bytes(), "tabular_main", ctx.clone());
                 }
 
                 ctx.result_output = Some(script.clone());
@@ -421,7 +451,10 @@ impl PluginManager {
             return Ok(ctx);
         }
 
-        Err(format!("Plugin '{}' not found or has no executable bytecode", plugin_id))
+        Err(format!(
+            "Plugin '{}' not found or has no executable bytecode",
+            plugin_id
+        ))
     }
 
     /// Execute raw WAT or WASM bytecode supplied by user

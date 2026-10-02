@@ -61,7 +61,9 @@ pub struct CrdtEditorState {
 impl CrdtEditorState {
     /// Send a text change to the CRDT engine
     pub fn on_local_change(&self, old: String, new: String) {
-        let _ = self.command_tx.send(CrdtCommand::LocalTextChanged { old, new });
+        let _ = self
+            .command_tx
+            .send(CrdtCommand::LocalTextChanged { old, new });
     }
 
     /// Send cursor position update
@@ -128,9 +130,9 @@ async fn run_ws_session(
     command_rx: mpsc::Receiver<CrdtCommand>,
     message_tx: mpsc::Sender<CrdtMessage>,
 ) {
-    use tokio_tungstenite::{connect_async, tungstenite::Message};
     use futures_util::{SinkExt, StreamExt};
     use log::{info, warn};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     // Build WS URL: ws(s)://server/ws/collab/{room_id}?token=...
     let ws_url = server_url
@@ -138,7 +140,11 @@ async fn run_ws_session(
         .replace("https://", "wss://");
     let ws_url = format!("{}/ws/collab/{}?token={}", ws_url, room_id, access_token);
 
-    info!("🔌 [crdt] Connecting to room {} at {}", room_id, &ws_url[..ws_url.find('?').unwrap_or(ws_url.len())]);
+    info!(
+        "🔌 [crdt] Connecting to room {} at {}",
+        room_id,
+        &ws_url[..ws_url.find('?').unwrap_or(ws_url.len())]
+    );
 
     let (ws_stream, _) = match connect_async(&ws_url).await {
         Ok(s) => s,
@@ -195,12 +201,11 @@ async fn run_ws_session(
         }
 
         // Poll WebSocket messages
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(16),
-            ws_rx.next(),
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_millis(16), ws_rx.next()).await {
             Ok(Some(Ok(Message::Binary(data)))) => {
-                if data.is_empty() { continue; }
+                if data.is_empty() {
+                    continue;
+                }
                 let msg_type = data[0];
                 let payload = &data[1..];
 
@@ -228,7 +233,10 @@ async fn run_ws_session(
                             let cid_u64: u64 = cid.get();
                             let peer = CollabPeer {
                                 client_id: cid_u64,
-                                display_name: json["name"].as_str().unwrap_or("Unknown").to_string(),
+                                display_name: json["name"]
+                                    .as_str()
+                                    .unwrap_or("Unknown")
+                                    .to_string(),
                                 cursor_pos: json["cursor"].as_u64().map(|v| v as usize),
                                 color: pick_peer_color(cid_u64),
                             };
@@ -240,7 +248,9 @@ async fn run_ws_session(
             }
             Ok(Some(Ok(Message::Close(_)))) => {
                 info!("🔌 [crdt] Server closed connection");
-                let _ = message_tx.send(CrdtMessage::Disconnected("Server closed connection".to_string()));
+                let _ = message_tx.send(CrdtMessage::Disconnected(
+                    "Server closed connection".to_string(),
+                ));
                 return;
             }
             Ok(Some(Err(e))) => {
@@ -253,7 +263,7 @@ async fn run_ws_session(
                 return;
             }
             Ok(Some(Ok(_))) => {} // Ignore text/ping/pong
-            Err(_) => {} // Timeout — continue polling commands
+            Err(_) => {}          // Timeout — continue polling commands
         }
     }
 }
@@ -300,9 +310,11 @@ fn diff_to_yjs_ops(old: &str, new: &str, text: &yrs::TextRef, doc: &Doc) -> Opti
         .count();
 
     let delete_count = old_suffix.chars().count().saturating_sub(suffix_len);
-    let insert_text = &new_suffix[..new_suffix.char_indices().nth(
-        new_suffix.chars().count().saturating_sub(suffix_len)
-    ).map(|(i, _)| i).unwrap_or(new_suffix.len())];
+    let insert_text = &new_suffix[..new_suffix
+        .char_indices()
+        .nth(new_suffix.chars().count().saturating_sub(suffix_len))
+        .map(|(i, _)| i)
+        .unwrap_or(new_suffix.len())];
 
     let mut txn = doc.transact_mut();
     if delete_count > 0 {
@@ -318,14 +330,14 @@ fn diff_to_yjs_ops(old: &str, new: &str, text: &yrs::TextRef, doc: &Doc) -> Opti
 /// Assign a deterministic color to a peer based on their client_id
 pub fn pick_peer_color(client_id: u64) -> eframe::egui::Color32 {
     const COLORS: [(u8, u8, u8); 8] = [
-        (99, 132, 255),   // Blue
-        (255, 99, 132),   // Pink
-        (54, 205, 143),   // Green
-        (255, 205, 86),   // Yellow
-        (153, 102, 255),  // Purple
-        (255, 159, 64),   // Orange
-        (50, 210, 210),   // Teal
-        (255, 99, 255),   // Magenta
+        (99, 132, 255),  // Blue
+        (255, 99, 132),  // Pink
+        (54, 205, 143),  // Green
+        (255, 205, 86),  // Yellow
+        (153, 102, 255), // Purple
+        (255, 159, 64),  // Orange
+        (50, 210, 210),  // Teal
+        (255, 99, 255),  // Magenta
     ];
     let (r, g, b) = COLORS[client_id as usize % COLORS.len()];
     eframe::egui::Color32::from_rgb(r, g, b)

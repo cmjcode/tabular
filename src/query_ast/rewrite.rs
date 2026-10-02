@@ -540,16 +540,11 @@ fn try_pushdown_limit_into_subquery(plan: &mut LogicalQueryPlan) -> bool {
         | L::With { input, .. } => {
             changed |= try_pushdown_limit_into_subquery(input);
         }
-        L::Join { left, right, .. } => {
+        L::Join { left, right, .. } | L::SetOp { left, right, .. } => {
             changed |= try_pushdown_limit_into_subquery(left);
             changed |= try_pushdown_limit_into_subquery(right);
         }
         L::TableScan { .. } | L::SubqueryScan { .. } => {}
-        L::SetOp {
-            left: _left,
-            right: _right,
-            op: _op,
-        } => todo!(),
     }
     changed
 }

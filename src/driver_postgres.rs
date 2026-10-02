@@ -46,6 +46,43 @@ pub(crate) async fn fetch_postgres_data(
     if let Some(db_name) = current_db {
         let staged_db = staging.add_database(&db_name);
 
+        // Pre-fetch all columns for public schema in one batch query to eliminate N+1 latency
+        let mut columns_by_table: std::collections::HashMap<String, Vec<ColumnMetaStaging>> =
+            std::collections::HashMap::new();
+
+        if let Ok(col_rows) = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            sqlx::query(
+                "SELECT table_name, column_name, data_type, ordinal_position \
+                 FROM information_schema.columns \
+                 WHERE table_schema = 'public' \
+                 ORDER BY table_name, ordinal_position",
+            )
+            .fetch_all(pool),
+        )
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)
+        .and_then(|r| r)
+        {
+            for col_row in col_rows {
+                if let (Ok(tbl_name), Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
+                    col_row.try_get::<String, _>(0),
+                    col_row.try_get::<String, _>(1),
+                    col_row.try_get::<String, _>(2),
+                    col_row.try_get::<i32, _>(3),
+                ) {
+                    columns_by_table
+                        .entry(tbl_name)
+                        .or_default()
+                        .push(ColumnMetaStaging {
+                            column_name: col_name,
+                            data_type: col_type,
+                            ordinal_position: ordinal_pos as i64,
+                        });
+                }
+            }
+        }
+
         // Tables (public)
         if let Ok(table_rows) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -57,38 +94,12 @@ pub(crate) async fn fetch_postgres_data(
         {
             for table_row in table_rows {
                 if let Ok(table_name) = table_row.try_get::<String, _>(0) {
-                    let mut staged_table = TableMetaStaging {
-                        table_name: table_name.clone(),
-                        table_type: "table".to_string(),
-                        columns: Vec::new(),
+                    let staged_table = TableMetaStaging {
+                        columns: columns_by_table.remove(&table_name).unwrap_or_default(),
                         indexes: Vec::new(),
+                        table_name,
+                        table_type: "table".to_string(),
                     };
-
-                    // Columns
-                    if let Ok(col_rows) = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        sqlx::query("SELECT column_name, data_type, ordinal_position FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position")
-                            .bind(&table_name)
-                            .fetch_all(pool),
-                    )
-                    .await
-                    .map_err(|_| sqlx::Error::PoolTimedOut)
-                    .and_then(|r| r)
-                    {
-                        for col_row in col_rows {
-                            if let (Ok(col_name), Ok(col_type), Ok(ordinal_pos)) = (
-                                col_row.try_get::<String, _>(0),
-                                col_row.try_get::<String, _>(1),
-                                col_row.try_get::<i32, _>(2),
-                            ) {
-                                staged_table.columns.push(ColumnMetaStaging {
-                                    column_name: col_name,
-                                    data_type: col_type,
-                                    ordinal_position: ordinal_pos as i64,
-                                });
-                            }
-                        }
-                    }
 
                     staged_db.tables.push(staged_table);
                 }
@@ -110,10 +121,10 @@ pub(crate) async fn fetch_postgres_data(
             for view_row in view_rows {
                 if let Ok(view_name) = view_row.try_get::<String, _>(0) {
                     staged_db.tables.push(TableMetaStaging {
+                        columns: columns_by_table.remove(&view_name).unwrap_or_default(),
+                        indexes: Vec::new(),
                         table_name: view_name,
                         table_type: "view".to_string(),
-                        columns: Vec::new(),
-                        indexes: Vec::new(),
                     });
                 }
             }
@@ -157,7 +168,9 @@ pub(crate) fn load_postgresql_structure(
 
     let mut dba_children = Vec::new();
 
-    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL) {
+    for (name, node_type, query) in
+        crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL)
+    {
         let mut dba_node = models::structs::TreeNode::new(name.to_string(), node_type);
         dba_node.connection_id = Some(connection_id);
         dba_node.is_loaded = false;
@@ -166,19 +179,21 @@ pub(crate) fn load_postgresql_structure(
     }
 
     // Render Custom Views
-    log::debug!("Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+    log::debug!(
+        "Rendering custom views for connection {}: found {}",
+        connection_id,
+        connection.custom_views.len()
+    );
     for view in connection.custom_views.iter() {
         log::debug!("Adding custom view node: {}", view.name);
-        let mut view_node = models::structs::TreeNode::new(
-            view.name.clone(),
-            models::enums::NodeType::CustomView,
-        );
-            view_node.connection_id = Some(connection_id);
-            // Store index in generic_id or similar if needed, or just use name for query lookup
-            view_node.query = Some(view.query.clone()); 
-            view_node.is_loaded = true;
-            dba_children.push(view_node);
-        }
+        let mut view_node =
+            models::structs::TreeNode::new(view.name.clone(), models::enums::NodeType::CustomView);
+        view_node.connection_id = Some(connection_id);
+        // Store index in generic_id or similar if needed, or just use name for query lookup
+        view_node.query = Some(view.query.clone());
+        view_node.is_loaded = true;
+        dba_children.push(view_node);
+    }
 
     dba_folder.children = dba_children;
     main_children.push(dba_folder);
@@ -213,32 +228,60 @@ pub(crate) async fn fetch_postgres_foreign_keys(
     let mut keys = Vec::new();
     for row in rows {
         keys.push(models::structs::ForeignKey {
-            constraint_name:        row.try_get::<String, _>("constraint_name").unwrap_or_default(),
-            table_name:             row.try_get::<String, _>("table_name").unwrap_or_default(),
-            column_name:            row.try_get::<String, _>("column_name").unwrap_or_default(),
-            referenced_table_name:  row.try_get::<String, _>("referenced_table_name").unwrap_or_default(),
-            referenced_column_name: row.try_get::<String, _>("referenced_column_name").unwrap_or_default(),
+            constraint_name: row
+                .try_get::<String, _>("constraint_name")
+                .unwrap_or_default(),
+            table_name: row.try_get::<String, _>("table_name").unwrap_or_default(),
+            column_name: row.try_get::<String, _>("column_name").unwrap_or_default(),
+            referenced_table_name: row
+                .try_get::<String, _>("referenced_table_name")
+                .unwrap_or_default(),
+            referenced_column_name: row
+                .try_get::<String, _>("referenced_column_name")
+                .unwrap_or_default(),
         });
     }
     Ok(keys)
 }
 
-/// Fetch all columns for every user table: table_name → [col1, col2, …]
+/// Fetch all columns for every user table: table_name → [kolom + tipe/PK/nullable]
 pub(crate) async fn fetch_postgres_columns(
     pool: &PgPool,
-) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
+) -> Result<std::collections::HashMap<String, Vec<models::structs::DiagramColumn>>, sqlx::Error> {
     let query = r#"
-        SELECT table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog','information_schema')
-        ORDER BY table_name, ordinal_position
+        SELECT c.table_name::text AS table_name,
+               c.column_name::text AS column_name,
+               c.udt_name::text AS type_name,
+               (c.is_nullable = 'YES') AS nullable,
+               EXISTS (
+                   SELECT 1
+                   FROM information_schema.table_constraints tc
+                   JOIN information_schema.key_column_usage k
+                     ON k.constraint_name = tc.constraint_name
+                    AND k.table_schema = tc.table_schema
+                    AND k.table_name = tc.table_name
+                   WHERE tc.constraint_type = 'PRIMARY KEY'
+                     AND tc.table_schema = c.table_schema
+                     AND tc.table_name = c.table_name
+                     AND k.column_name = c.column_name
+               ) AS is_pk
+        FROM information_schema.columns c
+        WHERE c.table_schema NOT IN ('pg_catalog','information_schema')
+        ORDER BY c.table_name, c.ordinal_position
     "#;
     let rows = sqlx::query(query).fetch_all(pool).await?;
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<models::structs::DiagramColumn>> =
+        std::collections::HashMap::new();
     for row in rows {
         let tbl: String = row.try_get("table_name").unwrap_or_default();
-        let col: String = row.try_get("column_name").unwrap_or_default();
-        map.entry(tbl).or_default().push(col);
+        map.entry(tbl)
+            .or_default()
+            .push(models::structs::DiagramColumn {
+                name: row.try_get("column_name").unwrap_or_default(),
+                type_name: row.try_get("type_name").unwrap_or_default(),
+                nullable: row.try_get("nullable").unwrap_or(true),
+                is_pk: row.try_get("is_pk").unwrap_or(false),
+            });
     }
     Ok(map)
 }
@@ -251,41 +294,272 @@ pub(crate) fn fetch_tables_from_postgres_connection(
     table_type: &str,
 ) -> Option<Vec<String>> {
     let rt = tokio::runtime::Runtime::new().ok()?;
-    let db = database_name.to_string();
+    let conn = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
+    rt.block_on(list_postgres_tables(&conn, database_name, table_type))
+}
 
-    rt.block_on(async {
-              let conn = tabular.connections.iter().find(|c| c.id == Some(connection_id))?.clone();
-              let conn_str = format!(
-                     "postgresql://{}:{}@{}:{}/{}",
-                     conn.username, conn.password, conn.host, conn.port, db
-              );
+/// Daftar tabel / view skema `public` satu database PostgreSQL. Memakai
+/// koneksi sekali pakai ke database tersebut karena pool koneksi utama terikat
+/// ke database default. Aman dipanggil dari task async.
+pub(crate) async fn list_postgres_tables(
+    conn: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<String>> {
+    let sql = match table_type {
+        "table" => {
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name"
+        }
+        "view" => {
+            "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name"
+        }
+        _ => return None,
+    };
+    let conn_str = format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        conn.username, conn.password, conn.host, conn.port, database_name
+    );
 
-        let pool = match PgPoolOptions::new()
-                     .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-                     .connect(&conn_str)
-                     .await
-              {
-                     Ok(p) => p,
-                     Err(_) => return None,
-              };
-
-              let sql = match table_type {
-                     "table" => "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name",
-                     "view" => "SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name",
-                     _ => return None,
-              };
-
-        match tokio::time::timeout(
-              std::time::Duration::from_secs(10),
-              sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
-        )
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&conn_str)
         .await
-        .map_err(|_| sqlx::Error::PoolTimedOut)
-        .and_then(|r| r)
-        {
-                     Ok(rows) => Some(rows.into_iter().map(|(n,)| n).collect()),
-                     Err(_) => None,
-              }
-       })
+        .ok()?;
+
+    let rows = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
+    )
+    .await
+    .map_err(|_| sqlx::Error::PoolTimedOut)
+    .and_then(|r| r);
+    pool.close().await;
+    rows.ok()
+        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
+}
+
+/// Mengubah satu nilai PostgreSQL menjadi teks tampilan.
+///
+/// sqlx mengecek kompatibilitas tipe secara ketat (kolom `INT4` tidak bisa dibaca
+/// sebagai `i64`, `NUMERIC` tidak bisa sebagai `String`), jadi setiap keluarga tipe
+/// di-decode dengan tipe Rust yang sesuai. Tipe yang tidak dikenal memakai byte
+/// mentah dari protokol.
+fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
+    use sqlx::{Column, TypeInfo, ValueRef};
+
+    fn show<T: ToString>(v: Result<Option<T>, sqlx::Error>) -> Option<String> {
+        v.ok().map(|o| {
+            o.map(|x| x.to_string())
+                .unwrap_or_else(|| "NULL".to_string())
+        })
+    }
+    fn show_array<T: ToString>(v: Result<Option<Vec<Option<T>>>, sqlx::Error>) -> Option<String> {
+        v.ok().map(|o| match o {
+            None => "NULL".to_string(),
+            Some(items) => format!(
+                "{{{}}}",
+                items
+                    .iter()
+                    .map(|i| i
+                        .as_ref()
+                        .map(|x| x.to_string())
+                        .unwrap_or_else(|| "NULL".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        })
+    }
+
+    match row.try_get_raw(idx) {
+        Ok(raw) if raw.is_null() => return "NULL".to_string(),
+        Err(e) => return format!("[error: {}]", e),
+        Ok(_) => {}
+    }
+
+    let type_name = row.columns()[idx].type_info().name().to_ascii_uppercase();
+    let decoded = match type_name.as_str() {
+        "BOOL" => show(row.try_get::<Option<bool>, _>(idx)),
+        "INT2" | "SMALLINT" | "SMALLSERIAL" => show(row.try_get::<Option<i16>, _>(idx)),
+        "INT4" | "INT" | "SERIAL" => show(row.try_get::<Option<i32>, _>(idx)),
+        "INT8" | "BIGINT" | "BIGSERIAL" => show(row.try_get::<Option<i64>, _>(idx)),
+        "OID" => show(
+            row.try_get::<Option<sqlx::postgres::types::Oid>, _>(idx)
+                .map(|o| o.map(|v| v.0)),
+        ),
+        "FLOAT4" | "REAL" => show(row.try_get::<Option<f32>, _>(idx)),
+        "FLOAT8" | "DOUBLE PRECISION" => show(row.try_get::<Option<f64>, _>(idx)),
+        "NUMERIC" => show(row.try_get::<Option<rust_decimal::Decimal>, _>(idx)),
+        "TIMESTAMP" => show(row.try_get::<Option<chrono::NaiveDateTime>, _>(idx)),
+        "TIMESTAMPTZ" => show(row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(idx)),
+        "DATE" => show(row.try_get::<Option<chrono::NaiveDate>, _>(idx)),
+        "TIME" => show(row.try_get::<Option<chrono::NaiveTime>, _>(idx)),
+        "JSON" | "JSONB" => show(row.try_get::<Option<sqlx::types::JsonValue>, _>(idx)),
+        "BYTEA" => row
+            .try_get::<Option<Vec<u8>>, _>(idx)
+            .ok()
+            .map(|o| match o {
+                None => "NULL".to_string(),
+                Some(b) => format!("\\x{}", hex::encode(b)),
+            }),
+        "UUID" => row.try_get_raw(idx).ok().and_then(|raw| {
+            let bytes = raw.as_bytes().ok()?;
+            (bytes.len() == 16).then(|| {
+                let h = hex::encode(bytes);
+                format!(
+                    "{}-{}-{}-{}-{}",
+                    &h[0..8],
+                    &h[8..12],
+                    &h[12..16],
+                    &h[16..20],
+                    &h[20..32]
+                )
+            })
+        }),
+        "INT2[]" => show_array(row.try_get::<Option<Vec<Option<i16>>>, _>(idx)),
+        "INT4[]" => show_array(row.try_get::<Option<Vec<Option<i32>>>, _>(idx)),
+        "INT8[]" => show_array(row.try_get::<Option<Vec<Option<i64>>>, _>(idx)),
+        "FLOAT8[]" => show_array(row.try_get::<Option<Vec<Option<f64>>>, _>(idx)),
+        "BOOL[]" => show_array(row.try_get::<Option<Vec<Option<bool>>>, _>(idx)),
+        "TEXT[]" | "VARCHAR[]" | "NAME[]" | "BPCHAR[]" => {
+            show_array(row.try_get::<Option<Vec<Option<String>>>, _>(idx))
+        }
+        _ => None,
+    };
+    if let Some(text) = decoded {
+        return text;
+    }
+
+    // Tipe mirip teks (TEXT, VARCHAR, NAME, CITEXT, enum, …) di-decode sebagai String.
+    if let Ok(v) = row.try_get_unchecked::<Option<String>, _>(idx)
+        && let Some(s) = v
+    {
+        return s;
+    }
+    match row
+        .try_get_raw(idx)
+        .ok()
+        .and_then(|raw| raw.as_bytes().ok())
+    {
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(s) if s.chars().all(|c| !c.is_control() || c.is_whitespace()) => s.to_string(),
+            _ => format!("\\x{}", hex::encode(bytes)),
+        },
+        None => format!("[unsupported {}]", type_name),
+    }
+}
+
+/// Mengubah baris PostgreSQL menjadi string tampilan, dengan men-decode setiap
+/// kolom memakai tipe aslinya (lihat [`pg_value_to_string`]).
+pub(crate) fn convert_postgres_rows_to_table_data(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| {
+            (0..row.len())
+                .map(|idx| pg_value_to_string(row, idx))
+                .collect()
+        })
+        .collect()
+}
+
+/// Drop a PostgreSQL database by connecting to a maintenance database (postgres or template1),
+/// terminating existing connections to the target database, and executing DROP DATABASE.
+pub async fn drop_database(
+    connection: &models::structs::ConnectionConfig,
+    database_name: &str,
+) -> Result<(), String> {
+    use sqlx::postgres::PgConnectOptions;
+
+    let (target_host, target_port) =
+        match crate::connection::pool::resolve_connection_target_async(connection).await {
+            Ok(t) => t,
+            Err(e) => return Err(format!("Cannot resolve target host: {}", e)),
+        };
+    let port_num = target_port.parse::<u16>().unwrap_or(5432);
+
+    // Never connect to the database being dropped
+    let conn_db = if database_name.eq_ignore_ascii_case("postgres") {
+        "template1"
+    } else {
+        "postgres"
+    };
+
+    let mut connect_opts = PgConnectOptions::new()
+        .host(&target_host)
+        .port(port_num)
+        .username(&connection.username)
+        .password(&connection.password)
+        .database(conn_db);
+
+    if connection.ssl_enabled {
+        let ssl_mode = if !connection.ssl_verify_server {
+            sqlx::postgres::PgSslMode::Require
+        } else if !connection.ssl_ca_cert.trim().is_empty() {
+            sqlx::postgres::PgSslMode::VerifyCa
+        } else {
+            sqlx::postgres::PgSslMode::Require
+        };
+        connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+        if !connection.ssl_ca_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_root_cert(connection.ssl_ca_cert.trim());
+        }
+        if !connection.ssl_client_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+        }
+        if !connection.ssl_client_key.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+        }
+    } else {
+        connect_opts = connect_opts.ssl_mode(sqlx::postgres::PgSslMode::Prefer);
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(connect_opts)
+        .await
+        .map_err(|e| {
+            format!(
+                "PostgreSQL connect failed (to maintenance db '{}'): {}",
+                conn_db, e
+            )
+        })?;
+
+    // Terminate existing connections to target database
+    let term_query = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()";
+    let _ = sqlx::query(term_query)
+        .bind(database_name)
+        .execute(&pool)
+        .await;
+
+    // Drop database with FORCE (PG 13+)
+    let safe_name = database_name.replace('"', "\"\"");
+    let drop_query_force = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE);", safe_name);
+    let res = sqlx::query(sqlx::AssertSqlSafe(drop_query_force.as_str()))
+        .execute(&pool)
+        .await;
+
+    match res {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let err_msg = err.to_string();
+            // Fallback for PostgreSQL < 13
+            if err_msg.to_lowercase().contains("syntax error") || err_msg.contains("42601") {
+                let drop_query = format!("DROP DATABASE IF EXISTS \"{}\";", safe_name);
+                sqlx::query(sqlx::AssertSqlSafe(drop_query.as_str()))
+                    .execute(&pool)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("PostgreSQL drop database error: {}", e))
+            } else {
+                Err(format!("PostgreSQL drop database error: {}", err))
+            }
+        }
+    }
 }

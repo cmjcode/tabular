@@ -1,3 +1,4 @@
+use log::{debug, error, warn};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Default)]
@@ -56,15 +57,20 @@ impl MetadataStaging {
         }
     }
 
-    pub(crate) async fn commit_to_sqlite(&self, cache_pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    pub(crate) async fn commit_to_sqlite(
+        &self,
+        cache_pool: &SqlitePool,
+    ) -> Result<(), sqlx::Error> {
         match self.commit_to_sqlite_inner(cache_pool).await {
             Ok(()) => Ok(()),
             Err(e) if is_corrupt_error(&e) => {
-                eprintln!(
+                warn!(
                     "[METADATA-STAGING] conn={} detected SQLite malformed/corruption error: {}. Attempting self-healing checkpoint & reindex...",
                     self.connection_id, e
                 );
-                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(cache_pool).await;
+                let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(cache_pool)
+                    .await;
                 let _ = sqlx::query("REINDEX").execute(cache_pool).await;
                 // Retry once after healing
                 self.commit_to_sqlite_inner(cache_pool).await
@@ -75,7 +81,7 @@ impl MetadataStaging {
 
     async fn commit_to_sqlite_inner(&self, cache_pool: &SqlitePool) -> Result<(), sqlx::Error> {
         let total_tables: usize = self.databases.iter().map(|d| d.tables.len()).sum();
-        eprintln!(
+        debug!(
             "[METADATA-STAGING] conn={} starting atomic SQLite commit: {} databases, {} tables total",
             self.connection_id,
             self.databases.len(),
@@ -85,7 +91,7 @@ impl MetadataStaging {
         let mut tx = match cache_pool.begin().await {
             Ok(tx) => tx,
             Err(e) => {
-                eprintln!(
+                error!(
                     "[METADATA-STAGING] conn={} failed to begin SQLite transaction: {}",
                     self.connection_id, e
                 );
@@ -184,13 +190,13 @@ impl MetadataStaging {
         }
 
         if let Err(e) = tx.commit().await {
-            eprintln!(
+            error!(
                 "[METADATA-STAGING] conn={} tx.commit() failed: {}",
                 self.connection_id, e
             );
             return Err(e);
         }
-        eprintln!(
+        debug!(
             "[METADATA-STAGING] conn={} SUCCESS committed {} databases and {} tables to SQLite",
             self.connection_id,
             self.databases.len(),

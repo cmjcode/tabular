@@ -20,6 +20,11 @@ impl super::Tabular {
         crate::sync::ui_teams::render_share_folder_dialog(self, ctx);
         crate::sync::ui_teams::render_add_member_dialog(self, ctx);
         crate::sync::ui_teams::render_delete_team_dialog(self, ctx);
+        crate::sync::ui_teams::render_report_dialog(self, ctx);
+        crate::sync::ui_teams::render_block_user_dialog(self, ctx);
+
+        // ── Project: dialog, share, dan sync manifest ─────────────────────────
+        crate::window_egui::project_ui::tick(self, ctx);
 
         // ── Poll CRDT messages ───────────────────────────────────────────────
         self.poll_crdt_messages(ctx);
@@ -38,10 +43,93 @@ impl super::Tabular {
 
         // ── Poll profile save receiver and avatar images ────────────────────────
         self.poll_profile_receiver(ctx);
+        self.poll_delete_account_receiver();
+        self.poll_moderation_receivers();
 
         // ── Vault (E2E encryption) setup/unlock UI receivers ────────────────────
         crate::sync::ui_vault_setup::drain_receivers(self);
         self.poll_vault_team_keys_receiver();
+    }
+
+    /// Settle the block and report requests (App Store Guideline 1.2).
+    ///
+    /// A successful block changes team membership on the server, so the team
+    /// list is refetched rather than patched locally.
+    fn poll_moderation_receivers(&mut self) {
+        if let Some(rx) = &self.report_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(()) => {
+                    self.report_target = None;
+                    self.report_details.clear();
+                    self.report_error = None;
+                    self.toasts
+                        .info("Report submitted. We review every report.");
+                }
+                Err(e) => {
+                    warn!("[moderation] Report failed: {}", e);
+                    self.report_error = Some(format!("Could not send the report: {}", e));
+                }
+            }
+            self.report_receiver = None;
+        }
+
+        if let Some(rx) = &self.blocked_users_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(list) => self.blocked_users = list,
+                Err(e) => warn!("[moderation] Could not load blocked users: {}", e),
+            }
+            self.blocked_users_receiver = None;
+        }
+
+        if let Some(rx) = &self.block_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(_) => {
+                    self.block_target = None;
+                    self.toasts.info("User blocked");
+                    crate::sync::ui_teams::refresh_teams(self);
+                    crate::sync::ui_login::refresh_blocked_users(self);
+                }
+                Err(e) => {
+                    warn!("[moderation] Block failed: {}", e);
+                    self.toasts.info(format!("Could not block user: {}", e));
+                    self.block_target = None;
+                }
+            }
+            self.block_receiver = None;
+        }
+    }
+
+    /// Finish an account deletion once the server has confirmed it.
+    ///
+    /// Only a confirmed delete wipes local state; a failure leaves the session
+    /// intact and reports into the modal so the user can retry rather than
+    /// being signed out of an account that still exists.
+    fn poll_delete_account_receiver(&mut self) {
+        if let Some(rx) = &self.delete_account_receiver
+            && let Ok(result) = rx.try_recv()
+        {
+            match result {
+                Ok(email) => {
+                    crate::sync::ui_login::wipe_local_session(self);
+                    self.show_delete_account_dialog = false;
+                    self.show_account_dialog = false;
+                    self.delete_account_confirm_input.clear();
+                    self.delete_account_error = None;
+                    self.toasts.info(format!("Account {} deleted", email));
+                }
+                Err(e) => {
+                    warn!("[sync] Account deletion failed: {}", e);
+                    self.delete_account_error = Some(format!("Could not delete account: {}", e));
+                }
+            }
+            self.delete_account_receiver = None;
+        }
     }
 
     fn poll_profile_receiver(&mut self, ctx: &egui::Context) {
@@ -57,15 +145,7 @@ impl super::Tabular {
                         account.phone = user.phone.clone();
                         crate::sync::api_client::save_account(account);
                     }
-                    self.profile_display_name_input = user.display_name.unwrap_or_default();
-                    self.profile_avatar_url_input = user.avatar_url.clone().unwrap_or_default();
-                    self.profile_username_input = user.username.unwrap_or_default();
-                    self.profile_phone_input = user.phone.unwrap_or_default();
-                    // Invalidate avatar texture if avatar_url changed
-                    if self.avatar_texture_url != user.avatar_url {
-                        self.avatar_texture = None;
-                        self.avatar_texture_url = None;
-                    }
+                    self.sync_profile_inputs_from_account();
                     self.toasts.info("Profile saved");
                 }
                 Err(e) => {
@@ -83,7 +163,8 @@ impl super::Tabular {
         {
             match result {
                 Ok((url, color_image)) => {
-                    self.avatar_texture = Some(ctx.load_texture("user_avatar", color_image, Default::default()));
+                    self.avatar_texture =
+                        Some(ctx.load_texture("user_avatar", color_image, Default::default()));
                     self.avatar_texture_url = Some(url);
                 }
                 Err(e) => {
@@ -365,6 +446,7 @@ impl super::Tabular {
                     let account = crate::sync::auth::token_to_account(&token_resp);
                     crate::sync::api_client::save_account(&account);
                     self.sync_account = Some(account.clone());
+                    self.sync_profile_inputs_from_account();
                     self.sync_login_pending = false;
                     self.sync_login_error = None;
                     self.sync_status = crate::sync::SyncStatus::Synced;
@@ -395,6 +477,13 @@ impl super::Tabular {
             match result {
                 Ok(updated) => {
                     info!("[sync] ✅ Access token refreshed automatically!");
+                    // Invalidate avatar texture cache if avatar URL was updated on server
+                    if let Some(ref account) = self.sync_account {
+                        if account.avatar_url != updated.avatar_url {
+                            self.avatar_texture = None;
+                            self.avatar_texture_url = None;
+                        }
+                    }
                     self.sync_account = Some(updated);
                     self.sync_login_error = None;
                     self.sync_status = crate::sync::SyncStatus::Synced;
@@ -563,7 +652,12 @@ impl super::Tabular {
             && let Ok(result) = rx.try_recv()
         {
             match result {
-                Ok(n) => info!("[sync] Pulled {} HTTP request(s)", n),
+                Ok(n) => {
+                    info!("[sync] Pulled {} HTTP request(s)", n);
+                    if n > 0 {
+                        self.yaak_workspaces = crate::http_collection::load_workspaces();
+                    }
+                }
                 Err(e) => {
                     warn!("[sync] HTTP requests pull error: {}", e);
                     self.check_401_error(&e);
@@ -639,7 +733,8 @@ impl super::Tabular {
                     info!("[sync] Refreshed {} teams", self.teams.len());
                     if let Some(pool) = self.db_pool.clone() {
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_teams_cache(pool.as_ref(), &teams).await;
+                            crate::sync::sync_teams_cache::save_teams_cache(pool.as_ref(), &teams)
+                                .await;
                         });
                     }
                 }
@@ -661,7 +756,11 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_clone = team.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_single_team_cache(pool.as_ref(), &t_clone).await;
+                            crate::sync::sync_teams_cache::save_single_team_cache(
+                                pool.as_ref(),
+                                &t_clone,
+                            )
+                            .await;
                         });
                     }
                     self.teams.push(team);
@@ -686,7 +785,8 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_id = team_id.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::delete_team_cache(pool.as_ref(), &t_id).await;
+                            crate::sync::sync_teams_cache::delete_team_cache(pool.as_ref(), &t_id)
+                                .await;
                         });
                     }
                 }
@@ -709,7 +809,12 @@ impl super::Tabular {
                     if let Some(pool) = self.db_pool.clone() {
                         let t_id = team_id.clone();
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_team_members_cache(pool.as_ref(), &t_id, &members).await;
+                            crate::sync::sync_teams_cache::save_team_members_cache(
+                                pool.as_ref(),
+                                &t_id,
+                                &members,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -780,10 +885,17 @@ impl super::Tabular {
             match result {
                 Ok(folders) => {
                     self.shared_folders_cache = folders.clone();
-                    info!("[sync] Refreshed {} shared folders", self.shared_folders_cache.len());
+                    info!(
+                        "[sync] Refreshed {} shared folders",
+                        self.shared_folders_cache.len()
+                    );
                     if let Some(pool) = self.db_pool.clone() {
                         crate::sync::spawn_async(async move {
-                            crate::sync::sync_teams_cache::save_shared_folders_cache(pool.as_ref(), &folders).await;
+                            crate::sync::sync_teams_cache::save_shared_folders_cache(
+                                pool.as_ref(),
+                                &folders,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -831,12 +943,18 @@ impl super::Tabular {
                     return;
                 }
             };
-            let existing: std::collections::HashSet<(String, String)> =
-                remote.iter().map(|r| (r.name.clone(), r.folder_path.clone())).collect();
+            let existing: std::collections::HashSet<(String, String)> = remote
+                .iter()
+                .map(|r| (r.name.clone(), r.folder_path.clone()))
+                .collect();
 
             let mut pushed = 0usize;
             for conn in connections {
-                let folder_path = conn.folder.clone().filter(|f| !f.trim().is_empty()).unwrap_or_else(|| "/".to_string());
+                let folder_path = conn
+                    .folder
+                    .clone()
+                    .filter(|f| !f.trim().is_empty())
+                    .unwrap_or_else(|| "/".to_string());
                 if existing.contains(&(conn.name.clone(), folder_path.clone())) {
                     continue;
                 }
@@ -860,7 +978,7 @@ impl super::Tabular {
                 };
                 let req = crate::sync::api_client::CreateConnectionReq {
                     name: conn.name.clone(),
-                    db_type: format!("{:?}", conn.connection_type),
+                    db_type: conn.connection_type.as_db_str().into_owned(),
                     encrypted_config: encrypted,
                     color_tag: None,
                     folder_path: Some(folder_path),
@@ -881,7 +999,10 @@ impl super::Tabular {
     /// `vault_sync::resolve_key_for_folder`. Rows this device can't decrypt
     /// yet (vault locked, Team key not granted, or pre-E2E legacy ciphertext)
     /// are skipped rather than guessed at.
-    fn merge_remote_connections(&mut self, remote_conns: Vec<crate::sync::api_client::RemoteConnection>) {
+    fn merge_remote_connections(
+        &mut self,
+        remote_conns: Vec<crate::sync::api_client::RemoteConnection>,
+    ) {
         let my_user_id = self.sync_account.as_ref().map(|a| a.user_id.clone());
         let token = self.sync_account.as_ref().map(|a| a.access_token.clone());
         let server = self.sync_server_url.clone();
@@ -899,7 +1020,10 @@ impl super::Tabular {
                 let vault = match &vault_opt {
                     Some(v) => v,
                     None => {
-                        info!("[sync] Vault locked — deferring connection decrypt for '{}' until unlocked", remote.name);
+                        info!(
+                            "[sync] Vault locked — deferring connection decrypt for '{}' until unlocked",
+                            remote.name
+                        );
                         continue;
                     }
                 };
@@ -912,14 +1036,20 @@ impl super::Tabular {
                 ) {
                     Some(k) => k.clone(),
                     None => {
-                        info!("[sync] Skipping Team-shared connection '{}': Team key not unlocked yet", remote.name);
+                        info!(
+                            "[sync] Skipping Team-shared connection '{}': Team key not unlocked yet",
+                            remote.name
+                        );
                         continue;
                     }
                 };
                 match crate::sync::vault_crypto::decrypt_json(&key, &remote.encrypted_config) {
                     Ok(c) => c,
                     Err(e) => {
-                        warn!("[sync] Failed to decrypt connection '{}': {}", remote.name, e);
+                        warn!(
+                            "[sync] Failed to decrypt connection '{}': {}",
+                            remote.name, e
+                        );
                         continue;
                     }
                 }
@@ -927,13 +1057,19 @@ impl super::Tabular {
                 // Legacy (pre-vault) row — best-effort decrypt with the old
                 // scheme(s), then queue a re-upload under the real vault key
                 // if vault is available so it migrates for good.
-                let plaintext = match (&my_user_id, crate::sync::legacy_crypto::legacy_decrypt_best_effort(
-                    &remote.encrypted_config,
-                    my_user_id.as_deref().unwrap_or(""),
-                )) {
+                let plaintext = match (
+                    &my_user_id,
+                    crate::sync::legacy_crypto::legacy_decrypt_best_effort(
+                        &remote.encrypted_config,
+                        my_user_id.as_deref().unwrap_or(""),
+                    ),
+                ) {
                     (Some(_), Some(p)) => p,
                     _ => {
-                        warn!("[sync] Could not decrypt legacy connection '{}' with any known scheme — skipping", remote.name);
+                        warn!(
+                            "[sync] Could not decrypt legacy connection '{}' with any known scheme — skipping",
+                            remote.name
+                        );
                         continue;
                     }
                 };
@@ -946,7 +1082,9 @@ impl super::Tabular {
                                 &self.shared_folders_cache,
                                 "connection",
                                 &remote.folder_path,
-                            ).cloned().unwrap_or_else(|| vault.account_key.clone());
+                            )
+                            .cloned()
+                            .unwrap_or_else(|| vault.account_key.clone());
                             crate::sync::sync_connections::migrate_legacy_connection(
                                 remote.id.clone(),
                                 c.clone(),
@@ -958,7 +1096,10 @@ impl super::Tabular {
                         c
                     }
                     Err(e) => {
-                        warn!("[sync] Legacy connection '{}' decrypted but wasn't valid JSON: {}", remote.name, e);
+                        warn!(
+                            "[sync] Legacy connection '{}' decrypted but wasn't valid JSON: {}",
+                            remote.name, e
+                        );
                         continue;
                     }
                 }
@@ -976,7 +1117,8 @@ impl super::Tabular {
 
         if added > 0 {
             info!("[sync] Merged {} new connection(s) from server", added);
-            self.toasts.info(format!("Synced {} connection(s) from cloud", added));
+            self.toasts
+                .info(format!("Synced {} connection(s) from cloud", added));
             crate::sidebar_database::load_connections(self);
         }
     }
@@ -992,7 +1134,8 @@ impl super::Tabular {
             if !unlocked.is_empty() {
                 info!("[sync] Unsealed {} Team vault key(s)", unlocked.len());
                 for (team_id, team_key) in unlocked {
-                    self.vault_team_keys.insert(team_id.clone(), team_key.clone());
+                    self.vault_team_keys
+                        .insert(team_id.clone(), team_key.clone());
 
                     let account = match &self.sync_account {
                         Some(a) => a.clone(),
@@ -1009,7 +1152,10 @@ impl super::Tabular {
                         )
                         .await
                         {
-                            warn!("[sync] Failed to grant pending Team {} key envelopes: {}", team_id, e);
+                            warn!(
+                                "[sync] Failed to grant pending Team {} key envelopes: {}",
+                                team_id, e
+                            );
                         }
                     });
                 }
@@ -1029,7 +1175,10 @@ impl super::Tabular {
                     self.sync_trigger_connections = true;
                     self.sync_trigger_http = true;
                 }
-                Err(e) => warn!("[sync] Failed to bootstrap Team {} vault key: {}", team_id, e),
+                Err(e) => warn!(
+                    "[sync] Failed to bootstrap Team {} vault key: {}",
+                    team_id, e
+                ),
             }
         }
     }
@@ -1062,7 +1211,13 @@ impl super::Tabular {
         self.vault_team_keys_receiver = Some(rx);
         crate::sync::spawn_async(async move {
             let client = crate::sync::api_client::ApiClient::new(&server);
-            let unlocked = crate::sync::vault_sync::unlock_all_team_keys(&client, &account.access_token, &vault, &missing).await;
+            let unlocked = crate::sync::vault_sync::unlock_all_team_keys(
+                &client,
+                &account.access_token,
+                &vault,
+                &missing,
+            )
+            .await;
             let _ = tx.send(unlocked);
         });
     }
@@ -1082,6 +1237,27 @@ impl super::Tabular {
             && crdt.is_connected
         {
             crdt.on_cursor_move(pos);
+        }
+    }
+
+    /// Sync the Account Information form input buffers from the currently active `sync_account`.
+    pub fn sync_profile_inputs_from_account(&mut self) {
+        if let Some(account) = &self.sync_account {
+            self.profile_display_name_input = account.display_name.clone().unwrap_or_default();
+            self.profile_avatar_url_input = account.avatar_url.clone().unwrap_or_default();
+            self.profile_username_input = account.username.clone().unwrap_or_default();
+            self.profile_phone_input = account.phone.clone().unwrap_or_default();
+            if self.avatar_texture_url != account.avatar_url {
+                self.avatar_texture = None;
+                self.avatar_texture_url = None;
+            }
+        } else {
+            self.profile_display_name_input.clear();
+            self.profile_avatar_url_input.clear();
+            self.profile_username_input.clear();
+            self.profile_phone_input.clear();
+            self.avatar_texture = None;
+            self.avatar_texture_url = None;
         }
     }
 }

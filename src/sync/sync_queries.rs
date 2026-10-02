@@ -15,17 +15,18 @@
 
 use log::{debug, info, warn};
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::path::Path;
+use std::sync::mpsc;
 
-use crate::directory;
-use super::api_client::{ApiClient, CreateQueryReq, RemoteSavedQuery, RemoteSharedFolder, UpdateQueryReq};
+use super::api_client::{
+    ApiClient, CreateQueryReq, RemoteSavedQuery, RemoteSharedFolder, UpdateQueryReq,
+};
 use super::vault_crypto::{self, SymKey};
 use super::vault_sync;
+use crate::directory;
 
 /// Compute SHA-256 checksum of a string (for conflict detection)
 pub fn checksum(content: &str) -> String {
-
     let digest = md5::compute(content.as_bytes());
     format!("{:x}", digest)
 }
@@ -82,6 +83,28 @@ pub fn push_queries_to_server(
                 continue;
             }
 
+            // Versi lama menyinkronkan semua file sebagai folder `/`. Baris
+            // lama dengan isi sama dipindah ke folder yang benar, bukan
+            // diduplikasi.
+            if folder_path != "/"
+                && let Some(legacy) = remote_queries.iter().find(|q| {
+                    q.name == name
+                        && q.folder_path == "/"
+                        && q.client_checksum.as_deref() == Some(&cs)
+                        && q.access.as_deref().is_none_or(|a| a == "owner")
+                })
+            {
+                let update = UpdateQueryReq {
+                    folder_path: Some(folder_path.clone()),
+                    ..Default::default()
+                };
+                match client.update_saved_query(&token, &legacy.id, &update).await {
+                    Ok(_) => pushed += 1,
+                    Err(e) => warn!("❌ [sync_queries] Failed to move '{}': {}", name, e),
+                }
+                continue;
+            }
+
             let key = match vault_sync::resolve_key_for_folder(
                 &account_key,
                 &team_keys,
@@ -116,7 +139,10 @@ pub fn push_queries_to_server(
             }
         }
 
-        info!("✅ [sync_queries] Pushed {} new/updated queries to server", pushed);
+        info!(
+            "✅ [sync_queries] Pushed {} new/updated queries to server",
+            pushed
+        );
         let _ = result_tx.send(Ok(pushed));
     });
 }
@@ -132,7 +158,10 @@ fn migrate_legacy_query(remote: RemoteSavedQuery, key: SymKey, token: String, se
         let encrypted = match vault_crypto::encrypt_str(&key, &remote.query_text) {
             Ok(e) => e,
             Err(e) => {
-                warn!("❌ [migrate] Failed to encrypt legacy query '{}': {}", remote.name, e);
+                warn!(
+                    "❌ [migrate] Failed to encrypt legacy query '{}': {}",
+                    remote.name, e
+                );
                 return;
             }
         };
@@ -142,8 +171,14 @@ fn migrate_legacy_query(remote: RemoteSavedQuery, key: SymKey, token: String, se
             ..Default::default()
         };
         match client.update_saved_query(&token, &remote.id, &update).await {
-            Ok(_) => info!("✅ [migrate] Migrated legacy query '{}' to end-to-end encryption", remote.name),
-            Err(e) => warn!("❌ [migrate] Failed to migrate query '{}': {}", remote.name, e),
+            Ok(_) => info!(
+                "✅ [migrate] Migrated legacy query '{}' to end-to-end encryption",
+                remote.name
+            ),
+            Err(e) => warn!(
+                "❌ [migrate] Failed to migrate query '{}': {}",
+                remote.name, e
+            ),
         }
     });
 }
@@ -164,7 +199,7 @@ pub fn reencrypt_folder_to_server(
         let query_dir = directory::get_query_dir();
         let files: Vec<(String, String, String)> = collect_sql_files(&query_dir)
             .into_iter()
-            .filter(|(_, folder, _)| *folder == folder_path)
+            .filter(|(_, folder, _)| vault_sync::folder_covers(&folder_path, folder))
             .collect();
         if files.is_empty() {
             return;
@@ -173,7 +208,10 @@ pub fn reencrypt_folder_to_server(
         let remote_queries = match client.list_queries(&token).await {
             Ok(q) => q,
             Err(e) => {
-                warn!("❌ [sync_queries] re-encrypt: failed to list remote queries: {}", e);
+                warn!(
+                    "❌ [sync_queries] re-encrypt: failed to list remote queries: {}",
+                    e
+                );
                 return;
             }
         };
@@ -188,12 +226,17 @@ pub fn reencrypt_folder_to_server(
             let encrypted = match vault_crypto::encrypt_str(&key, &content) {
                 Ok(e) => e,
                 Err(e) => {
-                    warn!("❌ [sync_queries] re-encrypt: failed to encrypt '{}': {}", name, e);
+                    warn!(
+                        "❌ [sync_queries] re-encrypt: failed to encrypt '{}': {}",
+                        name, e
+                    );
                     continue;
                 }
             };
 
-            let existing = remote_queries.iter().find(|q| q.name == name && q.folder_path == folder);
+            let existing = remote_queries
+                .iter()
+                .find(|q| q.name == name && q.folder_path == folder);
             let result = match existing {
                 Some(r) => {
                     let update = UpdateQueryReq {
@@ -202,7 +245,10 @@ pub fn reencrypt_folder_to_server(
                         crypto_version: Some(1),
                         ..Default::default()
                     };
-                    client.update_saved_query(&token, &r.id, &update).await.map(|_| ())
+                    client
+                        .update_saved_query(&token, &r.id, &update)
+                        .await
+                        .map(|_| ())
                 }
                 None => {
                     let req = CreateQueryReq {
@@ -218,10 +264,16 @@ pub fn reencrypt_folder_to_server(
             };
             match result {
                 Ok(()) => migrated += 1,
-                Err(e) => warn!("❌ [sync_queries] re-encrypt: failed to upsert '{}': {}", name, e),
+                Err(e) => warn!(
+                    "❌ [sync_queries] re-encrypt: failed to upsert '{}': {}",
+                    name, e
+                ),
             }
         }
-        info!("✅ [sync_queries] Re-encrypted {} quer(y/ies) in '{}' under the Team key", migrated, folder_path);
+        info!(
+            "✅ [sync_queries] Re-encrypted {} quer(y/ies) in '{}' under the Team key",
+            migrated, folder_path
+        );
     });
 }
 
@@ -260,7 +312,10 @@ pub fn pull_queries_from_server(
             ) {
                 Some(k) => k,
                 None => {
-                    info!("[sync_queries] Skipping Team-shared '{}': Team key not unlocked yet", rq.name);
+                    info!(
+                        "[sync_queries] Skipping Team-shared '{}': Team key not unlocked yet",
+                        rq.name
+                    );
                     continue;
                 }
             };
@@ -297,7 +352,10 @@ pub fn pull_queries_from_server(
                         continue; // In sync
                     }
                     // Conflict: local differs — skip (local wins)
-                    debug!("⚠️ [sync_queries] Conflict on '{}' — local version kept", rq.name);
+                    debug!(
+                        "⚠️ [sync_queries] Conflict on '{}' — local version kept",
+                        rq.name
+                    );
                     continue;
                 }
             }
@@ -323,37 +381,80 @@ pub fn pull_queries_from_server(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Recursively collect all .sql files.
-/// Returns (absolute_path, folder_path, name_without_ext)
+/// Recursively collect all .sql files as `(file_path, folder_path, name)`.
+/// `folder_path` selalu relatif terhadap root direktori query (`/`, `/A`,
+/// `/A/B`), sama seperti cara pull menaruh file.
 fn collect_sql_files(dir: &Path) -> Vec<(String, String, String)> {
     let mut results = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let subdir_results = collect_sql_files(&path);
-                results.extend(subdir_results);
-            } else if path.extension().map(|e| e == "sql").unwrap_or(false) {
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let folder = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(dir).ok())
-                    .and_then(|p| p.to_str())
-                    .map(|s| format!("/{}", s))
-                    .unwrap_or_else(|| "/".to_string());
-                results.push((path.to_string_lossy().to_string(), folder, name));
-            }
+    collect_sql_files_under(dir, dir, &mut results);
+    results
+}
+
+fn collect_sql_files_under(root: &Path, dir: &Path, results: &mut Vec<(String, String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sql_files_under(root, &path, results);
+        } else if path.extension().map(|e| e == "sql").unwrap_or(false) {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let folder = path
+                .parent()
+                .and_then(|p| p.strip_prefix(root).ok())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .map(|s| format!("/{}", s.trim_start_matches('/')))
+                .unwrap_or_else(|| "/".to_string());
+            results.push((path.to_string_lossy().to_string(), folder, name));
         }
     }
-    results
 }
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_folder_paths_relative_to_root() {
+        let root = std::env::temp_dir().join(format!(
+            "tabular-sync-queries-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("Shop/reports")).unwrap();
+        std::fs::write(root.join("top.sql"), "select 1").unwrap();
+        std::fs::write(root.join("Shop/a.sql"), "select 2").unwrap();
+        std::fs::write(root.join("Shop/reports/b.sql"), "select 3").unwrap();
+        let mut got: Vec<(String, String)> = collect_sql_files(&root)
+            .into_iter()
+            .map(|(_, folder, name)| (folder, name))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("/".to_string(), "top".to_string()),
+                ("/Shop".to_string(), "a".to_string()),
+                ("/Shop/reports".to_string(), "b".to_string()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

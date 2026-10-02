@@ -1,0 +1,44 @@
+{
+  "abi": "tabular-driver-v1",
+  "kind": "sidecar",
+  "version": "0.1.0",
+  "author": "Tabular",
+  "description": "DuckDB files and in-memory databases, running as a separate process.",
+  "entry": {
+    "macos-aarch64": "bin/tabular-duckdb-sidecar",
+    "macos-x86_64": "bin/tabular-duckdb-sidecar",
+    "linux-x86_64": "bin/tabular-duckdb-sidecar",
+    "linux-aarch64": "bin/tabular-duckdb-sidecar",
+    "windows-x86_64": "bin/tabular-duckdb-sidecar.exe"
+  },
+  "engine": {
+    "id": "duckdb",
+    "name": "DuckDB",
+    "icon": "🦆",
+    "standard_fields": {
+      "host": false,
+      "port": false,
+      "username": false,
+      "password": false,
+      "database": true
+    },
+    "options": [
+      {
+        "key": "read_only",
+        "label": "Read only",
+        "kind": "bool",
+        "default": "false",
+        "help": "Open the database file in read-only mode."
+      }
+    ],
+    "capabilities": {
+      "databases": true,
+      "schemas": true,
+      "query_language": "sql",
+      "sql_dialect": "duckdb",
+      "cancel": true,
+      "ssh_tunnel": false,
+      "tls": false
+    }
+  }
+}

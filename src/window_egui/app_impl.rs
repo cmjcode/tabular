@@ -1,42 +1,80 @@
-use eframe::{App, Frame, egui};
-use log::{debug};
+use super::{Tabular, style};
 use chrono::{DateTime, Duration, Utc};
-use super::{Tabular, PrefTab, style};
+use eframe::{App, Frame, egui};
+use log::debug;
 
-use crate::{models, connection, editor, data_table, sidebar_database,
-            sidebar_query, spreadsheet::SpreadsheetOperations, dialog,
-            cache_data};
+use crate::{
+    cache_data, connection, data_table, dialog, editor, models, sidebar_database, sidebar_query,
+    spreadsheet::SpreadsheetOperations,
+};
 
 impl Tabular {
     /// Render the "Auto Refresh Interval" modal dialog when requested.
     /// Extracted verbatim from `update()` (behavior-preserving).
     fn render_auto_refresh_dialog(&mut self, ctx: &egui::Context) {
         if self.show_auto_refresh_dialog {
+            let mut close = false;
+            crate::window_egui::style::render_modal_backdrop(
+                ctx,
+                "auto_refresh_backdrop",
+                self.show_auto_refresh_dialog,
+            );
+
             egui::Window::new("Auto Refresh Interval")
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(320.0)
                 .show(ctx, |ui| {
-                    ui.label("Set auto refresh interval (seconds):");
-                    ui.text_edit_singleline(&mut self.auto_refresh_interval_input);
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Auto Refresh Interval",
+                        &mut close,
+                    );
+                    ui.add_space(8.0);
+
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.label("Set auto refresh interval (seconds):");
+                        ui.add_space(4.0);
+                        crate::window_egui::style::render_text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut self.auto_refresh_interval_input),
+                            f32::INFINITY,
+                            None,
+                        );
+                    });
+
+                    ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() {
-                            if let Ok(v) = self.auto_refresh_interval_input.trim().parse::<u32>() {
-                                let v = std::cmp::max(1, v); // minimum 1 second
-                                self.auto_refresh_interval_seconds = v;
-                                self.auto_refresh_active = true;
-                                self.auto_refresh_last_run = None;
-                                self.show_auto_refresh_dialog = false;
-                            } else {
-                                // Invalid input keeps dialog open; user can correct it
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let ok_btn = egui::Button::new(
+                                egui::RichText::new("OK")
+                                    .color(egui::Color32::WHITE)
+                                    .strong(),
+                            )
+                            .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                            if ui.add(ok_btn).clicked() {
+                                if let Ok(v) =
+                                    self.auto_refresh_interval_input.trim().parse::<u32>()
+                                {
+                                    let v = std::cmp::max(1, v); // minimum 1 second
+                                    self.auto_refresh_interval_seconds = v;
+                                    self.auto_refresh_active = true;
+                                    self.auto_refresh_last_run = None;
+                                    self.show_auto_refresh_dialog = false;
+                                }
                             }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_auto_refresh_dialog = false;
-                            self.stop_auto_refresh();
-                        }
+                        });
                     });
                 });
+
+            if close {
+                self.show_auto_refresh_dialog = false;
+                self.stop_auto_refresh();
+            }
         }
     }
 
@@ -44,6 +82,7 @@ impl Tabular {
     /// connection pool. Extracted verbatim from `update()`.
     fn render_connecting_overlay(&mut self, ctx: &egui::Context) {
         if self.pool_wait_in_progress {
+            crate::window_egui::style::render_modal_backdrop(ctx, "connecting_backdrop", true);
             let elapsed = self
                 .pool_wait_started_at
                 .map(|t| t.elapsed())
@@ -53,28 +92,38 @@ impl Tabular {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .collapsible(false)
                 .resizable(false)
-                .title_bar(true)
+                .title_bar(false)
+                .frame(crate::window_egui::style::modal_window_frame(ctx))
+                .default_width(400.0)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        let conn_name = self
-                            .pool_wait_connection_id
-                            .and_then(|id| self.get_connection_name(id))
-                            .unwrap_or_else(|| "(connection)".to_string());
-                        ui.label(format!("Establishing connection pool for '{}'…", conn_name));
-                    });
-                    if elapsed.as_secs() >= 10 {
-                        ui.label(
-                            egui::RichText::new("This can take a while for slow networks.")
-                                .size(11.0)
-                                .weak(),
-                        );
+                    let mut close_dialog = false;
+                    crate::window_egui::style::render_modal_header(
+                        ui,
+                        "Connecting…",
+                        &mut close_dialog,
+                    );
+                    if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                        keep_open = false;
                     }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            keep_open = false;
+                    ui.add_space(8.0);
+                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            let conn_name = self
+                                .pool_wait_connection_id
+                                .and_then(|id| self.get_connection_name(id))
+                                .unwrap_or_else(|| "(connection)".to_string());
+                            ui.label(format!("Establishing connection pool for '{}'…", conn_name));
+                        });
+                        if elapsed.as_secs() >= 10 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("This can take a while for slow networks.")
+                                    .size(11.0)
+                                    .weak(),
+                            );
                         }
+                        ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new(format!("Waiting {}s", elapsed.as_secs()))
                                 .size(11.0)
@@ -92,559 +141,6 @@ impl Tabular {
                 self.pool_wait_query.clear();
                 self.pool_wait_started_at = None;
                 self.query_execution_in_progress = false;
-            }
-        }
-    }
-
-    /// Render the Preferences/Settings modal window.
-    /// Extracted verbatim from `update()` (behavior-preserving).
-    fn render_settings_dialog(&mut self, ctx: &egui::Context) {
-        if self.show_settings_window {
-            let mut open_flag = true; // local to satisfy borrow rules
-            let screen_rect = ctx.content_rect();
-            let max_dialog_h = (screen_rect.height() - 40.0).max(280.0);
-            let max_dialog_w = (screen_rect.width() - 32.0).min(780.0).max(360.0);
-            let content_max_h = (max_dialog_h - 120.0).max(180.0);
-
-            egui::Window::new("Preferences")
-                .open(&mut open_flag)
-                .collapsible(false)
-                .resizable(false)
-                .pivot(egui::Align2::CENTER_CENTER)
-                .fixed_pos(screen_rect.center())
-                .max_height(max_dialog_h)
-                .max_width(max_dialog_w)
-                .default_width(max_dialog_w)
-                .show(ctx, |ui| {
-                    // Tab bar
-                    egui::ScrollArea::horizontal()
-                        .id_salt("settings_tab_bar_scroll")
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                let accent = style::theme_accent(ctx);
-                            let draw_tab = |ui: &mut egui::Ui, current: &mut PrefTab, me: PrefTab, label: &str| {
-                                let selected = *current == me;
-                                let dark = ui.visuals().dark_mode;
-
-                                let inactive_bg = if dark {
-                                    egui::Color32::from_rgb(35, 35, 35)
-                                } else {
-                                    egui::Color32::from_rgb(240, 240, 240)
-                                };
-                                let mut tab_bg = if selected {
-                                    if dark {
-                                        egui::Color32::from_rgb(45, 48, 56)
-                                    } else {
-                                        egui::Color32::from_rgb(255, 255, 255)
-                                    }
-                                } else {
-                                    inactive_bg
-                                };
-                                let border_color = if selected {
-                                    if dark {
-                                        egui::Color32::from_rgb(55, 60, 76)
-                                    } else {
-                                        egui::Color32::from_rgb(215, 222, 232)
-                                    }
-                                } else {
-                                    ui.visuals().widgets.inactive.bg_stroke.color
-                                };
-                                let text_color = if selected {
-                                    if dark {
-                                        egui::Color32::WHITE
-                                    } else {
-                                        egui::Color32::from_rgb(20, 20, 20)
-                                    }
-                                } else {
-                                    ui.visuals().text_color()
-                                };
-
-                                let font_id = egui::FontId::proportional(12.5);
-                                let text_width = ui.painter().layout_no_wrap(label.to_string(), font_id.clone(), text_color).rect.width();
-                                let tab_width = text_width + 24.0;
-                                let menu_tab_height = 30.0;
-
-                                let (tab_rect, tab_resp) = ui.allocate_exact_size(
-                                    egui::vec2(tab_width, menu_tab_height),
-                                    egui::Sense::click(),
-                                );
-
-                                if !selected && tab_resp.hovered() {
-                                    tab_bg = if dark {
-                                        egui::Color32::from_rgb(42, 42, 42)
-                                    } else {
-                                        egui::Color32::from_rgb(230, 230, 230)
-                                    };
-                                }
-
-                                let tab_radius = egui::CornerRadius {
-                                    nw: 4,
-                                    ne: 4,
-                                    sw: 0,
-                                    se: 0,
-                                };
-                                ui.painter().rect_filled(tab_rect, tab_radius, tab_bg);
-                                ui.painter().rect_stroke(
-                                    tab_rect,
-                                    tab_radius,
-                                    egui::Stroke::new(1.0, border_color),
-                                    egui::StrokeKind::Outside,
-                                );
-
-                                if selected {
-                                    let line_height = 3.0;
-                                    let accent_rect = egui::Rect::from_min_size(
-                                        egui::pos2(tab_rect.left(), tab_rect.bottom() - line_height),
-                                        egui::vec2(tab_rect.width(), line_height),
-                                    );
-                                    ui.painter().rect_filled(
-                                        accent_rect,
-                                        0.0,
-                                        accent,
-                                    );
-                                }
-
-                                ui.painter().text(
-                                    tab_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    label,
-                                    font_id,
-                                    text_color,
-                                );
-
-                                if tab_resp.clicked() {
-                                    *current = me;
-                                }
-                            };
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::ApplicationTheme, "Application Theme");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::EditorTheme, "Editor Theme");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Performance, "Performance Settings");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::DataDirectory, "Data Directory");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Update, "Update");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::AiAssistant, "✨ AI Assistant");
-                            draw_tab(ui, &mut self.settings_active_pref_tab, PrefTab::Sync, "☁ Cloud Sync");
-                        });
-                    });
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    egui::ScrollArea::vertical()
-                        .id_salt("settings_content_scroll")
-                        .max_height(content_max_h)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            match self.settings_active_pref_tab {
-                                PrefTab::ApplicationTheme => {
-                                ui.heading("Application Theme");
-                                ui.add_space(8.0);
-
-                                let theme_cards: &[(crate::config::AppTheme, &str, &str)] = &[
-                                    (
-                                        crate::config::AppTheme::Dark,
-                                        "🌙 Dark",
-                                        "Rich contrast and calm surfaces for late-night work.",
-                                    ),
-                                    (
-                                        crate::config::AppTheme::Light,
-                                        "🔆 Light",
-                                        "Bright, crisp palette for a clean editor experience.",
-                                    ),
-                                    (
-                                        crate::config::AppTheme::LightSoft,
-                                        "⛅ Light Soft",
-                                        "Gentle warmth with soft backgrounds for long sessions.",
-                                    ),
-                                ];
-
-                                ui.horizontal(|ui| {
-                                     ui.spacing_mut().item_spacing.x = 10.0;
-                                     let card_size = egui::vec2(205.0, 135.0);
-
-                                     for (theme, title, caption) in theme_cards {
-                                         let selected = self.app_theme == *theme;
-                                         let frame = egui::Frame {
-                                             fill: if selected {
-                                                 ui.visuals().widgets.active.bg_fill
-                                             } else {
-                                                 ui.visuals().widgets.inactive.bg_fill
-                                             },
-                                             stroke: if selected {
-                                                 egui::Stroke::new(1.5, ui.visuals().selection.stroke.color)
-                                             } else {
-                                                 egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)
-                                             },
-                                             corner_radius: 10.0.into(),
-                                             inner_margin: 12.into(),
-                                             ..Default::default()
-                                         };
-                                         frame.show(ui, |ui| {
-                                             ui.set_min_size(card_size);
-                                             ui.set_max_size(card_size);
-                                             ui.vertical(|ui| {
-                                                 ui.horizontal(|ui| {
-                                                     ui.label(egui::RichText::new(*title).heading());
-                                                     if selected {
-                                                         ui.label(egui::RichText::new("Selected").small().weak());
-                                                     }
-                                                 });
-                                                 ui.add_space(4.0);
-                                                 ui.label(egui::RichText::new(*caption).small().color(egui::Color32::from_gray(120)));
-
-                                                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                                                     if ui.add_sized([130.0, 28.0], egui::Button::new(if selected { "Current" } else { "Select" })).clicked() {
-                                                         self.app_theme = *theme;
-                                                         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
-                                                         crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
-                                                         if self.link_editor_theme {
-                                                             self.advanced_editor.theme = match self.app_theme {
-                                                                 crate::config::AppTheme::Dark => crate::models::structs::EditorColorTheme::GithubDark,
-                                                                 _ => crate::models::structs::EditorColorTheme::GithubLight,
-                                                             };
-                                                         }
-                                                         self.prefs_dirty = true;
-                                                         self.try_save_prefs();
-                                                     }
-                                                 });
-                                             });
-                                         });
-                                     }
-                                 });
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new(match self.app_theme {
-                                    crate::config::AppTheme::Dark => "Classic dark theme with strong contrast and calm focus.",
-                                    crate::config::AppTheme::Light => "High-contrast white theme with crisp panels.",
-                                    crate::config::AppTheme::LightSoft => "Soft warm theme with gentle contrast for reduced eye fatigue.",
-                                }).size(11.0).color(egui::Color32::from_gray(120)));
-
-                                ui.add_space(14.0);
-                                ui.separator();
-                                ui.add_space(8.0);
-                                ui.heading("📱 Mode Antarmuka (Desktop / Tablet Touch)");
-                                ui.label(egui::RichText::new("Sesuaikan ukuran tombol, area sentuh, dan layout agar nyaman untuk mouse atau sentuhan jari pada iPad / Android tablet.").size(12.0).color(egui::Color32::from_gray(130)));
-                                ui.add_space(6.0);
-
-                                let mode_options = [
-                                    (crate::config::UiModePreference::Auto, "🌐 Otomatis", "Deteksi otomatis berdasarkan sistem (iOS/Android) atau resolusi layar."),
-                                    (crate::config::UiModePreference::Desktop, "💻 Desktop", "Ukuran tombol kompak dan padat untuk mouse & keyboard fisik."),
-                                    (crate::config::UiModePreference::TouchTablet, "📱 Tablet / Touch", "Target sentuh 44pt, baris tabel 38px, dan quick keyword toolbar."),
-                                ];
-
-                                for (mode, name, desc) in mode_options {
-                                    let selected = self.ui_mode == mode;
-                                    ui.horizontal(|ui| {
-                                        if ui.radio(selected, name).clicked() {
-                                            self.ui_mode = mode;
-                                            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
-                                            crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
-                                            self.prefs_dirty = true;
-                                            self.try_save_prefs();
-                                        }
-                                        ui.label(egui::RichText::new(desc).size(11.0).color(egui::Color32::from_gray(120)));
-                                    });
-                                }
-                                ctx.request_repaint();
-                            }
-                            PrefTab::EditorTheme => {
-                                ui.heading("Editor Theme");
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut self.link_editor_theme, "Link with application theme").changed() {
-                                        if self.link_editor_theme { self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight }; }
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                    if ui.button("Reset").on_hover_text("Reset to default & relink").clicked() {
-                                        self.link_editor_theme = true;
-                                        self.advanced_editor.theme = if self.app_theme.is_dark() { crate::models::structs::EditorColorTheme::GithubDark } else { crate::models::structs::EditorColorTheme::GithubLight };
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                });
-                                if self.link_editor_theme { ui.label(egui::RichText::new("(Editor theme follows application theme; uncheck to customize)").size(11.0).color(egui::Color32::from_gray(120))); }
-                                ui.label("Choose syntax highlighting theme for SQL editor");
-                                ui.add_space(4.0);
-                                let themes: &[(crate::models::structs::EditorColorTheme, &str, &str)] = &[
-                                    (crate::models::structs::EditorColorTheme::GithubDark, "GitHub Dark", "Dark theme with blue accents"),
-                                    (crate::models::structs::EditorColorTheme::GithubLight, "GitHub Light", "Clean light theme"),
-                                    (crate::models::structs::EditorColorTheme::Gruvbox, "Gruvbox", "Warm earthy retro palette"),
-                                ];
-                                for (theme, name, desc) in themes {
-                                    ui.horizontal(|ui| {
-                                        let selected = self.advanced_editor.theme == *theme;
-                                        if ui.selectable_label(selected, *name).clicked() {
-                                            self.advanced_editor.theme = *theme;
-                                            if self.link_editor_theme { self.link_editor_theme = false; }
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                        if selected { ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0,150,255))); }
-                                    });
-                                    ui.label(egui::RichText::new(*desc).size(11.0).color(egui::Color32::from_gray(120)));
-                                    ui.add_space(4.0);
-                                }
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    ui.label("Font size:");
-                                    let mut fs = self.advanced_editor.font_size as i32;
-                                    if ui.add(egui::DragValue::new(&mut fs).range(8..=32)).changed() {
-                                        self.advanced_editor.font_size = fs as f32;
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                    ui.separator();
-                                    ui.checkbox(&mut self.advanced_editor.show_line_numbers, "Line numbers").changed();
-                                    if ui.checkbox(&mut self.advanced_editor.word_wrap, "Word wrap").changed() { self.prefs_dirty = true; self.try_save_prefs(); }
-                                });
-                            }
-                            PrefTab::Performance => {
-                                ui.heading("Performance Settings");
-                                ui.horizontal(|ui| {
-                                    let prev_pagination = self.use_server_pagination;
-                                    if ui.checkbox(&mut self.use_server_pagination, "Server-side pagination")
-                                        .on_hover_text("When enabled, queries large tables in pages from the server instead of loading all data at once. Much faster for large datasets.")
-                                        .changed() {
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                        if prev_pagination != self.use_server_pagination && !self.current_table_headers.is_empty() {
-                                            if self.use_server_pagination { self.prefs_save_feedback = Some("Server pagination enabled. Browse a table to see the difference!".to_string()); }
-                                            else { self.prefs_save_feedback = Some("Client pagination enabled. Data will be loaded all at once.".to_string()); }
-                                            self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                        }
-                                    }
-                                });
-                                ui.label(egui::RichText::new("Server pagination queries data in smaller chunks (e.g., 100 rows at a time) from the database.\nThis is much faster for large tables but may not work with all custom queries.").size(11.0).color(egui::Color32::from_gray(120)));
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut self.enable_debug_logging, "Enable Debug Logging").changed() {
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                        if self.enable_debug_logging {
-                                            self.prefs_save_feedback = Some("Debug logging enabled. Please restart the application for this to take effect.".to_string());
-                                        } else {
-                                            self.prefs_save_feedback = Some("Debug logging disabled. Restart the application to improve performance.".to_string());
-                                        }
-                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                    }
-                                    ui.label(egui::RichText::new("(Requires Restart)").size(11.0).color(egui::Color32::from_gray(120)));
-                                });
-                                ui.label(egui::RichText::new("Turns on verbose logs. Disable this to improve application performance and reduce disk I/O.").size(11.0).color(egui::Color32::from_gray(120)));
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    ui.label("Redis browser auto-refresh default (seconds):");
-                                    let mut seconds = self.redis_browser_auto_refresh_default_seconds.max(1) as i32;
-                                    if ui.add(egui::DragValue::new(&mut seconds).range(1..=3600)).changed() {
-                                        self.redis_browser_auto_refresh_default_seconds = seconds.max(1) as u32;
-                                        self.prefs_dirty = true;
-                                        self.try_save_prefs();
-                                    }
-                                });
-                                ui.label(egui::RichText::new("Default interval used when Redis browser auto-refresh is enabled.").size(11.0).color(egui::Color32::from_gray(120)));
-                            }
-                            PrefTab::DataDirectory => {
-                                ui.heading("Data Directory");
-                                ui.label("Choose where Tabular stores its data (connections, queries, history):");
-                                ui.add_space(4.0);
-                                if self.temp_data_directory.is_empty() { self.temp_data_directory = self.data_directory.clone(); }
-                                ui.horizontal(|ui| { ui.label("Current location:"); ui.monospace(&self.data_directory); });
-                                ui.horizontal(|ui| { ui.label("New location:"); ui.text_edit_singleline(&mut self.temp_data_directory); if ui.button("📁 Browse").clicked() { self.handle_directory_picker(); } });
-                                ui.horizontal(|ui| {
-                                    let changed = self.temp_data_directory != self.data_directory;
-                                    let valid_path = !self.temp_data_directory.trim().is_empty() && std::path::Path::new(&self.temp_data_directory).is_absolute();
-                                    if ui.add_enabled(changed && valid_path, egui::Button::new("Apply Changes")).clicked() {
-                                        match crate::config::set_data_dir(&self.temp_data_directory) {
-                                            Ok(()) => {
-                                                self.refresh_data_directory();
-                                                self.prefs_dirty = true; self.try_save_prefs();
-                                                if let Some(rt) = &self.runtime && let Ok(new_store) = rt.block_on(crate::config::ConfigStore::new()) { self.config_store = Some(new_store); log::debug!("Config store reinitialized for new data directory"); }
-                                                self.prefs_save_feedback = Some("Data directory updated successfully!".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                                log::debug!("Data directory changed to: {}", self.data_directory);
-                                            }
-                                            Err(e) => { self.error_message = format!("Failed to change data directory: {}", e); self.show_error_message = true; }
-                                        }
-                                    }
-                                    if ui.button("Reset to Default").clicked() { self.temp_data_directory = dirs::home_dir().map(|mut p| { p.push(".tabular"); p.to_string_lossy().to_string() }).unwrap_or_else(|| ".".to_string()); }
-                                });
-                                ui.label(egui::RichText::new("⚠️ Changing data directory will require restarting the application").size(11.0).color(egui::Color32::from_rgb(200, 150, 0)));
-                            }
-                            PrefTab::Update => {
-                                ui.heading("Updates");
-                                ui.horizontal(|ui| { if ui.checkbox(&mut self.auto_check_updates, "Automatically check for updates on startup").changed() { self.prefs_dirty = true; self.try_save_prefs(); } });
-                                ui.label(egui::RichText::new("When enabled, Tabular will check for new versions from GitHub releases").size(11.0).color(egui::Color32::from_gray(120)));
-                            }
-                            PrefTab::AiAssistant => {
-                                ui.heading("✨ AI Assistant");
-                                ui.label(egui::RichText::new("Press Cmd+Shift+A in the editor to toggle the AI panel.").size(11.0).color(egui::Color32::from_gray(130)));
-                                ui.add_space(8.0);
-
-                                // Provider selection
-                                ui.label("AI Provider:");
-                                ui.horizontal_wrapped(|ui| {
-                                    let providers = [
-                                        crate::config::AiProvider::OpenAI,
-                                        crate::config::AiProvider::Anthropic,
-                                        crate::config::AiProvider::Groq,
-                                        crate::config::AiProvider::GitHub,
-                                        crate::config::AiProvider::Custom,
-                                    ];
-                                    for p in providers {
-                                        if ui.radio_value(&mut self.ai_provider, p, p.display_name()).clicked() {
-                                            // Reset model + base_url to defaults for new provider
-                                            self.ai_settings_model_input = p.default_model().to_string();
-                                            self.ai_settings_base_url_input = p.default_base_url().to_string();
-                                            self.ai_model = self.ai_settings_model_input.clone();
-                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                    }
-                                });
-                                // GitHub-specific instructions
-                                if self.ai_provider == crate::config::AiProvider::GitHub {
-                                    egui::Frame::new()
-                                        .fill(egui::Color32::from_rgb(20, 40, 70))
-                                        .inner_margin(egui::Margin::symmetric(8, 6))
-                                        .show(ui, |ui| {
-                                            ui.label(egui::RichText::new("ℹ GitHub Copilot / Models").strong().color(egui::Color32::from_rgb(100, 180, 255)).size(12.0));
-                                            ui.label(egui::RichText::new("Requires a GitHub Personal Access Token (PAT) with 'models:read' scope (or 'copilot' scope for Copilot subscribers).").size(11.0).color(egui::Color32::from_gray(200)));
-                                            ui.hyperlink_to(
-                                                egui::RichText::new("→ Create token at github.com/settings/tokens").size(11.0).color(egui::Color32::from_rgb(100, 180, 255)),
-                                                "https://github.com/settings/tokens"
-                                            );
-                                        });
-                                }
-                                ui.add_space(6.0);
-
-                                // API Key
-                                ui.label("API Key:");
-                                ui.horizontal(|ui| {
-                                    let hint = self.ai_provider.api_key_hint();
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.ai_settings_api_key_input)
-                                            .password(true)
-                                            .desired_width(280.0)
-                                            .hint_text(hint),
-                                    );
-                                    if resp.lost_focus() || ui.button("Apply").clicked() {
-                                        self.ai_api_key = self.ai_settings_api_key_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                        self.prefs_save_feedback = Some("API key saved.".to_string());
-                                        self.prefs_last_saved_at = Some(std::time::Instant::now());
-                                    }
-                                });
-                                ui.label(egui::RichText::new(format!("Hint: {}", self.ai_provider.api_key_hint())).size(11.0).color(egui::Color32::from_gray(120)));
-                                ui.label(egui::RichText::new("Key stored locally and only sent to the chosen provider.").size(11.0).color(egui::Color32::from_gray(120)));
-                                ui.add_space(6.0);
-
-                                // Model
-                                ui.label("Model:");
-                                ui.horizontal(|ui| {
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.ai_settings_model_input)
-                                            .desired_width(220.0)
-                                            .hint_text(self.ai_provider.default_model()),
-                                    );
-                                    if resp.lost_focus() || ui.button("Apply").clicked() {
-                                        self.ai_model = self.ai_settings_model_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                    if ui.small_button("Default").clicked() {
-                                        self.ai_settings_model_input = self.ai_provider.default_model().to_string();
-                                        self.ai_model = self.ai_settings_model_input.clone();
-                                        self.prefs_dirty = true; self.try_save_prefs();
-                                    }
-                                });
-                                // Preset model picker
-                                ui.label(egui::RichText::new("Quick pick:").size(11.0).color(egui::Color32::from_gray(140)));
-                                ui.horizontal_wrapped(|ui| {
-                                    let presets = self.ai_provider.preset_models();
-                                    for &m in presets {
-                                        let selected = self.ai_settings_model_input == m;
-                                        if ui.selectable_label(selected, egui::RichText::new(m).size(11.0).monospace()).clicked() {
-                                            self.ai_settings_model_input = m.to_string();
-                                            self.ai_model = m.to_string();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                    }
-                                });
-
-                                // Base URL — always shown, prominently highlighted for Custom provider
-                                ui.add_space(6.0);
-                                let is_custom = self.ai_provider == crate::config::AiProvider::Custom;
-                                if is_custom {
-                                    let accent = egui::Color32::from_rgb(120, 80, 220);
-                                    egui::Frame::new()
-                                        .fill(egui::Color32::from_rgba_unmultiplied(120, 80, 220, 20))
-                                        .stroke(egui::Stroke::new(1.5, accent))
-                                        .inner_margin(egui::Margin::same(8))
-                                        .outer_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })
-                                        .corner_radius(egui::CornerRadius::same(6))
-                                        .show(ui, |ui| {
-                                            ui.label(egui::RichText::new("🔗 Server URL (required)").size(12.0).color(accent).strong());
-                                            ui.add_space(4.0);
-                                            let resp = ui.add(
-                                                egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
-                                                    .desired_width(f32::INFINITY)
-                                                    .hint_text("https://localhost:11434/v1"),
-                                            );
-                                            if resp.lost_focus() || { let _ = resp; false } {
-                                                self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                                self.prefs_dirty = true; self.try_save_prefs();
-                                            }
-                                            ui.add_space(4.0);
-                                            ui.horizontal(|ui| {
-                                                if ui.button("Apply").clicked() {
-                                                    self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                                    self.prefs_dirty = true; self.try_save_prefs();
-                                                }
-                                                if ui.small_button("Reset to default").clicked() {
-                                                    self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
-                                                    self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                                    self.prefs_dirty = true; self.try_save_prefs();
-                                                }
-                                            });
-                                            ui.add_space(2.0);
-                                            ui.label(egui::RichText::new("Enter the base URL of your OpenAI-compatible server (e.g., Ollama, LM Studio).").size(11.0).color(egui::Color32::from_gray(150)));
-                                        });
-                                } else {
-                                    ui.label(egui::RichText::new(format!("Base URL (default: {})", self.ai_provider.default_base_url())).size(12.0));
-                                    ui.horizontal(|ui| {
-                                        let resp = ui.add(
-                                            egui::TextEdit::singleline(&mut self.ai_settings_base_url_input)
-                                                .desired_width(280.0)
-                                                .hint_text(self.ai_provider.default_base_url()),
-                                        );
-                                        if resp.lost_focus() || ui.button("Apply").clicked() {
-                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                        if ui.small_button("Default").clicked() {
-                                            self.ai_settings_base_url_input = self.ai_provider.default_base_url().to_string();
-                                            self.ai_base_url = self.ai_settings_base_url_input.clone();
-                                            self.prefs_dirty = true; self.try_save_prefs();
-                                        }
-                                    });
-                                    ui.label(egui::RichText::new("For OpenAI-compatible local servers (e.g., Ollama, LM Studio), change the base URL.").size(11.0).color(egui::Color32::from_gray(120)));
-                                }
-
-                                // Status indicator
-                                ui.add_space(6.0);
-                                if self.ai_api_key.is_empty() {
-                                    ui.label(egui::RichText::new("⚠ No API key set — AI panel will show a warning.").color(egui::Color32::from_rgb(220, 160, 30)).size(12.0));
-                                } else {
-                                    let masked = format!("{}…{}", &self.ai_api_key[..self.ai_api_key.len().min(6)], &self.ai_api_key[self.ai_api_key.len().saturating_sub(4)..]);
-                                    ui.label(egui::RichText::new(format!("✓ Key configured: {masked}")).color(egui::Color32::from_rgb(0, 180, 80)).size(12.0));
-                                }
-                            }
-                            PrefTab::Sync => {
-                                crate::sync::ui_login::render_sync_panel(self, ui);
-                            }
-                        }
-                    });
-
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("💾 Save Preferences").clicked() {
-                            self.prefs_dirty = true; self.try_save_prefs(); self.prefs_save_feedback = Some("Saved".to_string()); self.prefs_last_saved_at = Some(std::time::Instant::now());
-                        }
-                        if let Some(msg) = &self.prefs_save_feedback { ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(0,150,0))); }
-                    });
-                });
-            if !open_flag {
-                self.show_settings_window = false;
             }
         }
     }
@@ -680,690 +176,867 @@ impl Tabular {
     /// Drain and process all pending `BackgroundResult` messages.
     /// Extracted verbatim from `update()`.
     fn process_background_results(&mut self, ctx: &egui::Context) {
-            // Check for background task results
-            let mut results = Vec::new();
-            if let Some(receiver) = &self.background_receiver {
-                while let Ok(result) = receiver.try_recv() {
-                    results.push(result);
-                }
+        // Check for background task results
+        let mut results = Vec::new();
+        if let Some(receiver) = &self.background_receiver {
+            while let Ok(result) = receiver.try_recv() {
+                results.push(result);
             }
-        
-            for result in results {
-                    match result {
-                        models::enums::BackgroundResult::TableStructureFetched {
+        }
+
+        for result in results {
+            match result {
+                models::enums::BackgroundResult::TableStructureFetched {
+                    connection_id,
+                    database_name,
+                    table_name,
+                    columns,
+                    columns_detail,
+                    indexes,
+                    partitions,
+                } => {
+                    self.is_refreshing_structure = false;
+                    if let Some(cols) = &columns {
+                        crate::cache_data::save_columns_to_cache(
+                            self,
+                            connection_id,
+                            &database_name,
+                            &table_name,
+                            cols,
+                        );
+                        let active_db = self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .and_then(|t| t.database_name.clone())
+                            .unwrap_or_default();
+                        let conn_db = self
+                            .connections
+                            .iter()
+                            .find(|c| c.id == Some(connection_id))
+                            .map(|c| c.database.clone())
+                            .unwrap_or_default();
+                        let resolved_db = if !active_db.is_empty() {
+                            active_db.clone()
+                        } else {
+                            conn_db.clone()
+                        };
+                        let db_matches = active_db.eq_ignore_ascii_case(&database_name)
+                            || resolved_db.eq_ignore_ascii_case(&database_name)
+                            || database_name.is_empty()
+                            || database_name == "main";
+                        let current_table = data_table::infer_current_table_name(self);
+                        let table_matches = current_table.eq_ignore_ascii_case(&table_name)
+                            || (current_table.is_empty() && self.is_table_browse_mode);
+
+                        if self.current_connection_id == Some(connection_id)
+                            && db_matches
+                            && table_matches
+                        {
+                            self.structure_columns.clear();
+                            if let Some(detail) = columns_detail {
+                                if !detail.is_empty() {
+                                    self.structure_columns = detail;
+                                } else {
+                                    for (name, dtype) in cols {
+                                        self.structure_columns.push(
+                                            models::structs::ColumnStructInfo {
+                                                name: name.clone(),
+                                                data_type: dtype.clone(),
+                                                ..Default::default()
+                                            },
+                                        );
+                                    }
+                                }
+                            } else {
+                                for (name, dtype) in cols {
+                                    self.structure_columns.push(
+                                        models::structs::ColumnStructInfo {
+                                            name: name.clone(),
+                                            data_type: dtype.clone(),
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                            }
+                            self.last_structure_target =
+                                Some((connection_id, database_name.clone(), table_name.clone()));
+                        }
+                    }
+                    if let Some(idxs) = indexes {
+                        crate::cache_data::save_indexes_to_cache(
+                            self,
+                            connection_id,
+                            &database_name,
+                            &table_name,
+                            &idxs,
+                        );
+                        let active_db = self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .and_then(|t| t.database_name.clone())
+                            .unwrap_or_default();
+                        let conn_db = self
+                            .connections
+                            .iter()
+                            .find(|c| c.id == Some(connection_id))
+                            .map(|c| c.database.clone())
+                            .unwrap_or_default();
+                        let resolved_db = if !active_db.is_empty() {
+                            active_db.clone()
+                        } else {
+                            conn_db.clone()
+                        };
+                        let db_matches = active_db.eq_ignore_ascii_case(&database_name)
+                            || resolved_db.eq_ignore_ascii_case(&database_name)
+                            || database_name.is_empty()
+                            || database_name == "main";
+                        let current_table = data_table::infer_current_table_name(self);
+                        let clean_cur = current_table
+                            .trim_matches(['`', '"', '[', ']'])
+                            .to_lowercase();
+                        let clean_tbl =
+                            table_name.trim_matches(['`', '"', '[', ']']).to_lowercase();
+                        let table_matches = clean_cur == clean_tbl
+                            || (clean_cur.is_empty() && self.is_table_browse_mode)
+                            || clean_cur.contains(&clean_tbl)
+                            || clean_tbl.contains(&clean_cur);
+
+                        debug!(
+                            "[UI] TableStructureFetched conn={} db='{}' tbl='{}' idxs={} (cur_conn={:?}, cur_tbl='{}', db_ok={}, tbl_ok={})",
                             connection_id,
                             database_name,
                             table_name,
-                            columns,
-                            indexes,
-                            partitions,
-                        } => {
-                            self.is_refreshing_structure = false;
-                            if let Some(cols) = columns {
-                                crate::cache_data::save_columns_to_cache(
-                                    self,
-                                    connection_id,
-                                    &database_name,
-                                    &table_name,
-                                    &cols,
-                                );
-                                let active_db = self
-                                    .query_tabs
-                                    .get(self.active_tab_index)
-                                    .and_then(|t| t.database_name.clone())
-                                    .unwrap_or_default();
-                                let current_table = data_table::infer_current_table_name(self);
-                                if self.current_connection_id == Some(connection_id)
-                                    && active_db == database_name
-                                    && current_table == table_name
-                                {
-                                    self.structure_columns.clear();
-                                    for (name, dtype) in cols {
-                                        self.structure_columns.push(models::structs::ColumnStructInfo {
-                                            name,
-                                            data_type: dtype,
-                                            ..Default::default()
-                                        });
-                                    }
-                                    self.last_structure_target = Some((connection_id, database_name.clone(), table_name.clone()));
-                                }
-                            }
-                            if let Some(idxs) = indexes {
-                                if !idxs.is_empty() {
-                                    crate::cache_data::save_indexes_to_cache(
-                                        self,
-                                        connection_id,
-                                        &database_name,
-                                        &table_name,
-                                        &idxs,
-                                    );
-                                    let active_db = self
-                                        .query_tabs
-                                        .get(self.active_tab_index)
-                                        .and_then(|t| t.database_name.clone())
-                                        .unwrap_or_default();
-                                    let current_table = data_table::infer_current_table_name(self);
-                                    if self.current_connection_id == Some(connection_id)
-                                        && active_db == database_name
-                                        && current_table == table_name
-                                        && self.structure_sub_view == models::structs::StructureSubView::Indexes
-                                    {
-                                        self.structure_indexes = idxs;
-                                    }
-                                }
-                            }
-                            if let Some(parts) = partitions {
-                                if !parts.is_empty() {
-                                    crate::cache_data::save_partitions_to_cache(
-                                        self,
-                                        connection_id,
-                                        &database_name,
-                                        &table_name,
-                                        &parts,
-                                    );
-                                }
-                            }
-                            ctx.request_repaint();
+                            idxs.len(),
+                            self.current_connection_id,
+                            current_table,
+                            db_matches,
+                            table_matches
+                        );
+
+                        if self.current_connection_id == Some(connection_id)
+                            && db_matches
+                            && table_matches
+                        {
+                            self.structure_indexes = idxs;
+                            debug!(
+                                "[UI] structure_indexes UPDATED! count={}",
+                                self.structure_indexes.len()
+                            );
                         }
-                        models::enums::BackgroundResult::RefreshComplete {
-                            connection_id,
-                            success,
-                            databases,
-                        } => {
-                            // Remove from refreshing and pending sets
-                            self.refreshing_connections.remove(&connection_id);
-                            self.pending_connection_pools.remove(&connection_id);
+                    }
+                    if let Some(parts) = partitions {
+                        if !parts.is_empty() {
+                            crate::cache_data::save_partitions_to_cache(
+                                self,
+                                connection_id,
+                                &database_name,
+                                &table_name,
+                                &parts,
+                            );
+                        }
+                    }
+                    self.is_refreshing_structure = false;
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::RefreshComplete {
+                    connection_id,
+                    success,
+                    databases,
+                } => {
+                    // Remove from refreshing and pending sets
+                    self.refreshing_connections.remove(&connection_id);
+                    self.pending_connection_pools.remove(&connection_id);
 
-                            if success {
-                                self.connection_errors.remove(&connection_id);
-                                self.record_connection_synced(connection_id);
-                                debug!(
-                                    "✅ Background refresh completed successfully for connection {}",
-                                    connection_id
-                                );
+                    if success {
+                        self.connection_errors.remove(&connection_id);
+                        self.auto_sync_disabled.remove(&connection_id);
+                        self.record_connection_synced(connection_id);
+                        debug!(
+                            "✅ Background refresh completed successfully for connection {}",
+                            connection_id
+                        );
 
-                                // Extract expansion state — only present when refresh_connection
-                                // cleared the tree (user-triggered refresh). For background-only
-                                // auto-syncs the tree is untouched and no reload is needed.
-                                let expansion_state =
-                                    self.pending_expansion_restore.remove(&connection_id);
-                                let is_full_refresh = expansion_state.is_some();
+                        // Extract expansion state — only present when refresh_connection
+                        // cleared the tree (user-triggered refresh). For background-only
+                        // auto-syncs the tree is untouched and no reload is needed.
+                        let expansion_state = self.pending_expansion_restore.remove(&connection_id);
+                        let is_full_refresh = expansion_state.is_some();
 
-                                if is_full_refresh {
-                                    // Re-expand connection node to show fresh data
-                                    let node_found = if let Some(conn_node) =
-                                        Self::find_connection_node_recursive(
-                                            &mut self.items_tree,
-                                            connection_id,
-                                        )
-                                    {
-                                        debug!("   ✅ Found connection node: {}", conn_node.name);
-                                        if let Some(state) = expansion_state {
-                                            debug!(
-                                                "🔄 Restoring {} expansion states for connection {}",
-                                                state.len(),
-                                                connection_id
-                                            );
-                                            conn_node.is_loaded = false;
-                                            Self::restore_expansion_state(conn_node, &state);
-                                            debug!("   ✅ Expansion state restored");
-                                            Self::mark_expanded_nodes_loaded(conn_node);
-                                            debug!("   ✅ Expanded nodes marked for loading");
-                                        }
-                                        true
-                                    } else {
-                                        false
-                                    };
-
-                                    if !node_found {
-                                        debug!("   ❌ Connection node {} not found in tree!", connection_id);
-                                    }
-
-                                    // Mark for auto-load only when the tree was actually cleared
-                                    self.pending_auto_load.insert(connection_id);
+                        if is_full_refresh {
+                            // Re-expand connection node to show fresh data
+                            let node_found = if let Some(conn_node) =
+                                Self::find_connection_node_recursive(
+                                    &mut self.items_tree,
+                                    connection_id,
+                                ) {
+                                debug!("   ✅ Found connection node: {}", conn_node.name);
+                                if let Some(state) = expansion_state {
                                     debug!(
-                                        "📂 Marked connection {} for auto-load after restore",
+                                        "🔄 Restoring {} expansion states for connection {}",
+                                        state.len(),
                                         connection_id
                                     );
-                                } else {
-                                    // Background-only auto-sync: update in-memory DB cache
-                                    if !databases.is_empty() {
-                                        self.database_cache.insert(connection_id, databases.clone());
-                                        self.database_cache_time.insert(connection_id, std::time::Instant::now());
-                                    } else {
-                                        self.database_cache.remove(&connection_id);
-                                        self.database_cache_time.remove(&connection_id);
-                                    }
-
-                                    // Use the databases list that was read-back in the background thread
-                                    // (inside the same SQLite connection as the write) — no WAL race.
-                                    eprintln!(
-                                        "[REFRESH-COMPLETE] non-full-refresh for conn={} got {} databases inline",
-                                        connection_id, databases.len()
-                                    );
-
-                                    // Populate DatabasesFolder node directly with the inline data
-                                    if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
-                                        conn_node.is_loaded = false;
-                                        for child in &mut conn_node.children {
-                                            if child.node_type == models::enums::NodeType::DatabasesFolder {
-                                                if !databases.is_empty() {
-                                                    child.children.clear();
-                                                    for db_name in &databases {
-                                                        let mut db_node = models::structs::TreeNode::new(
-                                                            db_name.clone(),
-                                                            models::enums::NodeType::Database,
-                                                        );
-                                                        db_node.connection_id = Some(connection_id);
-                                                        db_node.database_name = Some(db_name.clone());
-                                                        db_node.is_loaded = false;
-
-                                                        let mut tables_folder = models::structs::TreeNode::new(
-                                                            "Tables".to_string(),
-                                                            models::enums::NodeType::TablesFolder,
-                                                        );
-                                                        tables_folder.connection_id = Some(connection_id);
-                                                        tables_folder.database_name = Some(db_name.clone());
-                                                        tables_folder.is_loaded = false;
-
-                                                        let mut views_folder = models::structs::TreeNode::new(
-                                                            "Views".to_string(),
-                                                            models::enums::NodeType::ViewsFolder,
-                                                        );
-                                                        views_folder.connection_id = Some(connection_id);
-                                                        views_folder.database_name = Some(db_name.clone());
-                                                        views_folder.is_loaded = false;
-
-                                                        let mut sp_folder = models::structs::TreeNode::new(
-                                                            "Stored Procedures".to_string(),
-                                                            models::enums::NodeType::StoredProceduresFolder,
-                                                        );
-                                                        sp_folder.connection_id = Some(connection_id);
-                                                        sp_folder.database_name = Some(db_name.clone());
-                                                        sp_folder.is_loaded = false;
-
-                                                        db_node.children = vec![tables_folder, views_folder, sp_folder];
-                                                        child.children.push(db_node);
-                                                    }
-                                                    child.is_loaded = true;
-                                                } else {
-                                                    // sync succeeded but server returned 0 databases — keep unloaded
-                                                    child.is_loaded = false;
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    debug!(
-                                        "✅ Background auto-sync complete for connection {} — tree populated with {} databases",
-                                        connection_id, databases.len()
-                                    );
+                                    conn_node.is_loaded = false;
+                                    Self::restore_expansion_state(conn_node, &state);
+                                    debug!("   ✅ Expansion state restored");
+                                    Self::mark_expanded_nodes_loaded(conn_node);
+                                    debug!("   ✅ Expanded nodes marked for loading");
                                 }
-
-                                // Request UI repaint to show updated data
-                                ctx.request_repaint();
+                                true
                             } else {
-                                debug!("Background refresh failed for connection {}", connection_id);
-                                self.connection_errors.insert(
-                                    connection_id,
-                                    "Connection refresh failed".to_string(),
+                                false
+                            };
+
+                            if !node_found {
+                                debug!(
+                                    "   ❌ Connection node {} not found in tree!",
+                                    connection_id
                                 );
-                                // Clean up pending restore state on failure
-                                self.pending_expansion_restore.remove(&connection_id);
-                                ctx.request_repaint();
                             }
-                        }
-                        models::enums::BackgroundResult::ConnectionFailed {
-                            connection_id,
-                            error_message,
-                        } => {
-                            self.refreshing_connections.remove(&connection_id);
-                            self.pending_connection_pools.remove(&connection_id);
-                            self.fetching_databases.remove(&connection_id);
-                            self.pending_expansion_restore.remove(&connection_id);
-                            self.connection_errors.insert(connection_id, error_message.clone());
-                            if self.pool_wait_in_progress
-                                && self.pool_wait_connection_id == Some(connection_id)
-                            {
-                                self.pool_wait_in_progress = false;
-                                self.pool_wait_connection_id = None;
-                                self.pool_wait_query.clear();
-                                self.pool_wait_started_at = None;
-                                self.query_execution_in_progress = false;
-                                self.error_message = format!("Connection failed: {}", error_message);
-                                self.show_error_message = true;
-                                if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                    tab.query_message = format!("Connection error: {}", error_message);
-                                    tab.query_message_is_error = true;
-                                }
+
+                            // Mark for auto-load only when the tree was actually cleared
+                            self.pending_auto_load.insert(connection_id);
+                            debug!(
+                                "📂 Marked connection {} for auto-load after restore",
+                                connection_id
+                            );
+                        } else {
+                            // Background-only auto-sync: update in-memory DB cache
+                            if !databases.is_empty() {
+                                self.database_cache.insert(connection_id, databases.clone());
+                                self.database_cache_time
+                                    .insert(connection_id, std::time::Instant::now());
+                            } else {
+                                self.database_cache.remove(&connection_id);
+                                self.database_cache_time.remove(&connection_id);
                             }
-                            self.toasts.error(format!("Connection failed: {}", error_message));
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::TestConnectionComplete { success, message } => {
-                            self.test_connection_in_progress = false;
-                            self.test_connection_status = Some((success, message));
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::PrefetchProgress {
-                            connection_id,
-                            completed,
-                            total,
-                        } => {
-                            // Update prefetch progress
-                            self.prefetch_progress
-                                .insert(connection_id, (completed, total));
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::PrefetchComplete { connection_id } => {
-                            // Prefetch completed
-                            self.prefetch_in_progress.remove(&connection_id);
-                            self.prefetch_progress.remove(&connection_id);
-                            debug!("Prefetch completed for connection {}", connection_id);
-                            // Reload any already-expanded table/view folders so newly-cached
-                            // tables become visible without the user having to re-click.
-                            self.refresh_all_table_folders(connection_id);
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::SqlitePathPicked { path } => {
-                            self.temp_sqlite_path = Some(path);
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::DatabasesFetched {
-                            connection_id,
-                            databases,
-                        } => {
-                            debug!("✅ Received background databases fetch result: {} databases", databases.len());
-                            self.refreshing_connections.remove(&connection_id);
-                            self.pending_connection_pools.remove(&connection_id);
-                            self.connection_errors.remove(&connection_id);
-                            self.fetching_databases.remove(&connection_id);
 
-                            // Update in-memory cache
-                            self.database_cache.insert(connection_id, databases.clone());
-                            self.database_cache_time
-                                .insert(connection_id, std::time::Instant::now());
+                            // Use the databases list that was read-back in the background thread
+                            // (inside the same SQLite connection as the write) — no WAL race.
+                            debug!(
+                                "[REFRESH-COMPLETE] non-full-refresh for conn={} got {} databases inline",
+                                connection_id,
+                                databases.len()
+                            );
 
-                            // Persist to SQLite cache so load_databases_for_folder can read it
-                            cache_data::save_databases_to_cache(self, connection_id, &databases);
-
-                            // Immediately populate the DatabasesFolder tree node from the
-                            // freshly-saved cache so the user doesn't need to re-click.
-                            // We find the DatabasesFolder child of the connection node and
-                            // call load_databases_for_folder on it directly.
-                            if let Some(conn_node) = Self::find_connection_node_recursive(&mut self.items_tree, connection_id) {
+                            // Populate DatabasesFolder node directly with the inline data
+                            if let Some(conn_node) = Self::find_connection_node_recursive(
+                                &mut self.items_tree,
+                                connection_id,
+                            ) {
                                 conn_node.is_loaded = false;
-                                // Find the DatabasesFolder child and reload it if it is expanded
                                 for child in &mut conn_node.children {
                                     if child.node_type == models::enums::NodeType::DatabasesFolder {
-                                        child.is_loaded = false;
-                                        // Clear the "Syncing..." / "Loading..." placeholder
-                                        child.children.clear();
-                                        for db_name in &databases {
-                                            let mut db_node = models::structs::TreeNode::new(
-                                                db_name.clone(),
-                                                models::enums::NodeType::Database,
-                                            );
-                                            db_node.connection_id = Some(connection_id);
-                                            db_node.database_name = Some(db_name.clone());
-                                            db_node.is_loaded = false;
+                                        if !databases.is_empty() {
+                                            child.children.clear();
+                                            for db_name in &databases {
+                                                let mut db_node = models::structs::TreeNode::new(
+                                                    db_name.clone(),
+                                                    models::enums::NodeType::Database,
+                                                );
+                                                db_node.connection_id = Some(connection_id);
+                                                db_node.database_name = Some(db_name.clone());
+                                                db_node.is_loaded = false;
 
-                                            let mut tables_folder = models::structs::TreeNode::new(
-                                                "Tables".to_string(),
-                                                models::enums::NodeType::TablesFolder,
-                                            );
-                                            tables_folder.connection_id = Some(connection_id);
-                                            tables_folder.database_name = Some(db_name.clone());
-                                            tables_folder.is_loaded = false;
+                                                let mut tables_folder =
+                                                    models::structs::TreeNode::new(
+                                                        "Tables".to_string(),
+                                                        models::enums::NodeType::TablesFolder,
+                                                    );
+                                                tables_folder.connection_id = Some(connection_id);
+                                                tables_folder.database_name = Some(db_name.clone());
+                                                tables_folder.is_loaded = false;
 
-                                            let mut views_folder = models::structs::TreeNode::new(
-                                                "Views".to_string(),
-                                                models::enums::NodeType::ViewsFolder,
-                                            );
-                                            views_folder.connection_id = Some(connection_id);
-                                            views_folder.database_name = Some(db_name.clone());
-                                            views_folder.is_loaded = false;
+                                                let mut views_folder =
+                                                    models::structs::TreeNode::new(
+                                                        "Views".to_string(),
+                                                        models::enums::NodeType::ViewsFolder,
+                                                    );
+                                                views_folder.connection_id = Some(connection_id);
+                                                views_folder.database_name = Some(db_name.clone());
+                                                views_folder.is_loaded = false;
 
-                                            let mut sp_folder = models::structs::TreeNode::new(
-                                                "Stored Procedures".to_string(),
-                                                models::enums::NodeType::StoredProceduresFolder,
-                                            );
-                                            sp_folder.connection_id = Some(connection_id);
-                                            sp_folder.database_name = Some(db_name.clone());
-                                            sp_folder.is_loaded = false;
+                                                let mut sp_folder = models::structs::TreeNode::new(
+                                                    "Stored Procedures".to_string(),
+                                                    models::enums::NodeType::StoredProceduresFolder,
+                                                );
+                                                sp_folder.connection_id = Some(connection_id);
+                                                sp_folder.database_name = Some(db_name.clone());
+                                                sp_folder.is_loaded = false;
 
-                                            db_node.children = vec![tables_folder, views_folder, sp_folder];
-                                            child.children.push(db_node);
+                                                db_node.children =
+                                                    vec![tables_folder, views_folder, sp_folder];
+                                                child.children.push(db_node);
+                                            }
+                                            child.is_loaded = true;
+                                        } else {
+                                            // sync succeeded but server returned 0 databases — keep unloaded
+                                            child.is_loaded = false;
                                         }
-                                        child.is_loaded = true;
                                         break;
                                     }
                                 }
                             }
-
-                            // Refresh UI
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::RedisKeysFetched {
-                            connection_id,
-                            database_name,
-                            keys,
-                        } => {
-                            log::debug!(
-                                "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
-                                connection_id,
-                                database_name,
-                                keys.len()
-                            );
                             debug!(
-                                "✅ Redis keys fetched for db '{}': {} keys",
-                                database_name,
-                                keys.len()
+                                "✅ Background auto-sync complete for connection {} — tree populated with {} databases",
+                                connection_id,
+                                databases.len()
                             );
+                        }
 
-                            // Remove from in-progress set
-                            self.fetching_redis_keys.remove(&(connection_id, database_name.clone()));
+                        // Request UI repaint to show updated data
+                        ctx.request_repaint();
+                    } else {
+                        debug!("Background refresh failed for connection {}", connection_id);
+                        self.connection_errors
+                            .insert(connection_id, "Connection refresh failed".to_string());
+                        // Matikan auto-sync koneksi ini agar idle-sync tidak mencoba ulang tiap 15 detik
+                        if self.auto_sync_disabled.insert(connection_id) {
+                            log::warn!(
+                                "[AUTO-SYNC] disabling auto-sync for connection {} after failed refresh; refresh manually to re-enable",
+                                connection_id
+                            );
+                        }
+                        // Clean up pending restore state on failure
+                        self.pending_expansion_restore.remove(&connection_id);
+                        ctx.request_repaint();
+                    }
+                }
+                models::enums::BackgroundResult::ConnectionFailed {
+                    connection_id,
+                    error_message,
+                } => {
+                    self.refreshing_connections.remove(&connection_id);
+                    self.pending_connection_pools.remove(&connection_id);
+                    self.fetching_databases.remove(&connection_id);
+                    self.pending_expansion_restore.remove(&connection_id);
+                    self.connection_errors
+                        .insert(connection_id, error_message.clone());
+                    if self.pool_wait_in_progress
+                        && self.pool_wait_connection_id == Some(connection_id)
+                    {
+                        self.pool_wait_in_progress = false;
+                        self.pool_wait_connection_id = None;
+                        self.pool_wait_query.clear();
+                        self.pool_wait_started_at = None;
+                        self.query_execution_in_progress = false;
+                        self.toasts
+                            .error(format!("Connection failed: {}", error_message));
+                        if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
+                            tab.query_message = format!("Connection error: {}", error_message);
+                            tab.query_message_is_error = true;
+                        }
+                    }
+                    self.toasts
+                        .error(format!("Connection failed: {}", error_message));
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::TestConnectionComplete { success, message } => {
+                    self.test_connection_in_progress = false;
+                    self.test_connection_status = Some((success, message));
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::PrefetchProgress {
+                    connection_id,
+                    completed,
+                    total,
+                } => {
+                    // Update prefetch progress
+                    self.prefetch_progress
+                        .insert(connection_id, (completed, total));
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::PrefetchComplete { connection_id } => {
+                    // Prefetch completed
+                    self.prefetch_in_progress.remove(&connection_id);
+                    self.prefetch_progress.remove(&connection_id);
+                    debug!("Prefetch completed for connection {}", connection_id);
+                    // Reload any already-expanded table/view folders so newly-cached
+                    // tables become visible without the user having to re-click.
+                    self.refresh_all_table_folders(connection_id);
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::SqlitePathPicked { path } => {
+                    self.temp_sqlite_path = Some(path);
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::DatabasesFetched {
+                    connection_id,
+                    databases,
+                } => {
+                    debug!(
+                        "✅ Received background databases fetch result: {} databases",
+                        databases.len()
+                    );
+                    self.refreshing_connections.remove(&connection_id);
+                    self.pending_connection_pools.remove(&connection_id);
+                    self.connection_errors.remove(&connection_id);
+                    self.fetching_databases.remove(&connection_id);
 
-                            // Group keys by type
-                            let mut keys_by_type: std::collections::HashMap<String, Vec<String>> =
-                                std::collections::HashMap::new();
-                            for (key, key_type) in keys {
-                                keys_by_type.entry(key_type).or_default().push(key);
-                            }
-                            let no_keys_found = keys_by_type.is_empty();
+                    // Update in-memory cache
+                    self.database_cache.insert(connection_id, databases.clone());
+                    self.database_cache_time
+                        .insert(connection_id, std::time::Instant::now());
 
-                            // Locate the database node in the tree and populate it
-                            for root in &mut self.items_tree {
-                                if let Some(db_node) = crate::window_egui::Tabular::find_redis_database_node(
-                                    root,
-                                    connection_id,
-                                    &Some(database_name.clone()),
-                                ) {
-                                    log::debug!(
-                                        "[redis_keys] found UI node '{}' for conn={} keyspace={}",
-                                        db_node.name,
-                                        connection_id,
-                                        database_name
+                    // Persist to SQLite cache so load_databases_for_folder can read it
+                    cache_data::save_databases_to_cache(self, connection_id, &databases);
+
+                    // Immediately populate the DatabasesFolder tree node from the
+                    // freshly-saved cache so the user doesn't need to re-click.
+                    // We find the DatabasesFolder child of the connection node and
+                    // call load_databases_for_folder on it directly.
+                    if let Some(conn_node) =
+                        Self::find_connection_node_recursive(&mut self.items_tree, connection_id)
+                    {
+                        conn_node.is_loaded = false;
+                        // Find the DatabasesFolder child and reload it if it is expanded
+                        for child in &mut conn_node.children {
+                            if child.node_type == models::enums::NodeType::DatabasesFolder {
+                                child.is_loaded = false;
+                                // Clear the "Syncing..." / "Loading..." placeholder
+                                child.children.clear();
+                                for db_name in &databases {
+                                    let mut db_node = models::structs::TreeNode::new(
+                                        db_name.clone(),
+                                        models::enums::NodeType::Database,
                                     );
-                                    db_node.children.clear();
+                                    db_node.connection_id = Some(connection_id);
+                                    db_node.database_name = Some(db_name.clone());
+                                    db_node.is_loaded = false;
 
-                                    let mut sorted_types: Vec<_> = keys_by_type.into_iter().collect();
-                                    sorted_types.sort_by(|a, b| a.0.cmp(&b.0));
-
-                                    for (data_type, type_keys) in sorted_types {
-                                        let folder_name = match data_type.as_str() {
-                                            "string" => "Strings",
-                                            "hash" => "Hashes",
-                                            "list" => "Lists",
-                                            "set" => "Sets",
-                                            "zset" => "Sorted Sets",
-                                            "stream" => "Streams",
-                                            other => other,
-                                        };
-                                        let mut type_folder = models::structs::TreeNode::new(
-                                            format!("{} ({})", folder_name, type_keys.len()),
-                                            models::enums::NodeType::TablesFolder,
-                                        );
-                                        type_folder.connection_id = Some(connection_id);
-                                        type_folder.database_name = Some(database_name.clone());
-                                        type_folder.is_expanded = false;
-                                        type_folder.is_loaded = true;
-
-                                        for key in type_keys {
-                                            let mut key_node = models::structs::TreeNode::new(
-                                                key,
-                                                models::enums::NodeType::Table,
-                                            );
-                                            key_node.connection_id = Some(connection_id);
-                                            key_node.database_name = Some(database_name.clone());
-                                            type_folder.children.push(key_node);
-                                        }
-                                        db_node.children.push(type_folder);
-                                    }
-
-                                    db_node.is_loaded = true;
-                                    break;
-                                }
-                            }
-
-                            if no_keys_found {
-                                log::warn!(
-                                    "[redis_keys] no keys or no types available for conn={} keyspace={}",
-                                    connection_id,
-                                    database_name
-                                );
-                            }
-
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::RedisBrowserStateFetched {
-                            connection_id,
-                            state,
-                        } => {
-                            self.fetching_redis_browser.remove(&connection_id);
-
-                            let keys_to_cache: Vec<(String, String)> = state
-                                .keys
-                                .iter()
-                                .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
-                                .collect();
-                            if !state.keyspace_label.is_empty() && !keys_to_cache.is_empty() {
-                                cache_data::save_redis_browser_keys_to_cache(
-                                    self,
-                                    connection_id,
-                                    &state.keyspace_label,
-                                    &keys_to_cache,
-                                );
-                            }
-
-                            for tab in &mut self.query_tabs {
-                                if tab.connection_id == Some(connection_id)
-                                    && tab.redis_browser_state.is_some()
-                                {
-                                    let mut merged_state = state.clone();
-                                    if let Some(previous_state) = tab.redis_browser_state.as_ref() {
-                                        merged_state.filter_text = previous_state.filter_text.clone();
-                                        merged_state.type_filter = previous_state.type_filter.clone();
-                                        merged_state.remote_search_in_progress = false;
-                                        merged_state.last_remote_search = previous_state.last_remote_search.clone();
-                                        merged_state.auto_refresh_enabled = previous_state.auto_refresh_enabled;
-                                        merged_state.auto_refresh_interval_seconds = previous_state.auto_refresh_interval_seconds.max(1);
-                                        merged_state.auto_refresh_last_run = previous_state.auto_refresh_last_run;
-                                        merged_state.selected_key = previous_state.selected_key.clone();
-                                        merged_state.selected_key_type = previous_state.selected_key_type.clone();
-                                        merged_state.preview = previous_state.preview.clone();
-                                        if !previous_state.last_error.as_deref().unwrap_or_default().is_empty() {
-                                            merged_state.last_error = previous_state.last_error.clone();
-                                        }
-                                    } else {
-                                        merged_state.auto_refresh_enabled = true;
-                                        merged_state.auto_refresh_interval_seconds =
-                                            self.redis_browser_auto_refresh_default_seconds.max(1);
-                                    }
-                                    tab.redis_browser_state = Some(merged_state);
-                                }
-                            }
-
-                            ctx.request_repaint();
-                        }
-                        models::enums::BackgroundResult::RedisBrowserSearchFetched {
-                            connection_id,
-                            database_name,
-                            search_text,
-                            keys,
-                        } => {
-                            let mut merged_keys_for_cache: Option<Vec<(String, String)>> = None;
-
-                            for tab in &mut self.query_tabs {
-                                if tab.connection_id == Some(connection_id)
-                                    && let Some(state) = &mut tab.redis_browser_state
-                                {
-                                    state.remote_search_in_progress = false;
-                                    state.last_remote_search = Some(search_text.clone());
-
-                                    for (key_name, key_type) in &keys {
-                                        if !state.keys.iter().any(|entry| entry.key_name == *key_name) {
-                                            state.keys.push(models::structs::RedisBrowserKeyEntry {
-                                                key_name: key_name.clone(),
-                                                key_type: key_type.clone(),
-                                                ttl_label: if database_name == crate::driver_redis::REDIS_CLUSTER_KEYSPACE {
-                                                    "Cluster".to_string()
-                                                } else {
-                                                    database_name.clone()
-                                                },
-                                                size_label: "-".to_string(),
-                                            });
-                                        }
-                                    }
-
-                                    state.keys.sort_by(|left, right| left.key_name.cmp(&right.key_name));
-                                    state.status_text = if keys.is_empty() {
-                                        format!("No Redis server matches for '{}'", search_text)
-                                    } else {
-                                        format!("Loaded {} Redis server matches for '{}'", keys.len(), search_text)
-                                    };
-                                    state.last_error = None;
-
-                                    merged_keys_for_cache = Some(
-                                        state
-                                            .keys
-                                            .iter()
-                                            .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
-                                            .collect(),
+                                    let mut tables_folder = models::structs::TreeNode::new(
+                                        "Tables".to_string(),
+                                        models::enums::NodeType::TablesFolder,
                                     );
+                                    tables_folder.connection_id = Some(connection_id);
+                                    tables_folder.database_name = Some(db_name.clone());
+                                    tables_folder.is_loaded = false;
+
+                                    let mut views_folder = models::structs::TreeNode::new(
+                                        "Views".to_string(),
+                                        models::enums::NodeType::ViewsFolder,
+                                    );
+                                    views_folder.connection_id = Some(connection_id);
+                                    views_folder.database_name = Some(db_name.clone());
+                                    views_folder.is_loaded = false;
+
+                                    let mut sp_folder = models::structs::TreeNode::new(
+                                        "Stored Procedures".to_string(),
+                                        models::enums::NodeType::StoredProceduresFolder,
+                                    );
+                                    sp_folder.connection_id = Some(connection_id);
+                                    sp_folder.database_name = Some(db_name.clone());
+                                    sp_folder.is_loaded = false;
+
+                                    db_node.children = vec![tables_folder, views_folder, sp_folder];
+                                    child.children.push(db_node);
                                 }
+                                child.is_loaded = true;
+                                break;
                             }
-
-                            if let Some(keys_to_cache) = merged_keys_for_cache
-                                && !database_name.is_empty()
-                            {
-                                cache_data::save_redis_browser_keys_to_cache(
-                                    self,
-                                    connection_id,
-                                    &database_name,
-                                    &keys_to_cache,
-                                );
-                            }
-
-                            ctx.request_repaint();
                         }
-                        models::enums::BackgroundResult::UpdateCheckComplete { result } => {
-                            // Finish check state first
-                            self.update_check_in_progress = false;
-                            let was_manual = self.manual_update_check;
-                            self.manual_update_check = false;
+                    }
 
-                            // Defer actions requiring mutable self in separate block to avoid borrow overlap
-                            match result {
-                                Ok(info) => {
-                                    let update_available = info.update_available;
-                                    self.update_info = Some(info.clone());
-                                    self.update_check_error = None;
-                                    if was_manual {
-                                        self.show_update_dialog = true;
-                                    } else if update_available {
-                                        self.show_update_notification = true;
-                                        if !self.update_download_started
-                                            && !self.update_download_in_progress
+                    // Refresh UI
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::RedisKeysFetched {
+                    connection_id,
+                    database_name,
+                    keys,
+                } => {
+                    log::debug!(
+                        "[redis_keys] UI received fetch result conn={} keyspace={} keys={}",
+                        connection_id,
+                        database_name,
+                        keys.len()
+                    );
+                    debug!(
+                        "✅ Redis keys fetched for db '{}': {} keys",
+                        database_name,
+                        keys.len()
+                    );
+
+                    // Remove from in-progress set
+                    self.fetching_redis_keys
+                        .remove(&(connection_id, database_name.clone()));
+
+                    // Group keys by type
+                    let mut keys_by_type: std::collections::HashMap<String, Vec<String>> =
+                        std::collections::HashMap::new();
+                    for (key, key_type) in keys {
+                        keys_by_type.entry(key_type).or_default().push(key);
+                    }
+                    let no_keys_found = keys_by_type.is_empty();
+
+                    // Locate the database node in the tree and populate it
+                    for root in &mut self.items_tree {
+                        if let Some(db_node) = crate::window_egui::Tabular::find_redis_database_node(
+                            root,
+                            connection_id,
+                            &Some(database_name.clone()),
+                        ) {
+                            log::debug!(
+                                "[redis_keys] found UI node '{}' for conn={} keyspace={}",
+                                db_node.name,
+                                connection_id,
+                                database_name
+                            );
+                            db_node.children.clear();
+
+                            let mut sorted_types: Vec<_> = keys_by_type.into_iter().collect();
+                            sorted_types.sort_by(|a, b| a.0.cmp(&b.0));
+
+                            for (data_type, type_keys) in sorted_types {
+                                let folder_name = match data_type.as_str() {
+                                    "string" => "Strings",
+                                    "hash" => "Hashes",
+                                    "list" => "Lists",
+                                    "set" => "Sets",
+                                    "zset" => "Sorted Sets",
+                                    "stream" => "Streams",
+                                    other => other,
+                                };
+                                let mut type_folder = models::structs::TreeNode::new(
+                                    format!("{} ({})", folder_name, type_keys.len()),
+                                    models::enums::NodeType::TablesFolder,
+                                );
+                                type_folder.connection_id = Some(connection_id);
+                                type_folder.database_name = Some(database_name.clone());
+                                type_folder.is_expanded = false;
+                                type_folder.is_loaded = true;
+
+                                for key in type_keys {
+                                    let mut key_node = models::structs::TreeNode::new(
+                                        key,
+                                        models::enums::NodeType::Table,
+                                    );
+                                    key_node.connection_id = Some(connection_id);
+                                    key_node.database_name = Some(database_name.clone());
+                                    type_folder.children.push(key_node);
+                                }
+                                db_node.children.push(type_folder);
+                            }
+
+                            db_node.is_loaded = true;
+                            break;
+                        }
+                    }
+
+                    if no_keys_found {
+                        log::warn!(
+                            "[redis_keys] no keys or no types available for conn={} keyspace={}",
+                            connection_id,
+                            database_name
+                        );
+                    }
+
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::RedisBrowserStateFetched {
+                    connection_id,
+                    state,
+                } => {
+                    self.fetching_redis_browser.remove(&connection_id);
+
+                    let keys_to_cache: Vec<(String, String)> = state
+                        .keys
+                        .iter()
+                        .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                        .collect();
+                    if !state.keyspace_label.is_empty() && !keys_to_cache.is_empty() {
+                        cache_data::save_redis_browser_keys_to_cache(
+                            self,
+                            connection_id,
+                            &state.keyspace_label,
+                            &keys_to_cache,
+                        );
+                    }
+
+                    for tab in &mut self.query_tabs {
+                        if tab.connection_id == Some(connection_id)
+                            && tab.redis_browser_state.is_some()
+                        {
+                            let mut merged_state = state.clone();
+                            if let Some(previous_state) = tab.redis_browser_state.as_ref() {
+                                merged_state.filter_text = previous_state.filter_text.clone();
+                                merged_state.type_filter = previous_state.type_filter.clone();
+                                merged_state.remote_search_in_progress = false;
+                                merged_state.last_remote_search =
+                                    previous_state.last_remote_search.clone();
+                                merged_state.auto_refresh_enabled =
+                                    previous_state.auto_refresh_enabled;
+                                merged_state.auto_refresh_interval_seconds =
+                                    previous_state.auto_refresh_interval_seconds.max(1);
+                                merged_state.auto_refresh_last_run =
+                                    previous_state.auto_refresh_last_run;
+                                merged_state.selected_key = previous_state.selected_key.clone();
+                                merged_state.selected_key_type =
+                                    previous_state.selected_key_type.clone();
+                                merged_state.preview = previous_state.preview.clone();
+                                if !previous_state
+                                    .last_error
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .is_empty()
+                                {
+                                    merged_state.last_error = previous_state.last_error.clone();
+                                }
+                            } else {
+                                merged_state.auto_refresh_enabled = true;
+                                merged_state.auto_refresh_interval_seconds =
+                                    self.redis_browser_auto_refresh_default_seconds.max(1);
+                            }
+                            tab.redis_browser_state = Some(merged_state);
+                        }
+                    }
+
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                    connection_id,
+                    database_name,
+                    search_text,
+                    keys,
+                } => {
+                    let mut merged_keys_for_cache: Option<Vec<(String, String)>> = None;
+
+                    for tab in &mut self.query_tabs {
+                        if tab.connection_id == Some(connection_id)
+                            && let Some(state) = &mut tab.redis_browser_state
+                        {
+                            state.remote_search_in_progress = false;
+                            state.last_remote_search = Some(search_text.clone());
+
+                            for (key_name, key_type) in &keys {
+                                if !state.keys.iter().any(|entry| entry.key_name == *key_name) {
+                                    state.keys.push(models::structs::RedisBrowserKeyEntry {
+                                        key_name: key_name.clone(),
+                                        key_type: key_type.clone(),
+                                        ttl_label: if database_name
+                                            == crate::driver_redis::REDIS_CLUSTER_KEYSPACE
                                         {
-                                            self.update_download_started = true;
-                                            // Start download after loop ends via flag (can't call method that mutably borrows self again inside borrow scope)
-                                        }
+                                            "Cluster".to_string()
+                                        } else {
+                                            database_name.clone()
+                                        },
+                                        size_label: "-".to_string(),
+                                    });
+                                }
+                            }
+
+                            state
+                                .keys
+                                .sort_by(|left, right| left.key_name.cmp(&right.key_name));
+                            state.status_text = if keys.is_empty() {
+                                format!("No Redis server matches for '{}'", search_text)
+                            } else {
+                                format!(
+                                    "Loaded {} Redis server matches for '{}'",
+                                    keys.len(),
+                                    search_text
+                                )
+                            };
+                            state.last_error = None;
+
+                            merged_keys_for_cache = Some(
+                                state
+                                    .keys
+                                    .iter()
+                                    .map(|entry| (entry.key_name.clone(), entry.key_type.clone()))
+                                    .collect(),
+                            );
+                        }
+                    }
+
+                    if let Some(keys_to_cache) = merged_keys_for_cache
+                        && !database_name.is_empty()
+                    {
+                        cache_data::save_redis_browser_keys_to_cache(
+                            self,
+                            connection_id,
+                            &database_name,
+                            &keys_to_cache,
+                        );
+                    }
+
+                    ctx.request_repaint();
+                }
+                models::enums::BackgroundResult::UpdateCheckComplete { result } => {
+                    // Finish check state first
+                    self.update_check_in_progress = false;
+                    let was_manual = self.manual_update_check;
+                    self.manual_update_check = false;
+
+                    // Defer actions requiring mutable self in separate block to avoid borrow overlap
+                    match result {
+                        Ok(info) => {
+                            let update_available = info.update_available;
+                            self.update_info = Some(info.clone());
+                            self.update_check_error = None;
+                            if was_manual {
+                                self.show_update_dialog = true;
+                            } else if update_available
+                                && crate::platform_prefs::current()
+                                    .update_skipped_version
+                                    .as_deref()
+                                    != Some(info.latest_version.as_str())
+                            {
+                                self.show_update_notification = true;
+                                // M8: unduh di latar belakang hanya bila diizinkan
+                                // preferensi/kebijakan; selain itu cukup notifikasi.
+                                if crate::platform_prefs::effective_auto_download()
+                                    && !self.update_download_started
+                                    && !self.update_download_in_progress
+                                {
+                                    self.update_download_started = true;
+                                    // Start download after loop ends via flag (can't call method that mutably borrows self again inside borrow scope)
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.update_check_error = Some(err);
+                            self.show_update_dialog = true;
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        }
+
+        while let Ok(message) = self.query_result_receiver.try_recv() {
+            self.handle_query_result_message(message);
+            ctx.request_repaint();
+        }
+
+        while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
+            log::debug!(
+                "[DBA-MONITOR] UI received result for tab_index={}, is_ok={}",
+                tab_index,
+                result.is_ok()
+            );
+            if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+                if let Some(state) = &mut tab.dba_monitor_state {
+                    state.is_loading = false;
+                    state.last_refreshed = Some(std::time::Instant::now());
+                    match result {
+                        Ok(procs) => {
+                            state.processes = procs;
+                            state.status_message = None;
+                        }
+                        Err(err) => {
+                            state.status_message = Some((format!("Error: {}", err), true));
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        while let Ok((tab_index, result)) = self.server_metrics_receiver.try_recv() {
+            let now = std::time::Instant::now();
+            if let Some(state) = self
+                .query_tabs
+                .get_mut(tab_index)
+                .and_then(|t| t.dba_monitor_state.as_mut())
+            {
+                match result {
+                    crate::server_metrics::MetricsResult::Counters(res) => {
+                        state.is_loading = false;
+                        state.last_refreshed = Some(now);
+                        match res {
+                            Ok(counters) => state.dashboard.push_counters(now, counters),
+                            Err(e) => {
+                                log::debug!("[DBA-METRICS] counters failed: {e}");
+                                state.dashboard.error = Some(e);
+                            }
+                        }
+                    }
+                    crate::server_metrics::MetricsResult::Slow(res) => {
+                        state.dashboard.slow_loading = false;
+                        state.dashboard.slow_loaded_at = Some(now);
+                        match res {
+                            Ok(rows) => {
+                                state.dashboard.slow = rows;
+                                state.dashboard.slow_error = None;
+                            }
+                            Err(e) => state.dashboard.slow_error = Some(e),
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
+            log::debug!("[USER-MGR] UI received result for tab_index={}", tab_index);
+            if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+                if let Some(state) = &mut tab.user_manager_state {
+                    state.is_loading = false;
+                    match result {
+                        crate::user_manager::UserManagerResult::Data(res) => {
+                            state.last_refreshed = Some(std::time::Instant::now());
+                            match res {
+                                Ok(payload) => {
+                                    log::debug!(
+                                        "[USER-MGR] UI applied payload: {} users, {} roles",
+                                        payload.users.len(),
+                                        payload.roles.len()
+                                    );
+                                    state.users = payload.users;
+                                    state.roles = payload.roles;
+                                    state.object_grants = payload.object_grants.clone();
+                                    state.original_grants = payload.object_grants;
+                                    state.all_privileges_map = payload.all_privileges_map;
+                                    state.executed_queries = payload.executed_queries;
+                                    if state.selected_user_index.is_none()
+                                        && !state.users.is_empty()
+                                    {
+                                        state.selected_user_index = Some(0);
+                                        state.selected_grantee =
+                                            Some(state.users[0].username.clone());
+                                        state.selected_grantee_host = state.users[0].host.clone();
                                     }
+                                    let db_type = tab
+                                        .connection_id
+                                        .and_then(|cid| {
+                                            self.connections.iter().find(|c| c.id == Some(cid))
+                                        })
+                                        .map(|c| c.connection_type.clone());
+                                    state.sync_grants_for_selected_grantee(db_type.as_ref());
+                                    state.status_message = None;
                                 }
                                 Err(err) => {
-                                    self.update_check_error = Some(err);
-                                    self.show_update_dialog = true;
+                                    log::error!("[USER-MGR] UI received error: {}", err);
+                                    state.status_message = Some((format!("Error: {}", err), true));
+                                    state.show_diagnostics_panel = true;
                                 }
-                            }
-                            ctx.request_repaint();
-                        }
-                    }
-                }
-
-
-            while let Ok(message) = self.query_result_receiver.try_recv() {
-                self.handle_query_result_message(message);
-                ctx.request_repaint();
-            }
-
-            while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
-                log::info!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
-                eprintln!("[DBA-MONITOR] UI received result for tab_index={}, is_ok={}", tab_index, result.is_ok());
-                if let Some(tab) = self.query_tabs.get_mut(tab_index) {
-                    if let Some(state) = &mut tab.dba_monitor_state {
-                        state.is_loading = false;
-                        state.last_refreshed = Some(std::time::Instant::now());
-                        match result {
-                            Ok(procs) => {
-                                state.processes = procs;
-                                state.status_message = None;
-                            }
-                            Err(err) => {
-                                state.status_message = Some((format!("Error: {}", err), true));
                             }
                         }
-                    }
-                }
-                ctx.request_repaint();
-            }
-
-            while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
-                log::info!("[USER-MGR] UI received result for tab_index={}", tab_index);
-                eprintln!("[USER-MGR] UI received result for tab_index={}", tab_index);
-                if let Some(tab) = self.query_tabs.get_mut(tab_index) {
-                    if let Some(state) = &mut tab.user_manager_state {
-                        state.is_loading = false;
-                        match result {
-                            crate::user_manager::UserManagerResult::Data(res) => {
-                                state.last_refreshed = Some(std::time::Instant::now());
-                                match res {
-                                    Ok(payload) => {
-                                        log::info!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
-                                        eprintln!("[USER-MGR] UI applied payload: {} users, {} roles", payload.users.len(), payload.roles.len());
-                                        state.users = payload.users;
-                                        state.roles = payload.roles;
-                                        state.object_grants = payload.object_grants.clone();
-                                        state.original_grants = payload.object_grants;
-                                        state.all_privileges_map = payload.all_privileges_map;
-                                        state.executed_queries = payload.executed_queries;
-                                        if state.selected_user_index.is_none() && !state.users.is_empty() {
-                                            state.selected_user_index = Some(0);
-                                            state.selected_grantee = Some(state.users[0].username.clone());
-                                            state.selected_grantee_host = state.users[0].host.clone();
-                                        }
-                                        let db_type = tab.connection_id
-                                            .and_then(|cid| self.connections.iter().find(|c| c.id == Some(cid)))
-                                            .map(|c| c.connection_type.clone());
-                                        state.sync_grants_for_selected_grantee(db_type.as_ref());
-                                        state.status_message = None;
-                                    }
-                                    Err(err) => {
-                                        log::error!("[USER-MGR] UI received error: {}", err);
-                                        eprintln!("[USER-MGR] UI received error: {}", err);
-                                        state.status_message = Some((format!("Error: {}", err), true));
-                                        state.show_diagnostics_panel = true;
-                                    }
-                                }
+                        crate::user_manager::UserManagerResult::CommandExecuted {
+                            action_name,
+                            sql,
+                            result,
+                        } => {
+                            if !sql.is_empty() {
+                                state.generated_sql_log.push(sql);
                             }
-                            crate::user_manager::UserManagerResult::CommandExecuted { action_name, sql, result } => {
-                                if !sql.is_empty() {
-                                    state.generated_sql_log.push(sql);
+                            match result {
+                                Ok(msg) => {
+                                    state.status_message =
+                                        Some((format!("{}: {}", action_name, msg), false));
                                 }
-                                match result {
-                                    Ok(msg) => {
-                                        state.status_message = Some((format!("{}: {}", action_name, msg), false));
-                                    }
-                                    Err(err) => {
-                                        state.status_message = Some((format!("{} failed: {}", action_name, err), true));
-                                    }
+                                Err(err) => {
+                                    state.status_message =
+                                        Some((format!("{} failed: {}", action_name, err), true));
                                 }
                             }
                         }
                     }
                 }
-                ctx.request_repaint();
             }
+            ctx.request_repaint();
+        }
     }
 
     /// Render the resizable left sidebar (connections/queries/history tree).
@@ -1371,54 +1044,27 @@ impl Tabular {
     /// Shared search box used by the Connections/Queries/History tabs. Text is stored
     /// in one field (`database_search_text`) so switching tabs doesn't reset the query.
     fn render_sidebar_search_box(&mut self, ui: &mut egui::Ui, hint: &str) {
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            let search_bg = if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(30, 32, 42)
-            } else {
-                egui::Color32::from_rgb(235, 238, 243)
-            };
-            let available_width = (ui.available_width() - 8.0).max(40.0);
-            let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), self.ui_mode);
-            let search_height = if metrics.is_touch { 40.0 } else { 28.0 };
+        let search_response =
+            style::render_search_field(ui, &mut self.database_search_text, hint, f32::INFINITY);
 
-            let search_response = ui.add_sized(
-                [available_width, search_height],
-                egui::TextEdit::singleline(&mut self.database_search_text)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(hint)
-                    .font(egui::FontId::proportional(if metrics.is_touch { 15.5 } else { 13.0 }))
-                    .background_color(search_bg),
-            );
-
-            if search_response.has_focus() {
-                let focus_color = if ui.visuals().dark_mode {
-                    egui::Color32::from_rgb(80, 90, 120)
-                } else {
-                    egui::Color32::from_rgb(150, 165, 200)
-                };
-                ui.painter().rect_stroke(
-                    search_response.rect,
-                    3.0,
-                    egui::Stroke::new(1.0, focus_color),
-                    egui::StrokeKind::Outside,
-                );
-            }
-
-            if search_response.changed() {
-                self.update_all_database_search_results();
-            }
-        });
+        if search_response.changed() {
+            self.update_all_database_search_results();
+        }
     }
 
     fn render_left_sidebar(&mut self, root_ui: &mut egui::Ui) {
-            let ctx = &root_ui.ctx().clone();
-            if self.sidebar_visible {
-                egui::Panel::left("sidebar")
+        let ctx = &root_ui.ctx().clone();
+        if self.sidebar_visible {
+            // Batas mengikuti lebar jendela supaya panel tengah tidak terjepit
+            // di iPad Split View / Slide Over (M11).
+            let width = ctx.content_rect().width();
+            let max_sidebar = (width * 0.85).clamp(200.0, 600.0);
+            let min_sidebar = 260.0_f32.min(max_sidebar);
+            egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_size(340.0)
-                .min_size(260.0)
-                .max_size(600.0)
+                .default_size(340.0_f32.min(max_sidebar))
+                .min_size(min_sidebar)
+                .max_size(max_sidebar)
                 // Reduce default inner padding so tree rows (connection/database/table) start closer to the left edge
                 .frame(
                     egui::Frame::default()
@@ -1430,6 +1076,8 @@ impl Tabular {
                         .inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 6 }),
                 )
                 .show(root_ui, |ui| {
+                    // Panel proses background: dasar sidebar, sama di semua tab.
+                    crate::window_egui::background_dock::render_background_dock(&mut self.background_tasks, ui);
                     ui.vertical(|ui| {
                         // Top bar for sidebar tabs matching query tab bar height and alignment
                         let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
@@ -1439,24 +1087,12 @@ impl Tabular {
                             egui::vec2(available_width, top_bar_height),
                             egui::Sense::hover(),
                         );
-                        let bar_bg = if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(25, 25, 25)
-                        } else {
-                            egui::Color32::from_rgb(245, 245, 245)
-                        };
-                        ui.painter().rect_filled(bar_rect, 0.0, bar_bg);
-                        let bottom_y = bar_rect.bottom();
+                        // Bar menyatu dengan permukaan sidebar; cukup satu garis pemisah
+                        // tipis di bawah tempat underline tab aktif "duduk".
                         ui.painter().hline(
                             bar_rect.x_range(),
-                            bottom_y - 0.5,
-                            egui::Stroke::new(
-                                1.0,
-                                if ui.visuals().dark_mode {
-                                    egui::Color32::from_rgb(55, 55, 55)
-                                } else {
-                                    egui::Color32::from_rgb(200, 200, 200)
-                                },
-                            ),
+                            bar_rect.bottom() - 0.5,
+                            egui::Stroke::new(1.0, style::nav_border(ctx)),
                         );
 
                         let mut top_bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
@@ -1464,13 +1100,14 @@ impl Tabular {
                             bar_rect.size(),
                             egui::Layout::left_to_right(egui::Align::TOP),
                             |ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
+                                ui.spacing_mut().item_spacing.x = 0.0;
                                 let btn_avail_width = ui.available_width();
-                                let button_width = ((btn_avail_width - 4.0) / 3.0).clamp(40.0, 140.0);
+                                let button_width = (btn_avail_width / 4.0).max(40.0);
                                 let button_height = top_bar_height;
 
+                                // Key internal tetap "Database"/"Collaborations"; label dibuat pendek agar sidebar ramping.
                                 let is_db_active = self.selected_menu == "Database";
-                                if style::render_custom_tab(ui, "Database", is_db_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "DBs", is_db_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Database".to_string();
                                 }
 
@@ -1479,8 +1116,16 @@ impl Tabular {
                                     self.selected_menu = "APIs".to_string();
                                 }
 
+                                let is_git_active = self.selected_menu == "Git";
+                                if style::render_custom_tab(ui, "Git", is_git_active, egui::vec2(button_width, button_height)).clicked() {
+                                    if !is_git_active && self.git.repos_loaded {
+                                        crate::window_egui::git_jobs::refresh_status(self);
+                                    }
+                                    self.selected_menu = "Git".to_string();
+                                }
+
                                 let is_collab_active = self.selected_menu == "Collaborations";
-                                if style::render_custom_tab(ui, "Collaborations", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
+                                if style::render_custom_tab(ui, "Team", is_collab_active, egui::vec2(button_width, button_height)).clicked() {
                                     self.selected_menu = "Collaborations".to_string();
                                 }
                             },
@@ -1495,33 +1140,25 @@ impl Tabular {
                                     // area. They're now compact icon sub-tabs nested right
                                     // under "Database" (like VS Code's view-container
                                     // sub-views) so each gets full space + a contextual "+".
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        let sub_avail_width = ui.available_width();
-                                        let sub_button_width = (sub_avail_width - 6.0) / 3.0;
-                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
-                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
-
-                                        let sub_tabs: [(&str, &str); 3] = [
-                                            ("Connections", "🔌"),
-                                            ("Queries", "📝"),
-                                            ("History", "🕒"),
-                                        ];
-
-                                        for (key, icon) in sub_tabs {
-                                            let is_active = self.selected_database_sub_menu == key;
-                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
-                                                .on_hover_text(key);
-                                            if resp.clicked() {
-                                                self.selected_database_sub_menu = key.to_string();
-                                            }
-                                        }
-                                    });
-                                    ui.add_space(3.0);
+                                    let segments = [
+                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: crate::i18n::tr("Connections") },
+                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: crate::i18n::tr("Queries") },
+                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: crate::i18n::tr("History") },
+                                    ];
+                                    let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                                    if let Some(key) = style::render_segmented_nav(
+                                        ui,
+                                        "db_sub_nav",
+                                        &segments,
+                                        &self.selected_database_sub_menu,
+                                        seg_height,
+                                    ) {
+                                        self.selected_database_sub_menu = key.to_string();
+                                    }
 
                                     match self.selected_database_sub_menu.as_str() {
                                 "Connections" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search connections...");
+                                    self.render_sidebar_search_box(ui, "Search connections…");
                                     ui.add_space(4.0);
 
                                     let db_area_response = ui.interact(
@@ -1551,17 +1188,21 @@ impl Tabular {
                                     ui.add_space(4.0);
                                 }
                                 "Queries" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search queries...");
+                                    self.render_sidebar_search_box(ui, "Search queries…");
                                     ui.add_space(4.0);
 
                                     let is_searching_queries = !self.database_search_text.trim().is_empty();
-                                    let mut queries_tree = if is_searching_queries {
+                                    let queries_tree = if is_searching_queries {
                                         std::mem::take(&mut self.filtered_queries_tree)
                                     } else {
                                         std::mem::take(&mut self.queries_tree)
                                     };
 
+                                    let (mut queries_tree, hidden_query_roots) =
+                                        crate::window_egui::project_ui::split_query_roots(self, queries_tree);
                                     let query_files_to_open = self.render_tree(ui, &mut queries_tree, false);
+                                    let queries_tree =
+                                        crate::window_egui::project_ui::merge_roots(queries_tree, hidden_query_roots);
 
                                     if is_searching_queries {
                                         self.filtered_queries_tree = queries_tree;
@@ -1607,7 +1248,7 @@ impl Tabular {
                                     }
                                 }
                                 "History" => {
-                                    self.render_sidebar_search_box(ui, "🔍 Search history...");
+                                    self.render_sidebar_search_box(ui, "Search history…");
                                     ui.add_space(4.0);
 
                                     if self.auto_refresh_active {
@@ -1720,36 +1361,32 @@ impl Tabular {
                                 }
                                 "Collaborations" => {
                                     // ── Sub-tabs: Teams / Collaboration ──────────
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        let sub_avail_width = (ui.available_width() - 8.0).max(40.0);
-                                        let sub_button_width = (sub_avail_width - 4.0) / 2.0;
-                                        let sub_button_height = if metrics.is_touch { 40.0 } else { 30.0 };
-                                        let sub_button_size = egui::vec2(sub_button_width, sub_button_height);
-
-                                        let sub_tabs: [(&str, &str); 2] = [
-                                            ("Teams", "👥"),
-                                            ("Collaboration", "☁"),
-                                        ];
-
-                                        for (key, icon) in sub_tabs {
-                                            let is_active = self.selected_collab_sub_menu == key;
-                                            let resp = style::render_sidebar_subtab(ui, icon, is_active, sub_button_size)
-                                                .on_hover_text(key);
-                                            if resp.clicked() {
-                                                let was_active = self.selected_collab_sub_menu == key;
-                                                self.selected_collab_sub_menu = key.to_string();
-                                                if !was_active {
-                                                    if key == "Teams" {
-                                                        crate::sync::ui_teams::refresh_teams(self);
-                                                    } else if key == "Collaboration" {
-                                                        crate::sync::ui_collab::refresh_rooms(self);
-                                                    }
-                                                }
+                                    let segments = [
+                                        style::NavSegment { key: "Teams", icon: egui_icons::icons::ICON_GROUPS.codepoint, label: "Teams" },
+                                        style::NavSegment { key: "Collaboration", icon: egui_icons::icons::ICON_CLOUD.codepoint, label: "Collaboration" },
+                                        style::NavSegment { key: "Projects", icon: egui_icons::icons::ICON_WORKSPACES.codepoint, label: "Projects" },
+                                    ];
+                                    let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
+                                    if let Some(key) = style::render_segmented_nav(
+                                        ui,
+                                        "collab_sub_nav",
+                                        &segments,
+                                        &self.selected_collab_sub_menu,
+                                        seg_height,
+                                    ) {
+                                        let was_active = self.selected_collab_sub_menu == key;
+                                        self.selected_collab_sub_menu = key.to_string();
+                                        if !was_active {
+                                            if key == "Teams" {
+                                                crate::sync::ui_teams::refresh_teams(self);
+                                            } else if key == "Collaboration" {
+                                                crate::sync::ui_collab::refresh_rooms(self);
+                                            } else if key == "Projects" {
+                                                crate::sync::ui_teams::refresh_teams(self);
+                                                crate::sync::ui_teams::refresh_all_shared_folders(self);
                                             }
                                         }
-                                    });
-                                    ui.add_space(4.0);
+                                    }
 
                                     match self.selected_collab_sub_menu.as_str() {
                                         "Teams" => {
@@ -1758,8 +1395,14 @@ impl Tabular {
                                         "Collaboration" => {
                                             crate::sync::ui_collab::render_collab_content(self, ui);
                                         }
+                                        "Projects" => {
+                                            crate::window_egui::project_ui::render_collab_projects(self, ui);
+                                        }
                                         _ => {}
                                     }
+                                }
+                                "Git" => {
+                                    crate::window_egui::git_sidebar::render_git_sidebar(self, ui);
                                 }
                                 _ => {}
                             }
@@ -1819,17 +1462,33 @@ impl Tabular {
                                             _ => {}
                                         }
                                     }
+                                    "Git" => {
+                                        ui.menu_button(
+                                            egui::RichText::new("➕").color(egui::Color32::WHITE),
+                                            |ui| crate::window_egui::git_sidebar::repo_menu(self, ui),
+                                        ).response.on_hover_text("Add repository");
+                                    }
                                     "APIs" => {
                                         ui.menu_button(
                                             egui::RichText::new("➕").color(egui::Color32::WHITE),
                                             |ui| {
-                                                ui.set_min_width(160.0);
+                                                ui.set_min_width(170.0);
+                                                if ui.button("📄 New HTTP Request").clicked() {
+                                                    editor::create_new_http_tab(self, "New Request".to_string(), None);
+                                                    ui.close();
+                                                }
                                                 if ui.button("📁 Add New Collection").clicked() {
                                                     self.pending_create_http_workspace = Some(String::new());
                                                     ui.close();
                                                 }
-                                                if ui.button("🌐 Add New Connection").clicked() {
-                                                    editor::create_new_http_tab(self, "New HTTP Connection".to_string(), None);
+                                                if ui.button("🌐 Add HTTP Connection").clicked() {
+                                                    self.test_connection_status = None;
+                                                    self.test_connection_in_progress = false;
+                                                    self.new_connection = models::structs::ConnectionConfig {
+                                                        connection_type: models::enums::DatabaseType::ApiHttp,
+                                                        ..Default::default()
+                                                    };
+                                                    self.show_add_connection = true;
                                                     ui.close();
                                                 }
                                                 ui.separator();
@@ -1842,7 +1501,7 @@ impl Tabular {
                                                     ui.close();
                                                 }
                                             },
-                                        ).response.on_hover_text("Add Collection/Connection or Import Yaak/Postman");
+                                        ).response.on_hover_text("New HTTP Request, Add Collection/Connection, or Import");
                                     }
                                     _ => {}
                                 }
@@ -1850,39 +1509,57 @@ impl Tabular {
                         });
                     });
                 });
-            }
+        }
     }
 
-    /// Render the AI Assistant right side panel.
-    /// Extracted verbatim from `update()`.
+    /// Render panel kanan AI Assistant.
     fn render_ai_right_panel(&mut self, root_ui: &mut egui::Ui) {
-            let ctx = &root_ui.ctx().clone();
-            if self.show_ai_panel {
-                egui::Panel::right("ai_right_panel")
-                    .resizable(true)
-                    .default_size(350.0)
-                    .min_size(280.0)
-                    .max_size(600.0)
-                    .frame(
-                        egui::Frame::default()
-                            .fill(if ctx.global_style().visuals.dark_mode {
-                                egui::Color32::from_rgb(22, 24, 34)
-                            } else {
-                                egui::Color32::from_rgb(240, 242, 252)
-                            })
-                            .inner_margin(egui::Margin::ZERO),
-                    )
-                    .show(root_ui, |ui| {
-                        editor::render_ai_panel(self, ui);
-                    });
+        let ctx = &root_ui.ctx().clone();
+        if self.show_ai_panel {
+            self.ai_panel_width = self.ai_panel_width.clamp(280.0, 800.0);
+            let panel_id = egui::Id::new("ai_right_panel");
+
+            // Pulihkan state panel di memori egui jika sebelumnya tersimpan terlalu kecil/menyusut (< 280px).
+            if let Some(mut state) = egui::containers::panel::PanelState::load(ctx, panel_id) {
+                if state.outer_rect.width() < 280.0 {
+                    let target_w = self.ai_panel_width.max(280.0);
+                    state.outer_rect.min.x = state.outer_rect.max.x - target_w;
+                    ctx.data_mut(|d| d.insert_persisted(panel_id, state));
+                }
             }
+
+            let panel_response = egui::Panel::right("ai_right_panel")
+                .resizable(true)
+                .default_size(self.ai_panel_width)
+                .min_size(280.0)
+                .max_size(800.0)
+                .frame(
+                    egui::Frame::default()
+                        .fill(super::style::ai_panel_bg(ctx))
+                        .inner_margin(egui::Margin::ZERO),
+                )
+                .show(root_ui, |ui| {
+                    // Pastikan child UI mengisi penuh lebar panel yang dialokasikan
+                    // agar tidak menyusut saat pesan chat streaming atau saat transkrip kosong.
+                    ui.set_min_width(ui.available_width().max(280.0));
+                    ui.take_available_width();
+                    editor::render_ai_panel(self, ui);
+                });
+
+            // Rekam perubahan ukuran oleh pengguna untuk disimpan ke preferensi
+            let actual_w = panel_response.response.rect.width();
+            if actual_w >= 280.0 && (actual_w - self.ai_panel_width).abs() > 1.0 {
+                self.ai_panel_width = actual_w;
+                self.prefs_dirty = true;
+            }
+        }
     }
 
     /// Render the central panel (editor / data grid / structure).
     /// Extracted verbatim from `update()`.
     fn render_central_panel(&mut self, root_ui: &mut egui::Ui) {
-            let ctx = &root_ui.ctx().clone();
-            egui::CentralPanel::default()
+        let ctx = &root_ui.ctx().clone();
+        egui::CentralPanel::default()
                 .frame(
                     egui::Frame::default()
                         .fill(if ctx.global_style().visuals.dark_mode {
@@ -1899,8 +1576,10 @@ impl Tabular {
                     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
                     let top_bar_height = metrics.tab_button_height;
                     let available_width = ui.available_width();
-                    let min_selectors = if metrics.is_touch { 420.0 } else { 360.0 };
-                    let mut selectors_width = (available_width * 0.50).clamp(min_selectors, 580.0);
+                    // Grup kanan hanya berisi switcher project, AI, dan akun/gear
+                    // (picker koneksi/database pindah ke kartu melayang editor).
+                    let min_selectors = if metrics.is_touch { 340.0 } else { 280.0 };
+                    let mut selectors_width = (available_width * 0.35).clamp(min_selectors, 420.0);
                     let mut left_width = available_width - selectors_width;
                     if left_width < 180.0 {
                         left_width = 180.0;
@@ -1987,10 +1666,23 @@ impl Tabular {
                                         ui.add_space(8.0);
                                         let mut to_close = None;
                                         let mut to_switch = None;
+                                        let mut to_toggle_pin = None;
+                                        let mut to_move = None;
+                                        let mut to_close_others = None;
+                                        let mut to_close_right = None;
 
                                         if self.last_active_tab_index != Some(self.active_tab_index) {
                                             self.scroll_to_active_tab = true;
                                             self.last_active_tab_index = Some(self.active_tab_index);
+                                        }
+
+                                        // Cancel drag if Escape key pressed
+                                        if ui.ctx().input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                                            if let Some(drag_idx) = self.dragged_tab_index.take() {
+                                                eprintln!("[TabDrag] Drag of tab #{} cancelled via Escape key", drag_idx);
+                                                log::info!("[TabDrag] Drag of tab #{} cancelled via Escape key", drag_idx);
+                                                ui.ctx().request_repaint();
+                                            }
                                         }
 
                                         let tab_count = self.query_tabs.len();
@@ -2003,14 +1695,32 @@ impl Tabular {
                                             max_single_tab_w
                                         };
 
+                                        let pointer_pos = ui.ctx().input(|inp| {
+                                            inp.pointer
+                                                .hover_pos()
+                                                .or(inp.pointer.interact_pos())
+                                                .or(inp.pointer.latest_pos())
+                                        });
+                                        let mouse_released = ui.ctx().input(|inp| inp.pointer.button_released(egui::PointerButton::Primary));
+
+                                        let mut tab_rects = Vec::with_capacity(tab_count);
+
                                         for (i, tab) in self.query_tabs.iter().enumerate() {
                                             let active = i == self.active_tab_index;
+                                            let is_being_dragged = self.dragged_tab_index == Some(i);
+
                                             let inactive_bg = if ui.visuals().dark_mode {
                                                 egui::Color32::from_rgb(35, 35, 35)
                                             } else {
                                                 egui::Color32::from_rgb(240, 240, 240)
                                             };
-                                            let tab_bg = if active {
+                                            let tab_bg = if is_being_dragged {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(30, 34, 44)
+                                                } else {
+                                                    egui::Color32::from_rgb(220, 224, 235)
+                                                }
+                                            } else if active {
                                                 if ui.visuals().dark_mode {
                                                     egui::Color32::from_rgb(45, 48, 56)
                                                 } else {
@@ -2019,11 +1729,19 @@ impl Tabular {
                                             } else {
                                                 inactive_bg
                                             };
-                                            let border_color = if active {
+                                            let border_color = if is_being_dragged {
+                                                super::style::theme_accent(ui.ctx()).linear_multiply(0.8)
+                                            } else if active {
                                                 if ui.visuals().dark_mode {
                                                     egui::Color32::from_rgb(55, 60, 76)
                                                 } else {
                                                     egui::Color32::from_rgb(215, 222, 232)
+                                                }
+                                            } else if tab.is_pinned {
+                                                if ui.visuals().dark_mode {
+                                                    egui::Color32::from_rgb(65, 60, 48)
+                                                } else {
+                                                    egui::Color32::from_rgb(215, 210, 195)
                                                 }
                                             } else {
                                                 ui.visuals().widgets.inactive.bg_stroke.color
@@ -2044,13 +1762,51 @@ impl Tabular {
                                                 title = format!("{} [{}]", title, n);
                                             }
                                             let close_size = 16.0;
+                                            let pin_size = 16.0;
                                             let tab_width = (title.len() as f32 * 8.0 + 64.0)
                                                 .clamp(min_single_tab_w, tab_width_cap);
                                             let menu_tab_height = 34.0;
                                             let (tab_rect, tab_resp) = ui.allocate_exact_size(
                                                 egui::vec2(tab_width, menu_tab_height),
-                                                egui::Sense::click(),
+                                                egui::Sense::click_and_drag(),
                                             );
+                                            tab_rects.push(tab_rect);
+
+                                            let right_slot_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    tab_rect.right() - close_size - 6.0,
+                                                    tab_rect.center().y - close_size / 2.0,
+                                                ),
+                                                egui::vec2(close_size, close_size),
+                                            );
+                                            let hover_pin_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    right_slot_rect.left() - pin_size - 4.0,
+                                                    tab_rect.center().y - pin_size / 2.0,
+                                                ),
+                                                egui::vec2(pin_size, pin_size),
+                                            );
+                                            let right_slot_hit_rect = right_slot_rect.expand2(egui::vec2(3.0, 4.0));
+                                            let hover_pin_hit_rect = hover_pin_rect.expand2(egui::vec2(3.0, 4.0));
+
+                                            // Only initiate drag if the mouse press is NOT over the close or pin buttons
+                                            if tab_resp.drag_started_by(egui::PointerButton::Primary) {
+                                                let start_pos = tab_resp.interact_pointer_pos().or(pointer_pos);
+                                                let on_btn = start_pos.map(|p| {
+                                                    right_slot_hit_rect.contains(p) || hover_pin_hit_rect.contains(p)
+                                                }).unwrap_or(false);
+
+                                                if !on_btn {
+                                                    eprintln!("[TabDrag] Drag started: tab #{} ('{}') at pos {:?}", i, tab.title, start_pos);
+                                                    log::info!("[TabDrag] Drag started: tab #{} ('{}') at pos {:?}", i, tab.title, start_pos);
+                                                    self.dragged_tab_index = Some(i);
+                                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                                    ui.ctx().request_repaint();
+                                                } else {
+                                                    eprintln!("[TabDrag] Drag ignored: pointer started over button on tab #{}", i);
+                                                    log::info!("[TabDrag] Drag ignored: pointer started over button on tab #{}", i);
+                                                }
+                                            }
 
                                             if active && self.scroll_to_active_tab {
                                                 tab_resp.scroll_to_me(Some(egui::Align::Center));
@@ -2069,6 +1825,13 @@ impl Tabular {
                                                 egui::Stroke::new(1.0, border_color),
                                                 egui::StrokeKind::Outside,
                                             );
+                                            // M10: strip warna environment koneksi di tepi atas tab.
+                                            if let Some(env) = tab
+                                                .connection_id
+                                                .and_then(|cid| self.connection_environment_by_id(cid))
+                                            {
+                                                super::platform_ui::paint_environment_strip(ui, tab_rect, env);
+                                            }
                                             if active {
                                                 let line_height = 3.0;
                                                 let accent_rect = egui::Rect::from_min_size(
@@ -2081,14 +1844,126 @@ impl Tabular {
                                                     super::style::theme_accent(ui.ctx()),
                                                 );
                                             }
-                                            let close_rect = egui::Rect::from_min_size(
-                                                egui::pos2(
-                                                    tab_rect.right() - close_size - 6.0,
-                                                    tab_rect.center().y - close_size / 2.0,
-                                                ),
-                                                egui::vec2(close_size, close_size),
-                                            );
-                                            let label_max_width = tab_rect.width() - close_size - 18.0;
+
+                                            let is_tab_hovered = pointer_pos.map(|p| tab_rect.contains(p)).unwrap_or(false);
+                                            let mut pointer_over_button = false;
+
+                                            if tab.is_pinned {
+                                                // Pinned tab: show pin icon at right_slot_rect (replaces close button)
+                                                let pin_resp = ui.interact(
+                                                    right_slot_hit_rect,
+                                                    ui.id().with(("tab_unpin", i)),
+                                                    egui::Sense::click(),
+                                                )
+                                                .on_hover_text("Pinned tab. Click to unpin, or right-click for options.");
+                                                if pin_resp.hovered() {
+                                                    let hover_color = if active {
+                                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                    } else {
+                                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                    };
+                                                    ui.painter().rect_filled(right_slot_rect, 4.0, hover_color);
+                                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                                    pointer_over_button = true;
+                                                }
+                                                ui.painter().text(
+                                                    right_slot_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    "📌",
+                                                    egui::FontId::proportional(12.0),
+                                                    text_color,
+                                                );
+                                                if pin_resp.clicked() {
+                                                    eprintln!("[TabPin] Pinned tab pin icon clicked: tab #{} ('{}') -> unpinning", i, tab.title);
+                                                    log::info!("[TabPin] Pinned tab pin icon clicked: tab #{} ('{}') -> unpinning", i, tab.title);
+                                                    to_toggle_pin = Some(i);
+                                                }
+                                            } else {
+                                                // Unpinned tab: show close button
+                                                let show_close = self.query_tabs.len() > 1 || !active;
+                                                if show_close {
+                                                    let close_resp = ui.interact(
+                                                        right_slot_hit_rect,
+                                                        ui.id().with(("tab_close", i)),
+                                                        egui::Sense::click(),
+                                                    )
+                                                    .on_hover_text("Close tab");
+                                                    if close_resp.hovered() {
+                                                        let hover_color = if active {
+                                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                        };
+                                                        ui.painter().rect_filled(right_slot_rect, 4.0, hover_color);
+                                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                                        pointer_over_button = true;
+                                                    }
+                                                    ui.painter().text(
+                                                        right_slot_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        "×",
+                                                        egui::FontId::proportional(13.0),
+                                                        text_color,
+                                                    );
+                                                    if close_resp.clicked() {
+                                                        log::debug!("[TabAction] Close button clicked: tab #{} ('{}')", i, tab.title);
+                                                        to_close = Some(i);
+                                                    }
+                                                }
+
+                                                // Quick pin button: allocate interactively whenever tab is not being dragged
+                                                if !is_being_dragged {
+                                                    let quick_pin_resp = ui.interact(
+                                                        hover_pin_hit_rect,
+                                                        ui.id().with(("tab_quick_pin", i)),
+                                                        egui::Sense::click(),
+                                                    )
+                                                    .on_hover_text("Pin tab (keep on left)");
+
+                                                    let pin_hovered = quick_pin_resp.hovered();
+                                                    if pin_hovered {
+                                                        let hover_color = if active {
+                                                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
+                                                        } else {
+                                                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
+                                                        };
+                                                        ui.painter().rect_filled(hover_pin_rect, 4.0, hover_color);
+                                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                                        pointer_over_button = true;
+                                                    }
+
+                                                    // Render pin icon when tab or button is hovered
+                                                    if is_tab_hovered || pin_hovered {
+                                                        let icon_color = if pin_hovered {
+                                                            text_color
+                                                        } else {
+                                                            text_color.linear_multiply(0.55)
+                                                        };
+                                                        ui.painter().text(
+                                                            hover_pin_rect.center(),
+                                                            egui::Align2::CENTER_CENTER,
+                                                            "📌",
+                                                            egui::FontId::proportional(11.0),
+                                                            icon_color,
+                                                        );
+                                                    }
+
+                                                    if quick_pin_resp.clicked() {
+                                                        eprintln!("[TabPin] Quick-pin clicked: tab #{} ('{}') -> pinning", i, tab.title);
+                                                        log::info!("[TabPin] Quick-pin clicked: tab #{} ('{}') -> pinning", i, tab.title);
+                                                        to_toggle_pin = Some(i);
+                                                    }
+                                                }
+                                            }
+
+                                            let right_margin = if tab.is_pinned {
+                                                close_size + 12.0
+                                            } else if is_tab_hovered && !is_being_dragged {
+                                                close_size + pin_size + 16.0
+                                            } else {
+                                                close_size + 12.0
+                                            };
+                                            let label_max_width = (tab_rect.width() - right_margin - 10.0).max(20.0);
                                             let label_area = egui::Rect::from_min_size(
                                                 egui::pos2(tab_rect.left() + 10.0, tab_rect.top()),
                                                 egui::vec2(label_max_width, tab_rect.height()),
@@ -2103,45 +1978,254 @@ impl Tabular {
                                                     text_color,
                                                 );
 
-                                            let show_close = self.query_tabs.len() > 1 || !active;
-                                            if show_close {
-                                                let close_resp = ui.interact(
-                                                    close_rect,
-                                                    ui.id().with(("tab_close", i)),
-                                                    egui::Sense::click(),
-                                                );
-                                                if close_resp.hovered() {
-                                                    let hover_color = if active {
-                                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30)
-                                                    } else {
-                                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 20)
-                                                    };
-                                                    ui.painter().rect_filled(close_rect, 4.0, hover_color);
+                                            // Context menu on tab
+                                            let tab_is_pinned = tab.is_pinned;
+                                            let cur_tabs_len = self.query_tabs.len();
+                                            tab_resp.context_menu(|ui| {
+                                                if tab_is_pinned {
+                                                    if ui.button("📌 Unpin Tab").clicked() {
+                                                        eprintln!("[TabPin] Context menu 'Unpin Tab' clicked: tab #{} ('{}')", i, tab.title);
+                                                        log::info!("[TabPin] Context menu 'Unpin Tab' clicked: tab #{} ('{}')", i, tab.title);
+                                                        to_toggle_pin = Some(i);
+                                                        ui.close();
+                                                    }
+                                                } else {
+                                                    if ui.button("📌 Pin Tab").clicked() {
+                                                        eprintln!("[TabPin] Context menu 'Pin Tab' clicked: tab #{} ('{}')", i, tab.title);
+                                                        log::info!("[TabPin] Context menu 'Pin Tab' clicked: tab #{} ('{}')", i, tab.title);
+                                                        to_toggle_pin = Some(i);
+                                                        ui.close();
+                                                    }
                                                 }
-                                                ui.painter().text(
-                                                    close_rect.center(),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    "×",
-                                                    egui::FontId::proportional(13.0),
-                                                    text_color,
-                                                );
-                                                if close_resp.clicked() {
+                                                ui.separator();
+                                                if i > 0 && ui.button("⬅ Move Tab Left").clicked() {
+                                                    log::debug!("[TabAction] Context menu 'Move Tab Left' clicked: tab #{} (to {})", i, i - 1);
+                                                    to_move = Some((i, i - 1));
+                                                    ui.close();
+                                                }
+                                                if i + 1 < cur_tabs_len && ui.button("➡ Move Tab Right").clicked() {
+                                                    log::debug!("[TabAction] Context menu 'Move Tab Right' clicked: tab #{} (to {})", i, i + 1);
+                                                    to_move = Some((i, i + 1));
+                                                    ui.close();
+                                                }
+                                                ui.separator();
+                                                let show_close_menu = cur_tabs_len > 1 || !active;
+                                                if ui.add_enabled(show_close_menu, egui::Button::new("✕ Close Tab")).clicked() {
+                                                    log::debug!("[TabAction] Context menu 'Close Tab' clicked: tab #{} ('{}')", i, tab.title);
                                                     to_close = Some(i);
+                                                    ui.close();
                                                 }
-                                            }
+                                                if cur_tabs_len > 1 && ui.button("Close Other Tabs").clicked() {
+                                                    log::debug!("[TabAction] Context menu 'Close Other Tabs' clicked (keeping tab #{})", i);
+                                                    to_close_others = Some(i);
+                                                    ui.close();
+                                                }
+                                                if i + 1 < cur_tabs_len && ui.button("Close Tabs to the Right").clicked() {
+                                                    log::debug!("[TabAction] Context menu 'Close Tabs to the Right' clicked for tab #{}", i);
+                                                    to_close_right = Some(i);
+                                                    ui.close();
+                                                }
+                                            });
+
+                                            let click_pos = tab_resp.interact_pointer_pos().or(pointer_pos).unwrap_or(egui::Pos2::ZERO);
+                                            let on_button = right_slot_hit_rect.contains(click_pos)
+                                                || (!tab.is_pinned && hover_pin_hit_rect.contains(click_pos));
 
                                             if tab_resp.clicked()
-                                                && !close_rect.contains(
-                                                    tab_resp.interact_pointer_pos().unwrap_or(egui::Pos2::ZERO),
-                                                )
+                                                && !on_button
+                                                && !pointer_over_button
+                                                && self.dragged_tab_index.is_none()
                                             {
                                                 if !active {
+                                                    log::debug!("[TabAction] Tab #{} ('{}') clicked -> switching active tab from {} to {}", i, tab.title, self.active_tab_index, i);
                                                     to_switch = Some(i);
                                                 } else {
                                                     self.scroll_to_active_tab = true;
                                                 }
                                             }
+
+                                            // Middle-click to close unpinned tabs
+                                            if tab_resp.middle_clicked()
+                                                && !tab.is_pinned
+                                                && (self.query_tabs.len() > 1 || !active)
+                                            {
+                                                log::debug!("[TabAction] Middle-click close: tab #{} ('{}')", i, tab.title);
+                                                to_close = Some(i);
+                                            }
+
+                                            // Divider between last pinned tab and first unpinned tab
+                                            let is_last_pinned = tab.is_pinned
+                                                && self.query_tabs.get(i + 1).map(|t| !t.is_pinned).unwrap_or(false);
+                                            if is_last_pinned {
+                                                let div_x = tab_rect.right() + 3.0;
+                                                ui.painter().vline(
+                                                    div_x,
+                                                    (tab_rect.top() + 6.0)..=(tab_rect.bottom() - 6.0),
+                                                    egui::Stroke::new(1.0, if ui.visuals().dark_mode {
+                                                        egui::Color32::from_rgb(70, 75, 85)
+                                                    } else {
+                                                        egui::Color32::from_rgb(190, 195, 205)
+                                                    }),
+                                                );
+                                                ui.add_space(6.0);
+                                            }
                                         }
+
+                                        // Handle active Drag-and-Drop state and drop insertion rendering
+                                        if let Some(drag_from) = self.dragged_tab_index {
+                                            if drag_from >= self.query_tabs.len() {
+                                                self.dragged_tab_index = None;
+                                            } else {
+                                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                                let mut candidate_insert_at = None;
+                                                let mut is_within_tab_bar_y = false;
+
+                                                if let Some(pos) = pointer_pos {
+                                                    // Floating ghost badge following cursor
+                                                    if let Some(drag_tab) = self.query_tabs.get(drag_from) {
+                                                        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                                                            egui::Order::Tooltip,
+                                                            egui::Id::new("tab_drag_badge"),
+                                                        ));
+                                                        let ghost_title = format!("{} {}", if drag_tab.is_pinned { "📌" } else { "📑" }, drag_tab.title);
+                                                        let font_id = egui::FontId::proportional(12.0);
+                                                        let text_w = painter.layout_no_wrap(ghost_title.clone(), font_id.clone(), egui::Color32::WHITE).size().x;
+                                                        let badge_w = (text_w + 24.0).clamp(80.0, 220.0);
+                                                        let badge_rect = egui::Rect::from_min_size(
+                                                            pos + egui::vec2(14.0, 10.0),
+                                                            egui::vec2(badge_w, 24.0),
+                                                        );
+                                                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(28, 30, 38, 235));
+                                                        painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.5, super::style::theme_accent(ui.ctx())), egui::StrokeKind::Outside);
+                                                        painter.text(
+                                                            badge_rect.center(),
+                                                            egui::Align2::CENTER_CENTER,
+                                                            ghost_title,
+                                                            font_id,
+                                                            egui::Color32::WHITE,
+                                                        );
+                                                    }
+
+                                                    // Determine candidate drop slot with generous vertical tolerance (35px margin)
+                                                    let margin = 35.0;
+                                                    is_within_tab_bar_y = tab_rects.first().map(|r| {
+                                                        pos.y >= r.top() - margin && pos.y <= r.bottom() + margin
+                                                    }).unwrap_or(false);
+
+                                                    if is_within_tab_bar_y {
+                                                        for (idx, r) in tab_rects.iter().enumerate() {
+                                                            if pos.x < r.center().x {
+                                                                candidate_insert_at = Some(idx);
+                                                                break;
+                                                            }
+                                                        }
+                                                        if candidate_insert_at.is_none() && !tab_rects.is_empty() {
+                                                            candidate_insert_at = Some(tab_rects.len());
+                                                        }
+                                                    }
+
+                                                    // Render insertion indicator line
+                                                    if let Some(target_idx) = candidate_insert_at {
+                                                        if target_idx != drag_from && target_idx != drag_from + 1 {
+                                                            let indicator_x = if target_idx < tab_rects.len() {
+                                                                tab_rects[target_idx].left() - 1.0
+                                                            } else {
+                                                                tab_rects.last().map(|r| r.right() + 1.0).unwrap_or(0.0)
+                                                            };
+                                                            let indicator_top = tab_rects.first().map(|r| r.top()).unwrap_or(0.0);
+                                                            let indicator_bottom = tab_rects.first().map(|r| r.bottom()).unwrap_or(34.0);
+                                                            let accent_col = super::style::theme_accent(ui.ctx());
+
+                                                            let ind_line_rect = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 1.5, indicator_top),
+                                                                egui::vec2(3.0, indicator_bottom - indicator_top),
+                                                            );
+                                                            ui.painter().rect_filled(ind_line_rect, 1.5, accent_col);
+
+                                                            let cap_top = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 3.5, indicator_top),
+                                                                egui::vec2(7.0, 4.0),
+                                                            );
+                                                            ui.painter().rect_filled(cap_top, 2.0, accent_col);
+                                                            let cap_bot = egui::Rect::from_min_size(
+                                                                egui::pos2(indicator_x - 3.5, indicator_bottom - 4.0),
+                                                                egui::vec2(7.0, 4.0),
+                                                            );
+                                                            ui.painter().rect_filled(cap_bot, 2.0, accent_col);
+                                                        }
+                                                    }
+                                                }
+
+                                                // Process drop on mouse release or cancel if primary pointer is released/lost
+                                                let primary_down = ui.ctx().input(|inp| inp.pointer.primary_down());
+                                                if mouse_released {
+                                                    let from = self.dragged_tab_index.take();
+                                                    eprintln!(
+                                                        "[TabDrag] Mouse release detected: from={:?}, target_slot={:?}, pointer_pos={:?}, within_y={}",
+                                                        from, candidate_insert_at, pointer_pos, is_within_tab_bar_y
+                                                    );
+                                                    log::info!(
+                                                        "[TabDrag] Mouse release detected: from={:?}, target_slot={:?}, pointer_pos={:?}, within_y={}",
+                                                        from, candidate_insert_at, pointer_pos, is_within_tab_bar_y
+                                                    );
+
+                                                    if let (Some(from_idx), Some(target_idx)) = (from, candidate_insert_at) {
+                                                        if target_idx != from_idx && target_idx != from_idx + 1 {
+                                                            let tab_title = self.query_tabs.get(from_idx).map(|t| t.title.as_str()).unwrap_or("");
+                                                            eprintln!(
+                                                                "[TabDrag] Executing reorder_tab: moving tab #{} ('{}') to insertion slot {}",
+                                                                from_idx, tab_title, target_idx
+                                                            );
+                                                            log::info!(
+                                                                "[TabDrag] Executing reorder_tab: moving tab #{} ('{}') to insertion slot {}",
+                                                                from_idx, tab_title, target_idx
+                                                            );
+                                                            editor::reorder_tab(self, from_idx, target_idx);
+                                                            eprintln!(
+                                                                "[TabDrag] Reorder success: total tabs={}, active_tab_index is now {}",
+                                                                self.query_tabs.len(), self.active_tab_index
+                                                            );
+                                                            log::info!(
+                                                                "[TabDrag] Reorder success: total tabs={}, active_tab_index is now {}",
+                                                                self.query_tabs.len(), self.active_tab_index
+                                                            );
+                                                        } else {
+                                                            eprintln!(
+                                                                "[TabDrag] Drop target slot ({}) is adjacent to drag position ({}), no move needed",
+                                                                target_idx, from_idx
+                                                            );
+                                                            log::info!(
+                                                                "[TabDrag] Drop target slot ({}) is adjacent to drag position ({}), no move needed",
+                                                                target_idx, from_idx
+                                                            );
+                                                        }
+                                                    } else {
+                                                        eprintln!(
+                                                            "[TabDrag] Drag cancelled: dropped outside valid tab bar area (within_y={}, pointer_pos={:?})",
+                                                            is_within_tab_bar_y, pointer_pos
+                                                        );
+                                                        log::info!(
+                                                            "[TabDrag] Drag cancelled: dropped outside valid tab bar area (within_y={}, pointer_pos={:?})",
+                                                            is_within_tab_bar_y, pointer_pos
+                                                        );
+                                                    }
+                                                    ui.ctx().request_repaint();
+                                                } else if !primary_down {
+                                                    if let Some(from) = self.dragged_tab_index.take() {
+                                                        eprintln!(
+                                                            "[TabDrag] Primary mouse button is no longer down without release event, cancelling drag for tab #{}",
+                                                            from
+                                                        );
+                                                        log::info!(
+                                                            "[TabDrag] Primary mouse button is no longer down without release event, cancelling drag for tab #{}",
+                                                            from
+                                                        );
+                                                    }
+                                                    ui.ctx().request_repaint();
+                                                }
+                                            }
+                                        }
+
                                         self.scroll_to_active_tab = false;
 
                                         let is_http_active = self.selected_menu == "APIs"
@@ -2179,17 +2263,51 @@ impl Tabular {
                                             .clicked()
                                         {
                                             if is_http_active {
-                                                editor::create_new_http_tab(self, "New Request".to_string(), self.current_connection_id);
+                                                let http_conn_id = self.current_connection_id.filter(|id| {
+                                                    self.connections
+                                                        .iter()
+                                                        .any(|c| c.id == Some(*id) && c.connection_type == models::enums::DatabaseType::ApiHttp)
+                                                });
+                                                editor::create_new_http_tab(self, "New Request".to_string(), http_conn_id);
                                             } else {
                                                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
                                             }
                                         }
 
+                                        let mut any_tab_action = false;
+                                        if let Some(i) = to_toggle_pin {
+                                            eprintln!("[TabPin] Executing toggle_pin_tab for index {}", i);
+                                            log::info!("[TabPin] Executing toggle_pin_tab for index {}", i);
+                                            editor::toggle_pin_tab(self, i);
+                                            any_tab_action = true;
+                                        }
+                                        if let Some((from, to)) = to_move {
+                                            log::debug!("[TabAction] Executing move_tab from {} to {}", from, to);
+                                            editor::move_tab(self, from, to);
+                                            any_tab_action = true;
+                                        }
                                         if let Some(i) = to_close {
-                                            editor::close_tab(self, i);
+                                            log::debug!("[TabAction] Executing close_tab for index {}", i);
+                                            crate::session_restore::request_close_tab(self, i);
+                                            any_tab_action = true;
+                                        }
+                                        if let Some(i) = to_close_others {
+                                            log::debug!("[TabAction] Executing close_other_tabs keeping index {}", i);
+                                            crate::session_restore::request_close_other_tabs(self, i);
+                                            any_tab_action = true;
+                                        }
+                                        if let Some(i) = to_close_right {
+                                            log::debug!("[TabAction] Executing close_tabs_to_the_right from index {}", i);
+                                            crate::session_restore::request_close_tabs_to_the_right(self, i);
+                                            any_tab_action = true;
                                         }
                                         if let Some(i) = to_switch {
+                                            log::debug!("[TabAction] Executing switch_to_tab to index {}", i);
                                             editor::switch_to_tab(self, i);
+                                            any_tab_action = true;
+                                        }
+                                        if any_tab_action {
+                                            ui.ctx().request_repaint();
                                         }
                                     });
                                 });
@@ -2498,8 +2616,82 @@ impl Tabular {
 
                                             draw_menu_sep(ui);
 
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None) {
+                                            if draw_menu_item(ui, "📦", "Export All Data (ZIP)...", None) {
+                                                self.show_export_all_dialog = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, "📥", "Import All Data (ZIP)...", None) {
+                                                self.show_import_all_dialog = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            draw_menu_sep(ui);
+
+                                            {
+                                                use super::transfer_ui::TransferAction;
+                                                let none = || (None, None, None);
+                                                let mut picked = None;
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_FILE_OPEN.codepoint, "Open Data File...", None) {
+                                                    picked = Some(TransferAction::OpenDataFile(None));
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_SWAP_HORIZ.codepoint, "Transfer Tables...", None) {
+                                                    let (conn_id, database, table) = none();
+                                                    picked = Some(TransferAction::Transfer { conn_id, database, table });
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_COMPARE_ARROWS.codepoint, "Compare Data...", None) {
+                                                    let (conn_id, database, table) = none();
+                                                    picked = Some(TransferAction::CompareData { conn_id, database, table });
+                                                }
+                                                if draw_menu_item(ui, egui_icons::icons::ICON_LOCK_OPEN.codepoint, "Decrypt Exported File...", None) {
+                                                    picked = Some(TransferAction::DecryptFile);
+                                                }
+                                                if let Some(action) = picked {
+                                                    self.transfer_ui.request(action);
+                                                    self.show_settings_menu = false;
+                                                }
+                                            }
+
+                                            draw_menu_sep(ui);
+
+                                            // Hidden on iOS — the App Store is the only
+                                            // update channel there (Guideline 2.5.2).
+                                            if crate::self_update::SELF_UPDATE_SUPPORTED
+                                                && draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None)
+                                            {
                                                 self.check_for_updates(true);
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            #[cfg(not(target_os = "ios"))]
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_FOLDER.codepoint, "Open Logs Folder", None) {
+                                                let dir = crate::app_logging::logs_dir();
+                                                let _ = std::fs::create_dir_all(&dir);
+                                                if let Err(e) = crate::url_opener::open_url(&dir.to_string_lossy()) {
+                                                    self.toasts.error(format!("Cannot open {}: {}", dir.display(), e));
+                                                }
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_MONITORING.codepoint, "Query Insights", None) {
+                                                self.open_query_insights();
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            #[cfg(not(target_os = "ios"))]
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_SECURITY.codepoint, "Agent Access (MCP)", None) {
+                                                self.open_agent_access();
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_KEYBOARD.codepoint, "Keyboard Shortcuts", None) {
+                                                self.show_shortcuts_window = true;
+                                                self.show_settings_menu = false;
+                                            }
+
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_CONTENT_COPY.codepoint, "Copy Diagnostics", None) {
+                                                ui.ctx().copy_text(crate::app_logging::diagnostics_report());
+                                                self.toasts.success("Diagnostics copied. Review it before sharing — recent log lines are included.");
                                                 self.show_settings_menu = false;
                                             }
 
@@ -2573,118 +2765,20 @@ impl Tabular {
                                 self.show_ai_panel = !self.show_ai_panel;
                             }
 
-                            let mut conn_list: Vec<(i64, String)> = self
-                                .connections
-                                .iter()
-                                .filter_map(|c| c.id.map(|id| (id, c.display_name())))
-                                .collect();
-                            conn_list.sort_by_key(|a| a.1.to_lowercase());
-                            let (tab_conn_id, tab_db_name) = self
-                                .query_tabs
-                                .get(self.active_tab_index)
-                                .map(|t| (t.connection_id, t.database_name.clone()))
-                                .unwrap_or((None, None));
-                            let current_conn_name = if let Some(cid) = tab_conn_id {
-                                self.get_connection_name(cid)
-                                    .unwrap_or_else(|| "(conn)".to_string())
-                            } else {
-                                "Select Connection".to_string()
-                            };
-
-                            if let Some(cid) = tab_conn_id {
-                                add_divider(ui);
-
-                                // 3. Database selector
-                                let mut dbs = self.get_databases_cached(cid);
-                                if dbs.is_empty() {
-                                    dbs.push("(default)".to_string());
-                                }
-                                let active_db = tab_db_name
-                                    .clone()
-                                    .unwrap_or_else(|| "(default)".to_string());
-                                egui::ComboBox::from_id_salt("query_db_select")
-                                    .width(90.0)
-                                    .selected_text(active_db.clone())
-                                    .show_ui(ui, |ui| {
-                                        for db in &dbs {
-                                            if ui.selectable_label(active_db == *db, db).clicked() {
-                                                if let Some(tab) =
-                                                    self.query_tabs.get_mut(self.active_tab_index)
-                                                {
-                                                    tab.database_name = if db == "(default)" {
-                                                        None
-                                                    } else {
-                                                        Some(db.clone())
-                                                    };
-                                                }
-                                                self.current_table_headers.clear();
-                                                self.current_table_data.clear();
-                                            }
-                                        }
-                                    });
-
-                                // 3.5 Active Schema / Search Path selector (Only for databases supporting schemas e.g. PostgreSQL & MsSQL)
-                                let (tab_schema, active_conn_type) = self
-                                    .query_tabs
-                                    .get(self.active_tab_index)
-                                    .map(|t| {
-                                        let conn_type = self.connections.iter().find(|c| c.id == t.connection_id).map(|c| c.connection_type.clone());
-                                        (t.schema_name.clone(), conn_type)
-                                    })
-                                    .unwrap_or((None, None));
-
-                                if active_conn_type.as_ref().is_some_and(|t| t.supports_schemas()) {
-                                    add_divider(ui);
-
-                                    let mut schemas = self.get_schemas_cached(cid, tab_db_name.as_deref());
-                                    if schemas.is_empty() {
-                                        schemas.push("public".to_string());
-                                    }
-                                    let active_schema = tab_schema.unwrap_or_else(|| "public".to_string());
-
-                                    egui::ComboBox::from_id_salt("query_schema_select")
-                                        .width(90.0)
-                                        .selected_text(format!("s: {}", active_schema))
-                                        .show_ui(ui, |ui| {
-                                            for s in &schemas {
-                                                if ui.selectable_label(active_schema == *s, s).clicked() {
-                                                    if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                                                        tab.schema_name = Some(s.clone());
-                                                    }
-                                                    if matches!(active_conn_type, Some(models::enums::DatabaseType::PostgreSQL)) {
-                                                        let set_path_query = format!("SET search_path TO {}, public;", s);
-                                                        let _ = crate::connection::execute_query_with_connection(self, cid, set_path_query);
-                                                    }
-                                                    self.toasts.info(format!("Switched active schema to '{}'", s));
-                                                }
-                                            }
-                                        });
-                                }
-                            }
-
                             add_divider(ui);
 
-                            // 4. Connection selector (Leftmost in group)
-                            egui::ComboBox::from_id_salt("query_conn_select")
-                                .width(140.0)
-                                .selected_text(current_conn_name)
-                                .show_ui(ui, |ui| {
-                                    for (cid, name) in &conn_list {
-                                        let selected = tab_conn_id == Some(*cid);
-                                        if ui.selectable_label(selected, name).clicked() {
-                                            if let Some(tab) =
-                                                self.query_tabs.get_mut(self.active_tab_index)
-                                            {
-                                                tab.connection_id = Some(*cid);
-                                                tab.database_name = None; // reset db for new connection
-                                            }
-                                            self.current_table_headers.clear();
-                                            self.current_table_data.clear();
-                                        }
-                                    }
-                                });
+                            // 3. Switcher project (paling kiri di grup kanan). Picker koneksi/database
+                            // kini ada di kartu melayang pojok kanan atas editor (db_context_bar).
+                            crate::window_egui::project_ui::render_switcher(self, ui);
                         },
                     );
+                    // Kartu melayang konteks database (koneksi/database/schema) di pojok
+                    // kanan atas area editor, tepat di bawah tab bar.
+                    let db_context_rect = egui::Rect::from_min_max(
+                        egui::pos2(bar_rect.left(), bar_rect.bottom()),
+                        ui.max_rect().right_bottom(),
+                    );
+                    crate::window_egui::db_context_bar::render(self, ui, db_context_rect, &metrics);
 
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                         && tab.content != self.editor.text
@@ -2721,7 +2815,6 @@ impl Tabular {
                                      let data_tab_w = if metrics.is_touch { 105.0 } else { 90.0 };
                                      let struct_tab_w = if metrics.is_touch { 125.0 } else { 105.0 };
                                      let query_tab_w = if metrics.is_touch { 110.0 } else { 90.0 };
-                                     let msg_tab_w = if metrics.is_touch { 120.0 } else { 100.0 };
 
                                      let is_data = self.table_bottom_view
                                          == models::structs::TableBottomView::Data;
@@ -2780,6 +2873,7 @@ impl Tabular {
                                                  .as_ref()
                                                  .map(|t| t != &current_target)
                                                  .unwrap_or(true)
+                                                 || (self.structure_columns.is_empty() && !self.is_refreshing_structure)
                                              {
                                                  data_table::load_structure_info_for_current_table(self);
                                              } else {
@@ -2810,15 +2904,6 @@ impl Tabular {
                                              self.table_bottom_view = models::structs::TableBottomView::Query;
                                          }
                                      }
-
-                                    // Messages tab - show when there's a query message
-                                    if !self.query_message.is_empty() {
-                                        let is_messages = self.show_message_panel;
-                                        if style::render_custom_tab(ui, "💬 Messages", is_messages, egui::vec2(msg_tab_w, tab_h)).clicked() {
-                                            self.show_message_panel = !self.show_message_panel;
-                                            self.message_shown_at = None;
-                                        }
-                                    }
                                 });
                             });
 
@@ -2833,6 +2918,29 @@ impl Tabular {
                                     // Render Data / Structure / Query (DDL) based on toggle
                                     match self.table_bottom_view {
                                         models::structs::TableBottomView::Structure => {
+                                            if let Some(conn_id) = self.current_connection_id {
+                                                let db = self
+                                                    .query_tabs
+                                                    .get(self.active_tab_index)
+                                                    .and_then(|t| t.database_name.clone())
+                                                    .unwrap_or_default();
+                                                let table = data_table::infer_current_table_name(self);
+                                                let current_target = (conn_id, db.clone(), table.clone());
+                                                if self
+                                                    .last_structure_target
+                                                    .as_ref()
+                                                    .map(|t| t != &current_target)
+                                                    .unwrap_or(true)
+                                                    || (self.structure_columns.is_empty() && !self.is_refreshing_structure)
+                                                {
+                                                    data_table::load_structure_info_for_current_table(self);
+                                                } else {
+                                                    debug!("✅ Using in-memory structure for {}/{} (no reload)", db, table);
+                                                }
+                                            } else {
+                                                // No active connection, try load to ensure state sane
+                                                data_table::load_structure_info_for_current_table(self);
+                                            }
                                             data_table::render_structure_view(self, ui);
                                         }
                                         models::structs::TableBottomView::Query => {
@@ -2879,7 +2987,9 @@ impl Tabular {
                         let mut rendered_redis_browser = false;
                         let mut rendered_dba_monitor = false;
                         let mut rendered_user_manager = false;
+                        let mut rendered_git = false;
                         let mut diagram_to_save = None;
+                        let mut diagram_action = None;
                         let mut redis_action = None;
                         let mut redis_connection_id = None;
                         let mut dba_action = None;
@@ -2940,8 +3050,7 @@ impl Tabular {
                             if let Some(state) = &mut tab.user_manager_state {
                                 // Auto-fetch initial data if empty and not loading
                                 if state.users.is_empty() && !state.is_loading && state.last_refreshed.is_none() {
-                                    log::info!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
-                                    eprintln!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
+                                    log::debug!("[USER-MGR] Triggering auto-fetch on initial tab open: conn_id={:?}, db_type={:?}", conn_id, db_type);
                                     user_mgr_action = Some(crate::user_manager::UserManagerAction::Refresh);
                                 }
 
@@ -2956,16 +3065,65 @@ impl Tabular {
                             rendered_user_manager = true;
                         }
 
+                        // Snapshot backend AI untuk bantuan AI di REST client. Diambil
+                        // sebelum `query_tabs` dipinjam mutable; hanya clone konfigurasi.
+                        let http_ai_backend: crate::http_client::AiBackend = if self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .is_some_and(|t| t.http_client_state.is_some())
+                        {
+                            let target = self.effective_default_target();
+                            crate::ai_assistant::backend_ready_for(self, target)
+                                .map(|()| crate::ai_assistant::chat_backend_for(self, target))
+                        } else {
+                            Err(String::new())
+                        };
+
+                        // Variabel environment project untuk tab HTTP aktif.
+                        let http_env_vars = {
+                            let ws_id = self
+                                .query_tabs
+                                .get(self.active_tab_index)
+                                .and_then(|t| t.http_client_state.as_ref())
+                                .and_then(|s| s.saved_workspace_id.clone());
+                            crate::window_egui::project_ui::http_vars_for_workspace(self, ws_id.as_deref())
+                        };
+
                         // Check for HTTP client tab
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && tab.http_client_state.is_some()
                         {
                             let conn_id = tab.connection_id;
+                            let mut new_tab_title = None;
+                            let mut saved_ws_id = None;
+                            let mut saved_folder_id = None;
+                            let mut workspaces_saved = false;
                             if let Some(state) = &mut tab.http_client_state {
-                                let workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id);
+                                state.env_vars = http_env_vars;
+                                workspaces_saved = crate::http_client::render_http_client(ui, state, &mut self.toasts, conn_id, &http_ai_backend);
                                 if workspaces_saved {
-                                    // Reload in-memory collection so sidebar reflects the newly saved request
-                                    self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                    saved_ws_id = state.saved_workspace_id.clone();
+                                    saved_folder_id = state.saved_folder_id.clone();
+                                    if !state.save_dialog_name.trim().is_empty() {
+                                        new_tab_title = Some(state.save_dialog_name.trim().to_string());
+                                    }
+                                }
+                            }
+                            if workspaces_saved {
+                                // Reload in-memory collection so sidebar reflects the newly saved request
+                                self.yaak_workspaces = crate::http_collection::load_workspaces();
+                                self.selected_menu = "APIs".to_string();
+                                if let Some(ws_id) = saved_ws_id {
+                                    self.collection_just_saved_workspace = Some(ws_id);
+                                }
+                                if let Some(f_id) = saved_folder_id {
+                                    self.collection_expanded_folders.insert(f_id);
+                                }
+                                if let Some(title) = new_tab_title {
+                                    tab.title = title;
+                                }
+                                if self.sync_account.is_some() {
+                                    self.sync_trigger_http = true;
                                 }
                             }
                             rendered_http = true;
@@ -2983,20 +3141,40 @@ impl Tabular {
                     
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && let Some(diagram_state) = &mut tab.diagram_state {
-                               crate::diagram_view::render_diagram(ui, diagram_state);
+                               if let Some(action) = crate::diagram_view::render_diagram(ui, diagram_state) {
+                                   diagram_action = Some((action, tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                               }
                                rendered_diagram = true;
                            
-                               if diagram_state.save_requested {
-                                   diagram_state.save_requested = false;
-                                   diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                               // Tab subset (`scoped_to`) tidak pernah disimpan:
+                               // isinya akan menimpa layout diagram database.
+                               // Auto save mati: perubahan hanya ditandai belum
+                               // tersimpan, kecuali ada permintaan simpan paksa.
+                               let force = std::mem::take(&mut diagram_state.force_save);
+                               if std::mem::take(&mut diagram_state.save_requested)
+                                   && diagram_state.scoped_to.is_none()
+                               {
+                                   if diagram_state.auto_save || force {
+                                       if force {
+                                           diagram_state.unsaved_changes = false;
+                                       }
+                                       // Autosave ke database menunggu jeda tanpa perubahan.
+                                       diagram_state.db_dirty_since = Some(std::time::Instant::now());
+                                       diagram_to_save = Some((tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
+                                   } else {
+                                       diagram_state.unsaved_changes = true;
+                                   }
                                }
                             }
                     
                         if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save
                              && let Some(cid) = conn_id_opt {
                                  let db = db_name_opt.unwrap_or_else(|| "default".to_string());
-                                 self.save_diagram(cid, &db, &state);
+                                 self.save_diagram_and_propagate(cid, &db, &state);
                              }
+                        if let Some((action, conn_id, db_name, state)) = diagram_action {
+                            self.handle_diagram_action(action, conn_id, db_name, &state);
+                        }
 
                         if let Some(conn_id) = redis_connection_id
                             && let Some(action) = redis_action
@@ -3112,6 +3290,62 @@ impl Tabular {
                             let rt_opt = self.runtime.clone();
 
                             match action {
+                                crate::dba_monitor::DbaAction::Refresh
+                                    if self
+                                        .query_tabs
+                                        .get(active_tab)
+                                        .and_then(|t| t.dba_monitor_state.as_ref())
+                                        .is_some_and(|s| s.selected_tab == models::enums::DbaMonitorTab::Dashboard) =>
+                                {
+                                    // Tab Dashboard: baca counter server, dan slow statement bila sudah waktunya.
+                                    let mut fetch_slow = false;
+                                    if let Some(state) = self.query_tabs.get_mut(active_tab).and_then(|t| t.dba_monitor_state.as_mut()) {
+                                        state.is_loading = true;
+                                        fetch_slow = state.dashboard.slow_due(std::time::Instant::now());
+                                        state.dashboard.slow_loading |= fetch_slow;
+                                    }
+                                    if let Some(rt) = rt_opt {
+                                        let sender = self.server_metrics_sender.clone();
+                                        let ctx = ui.ctx().clone();
+                                        rt.spawn(async move {
+                                            use crate::server_metrics::{fetch_counters, fetch_slow_statements, MetricsResult};
+                                            match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
+                                                Ok(pool) => {
+                                                    let counters = fetch_counters(&pool, &db_type).await;
+                                                    let _ = sender.send((active_tab, MetricsResult::Counters(counters)));
+                                                    if fetch_slow {
+                                                        let slow = fetch_slow_statements(&pool, &db_type).await;
+                                                        let _ = sender.send((active_tab, MetricsResult::Slow(slow)));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    let _ = sender.send((active_tab, MetricsResult::Counters(Err(e.clone()))));
+                                                    if fetch_slow {
+                                                        let _ = sender.send((active_tab, MetricsResult::Slow(Err(e))));
+                                                    }
+                                                }
+                                            }
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
+                                crate::dba_monitor::DbaAction::RefreshSlowStatements => {
+                                    if let Some(state) = self.query_tabs.get_mut(active_tab).and_then(|t| t.dba_monitor_state.as_mut()) {
+                                        state.dashboard.slow_loading = true;
+                                    }
+                                    if let Some(rt) = rt_opt {
+                                        let sender = self.server_metrics_sender.clone();
+                                        let ctx = ui.ctx().clone();
+                                        rt.spawn(async move {
+                                            let slow = match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
+                                                Ok(pool) => crate::server_metrics::fetch_slow_statements(&pool, &db_type).await,
+                                                Err(e) => Err(e),
+                                            };
+                                            let _ = sender.send((active_tab, crate::server_metrics::MetricsResult::Slow(slow)));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                }
                                 crate::dba_monitor::DbaAction::Refresh => {
                                     if let Some(tab) = self.query_tabs.get_mut(active_tab) {
                                         if let Some(state) = &mut tab.dba_monitor_state {
@@ -3188,8 +3422,7 @@ impl Tabular {
                         {
                             let active_tab = self.active_tab_index;
                             if let (Some(conn_id), Some(db_type)) = (conn_id_opt, db_type_opt.clone()) {
-                                log::info!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
-                                eprintln!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
+                                log::debug!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
                                 crate::connection::ensure_background_pool_creation(self, conn_id);
                                 let sender = self.user_manager_result_sender.clone();
                                 let ctx = ui.ctx().clone();
@@ -3430,7 +3663,6 @@ impl Tabular {
                             }
                         } else {
                             log::error!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
-                            eprintln!("[USER-MGR] Cannot process action: conn_id={:?}, db_type={:?}", conn_id_opt, db_type_opt);
                             if let Some(tab) = self.query_tabs.get_mut(active_tab) {
                                 if let Some(state) = &mut tab.user_manager_state {
                                     state.is_loading = false;
@@ -3441,7 +3673,17 @@ impl Tabular {
                         }
                     }
                     
-                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager {
+                        // Tab Git: diff file, detail commit, atau merge request.
+                        if self
+                            .query_tabs
+                            .get(self.active_tab_index)
+                            .is_some_and(|t| t.git_state.is_some())
+                        {
+                            crate::window_egui::git_view::render_active_git_tab(self, ui);
+                            rendered_git = true;
+                        }
+
+                        if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager && !rendered_git {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
                     
@@ -3457,6 +3699,11 @@ impl Tabular {
 
                     // Delete Connection confirmation dialog
                     self.render_delete_connection_confirmation(ui.ctx());
+                    self.render_drop_database_confirmation(ui.ctx());
+                    // Dialog aksi objek skema (rename, comment, maintenance, …)
+                    self.render_schema_ui(ui.ctx());
+                    // Dialog import/ekspor/transfer (bagian H)
+                    self.render_transfer_ui(ui.ctx());
                     self.render_clear_history_confirmation(ui.ctx());
                     self.render_delete_http_request_confirmation(ui.ctx());
                     self.render_rename_http_request_dialog(ui.ctx());
@@ -3467,73 +3714,32 @@ impl Tabular {
                     self.render_delete_http_workspace_confirmation(ui.ctx());
                     self.render_rename_http_workspace_dialog(ui.ctx());
 
-                    // Render context menu for row operations
-                    if self.show_row_context_menu {
-                        let mut close_menu = false;
-
-                        let area_response = egui::Area::new(egui::Id::new("row_context_menu"))
-                            .order(egui::Order::Foreground)
-                            .fixed_pos(self.context_menu_pos)
-                            .show(ui.ctx(), |ui| {
-                                let frame_response = egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                    ui.set_min_width(150.0);
-                                    if ui.button("📋 Duplicate Row").clicked() {
-                                        self.spreadsheet_duplicate_selected_row();
-                                        close_menu = true;
-                                    }
-                                    ui.separator();
-                                    if ui.button("🗑️ Delete Row").clicked() {
-                                        self.spreadsheet_delete_selected_row();
-                                        close_menu = true;
-                                    }
-                                });
-                                frame_response.response.hovered()
-                            });
-                        let hovered_menu = area_response.inner;
-                        // Close context menu when clicking elsewhere or pressing Escape
-                        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-                            self.show_row_context_menu = false;
-                            self.context_menu_row = None;
-                            self.context_menu_just_opened = false;
-                            self.context_menu_pos = egui::Pos2::ZERO;
-                        }
-                        if close_menu {
-                            self.show_row_context_menu = false;
-                            self.context_menu_row = None;
-                            self.context_menu_just_opened = false;
-                            self.context_menu_pos = egui::Pos2::ZERO;
-                        }
-                        // Close context menu when clicking anywhere outside the menu
-                        // Skip the first frame after opening to avoid immediate closure from the right-click event
-                        if !self.context_menu_just_opened {
-                            if ui.ctx().input(|i| i.pointer.any_click()) && !hovered_menu {
-                                self.show_row_context_menu = false;
-                                self.context_menu_row = None;
-                                self.context_menu_pos = egui::Pos2::ZERO;
-                            }
-                        } else {
-                            // Clear the flag after first frame
-                            self.context_menu_just_opened = false;
-                        }
-                    }
-
                     // Render MongoDB drop collection confirmation dialog if pending
                     if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
-                        let title = format!("Konfirmasi Drop Collection: {}.{}", db, coll);
-                        egui::Window::new(title)
+                        crate::window_egui::style::render_modal_backdrop(
+                            ui.ctx(),
+                            "drop_coll_backdrop",
+                            true,
+                        );
+                        let title = format!("Drop Collection {}.{}?", db, coll);
+                        let mut close_dialog = false;
+                        egui::Window::new(&title)
                             .collapsible(false)
                             .resizable(false)
                             .pivot(egui::Align2::CENTER_CENTER)
-                            .fixed_size(egui::vec2(480.0, 160.0))
+                            .default_width(460.0)
+                            .title_bar(false)
+                            .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
                             .show(ui.ctx(), |ui| {
-                                ui.label("Tindakan ini tidak dapat dibatalkan.");
+                                crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
                                 ui.add_space(8.0);
-                                ui.code(format!("db.{}.{}.drop()", db, coll));
+                                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                    ui.label("This action cannot be undone.");
+                                    ui.add_space(8.0);
+                                    ui.code(format!("db.{}.{}.drop()", db, coll));
+                                });
                                 ui.add_space(12.0);
-                                ui.horizontal(|ui| {
-                                    if ui.button("Cancel").clicked() {
-                                        self.pending_drop_collection = None;
-                                    }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
@@ -3554,113 +3760,71 @@ impl Tabular {
                                             // Clear caches and refresh connection tree
                                             self.clear_connection_cache(conn_id);
                                             self.refresh_connection(conn_id);
-                                            self.toasts.success(format!("Collection '{}.{}' berhasil di-drop", db, coll));
+                                            self.toasts.success(format!("Collection '{}.{}' dropped", db, coll));
                                         } else {
-                                            self.toasts.error(format!("Gagal drop collection '{}.{}'", db, coll));
+                                            self.toasts.error(format!("Failed to drop collection '{}.{}'", db, coll));
                                         }
                                         self.pending_drop_collection = None;
                                     }
                                 });
                             });
+                        if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_drop_collection = None;
+                        }
                     }
 
                     // Render DROP TABLE confirmation dialog if pending
                     if let Some((conn_id, ref db, ref table, ref stmt)) = self.pending_drop_table.clone() {
-                        let title = format!("Konfirmasi Drop Table: {}.{}", db, table);
+                        crate::window_egui::style::render_modal_backdrop(
+                            ui.ctx(),
+                            "drop_table_backdrop",
+                            true,
+                        );
+                        let title = format!("Drop Table {}.{}?", db, table);
                         let stmt_str = stmt.clone();
-                        egui::Window::new(title)
+                        let mut close_dialog = false;
+                        egui::Window::new(&title)
                             .collapsible(false)
                             .resizable(false)
                             .pivot(egui::Align2::CENTER_CENTER)
-                            .fixed_size(egui::vec2(480.0, 180.0))
+                            .default_width(460.0)
+                            .title_bar(false)
+                            .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
                             .show(ui.ctx(), |ui| {
-                                ui.label("Tindakan ini tidak dapat dibatalkan.");
+                                crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
                                 ui.add_space(8.0);
-                                ui.code(&stmt_str);
+                                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                                    ui.label("This action cannot be undone.");
+                                    ui.add_space(8.0);
+                                    ui.code(&stmt_str);
+                                });
                                 ui.add_space(12.0);
-                                ui.horizontal(|ui| {
-                                    if ui.button("Cancel").clicked() {
-                                        self.pending_drop_table = None;
-                                    }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
                                     {
-                                        use log::{error};
-                                        debug!("🗑️ Executing DROP TABLE:");
-                                        debug!("   Connection ID: {}", conn_id);
-                                        debug!("   Database: {}", db);
-                                        debug!("   Table: {}", table);
-                                        debug!("   Statement: {}", stmt_str);
-                                        // Execute DROP TABLE statement
-                                        let result = crate::connection::execute_query_with_connection(
-                                            self,
-                                            conn_id,
-                                            stmt_str.clone(),
-                                        );
-                                        // Log detailed result
-                                        match &result {
-                                            Some((headers, rows)) => {
-                                                debug!("   Result: Success");
-                                                debug!("   Headers: {:?}", headers);
-                                                debug!("   Rows count: {}", rows.len());
-                                                if !rows.is_empty() {
-                                                    debug!("   First row: {:?}", rows.first());
-                                                }
-                                                // Check if it's an error result
-                                                if headers.first().map(|h| h == "Error").unwrap_or(false) {
-                                                    error!("   ⚠️ Query returned Error header!");
-                                                    if let Some(err_row) = rows.first() {
-                                                        error!("   Error message: {:?}", err_row);
-                                                    }
-                                                }
-                                            }
-                                            None => {
-                                                error!("   Result: None (Failed)");
-                                            }
-                                        }
-                                        // Check if result is successful (not None and not Error)
-                                        let is_success = match &result {
-                                            Some((headers, _)) => {
-                                                !headers.first().map(|h| h == "Error").unwrap_or(false)
-                                            }
-                                            None => false,
-                                        };
-                                        if is_success {
-                                            debug!("✅ DROP TABLE succeeded for {}.{}", db, table);
-                                            debug!("   Connection ID: {}", conn_id);
-                                            debug!("   Database: '{}'", db);
-                                            debug!("   Table: '{}'", table);
-                                            // Use incremental update: just remove the table from tree
-                                            debug!("🌲 Removing table from sidebar tree (incremental)...");
-                                            self.remove_table_from_tree(conn_id, db, table);
-                                            // Clear cache for this table (but don't refresh entire connection)
-                                            debug!("🧹 Clearing cache for table {}.{}", db, table);
-                                            self.clear_table_cache(conn_id, db, table);
-                                            // Force UI repaint to reflect changes immediately
-                                            ui.ctx().request_repaint();
-                                            self.toasts.success(format!("Table '{}.{}' berhasil di-drop", db, table));
-                                        } else {
-                                            error!("❌ DROP TABLE failed for {}.{}", db, table);
-                                            // Show error message from result if available
-                                            let error_msg = if let Some((headers, rows)) = result {
-                                                if headers.first().map(|h| h == "Error").unwrap_or(false) {
-                                                    rows.first()
-                                                        .and_then(|row| row.first())
-                                                        .cloned()
-                                                        .unwrap_or_else(|| format!("Gagal drop table '{}.{}'", db, table))
-                                                } else {
-                                                    format!("Gagal drop table '{}.{}'", db, table)
-                                                }
+                                        debug!("🗑️ Executing DROP TABLE on conn {}: {}", conn_id, stmt_str);
+                                        let (db_name, table_name) = (db.clone(), table.clone());
+                                        self.run_query_with_callback(conn_id, stmt_str.clone(), move |tabular, message| {
+                                            if message.success {
+                                                debug!("✅ DROP TABLE succeeded for {}.{}", db_name, table_name);
+                                                tabular.remove_table_from_tree(conn_id, &db_name, &table_name);
+                                                tabular.clear_table_cache(conn_id, &db_name, &table_name);
+                                                tabular.toasts.success(format!("Table '{}.{}' dropped", db_name, table_name));
                                             } else {
-                                                format!("Gagal drop table '{}.{}'", db, table)
-                                            };
-                                            self.toasts.error(error_msg);
-                                        }
+                                                let err = message.error.clone().unwrap_or_default();
+                                                log::error!("❌ DROP TABLE failed for {}.{}: {}", db_name, table_name, err);
+                                                tabular.toasts.error(format!("Failed to drop table '{}.{}': {}", db_name, table_name, err));
+                                            }
+                                        });
                                         self.pending_drop_table = None;
                                     }
                                 });
                             });
+                        if close_dialog || ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_drop_table = None;
+                        }
                     }
 
                     self.render_active_query_jobs_overlay(ctx);
@@ -3671,256 +3835,313 @@ impl Tabular {
     /// Extracted verbatim from `update()`; `copy_shortcut_detected` is the
     /// per-frame flag computed during keyboard handling.
     fn handle_table_copy_shortcut(&mut self, ctx: &egui::Context, copy_shortcut_detected: bool) {
-            if copy_shortcut_detected {
-                debug!("📋 CMD+C for table/structure - executing copy...");
-            
-                let has_structure_selection = self.structure_selected_cell.is_some() 
-                    || self.structure_sel_anchor.is_some();
-                let has_data_selection = self.selected_cell.is_some() 
-                    || self.table_sel_anchor.is_some();
-                
-                let structure_focus = self.table_bottom_view
-                    == models::structs::TableBottomView::Structure
-                    && (self.table_recently_clicked || has_structure_selection);
-                let data_focus = self.table_recently_clicked || has_data_selection;
-            
-                debug!("📋 Table copy: table_flag={}, data_sel={:?}, struct_focus={}, data_focus={}", 
-                    self.table_recently_clicked,
-                    self.selected_cell,
-                    structure_focus,
-                    data_focus
-                );
+        if copy_shortcut_detected {
+            debug!("📋 CMD+C for table/structure - executing copy...");
 
-                // Handle structure/data copy
-                if structure_focus {
-                        // Structure multi-cell block
-                        if let (Some((ar, ac)), Some((br, bc))) =
-                            (self.structure_sel_anchor, self.structure_selected_cell)
-                        {
-                            let rmin = ar.min(br);
-                            let rmax = ar.max(br);
-                            let cmin = ac.min(bc);
-                            let cmax = ac.max(bc);
-                            let mut csv_out = String::new();
-                        
-                            match self.structure_sub_view {
-                                models::structs::StructureSubView::Columns => {
-                                    for r in rmin..=rmax {
-                                        if let Some(row) = self.structure_columns.get(r) {
-                                            let rowvals = [
-                                                (r + 1).to_string(),
-                                                row.name.clone(),
-                                                row.data_type.clone(),
-                                                row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
-                                                row.default_value.clone().unwrap_or_default(),
-                                                row.extra.clone().unwrap_or_default(),
-                                            ];
-                                            let mut fields: Vec<String> = Vec::new();
-                                            for c in cmin..=cmax {
-                                                let v = rowvals.get(c).cloned().unwrap_or_default();
-                                                fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
-                                            }
-                                            csv_out.push_str(&fields.join(","));
-                                            csv_out.push('\n');
-                                        }
+            let has_structure_selection =
+                self.structure_selected_cell.is_some() || self.structure_sel_anchor.is_some();
+            let has_data_selection =
+                self.selected_cell.is_some() || self.table_sel_anchor.is_some();
+
+            let structure_focus = self.table_bottom_view
+                == models::structs::TableBottomView::Structure
+                && (self.table_recently_clicked || has_structure_selection);
+            let data_focus = self.table_recently_clicked || has_data_selection;
+
+            debug!(
+                "📋 Table copy: table_flag={}, data_sel={:?}, struct_focus={}, data_focus={}",
+                self.table_recently_clicked, self.selected_cell, structure_focus, data_focus
+            );
+
+            // Handle structure/data copy
+            if structure_focus {
+                // Structure multi-cell block
+                if let (Some((ar, ac)), Some((br, bc))) =
+                    (self.structure_sel_anchor, self.structure_selected_cell)
+                {
+                    let rmin = ar.min(br);
+                    let rmax = ar.max(br);
+                    let cmin = ac.min(bc);
+                    let cmax = ac.max(bc);
+                    let mut csv_out = String::new();
+
+                    match self.structure_sub_view {
+                        models::structs::StructureSubView::Columns => {
+                            for r in rmin..=rmax {
+                                if let Some(row) = self.structure_columns.get(r) {
+                                    let rowvals = [
+                                        (r + 1).to_string(),
+                                        row.name.clone(),
+                                        row.data_type.clone(),
+                                        row.nullable
+                                            .map(|b| if b { "YES" } else { "NO" })
+                                            .unwrap_or("?")
+                                            .to_string(),
+                                        row.default_value.clone().unwrap_or_default(),
+                                        row.extra.clone().unwrap_or_default(),
+                                    ];
+                                    let mut fields: Vec<String> = Vec::new();
+                                    for c in cmin..=cmax {
+                                        let v = rowvals.get(c).cloned().unwrap_or_default();
+                                        fields.push(if v.contains(',') || v.contains('"') {
+                                            format!("\"{}\"", v.replace('"', "\"\""))
+                                        } else {
+                                            v
+                                        });
                                     }
+                                    csv_out.push_str(&fields.join(","));
+                                    csv_out.push('\n');
                                 }
-                                models::structs::StructureSubView::Indexes => {
-                                    for r in rmin..=rmax {
-                                        if let Some(row) = self.structure_indexes.get(r) {
-                                            let rowvals = [
-                                                (r + 1).to_string(),
-                                                row.name.clone(),
-                                                row.method.clone().unwrap_or_default(),
-                                                if row.unique { "YES".to_string() } else { "NO".to_string() },
-                                                if row.columns.is_empty() { String::new() } else { row.columns.join(",") },
-                                            ];
-                                            let mut fields: Vec<String> = Vec::new();
-                                            for c in cmin..=cmax {
-                                                let v = rowvals.get(c).cloned().unwrap_or_default();
-                                                fields.push(if v.contains(',') || v.contains('"') { format!("\"{}\"", v.replace('"', "\"\"")) } else { v });
-                                            }
-                                            csv_out.push_str(&fields.join(","));
-                                            csv_out.push('\n');
-                                        }
-                                    }
-                                }
-                            }
-                        
-                            if !csv_out.is_empty() {
-                                ctx.copy_text(csv_out.clone());
-                                debug!("📋 Copied Structure block {}x{} ({} chars)", rmax-rmin+1, cmax-cmin+1, csv_out.len());
                             }
                         }
-                        // Structure single cell
-                        else if let Some((r, c)) = self.structure_selected_cell {
-                            let val = match self.structure_sub_view {
-                                models::structs::StructureSubView::Columns => {
-                                    if let Some(row) = self.structure_columns.get(r) {
-                                        let rowvals = [(r + 1).to_string(), row.name.clone(), row.data_type.clone(), 
-                                                       row.nullable.map(|b| if b { "YES" } else { "NO" }).unwrap_or("?").to_string(),
-                                                       row.default_value.clone().unwrap_or_default(), row.extra.clone().unwrap_or_default()];
-                                        rowvals.get(c).cloned().unwrap_or_default()
-                                    } else { String::new() }
+                        models::structs::StructureSubView::Indexes => {
+                            for r in rmin..=rmax {
+                                if let Some(row) = self.structure_indexes.get(r) {
+                                    let rowvals = [
+                                        (r + 1).to_string(),
+                                        row.name.clone(),
+                                        row.method.clone().unwrap_or_default(),
+                                        if row.unique {
+                                            "YES".to_string()
+                                        } else {
+                                            "NO".to_string()
+                                        },
+                                        if row.columns.is_empty() {
+                                            String::new()
+                                        } else {
+                                            row.columns.join(",")
+                                        },
+                                    ];
+                                    let mut fields: Vec<String> = Vec::new();
+                                    for c in cmin..=cmax {
+                                        let v = rowvals.get(c).cloned().unwrap_or_default();
+                                        fields.push(if v.contains(',') || v.contains('"') {
+                                            format!("\"{}\"", v.replace('"', "\"\""))
+                                        } else {
+                                            v
+                                        });
+                                    }
+                                    csv_out.push_str(&fields.join(","));
+                                    csv_out.push('\n');
                                 }
-                                models::structs::StructureSubView::Indexes => {
-                                    if let Some(row) = self.structure_indexes.get(r) {
-                                        let rowvals = [(r + 1).to_string(), row.name.clone(), row.method.clone().unwrap_or_default(),
-                                                       if row.unique { "YES".to_string() } else { "NO".to_string() },
-                                                       if row.columns.is_empty() { String::new() } else { row.columns.join(",") }];
-                                        rowvals.get(c).cloned().unwrap_or_default()
-                                    } else { String::new() }
-                                }
-                            };
-                            ctx.copy_text(val.clone());
-                            debug!("📋 Copied Structure cell ({},{}) len={} chars", r, c, val.len());
+                            }
                         }
                     }
-                    // Data table copy
-                    else if data_focus {
-                        // Multi-cell block
-                        if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
-                            if let Some(csv) = crate::data_table::copy_selected_block_as_csv(self, a, b) {
-                                ctx.copy_text(csv.clone());
-                                debug!("📋 Copied Data block ({} chars)", csv.len());
-                            }
-                        }
-                        // Single cell
-                        else if let Some((r, c)) = self.selected_cell {
-                            if let Some(row) = self.current_table_data.get(r)
-                                && let Some(val) = row.get(c)
-                            {
-                                ctx.copy_text(val.clone());
-                                debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
-                            }
-                        }
-                        // Selected rows
-                        else if !self.selected_rows.is_empty() {
-                            if let Some(csv) = data_table::copy_selected_rows_as_csv(self) {
-                                ctx.copy_text(csv.clone());
-                                debug!("📋 Copied {} row(s) ({} chars)", self.selected_rows.len(), csv.len());
-                            }
-                        }
-                        // Selected columns
-                        else if !self.selected_columns.is_empty()
-                            && let Some(csv) = data_table::copy_selected_columns_as_csv(self)
-                        {
-                            ctx.copy_text(csv.clone());
-                            debug!(
-                                "📋 Copied {} col(s) ({} chars)",
-                                self.selected_columns.len(),
-                                csv.len()
-                            );
-                        }
-                    } else {
-                        debug!("⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})",
-                            self.table_recently_clicked, self.selected_cell);
+
+                    if !csv_out.is_empty() {
+                        ctx.copy_text(csv_out.clone());
+                        debug!(
+                            "📋 Copied Structure block {}x{} ({} chars)",
+                            rmax - rmin + 1,
+                            cmax - cmin + 1,
+                            csv_out.len()
+                        );
                     }
+                }
+                // Structure single cell
+                else if let Some((r, c)) = self.structure_selected_cell {
+                    let val = match self.structure_sub_view {
+                        models::structs::StructureSubView::Columns => {
+                            if let Some(row) = self.structure_columns.get(r) {
+                                let rowvals = [
+                                    (r + 1).to_string(),
+                                    row.name.clone(),
+                                    row.data_type.clone(),
+                                    row.nullable
+                                        .map(|b| if b { "YES" } else { "NO" })
+                                        .unwrap_or("?")
+                                        .to_string(),
+                                    row.default_value.clone().unwrap_or_default(),
+                                    row.extra.clone().unwrap_or_default(),
+                                ];
+                                rowvals.get(c).cloned().unwrap_or_default()
+                            } else {
+                                String::new()
+                            }
+                        }
+                        models::structs::StructureSubView::Indexes => {
+                            if let Some(row) = self.structure_indexes.get(r) {
+                                let rowvals = [
+                                    (r + 1).to_string(),
+                                    row.name.clone(),
+                                    row.method.clone().unwrap_or_default(),
+                                    if row.unique {
+                                        "YES".to_string()
+                                    } else {
+                                        "NO".to_string()
+                                    },
+                                    if row.columns.is_empty() {
+                                        String::new()
+                                    } else {
+                                        row.columns.join(",")
+                                    },
+                                ];
+                                rowvals.get(c).cloned().unwrap_or_default()
+                            } else {
+                                String::new()
+                            }
+                        }
+                    };
+                    ctx.copy_text(val.clone());
+                    debug!(
+                        "📋 Copied Structure cell ({},{}) len={} chars",
+                        r,
+                        c,
+                        val.len()
+                    );
+                }
             }
+            // Data table copy
+            else if data_focus {
+                // Multi-cell block
+                if let (Some(a), Some(b)) = (self.table_sel_anchor, self.selected_cell) {
+                    if let Some(csv) = crate::data_table::copy_selected_block_as_csv(self, a, b) {
+                        ctx.copy_text(csv.clone());
+                        debug!("📋 Copied Data block ({} chars)", csv.len());
+                    }
+                }
+                // Single cell
+                else if let Some((r, c)) = self.selected_cell {
+                    if let Some(row) = self.current_table_data.get(r)
+                        && let Some(val) = row.get(c)
+                    {
+                        ctx.copy_text(val.clone());
+                        debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
+                    }
+                }
+                // Selected rows
+                else if !self.selected_rows.is_empty() {
+                    if let Some(csv) = data_table::copy_selected_rows_as_csv(self) {
+                        ctx.copy_text(csv.clone());
+                        debug!(
+                            "📋 Copied {} row(s) ({} chars)",
+                            self.selected_rows.len(),
+                            csv.len()
+                        );
+                    }
+                }
+                // Selected columns
+                else if !self.selected_columns.is_empty()
+                    && let Some(csv) = data_table::copy_selected_columns_as_csv(self)
+                {
+                    ctx.copy_text(csv.clone());
+                    debug!(
+                        "📋 Copied {} col(s) ({} chars)",
+                        self.selected_columns.len(),
+                        csv.len()
+                    );
+                }
+            } else {
+                debug!(
+                    "⚠️ CMD+C but no focus target (table_flag={}, data_sel={:?})",
+                    self.table_recently_clicked, self.selected_cell
+                );
+            }
+        }
     }
 
     /// Render the feature-gated "Query AST Debug" floating window (Phase F).
     /// Extracted verbatim from `update()`.
     #[cfg(feature = "query_ast")]
     fn render_query_ast_debug_window(&mut self, ctx: &egui::Context) {
-            if self.show_query_ast_debug {
-                egui::Window::new("Query AST Debug")
-                    .open(&mut self.show_query_ast_debug)
-                    .resizable(true)
-                    .default_size(egui::vec2(520.0, 320.0))
-                    .show(ctx, |ui| {
-                        // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
-                        if let Some((h, key, ctes)) = crate::query_ast::take_last_debug() {
-                            self.last_plan_hash = Some(h);
-                            self.last_plan_cache_key = Some(key);
-                            self.last_ctes = ctes;
-                        }
-                        ui.label("Press F9 to toggle this panel.");
-                        if ui.button("Refresh Stats").clicked() {
-                            let (h, m) = crate::query_ast::cache_stats();
-                            self.last_cache_hits = h;
-                            self.last_cache_misses = m;
-                            if let Some(sql) = &self.last_compiled_sql
-                                && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
-                                && let Some(conn_id) = active_tab.connection_id
-                                && let Some(conn) =
-                                    self.connections.iter().find(|c| c.id == Some(conn_id))
+        if self.show_query_ast_debug {
+            egui::Window::new("Query AST Debug")
+                .open(&mut self.show_query_ast_debug)
+                .resizable(true)
+                .default_size(egui::vec2(520.0, 320.0))
+                .show(ctx, |ui| {
+                    // Attempt to capture latest plan hash/cache key from thread-local store (pop once per frame)
+                    if let Some((h, key, ctes)) = crate::query_ast::take_last_debug() {
+                        self.last_plan_hash = Some(h);
+                        self.last_plan_cache_key = Some(key);
+                        self.last_ctes = ctes;
+                    }
+                    ui.label("Press F9 to toggle this panel.");
+                    if ui.button("Refresh Stats").clicked() {
+                        let (h, m) = crate::query_ast::cache_stats();
+                        self.last_cache_hits = h;
+                        self.last_cache_misses = m;
+                        if let Some(sql) = &self.last_compiled_sql
+                            && let Some(active_tab) = self.query_tabs.get(self.active_tab_index)
+                            && let Some(conn_id) = active_tab.connection_id
+                            && let Some(conn) =
+                                self.connections.iter().find(|c| c.id == Some(conn_id))
+                        {
+                            if let Ok(plan_txt) =
+                                crate::query_ast::debug_plan(sql, &conn.connection_type)
                             {
-                                if let Ok(plan_txt) =
-                                    crate::query_ast::debug_plan(sql, &conn.connection_type)
-                                {
-                                    self.last_debug_plan = Some(plan_txt);
-                                }
-                                if let Ok((nodes, depth, subs_total, subs_corr, wins)) =
-                                    crate::query_ast::plan_metrics(sql)
-                                {
-                                    ui.label(format!(
-                                        "Plan: nodes={} depth={} subqueries={} (corr={}) windows={}",
-                                        nodes, depth, subs_total, subs_corr, wins
-                                    ));
-                                }
+                                self.last_debug_plan = Some(plan_txt);
+                            }
+                            if let Ok((nodes, depth, subs_total, subs_corr, wins)) =
+                                crate::query_ast::plan_metrics(sql)
+                            {
+                                ui.label(format!(
+                                    "Plan: nodes={} depth={} subqueries={} (corr={}) windows={}",
+                                    nodes, depth, subs_total, subs_corr, wins
+                                ));
                             }
                         }
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "Cache: hits={} misses={} hit_rate={:.1}%",
-                                self.last_cache_hits,
-                                self.last_cache_misses,
-                                if self.last_cache_hits + self.last_cache_misses > 0 {
-                                    (self.last_cache_hits as f64 * 100.0)
-                                        / (self.last_cache_hits + self.last_cache_misses) as f64
-                                } else {
-                                    0.0
-                                }
-                            ));
-                        });
-                        let rules = crate::query_ast::last_rewrite_rules();
-                        if !rules.is_empty() {
-                            ui.collapsing("Rewrite Rules Applied", |ui| {
-                                ui.label(rules.join(", "));
-                            });
-                        }
-                        if let Some(h) = self.last_plan_hash {
-                            ui.label(format!("Plan Hash: {:x}", h));
-                        }
-                        if let Some(k) = &self.last_plan_cache_key {
-                            ui.collapsing("Cache Key", |ui| {
-                                ui.code(k);
-                            });
-                        }
-                        if let Some(ctes) = &self.last_ctes
-                            && !ctes.is_empty()
-                        {
-                            ui.collapsing("Remaining CTEs", |ui| {
-                                ui.label(ctes.join(", "));
-                            });
-                        }
-                        if let Some(sql) = &self.last_compiled_sql {
-                            ui.collapsing("Last Emitted SQL", |ui| {
-                                ui.code(sql);
-                            });
-                        }
-                        if !self.last_compiled_headers.is_empty() {
-                            ui.collapsing("Last Inferred Headers", |ui| {
-                                ui.label(self.last_compiled_headers.join(", "));
-                            });
-                        }
-                        if let Some(plan) = &self.last_debug_plan {
-                            ui.collapsing("Logical Plan", |ui| {
-                                ui.code(plan);
-                            });
-                        }
-                        if self.last_compiled_sql.is_none() {
-                            ui.label("(Run a SELECT query to populate data)");
-                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Cache: hits={} misses={} hit_rate={:.1}%",
+                            self.last_cache_hits,
+                            self.last_cache_misses,
+                            if self.last_cache_hits + self.last_cache_misses > 0 {
+                                (self.last_cache_hits as f64 * 100.0)
+                                    / (self.last_cache_hits + self.last_cache_misses) as f64
+                            } else {
+                                0.0
+                            }
+                        ));
                     });
-            }
+                    let rules = crate::query_ast::last_rewrite_rules();
+                    if !rules.is_empty() {
+                        ui.collapsing("Rewrite Rules Applied", |ui| {
+                            ui.label(rules.join(", "));
+                        });
+                    }
+                    if let Some(h) = self.last_plan_hash {
+                        ui.label(format!("Plan Hash: {:x}", h));
+                    }
+                    if let Some(k) = &self.last_plan_cache_key {
+                        ui.collapsing("Cache Key", |ui| {
+                            ui.code(k);
+                        });
+                    }
+                    if let Some(ctes) = &self.last_ctes
+                        && !ctes.is_empty()
+                    {
+                        ui.collapsing("Remaining CTEs", |ui| {
+                            ui.label(ctes.join(", "));
+                        });
+                    }
+                    if let Some(sql) = &self.last_compiled_sql {
+                        ui.collapsing("Last Emitted SQL", |ui| {
+                            ui.code(sql);
+                        });
+                    }
+                    if !self.last_compiled_headers.is_empty() {
+                        ui.collapsing("Last Inferred Headers", |ui| {
+                            ui.label(self.last_compiled_headers.join(", "));
+                        });
+                    }
+                    if let Some(plan) = &self.last_debug_plan {
+                        ui.collapsing("Logical Plan", |ui| {
+                            ui.code(plan);
+                        });
+                    }
+                    if self.last_compiled_sql.is_none() {
+                        ui.label("(Run a SELECT query to populate data)");
+                    }
+                });
+        }
     }
 
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
-    fn try_save_prefs(&mut self) {
+    pub(crate) fn try_save_prefs(&mut self) {
         if self.prefs_dirty {
             if let (Some(store), Some(rt)) = (self.config_store.as_ref(), self.runtime.as_ref()) {
                 let prefs = crate::config::AppPreferences {
@@ -3953,9 +4174,26 @@ impl Tabular {
                     ai_model: self.ai_model.clone(),
                     ai_provider: self.ai_provider,
                     ai_base_url: self.ai_base_url.clone(),
-                    redis_browser_auto_refresh_seconds: self.redis_browser_auto_refresh_default_seconds.max(1),
+                    ai_default_target: self.ai_default_target,
+                    ai_chat_target: Some(self.ai_chat_target),
+                    ai_cli_profiles: self.ai_cli_profiles.values().cloned().collect(),
+                    ai_cli_auto_apply_edits: self.ai_cli_auto_apply_edits,
+                    ai_obsidian_vault_path: self.ai_obsidian_vault_path.clone(),
+                    ai_obsidian_enabled: self.ai_obsidian_enabled,
+                    ai_obsidian_allow_write: self.ai_obsidian_allow_write,
+                    ai_inline_suggestions: self.ai_inline_suggestions,
+                    redis_browser_auto_refresh_seconds: self
+                        .redis_browser_auto_refresh_default_seconds
+                        .max(1),
                     sync_server_url: Some(self.sync_server_url.clone()),
                     ui_mode: self.ui_mode,
+                    query_timeout_secs: self.query_timeout_secs,
+                    max_result_rows: self.max_result_rows.max(1),
+                    restore_session: self.restore_session,
+                    show_system_objects: self.show_system_objects,
+                    ai_panel_width: self.ai_panel_width,
+                    notify_long_queries: self.notify_long_queries,
+                    notify_threshold_secs: self.notify_threshold_secs,
                 };
                 rt.block_on(store.save(&prefs));
                 log::debug!(
@@ -3973,7 +4211,8 @@ impl Tabular {
 
 impl App for Tabular {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut Frame) {
-        static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        static FIRST_FRAME: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(true);
         let is_first = FIRST_FRAME.swap(false, std::sync::atomic::Ordering::SeqCst);
         if is_first {
             crate::log_startup_step("FIRST egui frame render started");
@@ -3981,6 +4220,7 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
+        self.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
 
         // Track user interaction for idle detection (> 3 min)
         let has_user_input = ctx.input(|i| {
@@ -3998,35 +4238,36 @@ impl App for Tabular {
         self.check_idle_and_auto_sync();
 
         // Compute adaptive device UI metrics (touch vs desktop) based on preferences and platform
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
+        let metrics =
+            crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
         // Ensure theme/style is applied for current `app_theme` and `ui_mode` each frame (idempotent)
         crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
-        
+
         // If Cmd+A was pressed, set a short-lived flag or state?
         // Actually, we need to know if "Select All" happened recently.
-        // Let's store a timestamp or frame counter? 
+        // Let's store a timestamp or frame counter?
         // Simpler: Just store the bool for this frame.
         // But the user sequence is Cmd+A (frame X), Release keys, Backspace (frame Y).
         // So checking "is Cmd+A pressed NOW" won't work for backspace.
-        
+
         // Wait, if the user holds Cmd+A and presses Backspace, that's one thing.
         // But usually they press Cmd+A, release, then Backspace.
         // The TextEdit "selection" state persists.
         // So we really need to know "Is the whole text selected?".
-        
+
         // Since we can't easily query that from outside without `TextEdit::load_state`,
         // let's try to load state in the dialog render function instead.
         // So here we just track backspace.
-        
+
         // Simple state machine: if Cmd+A pressed, remember it for a short time?
         // Actually, TextEdit handles selection internally.
         // If we want to support "Select All -> Delete", we need to know if everything is selected.
         // But we can't easily.
-        
+
         // Alternative Heuristic:
         // If Backspace is pressed, checking if modifiers.command is also held? No, that deletes word usually.
         // The user sequence is: Press Cmd+A (release). Press Backspace.
-        
+
         // Let's rely on `TextEditState`.
         // We can get `TextEditState` from memory using the ID.
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
@@ -4048,19 +4289,8 @@ impl App for Tabular {
                     self.shared_folders_cache = res.shared_folders_cache;
                 }
                 if let Some(account) = res.sync_account {
-                    if let Some(ref name) = account.display_name {
-                        self.profile_display_name_input = name.clone();
-                    }
-                    if let Some(ref avatar) = account.avatar_url {
-                        self.profile_avatar_url_input = avatar.clone();
-                    }
-                    if let Some(ref username) = account.username {
-                        self.profile_username_input = username.clone();
-                    }
-                    if let Some(ref phone) = account.phone {
-                        self.profile_phone_input = phone.clone();
-                    }
                     self.sync_account = Some(account);
+                    self.sync_profile_inputs_from_account();
                 }
                 self.connection_last_synced = res.connection_last_synced;
                 crate::sidebar_database::refresh_connections_tree(self);
@@ -4107,6 +4337,11 @@ impl App for Tabular {
             }
         }
 
+        // Drain background autocomplete metadata warming results
+        if crate::editor_autocomplete::poll_warm_results(self) {
+            ctx.request_repaint();
+        }
+
         // Drive sync & collaboration tick
         self.tick_sync(ctx);
         // Keyboard shortcut to toggle Query AST debug panel (Phase F)
@@ -4147,8 +4382,10 @@ impl App for Tabular {
 
         // Handle pending Auto Refresh request coming from History context menu
         ctx.data_mut(|data| {
-            if let Some(conn_id) = data.get_persisted::<i64>(egui::Id::new("auto_refresh_request_conn_id"))
-                && let Some(query) = data.get_persisted::<String>(egui::Id::new("auto_refresh_request_query"))
+            if let Some(conn_id) =
+                data.get_persisted::<i64>(egui::Id::new("auto_refresh_request_conn_id"))
+                && let Some(query) =
+                    data.get_persisted::<String>(egui::Id::new("auto_refresh_request_query"))
             {
                 // Initialize auto-refresh parameters but wait for user to confirm interval
                 self.auto_refresh_connection_id = Some(conn_id);
@@ -4254,10 +4491,11 @@ impl App for Tabular {
                     if self.fetching_redis_browser.insert(conn_id)
                         && let Some(sender) = &self.background_sender
                     {
-                        let _ = sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
-                            connection_id: conn_id,
-                            database_name: selected_keyspace,
-                        });
+                        let _ =
+                            sender.send(models::enums::BackgroundTask::FetchRedisBrowserState {
+                                connection_id: conn_id,
+                                database_name: selected_keyspace,
+                            });
                     }
                 }
             }
@@ -4266,50 +4504,34 @@ impl App for Tabular {
         // Lazy load preferences once (before applying visuals)
         if self.config_store.is_none()
             && !self.prefs_loaded
-            && let Some(rt) = &self.runtime
+            && let Some(rt) = self.runtime.clone()
         {
             match rt.block_on(crate::config::ConfigStore::new()) {
                 Ok(store) => {
                     let prefs = rt.block_on(store.load());
-                    self.app_theme = prefs.theme;
-                    self.ui_mode = prefs.ui_mode;
-                    self.link_editor_theme = prefs.link_editor_theme;
-                    self.advanced_editor.theme = match prefs.editor_theme.as_str() {
-                        "GITHUB_LIGHT" => crate::models::structs::EditorColorTheme::GithubLight,
-                        "GRUVBOX" => crate::models::structs::EditorColorTheme::Gruvbox,
-                        _ => crate::models::structs::EditorColorTheme::GithubDark,
-                    };
-                    self.advanced_editor.font_size = prefs.font_size;
-                    self.advanced_editor.word_wrap = prefs.word_wrap;
-                    // Load custom data directory if set
-                    if let Some(custom_dir) = &prefs.data_directory {
-                        self.data_directory = custom_dir.clone();
-                        // Apply the custom directory
-                        if let Err(e) = crate::config::set_data_dir(custom_dir) {
-                            log::error!(
-                                "Failed to set custom data directory '{}': {}",
-                                custom_dir,
-                                e
-                            );
-                            // Fallback to default
-                            self.data_directory =
-                                crate::config::get_data_dir().to_string_lossy().to_string();
-                        }
+                    // Semua field (termasuk pengaturan AI) disalin lewat satu jalur
+                    // supaya tidak ada yang terlewat lalu tertimpa default saat save.
+                    self.set_initial_prefs(prefs.clone());
+                    // Terapkan data directory kustom bila ada
+                    if let Some(custom_dir) = &prefs.data_directory
+                        && let Err(e) = crate::config::set_data_dir(custom_dir)
+                    {
+                        log::error!(
+                            "Failed to set custom data directory '{}': {}",
+                            custom_dir,
+                            e
+                        );
+                        // Fallback ke direktori default
+                        self.data_directory =
+                            crate::config::get_data_dir().to_string_lossy().to_string();
                     }
 
-                    // Load auto-update preference
-                    self.auto_check_updates = prefs.auto_check_updates;
-
-                    // Load server pagination preference
-                    self.use_server_pagination = prefs.use_server_pagination;
-
                     self.config_store = Some(store);
-                    self.last_saved_prefs = Some(prefs.clone());
-                    self.prefs_loaded = true;
                     log::debug!("Preferences loaded successfully on startup");
 
-                    // Check for updates on startup if enabled, but only once per day
-                    if prefs.auto_check_updates {
+                    // Check for updates on startup if enabled, but only once per day.
+                    // Never on iOS — see self_update::SELF_UPDATE_SUPPORTED.
+                    if prefs.auto_check_updates && crate::self_update::SELF_UPDATE_SUPPORTED {
                         let mut should_check = true;
                         if let Some(store_ref) = self.config_store.as_ref()
                             && let Some(last_iso) = rt.block_on(store_ref.get_last_update_check())
@@ -4342,9 +4564,7 @@ impl App for Tabular {
             }
         }
 
-        // Apply global UI visuals based on the current theme and device metrics.
-        let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(ctx, self.ui_mode);
-        crate::window_egui::style::apply_theme(ctx, self.app_theme, &metrics);
+        self.process_deferred_callback_queries();
 
         // If waiting for pool, check readiness and auto-run queued query
         if self.pool_wait_in_progress {
@@ -4366,39 +4586,52 @@ impl App for Tabular {
             if ready {
                 if let Some(conn_id) = self.pool_wait_connection_id {
                     let queued = self.pool_wait_query.clone();
-                    
+
                     // Execute asynchronously to avoid freezing if connection is still slow
-                    let job_id = self.next_query_job_id;
-                    self.next_query_job_id += 1;
-                    
-                    match crate::connection::prepare_query_job(self, conn_id, queued.clone(), job_id) {
+                    let job_id = self.jobs.allocate_id();
+
+                    match crate::connection::prepare_query_job(
+                        self,
+                        conn_id,
+                        queued.clone(),
+                        job_id,
+                    ) {
                         Ok(job) => {
-                            match crate::connection::spawn_query_job(self, job.clone(), self.query_result_sender.clone()) {
+                            match crate::connection::spawn_query_job(
+                                self,
+                                job.clone(),
+                                self.query_result_sender.clone(),
+                            ) {
                                 Ok(handle) => {
-                                    self.active_query_jobs.insert(job_id, crate::connection::QueryJobStatus {
+                                    self.jobs.active.insert(
                                         job_id,
-                                        connection_id: conn_id,
-                                        query_preview: queued.chars().take(50).collect(),
-                                        started_at: std::time::Instant::now(),
-                                        completed: false,
-                                    });
-                                    self.active_query_handles.insert(job_id, handle);
-                                    log::debug!("🚀 Asynchronously queued pool-wait query (Job {})", job_id);
+                                        crate::connection::QueryJobStatus {
+                                            job_id,
+                                            connection_id: conn_id,
+                                            query_preview: queued.chars().take(50).collect(),
+                                            started_at: std::time::Instant::now(),
+                                            completed: false,
+                                        },
+                                    );
+                                    self.jobs.handles.insert(job_id, handle);
+                                    log::debug!(
+                                        "🚀 Asynchronously queued pool-wait query (Job {})",
+                                        job_id
+                                    );
                                 }
                                 Err(e) => {
                                     log::error!("Failed to spawn queued query: {:?}", e);
-                                    self.error_message = format!("Failed to spawn queued query: {:?}", e);
-                                    self.show_error_message = true;
+                                    self.toasts
+                                        .error(format!("Failed to spawn queued query: {:?}", e));
                                 }
                             }
                         }
                         Err(e) => {
-                             log::error!("Failed to prepare queued query: {:?}", e);
-                             self.error_message = format!("Failed to prepare queued query: {:?}", e);
-                             self.show_error_message = true;
+                            log::error!("Failed to prepare queued query: {:?}", e);
+                            self.toasts
+                                .error(format!("Failed to prepare queued query: {:?}", e));
                         }
                     }
-
                 }
                 // Clear wait state
                 self.pool_wait_in_progress = false;
@@ -4421,8 +4654,7 @@ impl App for Tabular {
                     self.pool_wait_query.clear();
                     self.pool_wait_started_at = None;
                     self.query_execution_in_progress = false;
-                    self.error_message = format!("Connection failed: {}", err);
-                    self.show_error_message = true;
+                    self.toasts.error(format!("Connection failed: {}", err));
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
                         tab.query_message = format!("Connection error: {}", err);
                         tab.query_message_is_error = true;
@@ -4436,15 +4668,16 @@ impl App for Tabular {
                     self.pool_wait_query.clear();
                     self.pool_wait_started_at = None;
                     self.query_execution_in_progress = false;
-                    self.error_message = "Connection attempt timed out after 30 seconds.".to_string();
-                    self.show_error_message = true;
+                    self.toasts
+                        .error("Connection attempt timed out after 30 seconds.".to_string());
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        tab.query_message = "Connection attempt timed out after 30 seconds.".to_string();
+                        tab.query_message =
+                            "Connection attempt timed out after 30 seconds.".to_string();
                         tab.query_message_is_error = true;
                     }
                 } else {
-                    // Keep UI updated while waiting
-                    ctx.request_repaint();
+                    // Keep UI updated while waiting with 50ms throttle (smooth spinner without 100% CPU burn)
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 }
             }
         }
@@ -4495,7 +4728,7 @@ impl App for Tabular {
         // which is set when user clicks table cell and reset when clicking editor.
         // This avoids timing issues with egui focus state which updates AFTER render.
         let mut copy_shortcut_detected = false;
-        
+
         ctx.input(|i| {
             // Check for Copy event OR CMD+C key combo
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
@@ -4517,7 +4750,7 @@ impl App for Tabular {
 
         // Detect Save shortcut using consume_key so it works reliably on macOS/Windows/Linux
         let mut save_shortcut = false;
-        
+
         // Check if current tab is a diagram tab. If so, let diagram handle save.
         let is_diagram_active = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
             tab.diagram_state.is_some()
@@ -4525,53 +4758,34 @@ impl App for Tabular {
             false
         };
 
-        if !is_diagram_active {
-            ctx.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
-                    || i.consume_key(egui::Modifiers::CTRL, egui::Key::S)
-                {
-                    save_shortcut = true;
-                    println!("🔥 Save shortcut detected!");
-                }
-            });
-        }
-
-        // Handle keyboard shortcuts
-        ctx.input(|i| {
-            // CMD+W or CTRL+W to close current tab
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
-                && i.key_pressed(egui::Key::W)
-                && !self.query_tabs.is_empty()
-            {
-                editor::close_tab(self, self.active_tab_index);
+        {
+            use crate::keymap::{Action, consume};
+            // Shortcut global dari registry keymap. Setiap shortcut dikonsumsi
+            // agar tidak diproses dua kali oleh widget atau handler lain.
+            if !is_diagram_active && consume(ctx, &self.keymap, Action::SaveTab) {
+                save_shortcut = true;
             }
-
-            // CMD+Q or CTRL+Q to quit application
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::Q) {
+            let overlay_open = self.show_command_palette || self.quick_open_state.is_open;
+            if consume(ctx, &self.keymap, Action::CloseTab) && !self.query_tabs.is_empty() {
+                crate::session_restore::request_close_tab(self, self.active_tab_index);
+            }
+            if consume(ctx, &self.keymap, Action::Quit) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-
-            // CMD/CTRL+P, CMD+SHIFT+P, or CMD/CTRL+K to open universal quick open
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl)
-                && (i.key_pressed(egui::Key::P) || i.key_pressed(egui::Key::K))
-                && !self.show_command_palette
-                && !self.quick_open_state.is_open
-            {
-                crate::quick_open::open_quick_open(self);
+            if !self.show_command_palette && consume(ctx, &self.keymap, Action::QuickOpen) {
+                if self.quick_open_state.is_open {
+                    self.quick_open_state.close();
+                } else {
+                    crate::quick_open::open_quick_open(self);
+                }
             }
-
-            // F12 — Go to definition (navigate sidebar to table under cursor)
-            if i.key_pressed(egui::Key::F12) && !self.show_command_palette && !self.quick_open_state.is_open {
+            if !overlay_open && consume(ctx, &self.keymap, Action::GoToDefinition) {
                 editor::go_to_definition(self);
             }
-
-            // F2 — Rename symbol under cursor
-            if i.key_pressed(egui::Key::F2) && !self.show_command_palette && !self.quick_open_state.is_open {
+            if !overlay_open && consume(ctx, &self.keymap, Action::RenameSymbol) {
                 editor::begin_rename_symbol(self);
             }
-
-            // CMD/CTRL+R to refresh current view
-            if (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::R) {
+            if consume(ctx, &self.keymap, Action::Refresh) {
                 match self.table_bottom_view {
                     models::structs::TableBottomView::Structure => {
                         self.request_structure_refresh = true;
@@ -4582,7 +4796,46 @@ impl App for Tabular {
                     }
                 }
             }
+            if consume(ctx, &self.keymap, Action::NewTab) {
+                editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
+            }
+            if consume(ctx, &self.keymap, Action::OpenSettings) {
+                self.show_settings_window = true;
+            }
+            if consume(ctx, &self.keymap, Action::ShowShortcuts) {
+                self.show_shortcuts_window = !self.show_shortcuts_window;
+            }
+            if consume(ctx, &self.keymap, Action::ToggleTransactionMode) {
+                editor::execute_command(self, "Transaction: Begin / Toggle");
+                let enabled = self
+                    .query_tabs
+                    .get(self.active_tab_index)
+                    .is_some_and(|t| t.tx_mode);
+                self.toasts.info(if enabled {
+                    "Manual-commit mode on: statements run in a transaction until you commit or roll back."
+                } else {
+                    "Manual-commit mode off."
+                });
+            }
+        }
 
+        // Enter pertama pada Quick Open / command palette menjalankan pencarian yang masih
+        // di draft; baru Enter berikutnya memilih item. Dihitung di luar `ctx.input`.
+        let quick_open_search_pending = self.quick_open_state.is_open
+            && style::search_draft_pending(
+                ctx,
+                crate::quick_open::search_field_id(),
+                &self.quick_open_state.query,
+            );
+        let command_palette_search_pending = self.show_command_palette
+            && style::search_draft_pending(
+                ctx,
+                editor::command_palette_search_id(),
+                &self.command_palette_input,
+            );
+
+        // Handle keyboard shortcuts
+        ctx.input(|i| {
             // Handle table cell navigation with arrow keys
             // Only allow table navigation when table was recently clicked
             if !self.show_command_palette
@@ -4665,7 +4918,7 @@ impl App for Tabular {
                     let (max_rows, max_cols) = match self.structure_sub_view {
                         models::structs::StructureSubView::Columns => {
                             let cols = if self.structure_col_widths.is_empty() {
-                                6
+                                8
                             } else {
                                 self.structure_col_widths.len()
                             };
@@ -4757,7 +5010,12 @@ impl App for Tabular {
                     crate::quick_open::navigate_quick_open(self, -8);
                 } else if i.key_pressed(egui::Key::Tab) {
                     crate::quick_open::cycle_filter_category(self);
-                } else if i.key_pressed(egui::Key::Enter) {
+                } else if i.key_pressed(egui::Key::Enter)
+                    && i.modifiers.shift
+                    && !quick_open_search_pending
+                {
+                    crate::quick_open::focus_selected_quick_open(self);
+                } else if i.key_pressed(egui::Key::Enter) && !quick_open_search_pending {
                     crate::quick_open::execute_selected_quick_open(self);
                 }
             }
@@ -4771,7 +5029,10 @@ impl App for Tabular {
                     editor::navigate_command_palette(self, -1);
                 }
                 // Enter to execute selected command (only when command palette is visible)
-                else if i.key_pressed(egui::Key::Enter) && self.show_command_palette {
+                else if i.key_pressed(egui::Key::Enter)
+                    && self.show_command_palette
+                    && !command_palette_search_pending
+                {
                     log::debug!("🔥 GLOBAL DEBUG: Command palette Enter consumed");
                     editor::execute_selected_command(self);
                 }
@@ -4807,6 +5068,8 @@ impl App for Tabular {
                     self.show_command_palette = false;
                     self.command_palette_input.clear();
                     self.command_palette_selected_index = 0;
+                } else if self.grid_ext.close_topmost_overlay() {
+                    // Dialog/overlay grid (review SQL, find, jump, picker) ditutup dulu.
                 } else if self.spreadsheet_state.editing_cell.is_some() {
                     // If currently editing a cell, cancel the in-progress edit only
                     self.spreadsheet_finish_cell_edit(false);
@@ -4819,18 +5082,8 @@ impl App for Tabular {
                         self.spreadsheet_state.pending_operations.len(),
                         self.spreadsheet_state.is_dirty
                     );
-                    self.reset_spreadsheet_state();
-
-                    // Reload table view to revert any in-memory edits
-                    if self.is_table_browse_mode {
-                        // Ensure we stay in table browse mode so double-click editing works
-                        self.is_table_browse_mode = true;
-                        if self.use_server_pagination && !self.current_base_query.is_empty() {
-                            self.execute_paginated_query();
-                        } else {
-                            data_table::refresh_current_table_data(self);
-                        }
-                    }
+                    // Data dikembalikan lewat undo stack lalu tabel dimuat ulang.
+                    data_table::grid_state::discard_pending_changes(self);
                 } else {
                     // Clear selections in table
                     self.selected_rows.clear();
@@ -4847,11 +5100,6 @@ impl App for Tabular {
 
         // Execute Save action if shortcut was pressed
         if save_shortcut {
-            println!(
-                "🔥 Save shortcut execution block reached! pending_operations: {}, is_dirty: {}",
-                self.spreadsheet_state.pending_operations.len(),
-                self.spreadsheet_state.is_dirty
-            );
             debug!(
                 "🔥 Save shortcut pressed! pending_operations: {}, is_dirty: {}",
                 self.spreadsheet_state.pending_operations.len(),
@@ -4860,38 +5108,26 @@ impl App for Tabular {
 
             // If a cell is being edited, commit it first so its change is included in save
             if self.spreadsheet_state.editing_cell.is_some() {
-                println!("🔥 Committing active cell edit");
                 debug!("🔥 Committing active cell edit");
                 self.spreadsheet_finish_cell_edit(true);
             }
             // Prefer saving pending spreadsheet changes if any are queued
             if !self.spreadsheet_state.pending_operations.is_empty() {
                 let op_count = self.spreadsheet_state.pending_operations.len();
-                println!(
-                    "🔥 Calling spreadsheet_save_changes with {} operations",
-                    op_count
-                );
                 debug!(
                     "🔥 Calling spreadsheet_save_changes with {} operations",
                     op_count
                 );
-                self.spreadsheet_save_changes();
-                if !self.spreadsheet_state.is_dirty {
-                    self.toasts.success(format!("Berhasil menyimpan {} perubahan tabel", op_count));
-                } else if self.show_error_message {
-                    self.toasts.error(format!("Gagal menyimpan tabel: {}", self.error_message));
-                }
+                // Hasil simpan (sukses/gagal) dilaporkan oleh callback job di
+                // execute_spreadsheet_sql karena penyimpanan berjalan di latar belakang.
+                // Tampilkan review SQL dulu (B1); commit terjadi dari dialog.
+                data_table::grid_state::request_save_review(self);
             } else if !self.query_tabs.is_empty() {
-                println!("🔥 No spreadsheet operations, saving query tab instead");
                 debug!("🔥 No spreadsheet operations, saving query tab instead");
 
                 if let Err(error) = editor::save_current_tab(self) {
-                    self.error_message = format!("Save failed: {}", error);
-                    self.show_error_message = true;
                     self.toasts.error(format!("Save failed: {}", error));
                 }
-            } else {
-                println!("🔥 Nothing to save - no operations and no query tabs");
             }
         }
 
@@ -4935,11 +5171,35 @@ impl App for Tabular {
             crate::dialog_backup_restore::render_restore_dialog(self, ctx);
         }
 
+        // Copy Database dialog
+        if self.show_copy_database_dialog {
+            crate::dialog_copy_database::render_copy_database_dialog(self, ctx);
+        }
+
+        // Export All Data (ZIP) dialog
+        if self.show_export_all_dialog {
+            crate::dialog_export_import_all::render_export_all_dialog(self, ctx);
+        }
+
+        // Import All Data (ZIP) dialog
+        if self.show_import_all_dialog {
+            crate::dialog_export_import_all::render_import_all_dialog(self, ctx);
+        }
+
         // Show cache miss dialog (topmost)
+        self.poll_diagram_schema_jobs(ctx);
+        self.poll_diagram_repo_scan_jobs(ctx);
+        self.poll_diagram_db_jobs(ctx);
+        self.poll_diagram_flow_jobs(ctx);
+        self.sync_diagram_background_tasks();
+        crate::http_repo::render(self, ctx);
         self.render_cache_miss_dialog(ctx);
+        self.render_link_database_dialog(ctx);
+        self.render_diagram_merge_dialog(ctx);
 
         // Settings window with higher z-order
         self.render_settings_dialog(ctx);
+        self.render_platform_dialogs(ctx);
 
         // Centered loading overlay when waiting for connection pool
         self.render_connecting_overlay(ctx);
@@ -4949,6 +5209,9 @@ impl App for Tabular {
 
         // Check for background task results
         self.process_background_results(ctx);
+
+        // Deep link, Handoff, font bahasa (M1/M5/M6)
+        self.platform_tick(ctx);
 
         // Kick off deferred auto download if flagged (done outside borrow loops)
         if self.update_download_started && !self.update_download_in_progress {
@@ -5001,32 +5264,39 @@ impl App for Tabular {
                 .show(ctx, |ui| {
                     if let Some(info) = &info_clone {
                         if downloading {
-                            ui.vertical(|ui| {
-                                match &self.update_stage {
-                                    crate::auto_updater::UpdateStage::Downloading { progress, .. } => {
-                                        ui.horizontal(|ui| {
-                                            ui.spinner();
-                                            ui.label(format!("Downloading Tabular {} ({:.0}%)...", info.latest_version, progress * 100.0));
-                                        });
-                                    }
-                                    crate::auto_updater::UpdateStage::Extracting => {
-                                        ui.horizontal(|ui| {
-                                            ui.spinner();
-                                            ui.label("Extracting update archive...");
-                                        });
-                                    }
-                                    crate::auto_updater::UpdateStage::Applying => {
-                                        ui.horizontal(|ui| {
-                                            ui.spinner();
-                                            ui.label("Applying update...");
-                                        });
-                                    }
-                                    _ => {
-                                        ui.horizontal(|ui| {
-                                            ui.spinner();
-                                            ui.label(format!("Downloading update {}...", info.latest_version));
-                                        });
-                                    }
+                            ui.vertical(|ui| match &self.update_stage {
+                                crate::auto_updater::UpdateStage::Downloading {
+                                    progress, ..
+                                } => {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(format!(
+                                            "Downloading Tabular {} ({:.0}%)...",
+                                            info.latest_version,
+                                            progress * 100.0
+                                        ));
+                                    });
+                                }
+                                crate::auto_updater::UpdateStage::Extracting => {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label("Extracting update archive...");
+                                    });
+                                }
+                                crate::auto_updater::UpdateStage::Applying => {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label("Applying update...");
+                                    });
+                                }
+                                _ => {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(format!(
+                                            "Downloading update {}...",
+                                            info.latest_version
+                                        ));
+                                    });
                                 }
                             });
                         } else if installed {
@@ -5035,25 +5305,40 @@ impl App for Tabular {
                                     egui::RichText::new("✅ Update installed successfully!")
                                         .strong(),
                                 );
-                                ui.label(
-                                    egui::RichText::new("Restart Tabular to apply the update.")
-                                        .size(12.0),
-                                );
+                                // M8: bila "Install when quitting" aktif, cukup beri tahu.
+                                let hint = if crate::platform_prefs::effective_install_on_quit() {
+                                    crate::i18n::tr("Update ready. It will be installed when you quit.")
+                                } else {
+                                    crate::i18n::tr("Restart Tabular to apply the update.")
+                                };
+                                ui.label(egui::RichText::new(hint).size(12.0));
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("🚀 Restart Now").clicked() {
+                                    if ui.button(crate::i18n::tr("Restart Now")).clicked() {
                                         let staged = self.staged_update_script.as_ref();
-                                        let _ = crate::auto_updater::AutoUpdater::restart_app(staged);
+                                        let _ =
+                                            crate::auto_updater::AutoUpdater::restart_app(staged);
                                     }
-                                    if ui.button("Dismiss").clicked() {
+                                    if ui.button(crate::i18n::tr("Dismiss")).clicked() {
                                         self.show_update_notification = false;
                                     }
                                 });
                             });
                         } else if info.update_available {
                             ui.horizontal(|ui| {
-                                ui.label(format!("Update {} available", info.latest_version));
-                                if ui.button("Details").clicked() {
+                                ui.label(crate::i18n::trf(
+                                    "Update {} available",
+                                    &[&info.latest_version],
+                                ));
+                                if ui.button(crate::i18n::tr("Skip This Version")).clicked() {
+                                    let version = info.latest_version.clone();
+                                    crate::platform_prefs::update(|p| {
+                                        p.update_skipped_version = Some(version)
+                                    });
+                                    crate::platform_prefs::persist();
+                                    keep_open = false;
+                                }
+                                if ui.button(crate::i18n::tr("Details")).clicked() {
                                     ui.ctx().data_mut(|d| {
                                         d.insert_temp(
                                             egui::Id::new("trigger_update_details"),
@@ -5061,7 +5346,9 @@ impl App for Tabular {
                                         );
                                     });
                                 }
-                                if !download_started && ui.button("Download").clicked() {
+                                if !download_started
+                                    && ui.button(crate::i18n::tr("Download")).clicked()
+                                {
                                     ui.ctx().data_mut(|d| {
                                         d.insert_temp(
                                             egui::Id::new("trigger_manual_download"),
@@ -5103,7 +5390,6 @@ impl App for Tabular {
             }
         }
 
-
         // Check if we need to refresh the UI after a connection removal
         if self.needs_refresh {
             self.needs_refresh = false;
@@ -5119,32 +5405,45 @@ impl App for Tabular {
         {
             match result {
                 Ok(msg) => {
-                         // Extract IDs before mutable borrows
-                         let (target_id_opt, source_id_opt) = if let Some(dialog_state) = &self.replication_dialog {
-                             (Some(dialog_state.target_connection_id), dialog_state.source_connection_id)
-                         } else {
-                             (None, None)
-                         };
-                         
-                         // Save replication_master_id to the target connection
-                         if let (Some(target_id), Some(source_id)) = (target_id_opt, source_id_opt) {
-                             // Update the connection in memory
-                             if let Some(conn) = self.connections.iter_mut().find(|c| c.id == Some(target_id)) {
-                                 conn.replication_master_id = Some(source_id);
-                             }
-                             // Save to database (clone to avoid borrow issues)
-                             if let Some(conn) = self.connections.iter().find(|c| c.id == Some(target_id)).cloned() {
-                                 sidebar_database::update_connection_in_database(self, &conn);
-                             }
-                         }
-                         
-                         self.show_add_replication_dialog = false;
-                         self.replication_dialog = None;
-                         self.replication_setup_receiver = None;
-                         self.query_message = msg;
-                         self.show_message_panel = true;
-                         self.query_message_is_error = false;
-                         self.request_structure_refresh = true;
+                    // Extract IDs before mutable borrows
+                    let (target_id_opt, source_id_opt) =
+                        if let Some(dialog_state) = &self.replication_dialog {
+                            (
+                                Some(dialog_state.target_connection_id),
+                                dialog_state.source_connection_id,
+                            )
+                        } else {
+                            (None, None)
+                        };
+
+                    // Save replication_master_id to the target connection
+                    if let (Some(target_id), Some(source_id)) = (target_id_opt, source_id_opt) {
+                        // Update the connection in memory
+                        if let Some(conn) = self
+                            .connections
+                            .iter_mut()
+                            .find(|c| c.id == Some(target_id))
+                        {
+                            conn.replication_master_id = Some(source_id);
+                        }
+                        // Save to database (clone to avoid borrow issues)
+                        if let Some(conn) = self
+                            .connections
+                            .iter()
+                            .find(|c| c.id == Some(target_id))
+                            .cloned()
+                        {
+                            sidebar_database::update_connection_in_database(self, &conn);
+                        }
+                    }
+
+                    self.show_add_replication_dialog = false;
+                    self.replication_dialog = None;
+                    self.replication_setup_receiver = None;
+                    self.query_message = msg;
+                    self.show_message_panel = true;
+                    self.query_message_is_error = false;
+                    self.request_structure_refresh = true;
                 }
                 Err(err_msg) => {
                     if let Some(state) = &mut self.replication_dialog {
@@ -5165,7 +5464,8 @@ impl App for Tabular {
                     // Roll back the optimistic in-memory update to disk state.
                     sidebar_database::load_connections(self);
                     sidebar_database::refresh_connections_tree(self);
-                    self.toasts.error(format!("Failed to save custom view: {e}"));
+                    self.toasts
+                        .error(format!("Failed to save custom view: {e}"));
                 }
             }
         }
@@ -5176,6 +5476,10 @@ impl App for Tabular {
         dialog::render_error_dialog(self, ctx);
         dialog::render_about_dialog(self, ctx);
         crate::sync::ui_login::render_account_dialog(self, ctx);
+        crate::sync::ui_vault_setup::render_vault_unlock_dialog(self, ctx);
+        // Rendered after (and outside) the account dialog so closing that one
+        // does not take the deletion confirmation down with it.
+        crate::sync::ui_login::render_delete_account_dialog(self, ctx);
         // Index create/edit dialog
         dialog::render_index_dialog(self, ctx);
         dialog::render_create_table_dialog(self, ctx);
@@ -5183,6 +5487,7 @@ impl App for Tabular {
         dialog::render_parameter_dialog(self, ctx);
         dialog::render_unsafe_dml_dialog(self, ctx);
         crate::data_table::render_cell_inspector(self, ctx);
+        crate::data_table::grid_ui::render_grid_windows(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);
         sidebar_query::render_rename_query_folder_dialog(self, ctx);
         sidebar_query::render_move_to_folder_dialog(self, ctx);
@@ -5195,6 +5500,8 @@ impl App for Tabular {
         // Final attempt (in case any change slipped through)
         self.try_save_prefs();
 
+        // M11: Split View / Slide Over iPad — sembunyikan panel samping saat sempit.
+        self.apply_adaptive_layout(root_ui.ctx());
         self.render_left_sidebar(root_ui);
 
         // ─── AI Assistant Right Panel ───────────────────────────────────────────────
@@ -5207,48 +5514,79 @@ impl App for Tabular {
         // Note: We only reach here if table/structure has potential focus (not editor/message)
         self.handle_table_copy_shortcut(ctx, copy_shortcut_detected);
 
+        crate::keymap::render_shortcuts_window(self, ctx);
+
+        // Pemulihan sesi dijalankan sekali setelah preferensi dimuat (blok
+        // lazy-load preferensi di atas), lalu sesi disimpan berkala.
+        crate::session_restore::restore_on_startup(self);
+        crate::session_restore::handle_close_request(self, ctx);
+        crate::session_restore::render_close_tab_dialog(self, ctx);
+        crate::session_restore::render_quit_dialog(self, ctx);
+        crate::session_restore::tick(self, ctx);
+        crate::window_egui::git_jobs::poll(self, ctx);
+
+        self.render_query_insights(ctx);
+        #[cfg(not(target_os = "ios"))]
+        self.render_agent_access(ctx);
+        super::ai_fix::render_ai_fix_window(self, ctx);
+
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.
         self.toasts.show(ctx);
         if is_first {
-            crate::log_startup_step("FIRST egui frame render COMPLETED — window is ready and interactive!");
+            crate::log_startup_step(
+                "FIRST egui frame render COMPLETED — window is ready and interactive!",
+            );
         }
     } // end update
 
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.window_fill.to_normalized_gamma_f32()
+    }
+
     fn on_exit(&mut self) {
+        // Simpan sesi terakhir (jaring pengaman jika close_requested terlewat,
+        // misalnya saat OS mematikan aplikasi).
+        crate::session_restore::save_now(self, None);
         // Unwind connects that are still mid-handshake so their SSH child
         // processes are killed rather than orphaned when the app goes away.
         crate::connection::cancel_all_connection_attempts(self);
+        self.platform_on_exit();
     }
 } // end impl App for Tabular
 
 async fn wait_for_connection_pool(
     direct_pool: Option<models::enums::DatabasePool>,
-    shared_pools: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>>,
+    shared_pools: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>,
+    >,
     conn_id: i64,
 ) -> Result<models::enums::DatabasePool, String> {
     if let Some(p) = direct_pool {
-        log::info!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
-        eprintln!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
+        log::debug!("[POOL-WAIT] Direct pool available for conn_id={}", conn_id);
         return Ok(p);
     }
-    log::info!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
-    eprintln!("[POOL-WAIT] Waiting for background pool for conn_id={}...", conn_id);
+    log::debug!(
+        "[POOL-WAIT] Waiting for background pool for conn_id={}...",
+        conn_id
+    );
     for attempt in 0..100 {
         if let Ok(guard) = shared_pools.lock() {
             if let Some(p) = guard.get(&conn_id).cloned() {
-                log::info!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
-                eprintln!("[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}", attempt, conn_id);
+                log::debug!(
+                    "[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}",
+                    attempt,
+                    conn_id
+                );
                 return Ok(p);
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let err = format!("Connecting to database (id={}) timed out after 10s. Please check that the database server is reachable.", conn_id);
+    let err = format!(
+        "Connecting to database (id={}) timed out after 10s. Please check that the database server is reachable.",
+        conn_id
+    );
     log::error!("[POOL-WAIT] {}", err);
-    eprintln!("[POOL-WAIT] {}", err);
     Err(err)
 }
-
-
-

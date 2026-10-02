@@ -29,8 +29,18 @@ pub fn save_http_state(connection_id: i64, state: &HttpClientState) {
     );
 
     let path = dir.join(format!("{}.json", connection_id));
-    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(path, json);
+    let result = serde_json::to_string_pretty(&persisted)
+        .map_err(|e| e.to_string())
+        .and_then(|json| {
+            crate::directory::write_file_atomically(&path, json.as_bytes())
+                .map_err(|e| e.to_string())
+        });
+    if let Err(e) = result {
+        log::error!(
+            "Failed to save HTTP request state to {}: {}",
+            path.display(),
+            e
+        );
     }
 }
 
@@ -73,14 +83,21 @@ pub fn load_http_state(connection_id: i64) -> Option<HttpClientState> {
 
 // ─── Public entry-point called from window_egui ─────────────────────────────
 
+/// Backend AI yang siap dipakai, atau alasan kenapa belum bisa dipakai
+/// (ditampilkan apa adanya di UI).
+pub type AiBackend = Result<crate::ai_assistant::ChatBackend, String>;
+
+type Toasts = crate::window_egui::notifications::ToastManager;
+
 /// Render the HTTP client panel.
 /// Returns `true` if the user just saved a request to a collection workspace
 /// (so the caller can reload `app.yaak_workspaces` from disk).
 pub fn render_http_client(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
-    toasts: &mut crate::window_egui::notifications::ToastManager,
+    toasts: &mut Toasts,
     connection_id: Option<i64>,
+    ai: &AiBackend,
 ) -> bool {
     ui.style_mut().visuals.selection.bg_fill = crate::window_egui::style::theme_accent(ui.ctx());
     ui.style_mut().visuals.selection.stroke.color = egui::Color32::WHITE;
@@ -94,42 +111,49 @@ pub fn render_http_client(
 
         if let Some(resp) = received {
             apply_response(state, resp);
+        } else {
+            // Timer live di panel response butuh repaint berkala.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
         }
+    }
+
+    if state.ai.is_busy() {
+        if let Some((task, reply)) = state.ai.poll() {
+            apply_ai_reply(state, task, reply, toasts);
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // Cmd/Ctrl+Enter mengirim request dari mana pun di panel ini.
+    if !state.show_save_dialog
+        && !state.show_code_dialog
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
+        && can_send(state)
+    {
+        execute_request(state);
     }
 
     let mut workspaces_saved = false;
 
     egui::Frame::NONE
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.vertical(|ui| {
-                if render_url_bar(ui, state, toasts, connection_id) {
-                    workspaces_saved = true;
-                }
-                ui.add_space(4.0);
-
-                let available = ui.available_size();
-                let left_w = (available.x * 0.5).max(300.0).min(available.x - 260.0);
-
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(left_w);
-                        ui.set_min_height(available.y);
-                        render_request_panel(ui, state);
-                    });
-
-                    ui.separator();
-
-                    ui.vertical(|ui| {
-                        ui.set_min_height(available.y);
-                        render_response_panel(ui, state);
-                    });
-                });
-            });
+            if render_url_bar(ui, state, toasts, connection_id) {
+                workspaces_saved = true;
+            }
+            if state.ai.bar_open {
+                ui.add_space(8.0);
+                render_ai_bar(ui, state, ai);
+            }
+            ui.add_space(10.0);
+            render_split_panels(ui, state, toasts, ai);
         });
 
     // Render the save dialog (outside the Frame so it can float as a Window)
-    if render_save_dialog(ui, state, toasts) {
+    if render_save_dialog(ui, state, toasts, connection_id) {
         workspaces_saved = true;
     }
 
@@ -137,6 +161,379 @@ pub fn render_http_client(
     render_code_dialog(ui, state, toasts);
 
     workspaces_saved
+}
+
+fn can_send(state: &HttpClientState) -> bool {
+    !state.is_loading && !state.url.trim().is_empty()
+}
+
+/// Label modifier shortcut sesuai platform (`⌘` ada di font Proportional).
+fn mod_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘"
+    } else {
+        "Ctrl+"
+    }
+}
+
+const ALL_METHODS: [HttpMethod; 7] = [
+    HttpMethod::GET,
+    HttpMethod::POST,
+    HttpMethod::PUT,
+    HttpMethod::PATCH,
+    HttpMethod::DELETE,
+    HttpMethod::HEAD,
+    HttpMethod::OPTIONS,
+];
+
+// ─── Bantuan AI (agy / Claude Code / API) ──────────────────────────────────
+
+/// Nama backend AI untuk ditampilkan ke user.
+fn ai_backend_label(backend: &crate::ai_assistant::ChatBackend) -> &'static str {
+    match backend.backend {
+        crate::config::AiBackend::Api => backend.provider.display_name(),
+        crate::config::AiBackend::Cli => backend.cli.kind.display_name(),
+    }
+}
+
+fn ai_consent_id() -> egui::Id {
+    egui::Id::new("http_ai_consent_v1")
+}
+
+/// User sudah menyetujui bahwa request (tanpa secret) dikirim ke backend AI.
+fn ai_consent_given(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.get_persisted::<bool>(ai_consent_id()))
+        .unwrap_or(false)
+}
+
+/// Pemberitahuan sekali pakai sebelum data request pertama kali dikirim ke AI.
+/// Mengembalikan `true` bila user sudah setuju.
+fn render_ai_consent(ui: &mut egui::Ui, backend_label: &str) -> bool {
+    use crate::window_egui::style;
+    if ai_consent_given(ui.ctx()) {
+        return true;
+    }
+    let ctx = ui.ctx().clone();
+    style::ai_notice_frame(style::theme_info(&ctx)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            egui::RichText::new(format!(
+                "{}  The request (URL, headers, body) and response are sent to {backend_label}. \
+Tokens, passwords, cookies and other secrets are replaced with {} first.",
+                egui_icons::icons::ICON_SHIELD.codepoint,
+                crate::http_ai::REDACTED
+            ))
+            .size(12.0),
+        );
+        ui.add_space(6.0);
+        if ui.add(style::btn_secondary("Got it, continue")).clicked() {
+            ctx.data_mut(|d| d.insert_persisted(ai_consent_id(), true));
+        }
+    });
+    false
+}
+
+fn start_ai_task(
+    state: &mut HttpClientState,
+    task: crate::http_ai::HttpAiTask,
+    backend: &crate::ai_assistant::ChatBackend,
+) {
+    let (system, user) = crate::http_ai::build_prompts(task, state, &state.ai.prompt);
+    log::info!(
+        "[HTTP] AI task '{}' via {}",
+        task.label(),
+        ai_backend_label(backend)
+    );
+    let rx = crate::ai_assistant::request_text(backend, system, user);
+    state.ai.start(task, rx);
+    if task == crate::http_ai::HttpAiTask::ExplainResponse {
+        state.response_tab = HttpResponseTab::Ai;
+    }
+}
+
+fn apply_ai_reply(
+    state: &mut HttpClientState,
+    task: crate::http_ai::HttpAiTask,
+    reply: Result<String, String>,
+    toasts: &mut Toasts,
+) {
+    use crate::http_ai::{self, HttpAiTask};
+    let reply = match reply {
+        Ok(text) => text,
+        Err(e) => {
+            log::warn!("[HTTP] AI task '{}' failed: {}", task.label(), e);
+            state.ai.error = Some(e);
+            return;
+        }
+    };
+    match task {
+        HttpAiTask::ExplainResponse => {
+            state.ai.explanation = Some(reply.trim().to_string());
+            state.response_tab = HttpResponseTab::Ai;
+        }
+        HttpAiTask::GenerateBody => match http_ai::extract_json(&reply) {
+            Ok(json) => {
+                state.body_type = HttpBodyType::Json;
+                state.body_text = json;
+                state.active_tab = HttpRequestTab::Body;
+                state.ai.prompt.clear();
+                toasts.success("Body generated by AI");
+            }
+            Err(e) => state.ai.error = Some(e),
+        },
+        HttpAiTask::BuildRequest => {
+            let Some(curl) = http_ai::extract_curl(&reply) else {
+                state.ai.error = Some("The AI reply did not contain a curl command".to_string());
+                return;
+            };
+            match http_ai::apply_generated_curl(state, &curl) {
+                Ok(warnings) => {
+                    state.ai.prompt.clear();
+                    toasts.success("Request built by AI. Review it, then press Send.");
+                    for w in warnings {
+                        toasts.warning(w);
+                    }
+                }
+                Err(e) => state.ai.error = Some(format!("Could not apply the AI request: {e}")),
+            }
+        }
+    }
+}
+
+/// Bar prompt AI di bawah URL bar: pilih tugas, tulis instruksi, jalankan.
+fn render_ai_bar(ui: &mut egui::Ui, state: &mut HttpClientState, ai: &AiBackend) {
+    use crate::http_ai::HttpAiTask;
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::nav_text_muted(&ctx);
+
+    egui::Frame::new()
+        .fill(style::ai_surface(&ctx))
+        .stroke(egui::Stroke::new(1.0, style::ai_border(&ctx)))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let backend = match ai {
+                Ok(b) => b,
+                Err(msg) => {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  {msg}",
+                                egui_icons::icons::ICON_INFO.codepoint
+                            ))
+                            .size(12.0)
+                            .color(muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if style::ai_icon_button(
+                                ui,
+                                egui_icons::icons::ICON_CLOSE.codepoint,
+                                "Close",
+                            )
+                            .clicked()
+                            {
+                                state.ai.bar_open = false;
+                            }
+                        });
+                    });
+                    return;
+                }
+            };
+            let label = ai_backend_label(backend);
+            if !render_ai_consent(ui, label) {
+                return;
+            }
+
+            let busy = state.ai.is_busy();
+            let mut run = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(
+                    egui::RichText::new(egui_icons::icons::ICON_AUTO_AWESOME.codepoint)
+                        .size(16.0)
+                        .color(style::theme_accent(&ctx)),
+                );
+                for task in [HttpAiTask::BuildRequest, HttpAiTask::GenerateBody] {
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::selectable(
+                                state.ai.task == task,
+                                egui::RichText::new(task.label()).size(12.0),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        state.ai.task = task;
+                    }
+                }
+
+                let right_w = 110.0;
+                let hint = match state.ai.task {
+                    HttpAiTask::GenerateBody => {
+                        "e.g. create a user with 3 roles and a nested address"
+                    }
+                    _ => "e.g. get page 2 of permissions sorted by name",
+                };
+                let resp = style::render_text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut state.ai.prompt)
+                        .id_salt("http_ai_prompt")
+                        .hint_text(egui::RichText::new(hint).color(muted)),
+                    (ui.available_width() - right_w).max(120.0),
+                    None,
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    run = true;
+                }
+
+                if busy {
+                    ui.add(egui::Spinner::new().size(16.0));
+                    ui.label(egui::RichText::new("Thinking…").size(12.0).color(muted));
+                } else {
+                    let can_run = !state.ai.prompt.trim().is_empty();
+                    if ui
+                        .add_enabled(can_run, style::btn_field_action_primary(ui, "Generate"))
+                        .clicked()
+                    {
+                        run = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if style::ai_icon_button(ui, egui_icons::icons::ICON_CLOSE.codepoint, "Close")
+                        .clicked()
+                    {
+                        state.ai.bar_open = false;
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+            match &state.ai.error {
+                Some(err) if !busy => {
+                    ui.label(
+                        egui::RichText::new(err)
+                            .size(11.5)
+                            .color(style::theme_danger(&ctx)),
+                    );
+                }
+                _ => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "via {label} · secrets are redacted before sending"
+                        ))
+                        .size(11.0)
+                        .color(muted),
+                    );
+                }
+            }
+
+            if run && !busy && !state.ai.prompt.trim().is_empty() {
+                let task = state.ai.task;
+                start_ai_task(state, task, backend);
+            }
+        });
+}
+
+// ─── Layout: panel request/response dengan pembagi yang bisa digeser ─────────
+
+fn render_split_panels(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut Toasts,
+    ai: &AiBackend,
+) {
+    let ctx = ui.ctx().clone();
+    let area = ui.available_rect_before_wrap();
+    // Panel sempit otomatis ditumpuk supaya editor tidak terlalu kurus.
+    let vertical = state.layout_vertical || area.width() < 760.0;
+    let handle = 12.0;
+    let ratio = state.split_ratio.clamp(0.2, 0.8);
+
+    let (first, handle_rect, second) = if vertical {
+        let h1 = ((area.height() - handle) * ratio).round();
+        let first = egui::Rect::from_min_size(area.min, egui::vec2(area.width(), h1));
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(area.left(), first.bottom()),
+            egui::vec2(area.width(), handle),
+        );
+        let second =
+            egui::Rect::from_min_max(egui::pos2(area.left(), handle_rect.bottom()), area.max);
+        (first, handle_rect, second)
+    } else {
+        let w1 = ((area.width() - handle) * ratio).round();
+        let first = egui::Rect::from_min_size(area.min, egui::vec2(w1, area.height()));
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(first.right(), area.top()),
+            egui::vec2(handle, area.height()),
+        );
+        let second =
+            egui::Rect::from_min_max(egui::pos2(handle_rect.right(), area.top()), area.max);
+        (first, handle_rect, second)
+    };
+
+    let resp = ui
+        .interact(
+            handle_rect,
+            ui.id().with("http_split_handle"),
+            egui::Sense::click_and_drag(),
+        )
+        .on_hover_cursor(if vertical {
+            egui::CursorIcon::ResizeVertical
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        })
+        .on_hover_text("Drag to resize · double-click to reset");
+    if resp.dragged()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let r = if vertical {
+            (p.y - area.top()) / area.height().max(1.0)
+        } else {
+            (p.x - area.left()) / area.width().max(1.0)
+        };
+        state.split_ratio = r.clamp(0.2, 0.8);
+    }
+    if resp.double_clicked() {
+        state.split_ratio = 0.5;
+    }
+
+    let active = resp.hovered() || resp.dragged();
+    let line_color = if active {
+        crate::window_egui::style::theme_accent(&ctx).gamma_multiply(0.8)
+    } else {
+        crate::window_egui::style::nav_border(&ctx)
+    };
+    let stroke = egui::Stroke::new(if active { 2.0 } else { 1.0 }, line_color);
+    if vertical {
+        ui.painter()
+            .hline(handle_rect.x_range(), handle_rect.center().y, stroke);
+    } else {
+        ui.painter()
+            .vline(handle_rect.center().x, handle_rect.y_range(), stroke);
+    }
+
+    let mut req_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("http_request_panel")
+            .max_rect(first)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    req_ui.shrink_clip_rect(first);
+    render_request_panel(&mut req_ui, state, toasts);
+
+    let mut resp_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("http_response_panel")
+            .max_rect(second)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    resp_ui.shrink_clip_rect(second);
+    render_response_panel(&mut resp_ui, state, toasts, ai);
+
+    ui.allocate_rect(area, egui::Sense::hover());
 }
 
 // ─── URL bar ────────────────────────────────────────────────────────────────
@@ -147,53 +544,124 @@ fn render_url_bar(
     toasts: &mut crate::window_egui::notifications::ToastManager,
     connection_id: Option<i64>,
 ) -> bool {
+    use crate::window_egui::style;
+
     let mut workspaces_saved = false;
+    let ctx = ui.ctx().clone();
 
     let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
         ui.ctx(),
         crate::config::UiModePreference::Auto,
     );
-
-    let bar_h = if metrics.is_touch { 36.0 } else { 28.0 };
-    let method_w = if metrics.is_touch { 92.0 } else { 78.0 };
-    let send_save_code_w = if metrics.is_touch { 71.0 } else { 61.0 };
-    let font_sz = if metrics.is_touch { 14.0 } else { 12.5 };
+    let bar_h = if metrics.is_touch { 40.0 } else { 34.0 };
+    let method_w = if metrics.is_touch { 108.0 } else { 96.0 };
+    // Send, Save, Code sengaja berukuran sama.
+    let btn_w = if metrics.is_touch { 96.0 } else { 84.0 };
+    let font_sz = if metrics.is_touch { 14.5 } else { 13.0 };
+    let gap = 6.0;
+    let muted = style::nav_text_muted(&ctx);
 
     ui.horizontal(|ui| {
-        ui.spacing_mut().interact_size.y = bar_h;
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+        ui.spacing_mut().item_spacing.x = gap;
 
-        // Method selector
-        egui::ComboBox::from_id_salt("http_method_combo")
-            .width(method_w)
-            .selected_text(state.method.label())
-            .show_ui(ui, |ui| {
-                for method in [
-                    HttpMethod::GET,
-                    HttpMethod::POST,
-                    HttpMethod::PUT,
-                    HttpMethod::DELETE,
-                    HttpMethod::PATCH,
-                    HttpMethod::HEAD,
-                    HttpMethod::OPTIONS,
-                ] {
-                    let label = method.label();
-                    ui.selectable_value(&mut state.method, method, label);
+        // ── Field gabungan: [METHOD ▾ | URL] ──
+        // Empat tombol berukuran sama: Send, Save, Code, AI.
+        let field_w = (ui.available_width() - btn_w * 4.0 - gap * 4.0).max(200.0);
+        let (field_rect, _) =
+            ui.allocate_exact_size(egui::vec2(field_w, bar_h), egui::Sense::hover());
+        let visuals = ui.visuals().clone();
+        let painter = ui.painter().clone();
+        painter.rect_filled(field_rect, 6.0, visuals.text_edit_bg_color());
+
+        let method_rect = egui::Rect::from_min_size(field_rect.min, egui::vec2(method_w, bar_h));
+        let method_resp = ui
+            .interact(
+                method_rect,
+                ui.id().with("http_method_picker"),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("HTTP method");
+        if method_resp.hovered() {
+            painter.rect_filled(
+                method_rect.shrink(3.0),
+                4.0,
+                style::nav_raised(&ctx).gamma_multiply(0.6),
+            );
+        }
+        painter.text(
+            method_rect.left_center() + egui::vec2(12.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            state.method.label(),
+            egui::FontId::monospace(font_sz),
+            style::http_method_color(&ctx, &state.method),
+        );
+        painter.text(
+            method_rect.right_center() - egui::vec2(8.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            egui_icons::icons::ICON_EXPAND_MORE.codepoint,
+            egui::FontId::proportional(16.0),
+            muted,
+        );
+        painter.vline(
+            method_rect.right(),
+            egui::Rangef::new(method_rect.top() + 7.0, method_rect.bottom() - 7.0),
+            egui::Stroke::new(1.0, style::nav_border(&ctx)),
+        );
+
+        egui::Popup::menu(&method_resp)
+            .width(method_w + 30.0)
+            .show(|ui| {
+                for method in ALL_METHODS {
+                    let label = egui::RichText::new(method.label())
+                        .family(egui::FontFamily::Monospace)
+                        .size(font_sz)
+                        .color(style::http_method_color(ui.ctx(), &method));
+                    if ui.selectable_label(state.method == method, label).clicked() {
+                        state.method = method;
+                    }
                 }
             });
 
-        // URL input — fills all remaining space so the right buttons align flush to the right
-        let total_right_w = send_save_code_w + send_save_code_w + send_save_code_w;
-        let total_spacing = ui.spacing().item_spacing.x * 4.0;
-        let url_w = (ui.available_width() - total_right_w - total_spacing).max(80.0);
-        let url_resp = ui.add_sized(
-            [url_w, bar_h],
+        let url_rect = egui::Rect::from_min_max(
+            egui::pos2(method_rect.right() + 10.0, field_rect.top()),
+            egui::pos2(field_rect.right() - 10.0, field_rect.bottom()),
+        );
+        // Pakai child UI agar kursor layout tidak mundur ke url_rect; `ui.put`
+        // memajukan kursor dari url_rect.right sehingga tombol Send menimpa field.
+        let mut url_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(url_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let url_resp = url_ui.add_sized(
+            url_rect.size(),
             egui::TextEdit::singleline(&mut state.url)
-                .hint_text("https://api.example.com/endpoint")
-                .desired_width(url_w)
-                .margin(egui::Margin::symmetric(8, 4))
-                .vertical_align(egui::Align::Center),
+                .id_salt("http_url_field")
+                .frame(egui::Frame::NONE)
+                .font(egui::FontId::monospace(font_sz))
+                .vertical_align(egui::Align::Center)
+                .desired_width(f32::INFINITY)
+                .hint_text(
+                    egui::RichText::new(
+                        "https://api.example.com/endpoint  or paste a cURL command",
+                    )
+                    .color(muted),
+                ),
+        );
+
+        let border = if url_resp.has_focus() {
+            visuals.widgets.active.bg_stroke.color
+        } else if ui.rect_contains_pointer(field_rect) {
+            visuals.widgets.hovered.bg_stroke.color
+        } else {
+            visuals.widgets.inactive.bg_stroke.color
+        };
+        painter.rect_stroke(
+            field_rect,
+            6.0,
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
         );
 
         // Pasting a full curl command directly into the URL field auto-converts
@@ -214,78 +682,100 @@ fn render_url_bar(
             }
         }
 
-        // SEND button — identical width, height, and corner radius as Save and Code
-        let send_label = if state.is_loading {
-            format!("{}  Sending…", egui_icons::icons::ICON_HOURGLASS_EMPTY.codepoint)
-        } else {
-            format!("{}  Send", egui_icons::icons::ICON_PLAY_ARROW.codepoint)
-        };
-        let can_send = !state.is_loading && !state.url.is_empty();
-        let send_btn = egui::Button::new(
-            egui::RichText::new(send_label)
-                .color(egui::Color32::WHITE)
-                .strong()
-                .size(font_sz),
-        )
-        .fill(crate::window_egui::style::theme_accent(ui.ctx()))
-        .corner_radius(egui::CornerRadius::same(5));
-
-        let send_resp = ui
-            .add_enabled_ui(can_send, |ui| {
-                ui.add_sized([send_save_code_w, bar_h], send_btn)
-            })
-            .inner;
-
-        if send_resp.clicked() {
-            execute_request(state);
-        }
-
-        // SAVE button — identical width, height, and corner radius as Send and Code
-        let save_label = format!("{} Save", egui_icons::icons::ICON_SAVE.codepoint);
-        let save_btn = ui
-            .add_sized(
-                [send_save_code_w, bar_h],
-                egui::Button::new(
-                    egui::RichText::new(save_label)
-                        .color(ui.visuals().text_color())
-                        .size(font_sz),
-                )
-                .corner_radius(egui::CornerRadius::same(5)),
+        // ── SEND / CANCEL ──
+        if state.is_loading {
+            let cancel_btn = egui::Button::new(
+                egui::RichText::new(format!(
+                    "{}  Cancel",
+                    egui_icons::icons::ICON_STOP.codepoint
+                ))
+                .size(font_sz)
+                .color(style::nav_text_strong(&ctx)),
             )
-            .on_hover_text("Save / Update request (Cmd+S)");
-
-        if save_btn.clicked() {
-            if save_or_update_http_tab(connection_id, state, toasts) {
-                workspaces_saved = true;
+            .fill(style::nav_raised(&ctx))
+            .stroke(egui::Stroke::new(1.0, style::nav_border(&ctx)))
+            .corner_radius(6.0);
+            if ui
+                .add_sized([btn_w, bar_h], cancel_btn)
+                .on_hover_text("Cancel the running request")
+                .clicked()
+            {
+                cancel_request(state, toasts);
+            }
+        } else {
+            let send_btn = egui::Button::new(
+                egui::RichText::new(format!("{}  Send", egui_icons::icons::ICON_SEND.codepoint))
+                    .color(egui::Color32::WHITE)
+                    .strong()
+                    .size(font_sz),
+            )
+            .fill(style::theme_accent(&ctx))
+            .corner_radius(6.0);
+            let can = can_send(state);
+            let send_resp = ui
+                .add_enabled_ui(can, |ui| ui.add_sized([btn_w, bar_h], send_btn))
+                .inner
+                .on_hover_text(format!("Send request ({}Enter)", mod_key()));
+            if send_resp.clicked() {
+                execute_request(state);
             }
         }
 
-        // CODE button
-        let code_label = if send_save_code_w >= 60.0 {
-            format!("{} Code", egui_icons::icons::MDI_CODE_BRACES.codepoint)
-        } else {
-            egui_icons::icons::MDI_CODE_BRACES.codepoint.to_string()
-        };
-        let code_btn = ui
-            .add_sized(
-                [send_save_code_w, bar_h],
-                egui::Button::new(
-                    egui::RichText::new(code_label)
-                        .color(ui.visuals().text_color())
-                        .size(font_sz),
-                )
-                .corner_radius(egui::CornerRadius::same(5)),
+        // ── SAVE ──
+        let secondary = |label: String| {
+            egui::Button::new(
+                egui::RichText::new(label)
+                    .size(font_sz)
+                    .color(style::nav_text_strong(&ctx)),
             )
-            .on_hover_text("Copy request as code (curl, Python, Go, …)");
-        if code_btn.clicked() {
+            .fill(style::nav_raised(&ctx))
+            .stroke(egui::Stroke::new(1.0, style::nav_border(&ctx)))
+            .corner_radius(6.0)
+        };
+        if ui
+            .add_sized(
+                [btn_w, bar_h],
+                secondary(format!("{}  Save", egui_icons::icons::ICON_SAVE.codepoint)),
+            )
+            .on_hover_text(format!("Save / update request ({}S)", mod_key()))
+            .clicked()
+            && save_or_update_http_tab(connection_id, state, toasts)
+        {
+            workspaces_saved = true;
+        }
+
+        // ── CODE ──
+        if ui
+            .add_sized(
+                [btn_w, bar_h],
+                secondary(format!(
+                    "{}  Code",
+                    egui_icons::icons::MDI_CODE_BRACES.codepoint
+                )),
+            )
+            .on_hover_text("Copy request as code (cURL, Python, Go, …)")
+            .clicked()
+        {
             state.show_code_dialog = true;
         }
 
+        // ── AI ──
+        let ai_label = format!("{}  AI", egui_icons::icons::ICON_AUTO_AWESOME.codepoint);
+        let ai_btn = if state.ai.bar_open {
+            secondary(ai_label).stroke(egui::Stroke::new(1.0, style::theme_accent(&ctx)))
+        } else {
+            secondary(ai_label)
+        };
+        if ui
+            .add_sized([btn_w, bar_h], ai_btn)
+            .on_hover_text("Build the request or generate a body with AI (agy, Claude Code, …)")
+            .clicked()
+        {
+            state.ai.bar_open = !state.ai.bar_open;
+        }
+
         // Allow pressing Enter in the URL field to send
-        if url_resp.lost_focus()
-            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            && !state.is_loading
-            && !state.url.is_empty()
+        if url_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_send(state)
         {
             execute_request(state);
         }
@@ -301,6 +791,7 @@ fn render_save_dialog(
     ui: &mut egui::Ui,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
+    connection_id: Option<i64>,
 ) -> bool {
     if !state.show_save_dialog {
         return false;
@@ -309,76 +800,108 @@ fn render_save_dialog(
     let mut close = false;
     let mut save = false;
 
-    if state.workspaces.is_empty() {
-        state.workspaces = crate::http_collection::load_workspaces();
+    // Always fetch fresh workspaces from disk so newly created or imported collections are immediately visible
+    let mut workspaces = crate::http_collection::load_workspaces();
+    if workspaces.is_empty() {
+        let default_ws = crate::http_collection::create_workspace(&mut workspaces, "Collection");
+        state.collection_panel.active_workspace_id = Some(default_ws.id);
+    }
+    state.workspaces = workspaces.clone();
+
+    // Ensure active_workspace_id is set to a valid workspace
+    let active_ws_valid = state
+        .collection_panel
+        .active_workspace_id
+        .as_ref()
+        .is_some_and(|id| state.workspaces.iter().any(|w| &w.id == id));
+    if !active_ws_valid {
+        if let Some(first) = state.workspaces.first() {
+            state.collection_panel.active_workspace_id = Some(first.id.clone());
+        }
     }
 
-    egui::Window::new("💾 Save Request to Collection")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_save_request_backdrop",
+        state.show_save_dialog,
+    );
+
+    egui::Window::new("Save Request to Collection")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .default_width(380.0)
         .show(ui.ctx(), |ui| {
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Request Name:").strong());
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.save_dialog_name)
-                        .hint_text("e.g. Get User Profile")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Save Request to Collection",
+                &mut close,
+            );
+            ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Workspace:");
-                    if state.workspaces.is_empty() {
-                        ui.label(egui::RichText::new("Default Collection").weak());
-                    } else {
-                        let current_ws = state
-                            .collection_panel
-                            .active_workspace_id
-                            .clone()
-                            .unwrap_or_else(|| state.workspaces[0].id.clone());
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Request Name:").strong());
+                    crate::window_egui::style::render_text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut state.save_dialog_name)
+                            .hint_text("e.g. Get User Profile"),
+                        f32::INFINITY,
+                        None,
+                    );
+                    ui.add_space(8.0);
 
-                        let selected_name = state
-                            .workspaces
-                            .iter()
-                            .find(|w| w.id == current_ws)
-                            .map(|w| w.name.as_str())
-                            .unwrap_or("Default Workspace");
+                    ui.horizontal(|ui| {
+                        ui.label("Workspace:");
+                        if state.workspaces.is_empty() {
+                            ui.label(egui::RichText::new("Default Collection").weak());
+                        } else {
+                            let current_ws = state
+                                .collection_panel
+                                .active_workspace_id
+                                .clone()
+                                .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
+                                .unwrap_or_else(|| "default".to_string());
 
-                        egui::ComboBox::from_id_salt("save_dialog_ws_combo")
-                            .selected_text(selected_name)
-                            .show_ui(ui, |ui| {
-                                for ws in &state.workspaces {
-                                    ui.selectable_value(
-                                        &mut state.collection_panel.active_workspace_id,
-                                        Some(ws.id.clone()),
-                                        &ws.name,
-                                    );
-                                }
-                            });
-                    }
-                });
+                            let selected_name = state
+                                .workspaces
+                                .iter()
+                                .find(|w| w.id == current_ws)
+                                .map(|w| w.name.as_str())
+                                .unwrap_or("Collection");
 
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let save_btn = egui::Button::new(
-                            egui::RichText::new("Save")
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(save_btn).clicked() {
-                            save = true;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
+                            egui::ComboBox::from_id_salt("save_dialog_ws_combo")
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for ws in &state.workspaces {
+                                        ui.selectable_value(
+                                            &mut state.collection_panel.active_workspace_id,
+                                            Some(ws.id.clone()),
+                                            &ws.name,
+                                        );
+                                    }
+                                });
                         }
                     });
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save_btn = egui::Button::new(
+                        egui::RichText::new("Save")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(save_btn).clicked() {
+                        save = true;
+                        close = true;
+                    }
                 });
             });
         });
@@ -388,10 +911,16 @@ fn render_save_dialog(
             .collection_panel
             .active_workspace_id
             .clone()
+            .or_else(|| state.workspaces.first().map(|w| w.id.clone()))
             .unwrap_or_else(|| "default".to_string());
 
         let req_name = if state.save_dialog_name.trim().is_empty() {
-            "New Request".to_string()
+            let endpoint = crate::http_collection::extract_endpoint_url(&state.url);
+            if endpoint == "/" || endpoint.is_empty() {
+                "New Request".to_string()
+            } else {
+                endpoint
+            }
         } else {
             state.save_dialog_name.trim().to_string()
         };
@@ -417,6 +946,9 @@ fn render_save_dialog(
             api_key_value: state.api_key_value.clone(),
             api_key_in_header: state.api_key_in_header,
             description: String::new(),
+            tables: Vec::new(),
+            source: None,
+            route: None,
         };
 
         let mut workspaces = crate::http_collection::load_workspaces();
@@ -432,13 +964,21 @@ fn render_save_dialog(
             };
             workspaces.push(new_ws);
         }
-        crate::http_collection::save_workspaces(&workspaces);
+        if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+            toasts.error(e);
+        }
+        state.workspaces = workspaces;
         state.saved_request_id = Some(new_req.id.clone());
         state.saved_workspace_id = Some(ws_id.clone());
         state.saved_folder_id = None;
         state.save_dialog_name = req_name.clone();
+        state.collection_panel.active_workspace_id = Some(ws_id);
 
-        toasts.success(format!("Saved request '{}' to collection!", req_name));
+        if let Some(conn_id) = connection_id {
+            save_http_state(conn_id, state);
+        }
+
+        toasts.success(format!("Request '{}' saved ✓", req_name));
     }
 
     if close {
@@ -462,69 +1002,55 @@ fn render_code_dialog(
     let mut close_requested = false;
     let mut copy_clicked = false;
 
-    egui::Window::new("👨‍💻 Copy as Code")
+    crate::window_egui::style::render_modal_backdrop(
+        ui.ctx(),
+        "modal_code_dialog_backdrop",
+        state.show_code_dialog,
+    );
+
+    egui::Window::new("Copy as Code")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ui.ctx()))
         .collapsible(false)
         .resizable(true)
-        .default_size(egui::vec2(560.0, 440.0))
+        .default_size(egui::vec2(580.0, 460.0))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
-            // Generated once per frame, up front, so both the footer (Copy button)
-            // and the central content (code preview) can use it without any
-            // manual `available_height()` arithmetic — that pattern is what caused
-            // the dialog to grow every frame (self-referential sizing feedback
-            // loop) and the Beautify button to render in a broken spot. Panels
-            // reserve their own space via egui's normal layout pass instead.
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "Copy as Code",
+                &mut close_requested,
+            );
+            ui.add_space(8.0);
+
             let mut code = crate::http_code_export::generate(&state.code_dialog_lang, state);
 
-            egui::Panel::bottom("http_code_dialog_footer").show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let copy_label = format!("{} Copy to Clipboard", egui_icons::icons::ICON_CONTENT_COPY.codepoint);
-                        let copy_btn = egui::Button::new(
-                            egui::RichText::new(copy_label)
-                                .color(egui::Color32::WHITE)
-                                .strong(),
-                        )
-                        .fill(crate::window_egui::style::theme_accent(ui.ctx()));
-
-                        if ui.add(copy_btn).clicked() {
-                            ui.ctx().copy_text(code.clone());
-                            copy_clicked = true;
-                        }
-                        if ui.button("Close").clicked() {
-                            close_requested = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-            });
-
-            egui::CentralPanel::default().show(ui, |ui| {
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for lang in CodeLang::all() {
                         let label = lang.label();
                         ui.selectable_value(&mut state.code_dialog_lang, lang, label);
                     }
                 });
+            });
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
+            ui.add_space(8.0);
 
-                let dark = ui.visuals().dark_mode;
-                let lang_for_highlight = state.code_dialog_lang.clone();
-                let mut layouter =
-                    move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let s = buf.as_str();
-                        let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                        let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
+            let dark = ui.visuals().dark_mode;
+            let lang_for_highlight = state.code_dialog_lang.clone();
+            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let s = buf.as_str();
+                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
+                let mut job = highlight_code(s, &lang_for_highlight, dark, font_id);
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
 
+            let avail_h = (ui.available_height() - 44.0).max(180.0);
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                 egui::ScrollArea::both()
                     .id_salt("http_code_preview_scroll")
+                    .max_height(avail_h)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.add(
@@ -534,6 +1060,27 @@ fn render_code_dialog(
                                 .layouter(&mut layouter),
                         );
                     });
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let copy_label = format!(
+                        "{} Copy to Clipboard",
+                        egui_icons::icons::ICON_CONTENT_COPY.codepoint
+                    );
+                    let copy_btn = egui::Button::new(
+                        egui::RichText::new(copy_label)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(crate::window_egui::style::theme_accent(ui.ctx()));
+
+                    if ui.add(copy_btn).clicked() {
+                        ui.ctx().copy_text(code.clone());
+                        copy_clicked = true;
+                    }
+                });
             });
         });
 
@@ -547,20 +1094,19 @@ fn render_code_dialog(
 }
 
 /// Save or update an HTTP client tab.
-/// - If associated with an HTTP connection (`connection_id`), saves connection state to disk.
-/// - Else if associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
+/// - If associated with an existing collection request (`state.saved_request_id`), updates the request in collection.
+///   (Also updates HTTP connection state draft if `connection_id` is present).
+/// - Else if associated with an HTTP connection (`connection_id`), saves connection state to disk.
 /// - Else (unsaved request), triggers the "Save Request to Collection" dialog.
-/// Returns `true` if workspace collection was modified (requires reloading `app.yaak_workspaces`).
+///   (Also updates HTTP connection state draft if `connection_id` is present).
+///
+/// Returns `true` if workspace collection or connection state was modified.
 pub fn save_or_update_http_tab(
     connection_id: Option<i64>,
     state: &mut HttpClientState,
     toasts: &mut crate::window_egui::notifications::ToastManager,
 ) -> bool {
-    if let Some(conn_id) = connection_id {
-        save_http_state(conn_id, state);
-        toasts.success("HTTP connection state disimpan ✓");
-        false
-    } else if let Some(req_id) = state.saved_request_id.clone() {
+    if let Some(req_id) = state.saved_request_id.clone() {
         let mut workspaces = crate::http_collection::load_workspaces();
         let mut updated = false;
 
@@ -582,6 +1128,9 @@ pub fn save_or_update_http_tab(
             req.api_key_name = state.api_key_name.clone();
             req.api_key_value = state.api_key_value.clone();
             req.api_key_in_header = state.api_key_in_header;
+            if !state.save_dialog_name.trim().is_empty() {
+                req.name = state.save_dialog_name.trim().to_string();
+            }
         }
 
         fn update_in_folders(
@@ -614,26 +1163,53 @@ pub fn save_or_update_http_tab(
         }
 
         if updated {
-            crate::http_collection::save_workspaces(&workspaces);
-            let display_name = if state.save_dialog_name.is_empty() {
+            if let Err(e) = crate::http_collection::save_workspaces(&workspaces) {
+                toasts.error(e);
+            }
+            state.workspaces = workspaces;
+            if let Some(conn_id) = connection_id {
+                save_http_state(conn_id, state);
+            }
+            let display_name = if state.save_dialog_name.trim().is_empty() {
                 "request"
             } else {
-                &state.save_dialog_name
+                state.save_dialog_name.trim()
             };
-            toasts.success(format!("Tersimpan '{}' ✓", display_name));
+            toasts.success(format!("Saved '{}' ✓", display_name));
             true
         } else {
             // Request missing from workspaces, fallback to save dialog
             state.show_save_dialog = true;
-            if state.save_dialog_name.is_empty() {
-                state.save_dialog_name = "New Request".to_string();
+            if state.save_dialog_name.trim().is_empty() {
+                let default_name = crate::http_collection::extract_endpoint_url(&state.url);
+                state.save_dialog_name = if default_name == "/" || default_name.is_empty() {
+                    "New Request".to_string()
+                } else {
+                    default_name
+                };
+            }
+            if let Some(conn_id) = connection_id {
+                save_http_state(conn_id, state);
             }
             false
         }
+    } else if let Some(conn_id) = connection_id {
+        save_http_state(conn_id, state);
+        toasts.success("HTTP connection state saved ✓");
+        true
     } else {
+        // Unsaved request: open save dialog so user can name it and choose collection
         state.show_save_dialog = true;
-        if state.save_dialog_name.is_empty() {
-            state.save_dialog_name = "New Request".to_string();
+        if state.save_dialog_name.trim().is_empty() {
+            let default_name = crate::http_collection::extract_endpoint_url(&state.url);
+            state.save_dialog_name = if default_name == "/" || default_name.is_empty() {
+                "New Request".to_string()
+            } else {
+                default_name
+            };
+        }
+        if let Some(conn_id) = connection_id {
+            save_http_state(conn_id, state);
         }
         false
     }
@@ -641,644 +1217,1160 @@ pub fn save_or_update_http_tab(
 
 // ─── Request panel (tabs + content) ─────────────────────────────────────────
 
-fn render_request_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
-    // Tab bar
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.active_tab, HttpRequestTab::Body, "Body");
-        ui.selectable_value(&mut state.active_tab, HttpRequestTab::Params, "Params");
+fn render_request_panel(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    use crate::http_client_widgets::{self as w, TabItem};
 
-        let header_count = state.headers.iter().filter(|(_, _, en)| *en).count();
-        let headers_label = if header_count > 0 {
-            format!("Headers ({})", header_count)
+    let items = [
+        TabItem {
+            label: "Body",
+            badge: None,
+            dot: state.body_type != HttpBodyType::NoBody,
+        },
+        TabItem {
+            label: "Params",
+            badge: Some(w::active_count(&state.params)),
+            dot: false,
+        },
+        TabItem {
+            label: "Headers",
+            badge: Some(w::active_count(&state.headers)),
+            dot: false,
+        },
+        TabItem {
+            label: "Auth",
+            badge: None,
+            dot: !matches!(
+                state.auth_type,
+                HttpAuthType::NoAuth | HttpAuthType::InheritParent
+            ),
+        },
+    ];
+    let active = match state.active_tab {
+        HttpRequestTab::Body => 0,
+        HttpRequestTab::Params => 1,
+        HttpRequestTab::Headers => 2,
+        HttpRequestTab::Auth => 3,
+    };
+
+    let vertical = state.layout_vertical;
+    let mut toggle_layout = false;
+    let clicked = w::render_tab_strip(ui, "http_request_tabs", &items, active, |ui| {
+        let (icon, tip) = if vertical {
+            (
+                egui_icons::icons::ICON_VERTICAL_SPLIT,
+                "Show request and response side by side",
+            )
         } else {
-            "Headers".to_string()
+            (
+                egui_icons::icons::ICON_HORIZONTAL_SPLIT,
+                "Stack response below the request",
+            )
         };
-        ui.selectable_value(
-            &mut state.active_tab,
-            HttpRequestTab::Headers,
-            headers_label,
-        );
-        ui.selectable_value(&mut state.active_tab, HttpRequestTab::Auth, "Auth");
+        if crate::window_egui::style::ai_icon_button(ui, icon.codepoint, tip).clicked() {
+            toggle_layout = true;
+        }
     });
-
-    ui.separator();
-
-    // Text-body editors are rendered outside this outer ScrollArea because
-    // render_body_panel wraps its own TextEdit in an inner ScrollArea (the
-    // TextEdit widget itself never scrolls on its own) — nesting it inside
-    // this outer one too would produce two competing scrollbars.
-    let is_text_body = matches!(state.active_tab, HttpRequestTab::Body)
-        && matches!(
-            state.body_type,
-            HttpBodyType::Json
-                | HttpBodyType::Xml
-                | HttpBodyType::GraphQL
-                | HttpBodyType::OtherText
-        );
-
-    if is_text_body {
-        render_body_panel(ui, state);
-    } else {
-        egui::ScrollArea::vertical()
-            .id_salt("http_request_scroll")
-            .show(ui, |ui| match state.active_tab.clone() {
-                HttpRequestTab::Body => render_body_panel(ui, state),
-                HttpRequestTab::Params => render_kv_table(ui, &mut state.params, "http_params"),
-                HttpRequestTab::Headers => render_kv_table(ui, &mut state.headers, "http_headers"),
-                HttpRequestTab::Auth => render_auth_panel(ui, state),
-            });
+    if toggle_layout {
+        state.layout_vertical = !state.layout_vertical;
     }
+    if let Some(i) = clicked {
+        state.active_tab = match i {
+            0 => HttpRequestTab::Body,
+            1 => HttpRequestTab::Params,
+            2 => HttpRequestTab::Headers,
+            _ => HttpRequestTab::Auth,
+        };
+    }
+
+    ui.add_space(8.0);
+
+    // Body punya editor sendiri (dengan ScrollArea internal), jadi tidak
+    // dibungkus ScrollArea luar supaya tidak muncul dua scrollbar.
+    if matches!(state.active_tab, HttpRequestTab::Body) {
+        render_body_panel(ui, state, toasts);
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .id_salt("http_request_scroll")
+        .auto_shrink([false; 2])
+        .show(ui, |ui| match state.active_tab {
+            HttpRequestTab::Params => w::render_kv_table(
+                ui,
+                &mut state.params,
+                "http_params",
+                &w::KvOptions {
+                    suggestions: &[],
+                    mask_sensitive: true,
+                    key_hint: "parameter",
+                    value_hint: "value",
+                },
+            ),
+            HttpRequestTab::Headers => w::render_kv_table(
+                ui,
+                &mut state.headers,
+                "http_headers",
+                &w::KvOptions {
+                    suggestions: w::COMMON_HEADERS,
+                    mask_sensitive: true,
+                    key_hint: "Header-Name",
+                    value_hint: "value",
+                },
+            ),
+            HttpRequestTab::Auth => render_auth_panel(ui, state),
+            HttpRequestTab::Body => {}
+        });
 }
 
 // ─── Body panel ─────────────────────────────────────────────────────────────
 
-fn render_body_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
-    // Body type selector row
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-
-        ui.selectable_value(&mut state.body_type, HttpBodyType::NoBody, "No Body");
-        ui.selectable_value(&mut state.body_type, HttpBodyType::Json, "JSON");
-        ui.selectable_value(
-            &mut state.body_type,
+/// Pasangan (tipe body, key segmen, ikon, label) untuk pemilih tipe body.
+fn body_type_segments() -> [(HttpBodyType, &'static str, &'static str, &'static str); 8] {
+    use egui_icons::icons as i;
+    [
+        (
+            HttpBodyType::NoBody,
+            "none",
+            i::ICON_BLOCK.codepoint,
+            "None",
+        ),
+        (
+            HttpBodyType::Json,
+            "json",
+            i::MDI_CODE_JSON.codepoint,
+            "JSON",
+        ),
+        (
             HttpBodyType::UrlEncoded,
-            "Form URL-Encoded",
-        );
-        ui.selectable_value(&mut state.body_type, HttpBodyType::MultiPart, "Multi-Part");
+            "form",
+            i::ICON_FORMAT_LIST_BULLETED.codepoint,
+            "Form",
+        ),
+        (
+            HttpBodyType::MultiPart,
+            "multipart",
+            i::ICON_ATTACH_FILE.codepoint,
+            "Multipart",
+        ),
+        (
+            HttpBodyType::GraphQL,
+            "graphql",
+            i::MDI_GRAPHQL.codepoint,
+            "GraphQL",
+        ),
+        (HttpBodyType::Xml, "xml", i::MDI_XML.codepoint, "XML"),
+        (
+            HttpBodyType::OtherText,
+            "raw",
+            i::ICON_TEXT_SNIPPET.codepoint,
+            "Raw",
+        ),
+        (
+            HttpBodyType::BinaryFile,
+            "binary",
+            i::ICON_UPLOAD_FILE.codepoint,
+            "Binary",
+        ),
+    ]
+}
 
-        // More body types dropdown
-        let more_label = match state.body_type {
-            HttpBodyType::GraphQL => "GraphQL",
-            HttpBodyType::Xml => "XML",
-            HttpBodyType::OtherText => "Raw Text",
-            HttpBodyType::BinaryFile => "Binary File",
-            _ => "More Types ▾",
-        };
+/// Content-Type yang dikirim `execute_request` untuk tipe body teks.
+fn body_mime_label(body_type: &HttpBodyType) -> &'static str {
+    match body_type {
+        HttpBodyType::Json | HttpBodyType::GraphQL => "application/json",
+        HttpBodyType::Xml => "application/xml",
+        HttpBodyType::UrlEncoded => "application/x-www-form-urlencoded",
+        HttpBodyType::MultiPart => "multipart/form-data",
+        HttpBodyType::OtherText => "text/plain",
+        HttpBodyType::BinaryFile => "application/octet-stream",
+        HttpBodyType::NoBody => "",
+    }
+}
 
-        egui::ComboBox::from_id_salt("http_body_more_types_combo")
-            .selected_text(more_label)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.body_type, HttpBodyType::GraphQL, "GraphQL");
-                ui.selectable_value(&mut state.body_type, HttpBodyType::Xml, "XML");
-                ui.selectable_value(&mut state.body_type, HttpBodyType::OtherText, "Raw Text");
-                ui.selectable_value(
-                    &mut state.body_type,
-                    HttpBodyType::BinaryFile,
-                    "Binary File",
-                );
-            });
-    });
+/// Pesan error parse JSON (dengan baris/kolom), `None` bila valid atau kosong.
+/// Body di atas 512 KB tidak divalidasi supaya UI tetap ringan.
+fn json_error(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.len() > 512 * 1024 {
+        return None;
+    }
+    serde_json::from_str::<serde::de::IgnoredAny>(trimmed)
+        .err()
+        .map(|e| e.to_string())
+}
 
-    ui.add_space(6.0);
+fn render_body_panel(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    use crate::http_client_widgets::{self as w, CodeView, Syntax};
+    use crate::window_egui::style;
 
-    match &state.body_type {
+    let ctx = ui.ctx().clone();
+    let segments_src = body_type_segments();
+    let segments: Vec<style::NavSegment<'_>> = segments_src
+        .iter()
+        .map(|(_, key, icon, label)| style::NavSegment { key, icon, label })
+        .collect();
+    let selected = segments_src
+        .iter()
+        .find(|(t, ..)| *t == state.body_type)
+        .map(|(_, key, ..)| *key)
+        .unwrap_or("none");
+    if let Some(key) = style::render_segmented_nav(ui, "http_body_type", &segments, selected, 32.0)
+        && let Some((t, ..)) = segments_src.iter().find(|(_, k, ..)| *k == key)
+    {
+        state.body_type = t.clone();
+    }
+
+    ui.add_space(8.0);
+
+    match state.body_type {
         HttpBodyType::NoBody => {
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                "No body will be sent with this request.",
+            ui.add_space(36.0);
+            w::empty_state(
+                ui,
+                egui_icons::icons::ICON_DATA_OBJECT.codepoint,
+                "This request has no body",
+                "Pick a body type above to send JSON, form data, GraphQL, XML or raw text.",
             );
+            ui.add_space(12.0);
+            ui.vertical_centered(|ui| {
+                if ui
+                    .add(
+                        style::btn_secondary(format!(
+                            "{}  Add JSON body",
+                            egui_icons::icons::ICON_ADD.codepoint
+                        ))
+                        .min_size(egui::vec2(0.0, 30.0)),
+                    )
+                    .clicked()
+                {
+                    state.body_type = HttpBodyType::Json;
+                    if state.body_text.trim().is_empty() {
+                        state.body_text = "{\n  \n}".to_string();
+                    }
+                }
+            });
         }
         HttpBodyType::UrlEncoded | HttpBodyType::MultiPart => {
-            render_kv_table(ui, &mut state.form_data, "http_form_data");
-        }
-        HttpBodyType::BinaryFile => {
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                "Binary file upload is not yet supported.",
-            );
-        }
-        // Text-based body types
-        _ => {
-            let hint = match state.body_type {
-                HttpBodyType::Json => "{ \"key\": \"value\" }",
-                HttpBodyType::GraphQL => "{ query { ... } }",
-                HttpBodyType::Xml => "<root></root>",
-                _ => "",
-            };
-
-            let can_beautify = matches!(
-                state.body_type,
-                HttpBodyType::Json | HttpBodyType::GraphQL | HttpBodyType::Xml
-            );
-            // ── Editor filling remaining space ──────────────────────────
-            // Panel's fixed viewport rect, captured before the ScrollArea so the
-            // floating "Beautify" button stays pinned to the visible bottom-right
-            // corner instead of scrolling away with long content.
-            let panel_rect = ui.available_rect_before_wrap();
-            let editor_w = panel_rect.width();
-            let editor_h = panel_rect.height().max(80.0);
-
-            let dark = ui.visuals().dark_mode;
-            let body_type_cap = state.body_type.clone();
-            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                let s = buf.as_str();
-                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                let mut job = match &body_type_cap {
-                    HttpBodyType::Json => highlight_body_json(s, dark, font_id),
-                    HttpBodyType::GraphQL => highlight_body_graphql(s, dark, font_id),
-                    HttpBodyType::Xml => highlight_body_xml(s, dark, font_id),
-                    _ => {
-                        let col = if dark {
-                            egui::Color32::from_rgb(220, 220, 220)
-                        } else {
-                            egui::Color32::from_rgb(30, 30, 30)
-                        };
-                        let mut j = egui::text::LayoutJob::default();
-                        j.append(
-                            s,
-                            0.0,
-                            egui::TextFormat {
-                                font_id,
-                                color: col,
-                                ..Default::default()
-                            },
-                        );
-                        j
-                    }
-                };
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-
             egui::ScrollArea::vertical()
-                .id_salt("http_request_body_scroll")
+                .id_salt("http_form_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    ui.add_sized(
-                        [editor_w, editor_h],
-                        egui::TextEdit::multiline(&mut state.body_text)
-                            .hint_text(hint)
-                            .desired_width(f32::INFINITY)
-                            .layouter(&mut layouter),
+                    w::render_kv_table(
+                        ui,
+                        &mut state.form_data,
+                        "http_form_data",
+                        &w::KvOptions {
+                            suggestions: &[],
+                            mask_sensitive: true,
+                            key_hint: "field",
+                            value_hint: "value",
+                        },
                     );
                 });
+        }
+        HttpBodyType::BinaryFile => {
+            ui.add_space(36.0);
+            w::empty_state(
+                ui,
+                egui_icons::icons::ICON_UPLOAD_FILE.codepoint,
+                "Binary upload is not supported yet",
+                "Use Multipart or Raw to send file contents for now.",
+            );
+        }
+        HttpBodyType::Json
+        | HttpBodyType::GraphQL
+        | HttpBodyType::Xml
+        | HttpBodyType::OtherText => {
+            let (syntax, hint) = match state.body_type {
+                HttpBodyType::Json => (Syntax::Json, "{\n  \"key\": \"value\"\n}"),
+                HttpBodyType::GraphQL => (
+                    Syntax::GraphQl,
+                    "{\n  \"query\": \"{ users { id name } }\"\n}",
+                ),
+                HttpBodyType::Xml => (Syntax::Xml, "<root>\n  <item>value</item>\n</root>"),
+                _ => (Syntax::Plain, "Raw request body"),
+            };
+            let is_json = matches!(state.body_type, HttpBodyType::Json | HttpBodyType::GraphQL);
+            let can_beautify = is_json || matches!(state.body_type, HttpBodyType::Xml);
 
-            if can_beautify && !state.show_code_dialog {
-                let ctx = ui.ctx().clone();
-                egui::Area::new(egui::Id::new("http_req_beautify_overlay"))
-                    .order(egui::Order::Middle)
-                    .fixed_pos(egui::pos2(
-                        panel_rect.right() - 28.0,
-                        panel_rect.bottom() - 28.0,
-                    ))
-                    .show(&ctx, |ui| {
-                        let btn = ui.add_sized(
-                            [22.0, 22.0],
-                            egui::Button::new(
-                                egui::RichText::new("⚡")
-                                    .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
-                        );
-                        if btn.clicked() {
-                            match state.body_type {
-                                HttpBodyType::Json | HttpBodyType::GraphQL => {
-                                    if let Some(pretty) = beautify_json(&state.body_text) {
-                                        state.body_text = pretty;
-                                    }
-                                }
-                                HttpBodyType::Xml => {
-                                    let pretty = beautify_xml(&state.body_text);
-                                    if !pretty.is_empty() {
-                                        state.body_text = pretty;
-                                    }
-                                }
-                                _ => {}
-                            }
+            // ── Toolbar editor ──
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(body_mime_label(&state.body_type))
+                        .size(11.5)
+                        .family(egui::FontFamily::Monospace)
+                        .color(style::nav_text_muted(&ctx)),
+                );
+                if is_json && !state.body_text.trim().is_empty() {
+                    ui.add_space(6.0);
+                    match json_error(&state.body_text) {
+                        None => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} Valid JSON",
+                                    egui_icons::icons::ICON_CHECK_CIRCLE.codepoint
+                                ))
+                                .size(11.5)
+                                .color(style::theme_success(&ctx)),
+                            );
                         }
-                        btn.on_hover_text("Beautify body");
-                    });
-            }
+                        Some(err) => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} Invalid JSON",
+                                    egui_icons::icons::ICON_ERROR.codepoint
+                                ))
+                                .size(11.5)
+                                .color(style::theme_danger(&ctx)),
+                            )
+                            .on_hover_text(err);
+                        }
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if style::ai_icon_button(
+                        ui,
+                        egui_icons::icons::ICON_DELETE.codepoint,
+                        "Clear body",
+                    )
+                    .clicked()
+                    {
+                        state.body_text.clear();
+                    }
+                    if style::ai_icon_button(
+                        ui,
+                        egui_icons::icons::ICON_CONTENT_COPY.codepoint,
+                        "Copy body",
+                    )
+                    .clicked()
+                    {
+                        ui.ctx().copy_text(state.body_text.clone());
+                        toasts.success("Request body copied");
+                    }
+                    if can_beautify
+                        && style::ai_icon_button(
+                            ui,
+                            egui_icons::icons::ICON_AUTO_FIX_HIGH.codepoint,
+                            "Beautify (format) body",
+                        )
+                        .clicked()
+                    {
+                        beautify_request_body(state, toasts);
+                    }
+                });
+            });
+            ui.add_space(4.0);
+
+            w::render_code_view(
+                ui,
+                &mut state.body_text,
+                CodeView {
+                    id_salt: "http_request_body_editor",
+                    syntax,
+                    wrap: true,
+                    hint,
+                    search: "",
+                },
+            );
         }
     }
 }
 
-// ─── Key-Value table (params / headers / form data) ─────────────────────────
-
-fn render_kv_table(ui: &mut egui::Ui, rows: &mut Vec<(String, String, bool)>, id: &str) {
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
-        ui.ctx(),
-        crate::config::UiModePreference::Auto,
-    );
-    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
-    let del_btn_w = if metrics.is_touch { 34.0 } else { 26.0 };
-    let font_sz = if metrics.is_touch { 14.0 } else { 12.5 };
-    let checkbox_w = if metrics.is_touch { 24.0 } else { 20.0 };
-
-    let mut to_remove: Vec<usize> = Vec::new();
-    let spacing = ui.spacing().item_spacing.x;
-    let total_w = ui.available_width();
-    // Two fields share the exact space left after checkbox, delete button, and 3 gaps
-    let field_w = ((total_w - checkbox_w - del_btn_w - spacing * 3.0) * 0.5).max(60.0);
-
-    // Header row
-    ui.horizontal(|ui| {
-        ui.spacing_mut().interact_size.y = row_h;
-        ui.add_space(checkbox_w + spacing);
-        ui.add_sized(
-            [field_w, row_h],
-            egui::Label::new(egui::RichText::new("Key").strong().size(font_sz)),
-        );
-        ui.add_sized(
-            [field_w, row_h],
-            egui::Label::new(egui::RichText::new("Value").strong().size(font_sz)),
-        );
-    });
-    ui.separator();
-
-    let _ = id;
-    for (idx, (key, value, enabled)) in rows.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().interact_size.y = row_h;
-            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-
-            ui.add_sized([checkbox_w, row_h], |ui: &mut egui::Ui| {
-                ui.checkbox(enabled, "")
-            });
-
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(key)
-                    .desired_width(field_w)
-                    .hint_text("key")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
-            );
-
-            ui.add_sized(
-                [field_w, row_h],
-                egui::TextEdit::singleline(value)
-                    .desired_width(field_w)
-                    .hint_text("value")
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center),
-            );
-
-            let del_btn = egui::Button::new(
-                egui_icons::icons::ICON_CLOSE.rich_text()
-                    .size(if metrics.is_touch { 14.0 } else { 11.0 }),
-            )
-            .corner_radius(egui::CornerRadius::same(5));
-
-            if ui
-                .add_sized([del_btn_w, row_h], del_btn)
-                .on_hover_text("Remove row")
-                .clicked()
-            {
-                to_remove.push(idx);
+fn beautify_request_body(
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    match state.body_type {
+        HttpBodyType::Json | HttpBodyType::GraphQL => match beautify_json(&state.body_text) {
+            Some(pretty) => state.body_text = pretty,
+            None => toasts.warning("Body is not valid JSON, nothing to format"),
+        },
+        HttpBodyType::Xml => {
+            let pretty = beautify_xml(&state.body_text);
+            if !pretty.is_empty() {
+                state.body_text = pretty;
             }
-        });
-        ui.add_space(2.0);
-    }
-
-    for idx in to_remove.iter().rev() {
-        rows.remove(*idx);
-    }
-
-    ui.add_space(4.0);
-    let add_btn_w = if metrics.is_touch { 110.0 } else { 90.0 };
-    let add_label = format!("{} Add row", egui_icons::icons::ICON_ADD.codepoint);
-    if ui
-        .add_sized(
-            [add_btn_w, row_h],
-            egui::Button::new(egui::RichText::new(add_label).size(font_sz).strong())
-                .corner_radius(egui::CornerRadius::same(5)),
-        )
-        .clicked()
-    {
-        rows.push(("".to_string(), "".to_string(), true));
+        }
+        _ => {}
     }
 }
 
 // ─── Auth panel ─────────────────────────────────────────────────────────────
 
-fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
-    let metrics = crate::window_egui::device_profile::DeviceUiMetrics::compute(
-        ui.ctx(),
-        crate::config::UiModePreference::Auto,
-    );
-    let row_h = if metrics.is_touch { 36.0 } else { 28.0 };
+fn auth_label(auth: &HttpAuthType) -> &'static str {
+    match auth {
+        HttpAuthType::NoAuth => "No Auth",
+        HttpAuthType::InheritParent => "Inherit from Parent",
+        HttpAuthType::BearerToken => "Bearer Token",
+        HttpAuthType::BasicAuth => "Basic Auth",
+        HttpAuthType::ApiKey => "API Key",
+        HttpAuthType::JwtBearer => "JWT Bearer",
+        HttpAuthType::OAuth1 => "OAuth 1.0",
+        HttpAuthType::OAuth2 => "OAuth 2.0",
+        HttpAuthType::AwsSignature => "AWS Signature",
+        HttpAuthType::NtlmAuth => "NTLM Auth",
+    }
+}
 
-    // Auth type selector
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Type:");
-        for (auth, label) in [
-            (HttpAuthType::NoAuth, "No Auth"),
-            (HttpAuthType::InheritParent, "Inherit from Parent"),
-            (HttpAuthType::BearerToken, "Bearer Token"),
-            (HttpAuthType::BasicAuth, "Basic Auth"),
-            (HttpAuthType::ApiKey, "API Key"),
-            (HttpAuthType::JwtBearer, "JWT Bearer"),
-            (HttpAuthType::OAuth1, "OAuth 1.0"),
-            (HttpAuthType::OAuth2, "OAuth 2.0"),
-            (HttpAuthType::AwsSignature, "AWS Signature"),
-            (HttpAuthType::NtlmAuth, "NTLM Auth"),
-        ] {
-            ui.selectable_value(&mut state.auth_type, auth, label);
-        }
-    });
-
-    ui.separator();
-
-    match &state.auth_type {
-        HttpAuthType::NoAuth => {
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                "No authentication will be used.",
-            );
-        }
+fn auth_description(auth: &HttpAuthType) -> &'static str {
+    match auth {
+        HttpAuthType::NoAuth => "The request is sent without authentication.",
         HttpAuthType::InheritParent => {
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                "Auth settings will be inherited from the parent collection.",
-            );
+            "Auth settings will be inherited from the parent collection."
         }
         HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
-            ui.label("Token:");
-            ui.add_sized(
-                [ui.available_width(), row_h],
-                egui::TextEdit::singleline(&mut state.bearer_token)
-                    .hint_text("Bearer token or JWT string")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .vertical_align(egui::Align::Center)
-                    .password(true),
+            "Sent as the header  Authorization: Bearer <token>"
+        }
+        HttpAuthType::BasicAuth => {
+            "Username and password are sent Base64-encoded in the Authorization header."
+        }
+        HttpAuthType::ApiKey => "The key is sent as a custom header or as a query parameter.",
+        HttpAuthType::OAuth1
+        | HttpAuthType::OAuth2
+        | HttpAuthType::AwsSignature
+        | HttpAuthType::NtlmAuth => "This authentication type is not implemented yet.",
+    }
+}
+
+/// Field secret dengan tombol mata untuk menampilkan/menyembunyikan isinya.
+fn secret_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width: f32) {
+    let reveal_id = egui::Id::new((id, "reveal"));
+    let revealed = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(reveal_id))
+        .unwrap_or(false);
+    ui.horizontal(|ui| {
+        crate::window_egui::style::render_text_field(
+            ui,
+            egui::TextEdit::singleline(value)
+                .id_salt(id)
+                .hint_text(hint)
+                .password(!revealed),
+            width - 32.0,
+            None,
+        );
+        let icon = if revealed {
+            egui_icons::icons::ICON_VISIBILITY_OFF
+        } else {
+            egui_icons::icons::ICON_VISIBILITY
+        };
+        if crate::window_egui::style::ai_icon_button(
+            ui,
+            icon.codepoint,
+            if revealed { "Hide" } else { "Show" },
+        )
+        .clicked()
+        {
+            ui.ctx().data_mut(|d| d.insert_temp(reveal_id, !revealed));
+        }
+    });
+}
+
+fn render_auth_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::nav_text_muted(&ctx);
+    let field_w = ui.available_width().min(460.0);
+    let label = |text: &str| egui::RichText::new(text).size(12.0).color(muted);
+
+    ui.horizontal(|ui| {
+        ui.label(label("Type"));
+        ui.add_space(8.0);
+        egui::ComboBox::from_id_salt("http_auth_type")
+            .width(220.0)
+            .selected_text(auth_label(&state.auth_type))
+            .show_ui(ui, |ui| {
+                for auth in [
+                    HttpAuthType::NoAuth,
+                    HttpAuthType::InheritParent,
+                    HttpAuthType::BearerToken,
+                    HttpAuthType::BasicAuth,
+                    HttpAuthType::ApiKey,
+                    HttpAuthType::JwtBearer,
+                    HttpAuthType::OAuth1,
+                    HttpAuthType::OAuth2,
+                    HttpAuthType::AwsSignature,
+                    HttpAuthType::NtlmAuth,
+                ] {
+                    let text = auth_label(&auth);
+                    ui.selectable_value(&mut state.auth_type, auth, text);
+                }
+            });
+    });
+    ui.add_space(6.0);
+    ui.label(label(auth_description(&state.auth_type)).size(11.5));
+    ui.add_space(12.0);
+
+    match state.auth_type {
+        HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
+            ui.label(label("Token"));
+            ui.add_space(4.0);
+            secret_field(
+                ui,
+                "http_auth_bearer",
+                &mut state.bearer_token,
+                "Bearer token or JWT",
+                field_w,
             );
         }
         HttpAuthType::BasicAuth => {
-            egui::Grid::new("http_basic_auth")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Username:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.basic_user)
-                            .hint_text("username")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
-                    );
-                    ui.end_row();
-
-                    ui.label("Password:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.basic_pass)
-                            .hint_text("password")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
-                            .password(true),
-                    );
-                    ui.end_row();
-                });
-        }
-        HttpAuthType::ApiKey => {
-            egui::Grid::new("http_api_key_auth")
-                .num_columns(2)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Key Name:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.api_key_name)
-                            .hint_text("X-API-Key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center),
-                    );
-                    ui.end_row();
-
-                    ui.label("Key Value:");
-                    ui.add_sized(
-                        [260.0, row_h],
-                        egui::TextEdit::singleline(&mut state.api_key_value)
-                            .hint_text("your-api-key")
-                            .desired_width(260.0)
-                            .margin(egui::Margin::symmetric(8, 4))
-                            .vertical_align(egui::Align::Center)
-                            .password(true),
-                    );
-                    ui.end_row();
-
-                    ui.label("Add to:");
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut state.api_key_in_header, true, "Header");
-                        ui.radio_value(&mut state.api_key_in_header, false, "Query Param");
-                    });
-                    ui.end_row();
-                });
-        }
-        HttpAuthType::AwsSignature
-        | HttpAuthType::OAuth1
-        | HttpAuthType::OAuth2
-        | HttpAuthType::NtlmAuth => {
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                format!(
-                    "{:?} authentication is not yet implemented.",
-                    state.auth_type
-                ),
+            ui.label(label("Username"));
+            ui.add_space(4.0);
+            style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut state.basic_user).hint_text("username"),
+                field_w - 32.0,
+                None,
+            );
+            ui.add_space(10.0);
+            ui.label(label("Password"));
+            ui.add_space(4.0);
+            secret_field(
+                ui,
+                "http_auth_basic_pass",
+                &mut state.basic_pass,
+                "password",
+                field_w,
             );
         }
+        HttpAuthType::ApiKey => {
+            ui.label(label("Key name"));
+            ui.add_space(4.0);
+            style::render_text_field(
+                ui,
+                egui::TextEdit::singleline(&mut state.api_key_name).hint_text("X-API-Key"),
+                field_w - 32.0,
+                None,
+            );
+            ui.add_space(10.0);
+            ui.label(label("Key value"));
+            ui.add_space(4.0);
+            secret_field(
+                ui,
+                "http_auth_api_key",
+                &mut state.api_key_value,
+                "your-api-key",
+                field_w,
+            );
+            ui.add_space(10.0);
+            ui.label(label("Add to"));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut state.api_key_in_header, true, "Header");
+                ui.radio_value(&mut state.api_key_in_header, false, "Query param");
+            });
+        }
+        _ => {}
     }
 }
 
 // ─── Response panel ──────────────────────────────────────────────────────────
 
-fn render_response_panel(ui: &mut egui::Ui, state: &mut HttpClientState) {
+fn cancel_request(
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    // Menjatuhkan receiver cukup: thread latar selesai sendiri dan hasilnya
+    // dibuang karena `send` ke channel yang sudah ditutup gagal diam-diam.
+    state.is_loading = false;
+    state.response_receiver = None;
+    state.request_started = None;
+    log::info!("[HTTP] request cancelled by user");
+    toasts.info("Request cancelled");
+}
+
+/// Deteksi bahasa body response dari Content-Type, dengan fallback sniffing
+/// untuk server yang mengirim JSON tanpa header yang benar.
+fn response_syntax(headers: &[(String, String)], body: &str) -> crate::http_client_widgets::Syntax {
+    use crate::http_client_widgets::Syntax;
+    let ct = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ct.contains("json") {
+        return Syntax::Json;
+    }
+    if ct.contains("xml") || ct.contains("html") {
+        return Syntax::Xml;
+    }
+    let t = body.trim_start();
+    if t.starts_with('{') || t.starts_with('[') {
+        Syntax::Json
+    } else if t.starts_with('<') {
+        Syntax::Xml
+    } else {
+        Syntax::Plain
+    }
+}
+
+fn render_response_panel(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut Toasts,
+    ai: &AiBackend,
+) {
     if state.is_loading {
-        ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
-            ui.spinner();
-            ui.label("Sending request…");
-        });
+        render_response_loading(ui, state, toasts);
+        return;
+    }
+    if let Some(err) = state.response_error.clone() {
+        render_response_error(ui, state, &err, ai);
+        return;
+    }
+    if state.response_status.is_none() {
+        render_response_empty(ui);
         return;
     }
 
-    if state.response_status.is_none() && state.response_error.is_none() {
-        ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
-            ui.colored_label(
-                ui.style().visuals.weak_text_color(),
-                "Enter a URL and press Send to receive a response.",
-            );
-        });
-        return;
-    }
+    use crate::http_client_widgets::{self as w, CodeView, Syntax, TabItem};
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::theme_muted_text(&ctx);
+    let syntax = response_syntax(&state.response_headers, &state.response_body);
 
-    // Status bar
+    // ── Meta: status · waktu · ukuran · aksi ──
     ui.horizontal(|ui| {
-        if let Some(err) = &state.response_error {
-            ui.colored_label(
-                crate::window_egui::style::theme_danger(ui.ctx()),
-                format!("Error: {}", err),
-            );
-        } else if let Some(status) = state.response_status {
-            let color = if status < 300 {
-                crate::window_egui::style::theme_success(ui.ctx())
-            } else if status < 400 {
-                crate::window_egui::style::theme_warning(ui.ctx())
-            } else {
-                crate::window_egui::style::theme_danger(ui.ctx())
-            };
-            ui.colored_label(
-                color,
-                format!("Status: {} {}", status, state.response_status_text),
-            );
-        }
-
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let status = state.response_status.unwrap_or(0);
+        let status_text = format!("{} {}", status, state.response_status_text);
+        w::pill(ui, None, status_text.trim(), w::status_color(&ctx, status));
         if let Some(ms) = state.response_time_ms {
-            ui.separator();
-            ui.label(format!("Time: {}ms", ms));
+            w::pill(
+                ui,
+                Some(egui_icons::icons::ICON_TIMER.codepoint),
+                &w::format_duration(ms),
+                muted,
+            )
+            .on_hover_text("Total time");
         }
-
         if let Some(bytes) = state.response_size_bytes {
-            ui.separator();
-            let size_str = if bytes >= 1024 * 1024 {
-                format!("Size: {:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-            } else if bytes >= 1024 {
-                format!("Size: {:.1} KB", bytes as f64 / 1024.0)
-            } else {
-                format!("Size: {} B", bytes)
-            };
-            ui.label(size_str);
+            w::pill(
+                ui,
+                Some(egui_icons::icons::ICON_DATA_OBJECT.codepoint),
+                &w::format_bytes(bytes),
+                muted,
+            )
+            .on_hover_text("Response body size");
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            #[cfg(not(target_os = "ios"))]
+            if style::ai_icon_button(
+                ui,
+                egui_icons::icons::ICON_DOWNLOAD.codepoint,
+                "Save response body to file",
+            )
+            .clicked()
+            {
+                save_response_to_file(state, syntax, toasts);
+            }
+            if style::ai_icon_button(
+                ui,
+                egui_icons::icons::ICON_CONTENT_COPY.codepoint,
+                "Copy response body",
+            )
+            .clicked()
+            {
+                ui.ctx().copy_text(state.response_body.clone());
+                toasts.success("Response body copied");
+            }
+            if matches!(syntax, Syntax::Json | Syntax::Xml)
+                && style::ai_icon_button(
+                    ui,
+                    egui_icons::icons::ICON_AUTO_FIX_HIGH.codepoint,
+                    "Beautify response body",
+                )
+                .clicked()
+            {
+                if syntax == Syntax::Json {
+                    if let Some(pretty) = beautify_json(&state.response_body) {
+                        state.response_body = pretty;
+                    }
+                } else {
+                    let pretty = beautify_xml(&state.response_body);
+                    if !pretty.is_empty() {
+                        state.response_body = pretty;
+                    }
+                }
+            }
+        });
+    });
+    ui.add_space(6.0);
+
+    // ── Tab ──
+    let items = [
+        TabItem {
+            label: "Body",
+            badge: None,
+            dot: false,
+        },
+        TabItem {
+            label: "Headers",
+            badge: Some(state.response_headers.len()),
+            dot: false,
+        },
+        TabItem {
+            label: "Raw",
+            badge: None,
+            dot: false,
+        },
+        TabItem {
+            label: "AI",
+            badge: None,
+            dot: state.ai.explanation.is_some(),
+        },
+    ];
+    let active = match state.response_tab {
+        HttpResponseTab::Body => 0,
+        HttpResponseTab::Headers => 1,
+        HttpResponseTab::Raw => 2,
+        HttpResponseTab::Ai => 3,
+    };
+    let show_body_tools = matches!(state.response_tab, HttpResponseTab::Body);
+    let match_count = if show_body_tools && !state.response_search.is_empty() {
+        Some(w::match_ranges(&state.response_body, &state.response_search).len())
+    } else {
+        None
+    };
+    let search = &mut state.response_search;
+    let wrap = &mut state.response_wrap;
+    let clicked = w::render_tab_strip(ui, "http_response_tabs", &items, active, |ui| {
+        if !show_body_tools {
+            return;
+        }
+        if w::icon_toggle(
+            ui,
+            egui_icons::icons::ICON_WRAP_TEXT.codepoint,
+            "Wrap long lines",
+            *wrap,
+        )
+        .clicked()
+        {
+            *wrap = !*wrap;
+        }
+        style::render_search_field(ui, search, "Find in body", 180.0);
+        if let Some(n) = match_count {
+            ui.label(
+                egui::RichText::new(match n {
+                    1 => "1 match".to_string(),
+                    n => format!("{n} matches"),
+                })
+                .size(11.5)
+                .color(muted),
+            );
         }
     });
-
-    ui.separator();
-
-    // Response tab bar
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.response_tab, HttpResponseTab::Body, "Body");
-        ui.selectable_value(&mut state.response_tab, HttpResponseTab::Headers, "Headers");
-    });
-
-    ui.add_space(6.0);
+    if let Some(i) = clicked {
+        state.response_tab = match i {
+            0 => HttpResponseTab::Body,
+            1 => HttpResponseTab::Headers,
+            2 => HttpResponseTab::Raw,
+            _ => HttpResponseTab::Ai,
+        };
+    }
+    ui.add_space(8.0);
 
     match state.response_tab {
         HttpResponseTab::Body => {
-            // ── Detect content-type from response headers ─────────────
-            let content_type = state
-                .response_headers
-                .iter()
-                .find(|(k, _)| k.to_lowercase() == "content-type")
-                .map(|(_, v)| v.to_lowercase())
-                .unwrap_or_default();
-            let is_json = content_type.contains("json");
-            let is_xml = content_type.contains("xml") || content_type.contains("html");
-
-            // ── Syntax-highlighted editor, fills remaining height ──────
-            let dark = ui.visuals().dark_mode;
-            let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                let s = buf.as_str();
-                let font_id = ui.style().text_styles[&egui::TextStyle::Monospace].clone();
-                let mut job = if is_json {
-                    highlight_body_json(s, dark, font_id)
-                } else if is_xml {
-                    highlight_body_xml(s, dark, font_id)
-                } else {
-                    let col = if dark {
-                        egui::Color32::from_rgb(220, 220, 220)
-                    } else {
-                        egui::Color32::from_rgb(30, 30, 30)
-                    };
-                    let mut j = egui::text::LayoutJob::default();
-                    j.append(
-                        s,
-                        0.0,
-                        egui::TextFormat {
-                            font_id,
-                            color: col,
-                            ..Default::default()
-                        },
-                    );
-                    j
-                };
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-
-            // Panel's fixed viewport rect, captured before the ScrollArea so the
-            // floating "Beautify" button stays pinned to the visible bottom-right
-            // corner instead of scrolling away with long content.
-            let panel_rect = ui.available_rect_before_wrap();
-            let w = panel_rect.width();
-            let h = panel_rect.height().max(80.0);
-
-            egui::ScrollArea::vertical()
-                .id_salt("http_response_body_scroll")
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    ui.add_sized(
-                        [w, h],
-                        egui::TextEdit::multiline(&mut state.response_body)
-                            .desired_width(f32::INFINITY)
-                            .interactive(true)
-                            .layouter(&mut layouter),
-                    );
-                });
-
-            if (is_json || is_xml) && !state.show_code_dialog {
-                let ctx = ui.ctx().clone();
-                egui::Area::new(egui::Id::new("http_resp_beautify_overlay"))
-                    .order(egui::Order::Middle)
-                    .fixed_pos(egui::pos2(
-                        panel_rect.right() - 28.0,
-                        panel_rect.bottom() - 28.0,
-                    ))
-                    .show(&ctx, |ui| {
-                        let btn = ui.add_sized(
-                            [22.0, 22.0],
-                            egui::Button::new(
-                                egui::RichText::new("⚡")
-                                    .color(crate::window_egui::style::theme_accent(ui.ctx())),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
-                        );
-                        if btn.clicked() {
-                            if is_json {
-                                if let Some(pretty) = beautify_json(&state.response_body) {
-                                    state.response_body = pretty;
-                                }
-                            } else {
-                                let pretty = beautify_xml(&state.response_body);
-                                if !pretty.is_empty() {
-                                    state.response_body = pretty;
-                                }
-                            }
-                        }
-                        btn.on_hover_text("Beautify response body");
-                    });
+            if state.response_body.is_empty() {
+                ui.add_space(24.0);
+                w::empty_state(
+                    ui,
+                    egui_icons::icons::ICON_NOTES.codepoint,
+                    "Empty response body",
+                    "The server returned no content.",
+                );
+                return;
             }
+            let mut body: &str = state.response_body.as_str();
+            w::render_code_view(
+                ui,
+                &mut body,
+                CodeView {
+                    id_salt: "http_response_body_view",
+                    syntax,
+                    wrap: state.response_wrap,
+                    hint: "",
+                    search: &state.response_search,
+                },
+            );
         }
-        HttpResponseTab::Headers => {
-            egui::ScrollArea::both()
-                .id_salt("http_response_headers_scroll")
+        HttpResponseTab::Headers => render_response_headers(ui, state, toasts),
+        HttpResponseTab::Raw => {
+            let raw = raw_response_text(state);
+            let mut raw_ref: &str = raw.as_str();
+            w::render_code_view(
+                ui,
+                &mut raw_ref,
+                CodeView {
+                    id_salt: "http_response_raw_view",
+                    syntax: Syntax::Plain,
+                    wrap: state.response_wrap,
+                    hint: "",
+                    search: "",
+                },
+            );
+        }
+        HttpResponseTab::Ai => render_ai_explanation(ui, state, ai),
+    }
+}
+
+/// Tab "AI" di panel response: tombol Explain, status, dan jawaban Markdown.
+fn render_ai_explanation(ui: &mut egui::Ui, state: &mut HttpClientState, ai: &AiBackend) {
+    use crate::http_ai::HttpAiTask;
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let muted = style::nav_text_muted(&ctx);
+
+    let backend = match ai {
+        Ok(b) => b,
+        Err(msg) => {
+            ui.add_space(24.0);
+            crate::http_client_widgets::empty_state(
+                ui,
+                egui_icons::icons::ICON_AUTO_AWESOME.codepoint,
+                "AI is not configured",
+                msg,
+            );
+            return;
+        }
+    };
+    let label = ai_backend_label(backend);
+    if !render_ai_consent(ui, label) {
+        return;
+    }
+
+    let explaining = state
+        .ai
+        .pending
+        .as_ref()
+        .is_some_and(|(t, _)| *t == HttpAiTask::ExplainResponse);
+    let busy = state.ai.is_busy();
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Explained by {label}"))
+                .size(11.5)
+                .color(muted),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let text = if state.ai.explanation.is_some() {
+                "Explain again"
+            } else {
+                "Explain this response"
+            };
+            if ui
+                .add_enabled(
+                    !busy,
+                    style::btn_secondary(format!(
+                        "{}  {text}",
+                        egui_icons::icons::ICON_AUTO_AWESOME.codepoint
+                    )),
+                )
+                .clicked()
+            {
+                start_ai_task(state, HttpAiTask::ExplainResponse, backend);
+            }
+        });
+    });
+    ui.add_space(8.0);
+
+    if explaining {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.add(egui::Spinner::new().size(20.0));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("Asking {label}…")).color(muted));
+        });
+        return;
+    }
+    if let Some(err) = &state.ai.error {
+        style::ai_notice_frame(style::theme_danger(&ctx)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(err).size(12.0));
+        });
+        return;
+    }
+    match &state.ai.explanation {
+        Some(text) => {
+            egui::ScrollArea::vertical()
+                .id_salt("http_ai_explanation_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    if state.response_headers.is_empty() {
-                        ui.colored_label(
-                            ui.style().visuals.weak_text_color(),
-                            "No headers received.",
+                    let mut cache = egui_commonmark::CommonMarkCache::default();
+                    egui_commonmark::CommonMarkViewer::new().show(ui, &mut cache, text);
+                });
+        }
+        None => {
+            ui.add_space(24.0);
+            crate::http_client_widgets::empty_state(
+                ui,
+                egui_icons::icons::ICON_AUTO_AWESOME.codepoint,
+                "Get a plain-English explanation",
+                "What the status means, what the body contains, and how to fix errors.",
+            );
+        }
+    }
+}
+
+/// Response lengkap dalam format mirip wire: status line, header, baris
+/// kosong, lalu body.
+fn raw_response_text(state: &HttpClientState) -> String {
+    let mut out = format!(
+        "HTTP {} {}\n",
+        state.response_status.unwrap_or(0),
+        state.response_status_text
+    );
+    for (k, v) in &state.response_headers {
+        out.push_str(k);
+        out.push_str(": ");
+        out.push_str(v);
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&state.response_body);
+    out
+}
+
+fn render_response_headers(
+    ui: &mut egui::Ui,
+    state: &HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    if state.response_headers.is_empty() {
+        ui.add_space(24.0);
+        crate::http_client_widgets::empty_state(
+            ui,
+            egui_icons::icons::ICON_LIST.codepoint,
+            "No headers received",
+            "",
+        );
+        return;
+    }
+    let key_color = style::theme_info(&ctx);
+    egui::ScrollArea::both()
+        .id_salt("http_response_headers_scroll")
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            egui::Grid::new("resp_headers_grid")
+                .num_columns(2)
+                .spacing([18.0, 6.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for (k, v) in &state.response_headers {
+                        ui.label(
+                            egui::RichText::new(k)
+                                .family(egui::FontFamily::Monospace)
+                                .color(key_color),
                         );
-                    } else {
-                        egui::Grid::new("resp_headers_grid")
-                            .num_columns(2)
-                            .spacing([8.0, 2.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for (k, v) in &state.response_headers {
-                                    ui.label(egui::RichText::new(k).monospace().strong());
-                                    ui.label(egui::RichText::new(v).monospace());
-                                    ui.end_row();
-                                }
-                            });
+                        let resp = ui
+                            .add(
+                                egui::Label::new(
+                                    egui::RichText::new(v).family(egui::FontFamily::Monospace),
+                                )
+                                .sense(egui::Sense::click()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Click to copy");
+                        if resp.clicked() {
+                            ui.ctx().copy_text(format!("{k}: {v}"));
+                            toasts.success(format!("Copied header {k}"));
+                        }
+                        ui.end_row();
                     }
                 });
+        });
+}
+
+fn render_response_loading(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    ui.add_space(72.0);
+    ui.vertical_centered(|ui| {
+        ui.add(egui::Spinner::new().size(24.0));
+        ui.add_space(12.0);
+        ui.label(
+            egui::RichText::new("Sending request…")
+                .size(14.0)
+                .strong()
+                .color(style::nav_text_strong(&ctx)),
+        );
+        if let Some(started) = state.request_started {
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(crate::http_client_widgets::format_duration(
+                    started.elapsed().as_millis(),
+                ))
+                .family(egui::FontFamily::Monospace)
+                .color(style::nav_text_muted(&ctx)),
+            );
+        }
+        ui.add_space(14.0);
+        if ui
+            .add(style::btn_secondary(format!(
+                "{}  Cancel",
+                egui_icons::icons::ICON_STOP.codepoint
+            )))
+            .clicked()
+        {
+            cancel_request(state, toasts);
+        }
+    });
+}
+
+fn render_response_error(
+    ui: &mut egui::Ui,
+    state: &mut HttpClientState,
+    err: &str,
+    ai: &AiBackend,
+) {
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    let danger = style::theme_danger(&ctx);
+    ui.add_space(4.0);
+    style::theme_alert_frame(&ctx, true).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(egui_icons::icons::ICON_ERROR.codepoint)
+                    .size(18.0)
+                    .color(danger),
+            );
+            ui.label(
+                egui::RichText::new("Request failed")
+                    .size(14.0)
+                    .strong()
+                    .color(danger),
+            );
+            if let Some(ms) = state.response_time_ms {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(crate::http_client_widgets::format_duration(ms))
+                            .size(11.5)
+                            .color(style::nav_text_muted(&ctx)),
+                    );
+                });
+            }
+        });
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(egui::RichText::new(err).family(egui::FontFamily::Monospace)).wrap(),
+        );
+        if let Some(hint) = crate::http_client_widgets::error_hint(err) {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  {}",
+                    egui_icons::icons::ICON_LIGHTBULB.codepoint,
+                    hint
+                ))
+                .size(12.0)
+                .color(style::nav_text_strong(&ctx)),
+            );
+        }
+    });
+
+    // Error jaringan juga bisa dijelaskan AI (tanpa tab, langsung di bawah).
+    if ai.is_ok() {
+        ui.add_space(12.0);
+        render_ai_explanation(ui, state, ai);
+    }
+}
+
+fn render_response_empty(ui: &mut egui::Ui) {
+    use crate::window_egui::style;
+    let ctx = ui.ctx().clone();
+    ui.add_space((ui.available_height() * 0.22).clamp(24.0, 140.0));
+    crate::http_client_widgets::empty_state(
+        ui,
+        egui_icons::icons::ICON_SEND.codepoint,
+        "Send a request to see the response",
+        "Status, timing, headers and the body will show up here.",
+    );
+    ui.add_space(18.0);
+
+    let send_keys = if cfg!(target_os = "macos") {
+        "⌘ ↵"
+    } else {
+        "Ctrl ↵"
+    };
+    let save_keys = if cfg!(target_os = "macos") {
+        "⌘ S"
+    } else {
+        "Ctrl S"
+    };
+    let rows: [(&str, Option<&str>); 3] = [
+        ("Send request", Some(send_keys)),
+        ("Save request", Some(save_keys)),
+        ("Import cURL: paste it into the URL bar", None),
+    ];
+    let block_w = 280.0_f32.min(ui.available_width());
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - block_w) / 2.0).max(0.0));
+        ui.vertical(|ui| {
+            ui.set_width(block_w);
+            for (label, keys) in rows {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(label)
+                            .size(12.0)
+                            .color(style::nav_text_muted(&ctx)),
+                    );
+                    if let Some(keys) = keys {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            style::render_shortcut_badge(ui, keys);
+                        });
+                    }
+                });
+                ui.add_space(2.0);
+            }
+        });
+    });
+}
+
+#[cfg(not(target_os = "ios"))]
+fn save_response_to_file(
+    state: &HttpClientState,
+    syntax: crate::http_client_widgets::Syntax,
+    toasts: &mut crate::window_egui::notifications::ToastManager,
+) {
+    use crate::http_client_widgets::Syntax;
+    let (name, ext) = match syntax {
+        Syntax::Json => ("response.json", "json"),
+        Syntax::Xml => ("response.xml", "xml"),
+        _ => ("response.txt", "txt"),
+    };
+    let Some(path) = crate::rfd::FileDialog::new()
+        .set_file_name(name)
+        .add_filter(ext.to_uppercase(), &[ext])
+        .save_file()
+    else {
+        return;
+    };
+    match std::fs::write(&path, state.response_body.as_bytes()) {
+        Ok(()) => toasts.success(format!("Saved to {}", path.display())),
+        Err(e) => {
+            log::error!(
+                "[HTTP] failed to save response to {}: {}",
+                path.display(),
+                e
+            );
+            toasts.error(format!("Could not save response: {e}"));
         }
     }
 }
@@ -1294,179 +2386,21 @@ fn execute_request(state: &mut HttpClientState) {
     state.response_time_ms = None;
     state.response_size_bytes = None;
     state.response_error = None;
+    state.request_started = Some(std::time::Instant::now());
 
     let (tx, rx) = mpsc::channel::<HttpClientResponse>();
     state.response_receiver = Some(Arc::new(Mutex::new(rx)));
 
-    // Gather all request data before moving into thread
-    let url = state.url.clone();
-    let method = state.method.clone();
-    let body_type = state.body_type.clone();
-    let body_text = state.body_text.clone();
-    let form_data: Vec<(String, String)> = state
-        .form_data
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let params: Vec<(String, String)> = state
-        .params
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let custom_headers: Vec<(String, String)> = state
-        .headers
-        .iter()
-        .filter(|(k, _, en)| *en && !k.is_empty())
-        .map(|(k, v, _)| (k.clone(), v.clone()))
-        .collect();
-    let auth_type = state.auth_type.clone();
-    let bearer_token = state.bearer_token.clone();
-    let basic_user = state.basic_user.clone();
-    let basic_pass = state.basic_pass.clone();
-    let api_key_name = state.api_key_name.clone();
-    let api_key_value = state.api_key_value.clone();
-    let api_key_in_header = state.api_key_in_header;
-
+    let spec = crate::http_send::RequestSpec::from_state(state).with_vars(&state.env_vars);
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async move {
-            let client = reqwest::Client::builder()
-                .danger_accept_invalid_certs(false)
-                .build()
-                .unwrap_or_default();
-
-            let start = std::time::Instant::now();
-
-            // Build URL with query params
-            let mut full_url = url.clone();
-            if !params.is_empty() {
-                let query_str: String = params
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("&");
-                if full_url.contains('?') {
-                    full_url.push('&');
-                } else {
-                    full_url.push('?');
-                }
-                full_url.push_str(&query_str);
-            }
-
-            // Add API key to URL if needed
-            if matches!(auth_type, HttpAuthType::ApiKey) && !api_key_in_header {
-                let q = format!("{}={}", api_key_name, api_key_value);
-                if full_url.contains('?') {
-                    full_url.push('&');
-                } else {
-                    full_url.push('?');
-                }
-                full_url.push_str(&q);
-            }
-
-            let mut req_builder = match method {
-                HttpMethod::GET => client.get(&full_url),
-                HttpMethod::POST => client.post(&full_url),
-                HttpMethod::PUT => client.put(&full_url),
-                HttpMethod::DELETE => client.delete(&full_url),
-                HttpMethod::PATCH => client.patch(&full_url),
-                HttpMethod::HEAD => client.head(&full_url),
-                HttpMethod::OPTIONS => client.request(reqwest::Method::OPTIONS, &full_url),
-            };
-
-            // Custom headers
-            for (k, v) in &custom_headers {
-                req_builder = req_builder.header(k.as_str(), v.as_str());
-            }
-
-            // Auth headers
-            match auth_type {
-                HttpAuthType::BearerToken | HttpAuthType::JwtBearer => {
-                    req_builder =
-                        req_builder.header("Authorization", format!("Bearer {}", bearer_token));
-                }
-                HttpAuthType::BasicAuth => {
-                    req_builder = req_builder.basic_auth(&basic_user, Some(&basic_pass));
-                }
-                HttpAuthType::ApiKey if api_key_in_header && !api_key_name.is_empty() => {
-                    req_builder = req_builder.header(api_key_name.as_str(), api_key_value.as_str());
-                }
-                _ => {}
-            }
-
-            // Body
-            req_builder = match &body_type {
-                HttpBodyType::Json => req_builder
-                    .header("Content-Type", "application/json")
-                    .body(body_text.clone()),
-                HttpBodyType::Xml => req_builder
-                    .header("Content-Type", "application/xml")
-                    .body(body_text.clone()),
-                HttpBodyType::GraphQL => req_builder
-                    .header("Content-Type", "application/json")
-                    .body(body_text.clone()),
-                HttpBodyType::OtherText => req_builder.body(body_text.clone()),
-                HttpBodyType::UrlEncoded => req_builder.form(&form_data),
-                HttpBodyType::MultiPart => {
-                    let mut form = reqwest::multipart::Form::new();
-                    for (k, v) in form_data {
-                        form = form.text(k, v);
-                    }
-                    req_builder.multipart(form)
-                }
-                HttpBodyType::NoBody | HttpBodyType::BinaryFile => req_builder,
-            };
-
-            match req_builder.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let status_text = response
-                        .status()
-                        .canonical_reason()
-                        .unwrap_or("")
-                        .to_string();
-                    let resp_headers: Vec<(String, String)> = response
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<binary>").to_string()))
-                        .collect();
-                    let body = response.text().await.unwrap_or_default();
-                    let time_ms = start.elapsed().as_millis();
-                    let size_bytes = body.len();
-                    HttpClientResponse {
-                        status,
-                        status_text,
-                        body,
-                        headers: resp_headers,
-                        time_ms,
-                        size_bytes,
-                        error: None,
-                    }
-                }
-                Err(e) => {
-                    let time_ms = start.elapsed().as_millis();
-                    HttpClientResponse {
-                        status: 0,
-                        status_text: String::new(),
-                        body: String::new(),
-                        headers: Vec::new(),
-                        time_ms,
-                        size_bytes: 0,
-                        error: Some(e.to_string()),
-                    }
-                }
-            }
-        });
-
-        let _ = tx.send(result);
+        let _ = tx.send(crate::http_send::send_blocking(spec));
     });
 }
 
 fn apply_response(state: &mut HttpClientState, resp: HttpClientResponse) {
     state.is_loading = false;
     state.response_receiver = None;
+    state.request_started = None;
     if let Some(err) = resp.error {
         state.response_error = Some(err);
         state.response_status = None;
@@ -1615,7 +2549,11 @@ fn xml_tag_end(input: &str) -> usize {
 /// JSON syntax highlighter.
 /// Colors: cyan = keys, green = string values, orange = numbers,
 ///         purple = true/false/null, gray = punctuation.
-fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_json(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
@@ -1741,7 +2679,11 @@ fn highlight_body_json(text: &str, dark: bool, font_id: egui::FontId) -> egui::t
 /// Colors: blue = tag names, light-blue = attr names, green = attr values,
 ///         gray = punctuation, muted-green = comments, yellow = CDATA,
 ///         purple = processing instructions.
-fn highlight_body_xml(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_xml(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
@@ -1910,7 +2852,11 @@ fn highlight_body_xml(text: &str, dark: bool, font_id: egui::FontId) -> egui::te
 /// GraphQL syntax highlighter.
 /// Colors: purple = keywords, green = strings, muted-green = comments,
 ///         orange = types (uppercase), cyan = fields, gray = punctuation.
-fn highlight_body_graphql(text: &str, dark: bool, font_id: egui::FontId) -> egui::text::LayoutJob {
+pub(crate) fn highlight_body_graphql(
+    text: &str,
+    dark: bool,
+    font_id: egui::FontId,
+) -> egui::text::LayoutJob {
     use egui::{Color32, TextFormat, text::LayoutJob};
     let mut job = LayoutJob::default();
 
@@ -2079,7 +3025,7 @@ fn is_graphql_keyword(word: &str) -> bool {
 /// Colors: green = strings, muted-green = comments, orange = numbers,
 ///         purple = keywords / curl flags, yellow = Capitalized identifiers,
 ///         cyan = $variables (PHP), gray = punctuation.
-fn highlight_code(
+pub(crate) fn highlight_code(
     text: &str,
     lang: &CodeLang,
     dark: bool,
@@ -2287,4 +3233,78 @@ fn highlight_code(
         }
     }
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_client_widgets::Syntax;
+
+    #[test]
+    fn legacy_state_json_loads_with_layout_defaults() {
+        // State yang disimpan sebelum field layout ditambahkan.
+        let mut value = serde_json::to_value(HttpClientState::default()).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        for field in ["split_ratio", "layout_vertical", "response_wrap"] {
+            assert!(obj.remove(field).is_some(), "{field} should be serialized");
+        }
+        let state: HttpClientState = serde_json::from_value(value).unwrap();
+        assert_eq!(state.split_ratio, 0.5);
+        assert!(!state.layout_vertical);
+        assert!(state.response_wrap);
+        assert!(state.request_started.is_none());
+    }
+
+    #[test]
+    fn json_error_reports_position_and_ignores_empty() {
+        assert!(json_error("").is_none());
+        assert!(json_error("  {\"a\": [1, 2]} ").is_none());
+        let err = json_error("{\n  \"a\": ,\n}").unwrap();
+        assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
+    fn response_syntax_uses_content_type_then_sniffs() {
+        let ct = |v: &str| vec![("Content-Type".to_string(), v.to_string())];
+        assert_eq!(
+            response_syntax(&ct("application/problem+json"), "x"),
+            Syntax::Json
+        );
+        assert_eq!(
+            response_syntax(&ct("text/html; charset=utf-8"), "x"),
+            Syntax::Xml
+        );
+        assert_eq!(response_syntax(&[], "  [1,2]"), Syntax::Json);
+        assert_eq!(response_syntax(&[], "<a/>"), Syntax::Xml);
+        assert_eq!(response_syntax(&ct("text/plain"), "hello"), Syntax::Plain);
+    }
+
+    #[test]
+    fn raw_response_has_status_headers_and_body() {
+        let state = HttpClientState {
+            response_status: Some(201),
+            response_status_text: "Created".into(),
+            response_headers: vec![("x-id".into(), "7".into())],
+            response_body: "{}".into(),
+            ..Default::default()
+        };
+        assert_eq!(raw_response_text(&state), "HTTP 201 Created\nx-id: 7\n\n{}");
+    }
+
+    #[test]
+    fn body_segments_cover_every_body_type_once() {
+        let segs = body_type_segments();
+        for t in [
+            HttpBodyType::NoBody,
+            HttpBodyType::Json,
+            HttpBodyType::UrlEncoded,
+            HttpBodyType::MultiPart,
+            HttpBodyType::GraphQL,
+            HttpBodyType::Xml,
+            HttpBodyType::OtherText,
+            HttpBodyType::BinaryFile,
+        ] {
+            assert_eq!(segs.iter().filter(|(s, ..)| *s == t).count(), 1, "{t:?}");
+        }
+    }
 }

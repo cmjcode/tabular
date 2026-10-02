@@ -1,6 +1,10 @@
 use crate::self_update::UpdateInfo;
 use futures_util::StreamExt;
-use log::{debug, info, warn};
+use log::info;
+// Every `warn!` here lives in the macOS-only DMG staging path, so importing it
+// unconditionally makes the iOS build fail `clippy -D warnings`.
+#[cfg(target_os = "macos")]
+use log::{debug, warn};
 use std::fs;
 #[allow(unused_imports)]
 use std::io::Cursor;
@@ -9,7 +13,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum UpdateStage {
     Idle,
-    Downloading { progress: f32, downloaded: u64, total: Option<u64> },
+    Downloading {
+        progress: f32,
+        downloaded: u64,
+        total: Option<u64>,
+    },
     Extracting,
     Applying,
     /// Update completed. On macOS, contains the path to the staged helper script
@@ -56,6 +64,7 @@ impl AutoUpdater {
             .as_ref()
             .ok_or("No download URL available for this release")?;
 
+        crate::privacy::check(crate::privacy::NetCategory::UpdateDownload, download_url)?;
         info!("🚀 Starting auto update download from: {}", download_url);
         progress_cb(UpdateStage::Downloading {
             progress: 0.0,
@@ -100,7 +109,10 @@ impl AutoUpdater {
             });
         }
 
-        info!("📦 Update payload downloaded successfully ({} bytes)", content.len());
+        info!(
+            "📦 Update payload downloaded successfully ({} bytes)",
+            content.len()
+        );
         progress_cb(UpdateStage::Extracting);
 
         // staged_script carries back the macOS helper script path (None on other platforms)
@@ -108,19 +120,23 @@ impl AutoUpdater {
 
         #[cfg(target_os = "macos")]
         {
-            let staged = self.stage_macos_update(&content, update_info, &progress_cb).await?;
+            let staged = self
+                .stage_macos_update(&content, update_info, &progress_cb)
+                .await?;
             staged_script = staged;
         }
 
         #[cfg(target_os = "linux")]
         {
-            self.stage_linux_update(&content, update_info, &progress_cb).await?;
+            self.stage_linux_update(&content, update_info, &progress_cb)
+                .await?;
             staged_script = None;
         }
 
         #[cfg(target_os = "windows")]
         {
-            self.stage_windows_update(&content, update_info, &progress_cb).await?;
+            self.stage_windows_update(&content, update_info, &progress_cb)
+                .await?;
             staged_script = None;
         }
 
@@ -150,7 +166,10 @@ impl AutoUpdater {
             // If a staged update script is available, run it and exit.
             // The script waits for us to quit, then replaces the .app and relaunches.
             if let Some(script_path) = staged_script {
-                info!("🍏 Launching staged update helper script: {:?}", script_path);
+                info!(
+                    "🍏 Launching staged update helper script: {:?}",
+                    script_path
+                );
                 std::process::Command::new("bash")
                     .arg(script_path)
                     .spawn()?;
@@ -174,6 +193,27 @@ impl AutoUpdater {
 
         std::process::Command::new(&current_exe).spawn()?;
         std::process::exit(0);
+    }
+}
+
+impl AutoUpdater {
+    /// Pasang update yang sudah di-stage saat aplikasi ditutup (M8), tanpa
+    /// membuka ulang. Linux/Windows sudah mengganti binary saat staging, jadi
+    /// hanya macOS yang perlu menjalankan helper script di sini.
+    pub fn install_on_quit(staged_script: Option<&PathBuf>) {
+        #[cfg(target_os = "macos")]
+        if let Some(script) = staged_script {
+            info!("🍏 Installing staged update on quit: {:?}", script);
+            if let Err(e) = std::process::Command::new("bash")
+                .arg(script)
+                .arg("--no-relaunch")
+                .spawn()
+            {
+                warn!("Failed to launch update helper on quit: {}", e);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = staged_script;
     }
 }
 
@@ -209,10 +249,7 @@ impl AutoUpdater {
         info!("🍏 Staging macOS update (safe staged approach)...");
         progress_cb(UpdateStage::Applying);
 
-        let asset_name = update_info
-            .asset_name
-            .as_deref()
-            .unwrap_or("Tabular.dmg");
+        let asset_name = update_info.asset_name.as_deref().unwrap_or("Tabular.dmg");
 
         let dmg_path = self.temp_dir.join(asset_name);
         fs::write(&dmg_path, content)?;
@@ -258,7 +295,11 @@ impl AutoUpdater {
 
                 // Use system cp -R for reliable deep-copy of .app bundle
                 let cp_status = std::process::Command::new("cp")
-                    .args(["-R", mounted_app.to_str().unwrap(), staged_app.to_str().unwrap()])
+                    .args([
+                        "-R",
+                        mounted_app.to_str().unwrap(),
+                        staged_app.to_str().unwrap(),
+                    ])
                     .status();
 
                 let _ = std::process::Command::new("hdiutil")
@@ -286,8 +327,8 @@ impl AutoUpdater {
                         xattr -cr \"{install}\" 2>/dev/null || true\n\
                         # Remove this helper script\n\
                         rm -f \"{script}\"\n\
-                        # Relaunch the app\n\
-                        open \"{install}\"\n",
+                        # Relaunch the app (dilewati untuk install-saat-keluar)\n\
+                        if [ \"$1\" != \"--no-relaunch\" ]; then open \"{install}\"; fi\n",
                         install = install_target,
                         staged = staged_app.to_string_lossy(),
                         script = helper_script_path.to_string_lossy(),
@@ -299,13 +340,21 @@ impl AutoUpdater {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(&helper_script_path, fs::Permissions::from_mode(0o755))?;
+                        fs::set_permissions(
+                            &helper_script_path,
+                            fs::Permissions::from_mode(0o755),
+                        )?;
                     }
 
-                    info!("✅ Update staged. Helper script ready at {:?}", helper_script_path);
+                    info!(
+                        "✅ Update staged. Helper script ready at {:?}",
+                        helper_script_path
+                    );
                     return Ok(Some(helper_script_path));
                 } else {
-                    warn!("❌ Failed to copy new .app to staging dir; falling back to Downloads DMG");
+                    warn!(
+                        "❌ Failed to copy new .app to staging dir; falling back to Downloads DMG"
+                    );
                 }
             } else {
                 let _ = std::process::Command::new("hdiutil")
@@ -326,7 +375,9 @@ impl AutoUpdater {
             if let Some(downloads_dir) = dirs::download_dir() {
                 let download_dmg = downloads_dir.join(asset_name);
                 let _ = fs::copy(&dmg_fallback_path, &download_dmg);
-                let _ = std::process::Command::new("open").arg(&download_dmg).spawn();
+                let _ = std::process::Command::new("open")
+                    .arg(&download_dmg)
+                    .spawn();
             }
             let _ = fs::remove_file(&dmg_fallback_path);
         }
@@ -376,8 +427,8 @@ impl AutoUpdater {
             }
         }
 
-        let new_binary = extracted_binary
-            .ok_or("Could not find extracted binary in update archive")?;
+        let new_binary =
+            extracted_binary.ok_or("Could not find extracted binary in update archive")?;
 
         // Set executable permissions (0755)
         #[cfg(unix)]
@@ -397,7 +448,9 @@ impl AutoUpdater {
             } else {
                 // Rollback if copy fails
                 let _ = fs::rename(&temp_old_exe, &current_exe);
-                warn!("Linux in-place replacement failed (permission denied); saving to Downloads");
+                log::warn!(
+                    "Linux in-place replacement failed (permission denied); saving to Downloads"
+                );
                 if let Some(downloads_dir) = dirs::download_dir() {
                     let dest = downloads_dir.join("tabular-latest");
                     let _ = fs::copy(&new_binary, &dest);
@@ -429,12 +482,16 @@ impl AutoUpdater {
         progress_cb(UpdateStage::Applying);
 
         // ── Path A: MSI silent install ────────────────────────────────────
-        if matches!(update_info.windows_update_kind, Some(WindowsUpdateKind::Msi)) {
+        if matches!(
+            update_info.windows_update_kind,
+            Some(WindowsUpdateKind::Msi)
+        ) {
             return self.apply_msi_update(content, update_info).await;
         }
 
         // ── Path B: ZIP / EXE in-place ────────────────────────────────────
-        self.apply_zip_update(content, update_info, progress_cb).await
+        self.apply_zip_update(content, update_info, progress_cb)
+            .await
     }
 
     /// Jalankan MSI installer secara silent menggunakan msiexec.
@@ -462,11 +519,14 @@ impl AutoUpdater {
         let status = std::process::Command::new("msiexec.exe")
             .args([
                 "/i",
-                msi_path.to_str().ok_or("MSI path tidak valid (non-UTF8)")?,
+                msi_path.to_str().ok_or("MSI path is not valid UTF-8")?,
                 "/qn",
                 "/norestart",
                 "/l*v",
-                self.temp_dir.join("msi_install.log").to_str().unwrap_or("nul"),
+                self.temp_dir
+                    .join("msi_install.log")
+                    .to_str()
+                    .unwrap_or("nul"),
             ])
             .status();
 
@@ -488,12 +548,13 @@ impl AutoUpdater {
                 } else {
                     let log_hint = self.temp_dir.join("msi_install.log");
                     Err(format!(
-                        "msiexec gagal dengan exit code {}. Lihat log: {:?}",
+                        "msiexec failed with exit code {}. See log: {:?}",
                         code, log_hint
-                    ).into())
+                    )
+                    .into())
                 }
             }
-            Err(e) => Err(format!("Gagal menjalankan msiexec: {}", e).into()),
+            Err(e) => Err(format!("Failed to run msiexec: {}", e).into()),
         }
     }
 
@@ -543,13 +604,19 @@ impl AutoUpdater {
     }
 
     /// Cari file .exe pertama yang ditemukan di dalam direktori (tidak rekursif).
-    fn find_exe_in_dir(dir: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    fn find_exe_in_dir(
+        dir: &std::path::Path,
+    ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
         // Cari di root directory dulu
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
                     if name.ends_with(".exe") {
                         return Ok(path);
                     }
@@ -566,7 +633,11 @@ impl AutoUpdater {
                         for sub_entry in sub_entries.flatten() {
                             let sub_path = sub_entry.path();
                             if sub_path.is_file() {
-                                let name = sub_path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                                let name = sub_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_lowercase();
                                 if name.ends_with(".exe") {
                                     return Ok(sub_path);
                                 }
@@ -577,7 +648,7 @@ impl AutoUpdater {
             }
         }
 
-        Err("Tidak ada file .exe ditemukan di dalam ZIP archive".into())
+        Err("No .exe file found in the ZIP archive".into())
     }
 
     /// Periksa apakah path memerlukan hak administrator untuk ditulis.
@@ -629,14 +700,14 @@ impl AutoUpdater {
 
         info!("🔄 Rename {:?} → {:?}", current_exe, old_exe);
         fs::rename(current_exe, &old_exe)
-            .map_err(|e| format!("Gagal rename exe lama: {}", e))?;
+            .map_err(|e| format!("Failed to rename the old executable: {}", e))?;
 
         info!("📋 Copy binary baru {:?} → {:?}", new_binary, current_exe);
         if let Err(e) = fs::copy(new_binary, current_exe) {
             // Rollback: kembalikan exe lama
             warn!("Copy gagal ({}), rolling back...", e);
             let _ = fs::rename(&old_exe, current_exe);
-            return Err(format!("Gagal copy binary baru: {}", e).into());
+            return Err(format!("Failed to copy the new binary: {}", e).into());
         }
 
         info!("✅ Binary berhasil diganti in-place (Windows portable)");
@@ -717,9 +788,12 @@ Remove-Item -Path '{script}' -Force -ErrorAction SilentlyContinue
         );
 
         fs::write(&script_path, ps_script.as_bytes())
-            .map_err(|e| format!("Gagal menulis PowerShell helper script: {}", e))?;
+            .map_err(|e| format!("Failed to write the PowerShell helper script: {}", e))?;
 
-        info!("🚀 Spawning PowerShell helper dengan UAC elevation: {:?}", script_path);
+        info!(
+            "🚀 Spawning PowerShell helper dengan UAC elevation: {:?}",
+            script_path
+        );
 
         // Start-Process dengan -Verb RunAs meminta elevasi UAC
         // -WindowStyle Hidden agar tidak muncul jendela console
@@ -744,8 +818,9 @@ Remove-Item -Path '{script}' -Force -ErrorAction SilentlyContinue
                 "PowerShell helper gagal di-spawn (exit code: {:?}). \
                  Coba update manual dari halaman release GitHub.",
                 s.code()
-            ).into()),
-            Err(e) => Err(format!("Gagal menjalankan PowerShell: {}", e).into()),
+            )
+            .into()),
+            Err(e) => Err(format!("Failed to run PowerShell: {}", e).into()),
         }
     }
 }

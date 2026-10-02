@@ -66,15 +66,25 @@ pub(crate) fn load_queries_from_directory(tabular: &mut window_egui::Tabular) {
 
 /// Filter queries tree based on database_search_text
 pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
-    let search_text = tabular.database_search_text.trim().to_lowercase();
+    let search_text = crate::search_match::SearchQuery::new(&tabular.database_search_text);
     if search_text.is_empty() {
         tabular.filtered_queries_tree.clear();
         return;
     }
 
-    fn filter_node(node: &models::structs::TreeNode, search_text: &str) -> Option<models::structs::TreeNode> {
-        let name_lower = node.name.to_lowercase();
-        let matches = name_lower.contains(search_text);
+    fn filter_node(
+        node: &models::structs::TreeNode,
+        search_text: &crate::search_match::SearchQuery,
+    ) -> Option<models::structs::TreeNode> {
+        let matches = search_text.matches(&node.name);
+
+        // If this node is a folder and matches the search text, preserve all of its contents (children)
+        // and recursively expand all nested subfolders.
+        if matches && node.node_type.is_folder() {
+            let mut filtered_node = node.clone();
+            filtered_node.expand_all_folders();
+            return Some(filtered_node);
+        }
 
         let mut filtered_children = Vec::new();
         for child in &node.children {
@@ -88,6 +98,7 @@ pub(crate) fn filter_queries_tree(tabular: &mut window_egui::Tabular) {
             if !filtered_children.is_empty() {
                 filtered_node.children = filtered_children;
             }
+            filtered_node.is_expanded = true;
             Some(filtered_node)
         } else {
             None
@@ -247,8 +258,7 @@ pub(crate) fn render_create_folder_dialog(tabular: &mut window_egui::Tabular, ct
                         };
 
                         if let Err(err) = result {
-                            tabular.error_message = err;
-                            tabular.show_error_message = true;
+                            tabular.toasts.error(err);
                         } else {
                             // Force immediate UI repaint after successful folder creation
                             ui.ctx().request_repaint();
@@ -289,9 +299,7 @@ pub(crate) fn rename_query_folder(
         return Err(format!("Folder '{}' does not exist", relative_path));
     }
 
-    let parent_path = source_path
-        .parent()
-        .unwrap_or(&query_dir);
+    let parent_path = source_path.parent().unwrap_or(&query_dir);
     let target_path = parent_path.join(trimmed);
 
     if target_path == source_path {
@@ -330,7 +338,9 @@ pub(crate) fn rename_query_folder(
 
     // Refresh query tree
     load_queries_from_directory(tabular);
-    tabular.toasts.success(format!("Renamed folder to '{}'", trimmed));
+    tabular
+        .toasts
+        .success(format!("Renamed folder to '{}'", trimmed));
     Ok(())
 }
 
@@ -391,8 +401,7 @@ pub(crate) fn render_rename_query_folder_dialog(
         let trimmed = edit_name.trim().to_string();
         if !trimmed.is_empty() && trimmed != current_name {
             if let Err(err) = rename_query_folder(tabular, &relative_path, &trimmed) {
-                tabular.error_message = err;
-                tabular.show_error_message = true;
+                tabular.toasts.error(err);
             } else {
                 ctx.request_repaint();
             }
@@ -437,16 +446,14 @@ pub(crate) fn render_move_to_folder_dialog(
                                 if let Err(err) =
                                     sidebar_query::move_query_to_root(tabular, &query_path)
                                 {
-                                    tabular.error_message = err;
-                                    tabular.show_error_message = true;
+                                    tabular.toasts.error(err);
                                 }
                             } else if let Err(err) = sidebar_query::move_query_to_folder(
                                 tabular,
                                 &query_path,
                                 &tabular.target_folder_name.clone(),
                             ) {
-                                tabular.error_message = err;
-                                tabular.show_error_message = true;
+                                tabular.toasts.error(err);
                             }
                         }
                         tabular.show_move_to_folder_dialog = false;
@@ -517,7 +524,10 @@ pub(crate) fn open_query_file(
         };
     let effective_connection_id = resolved_connection_id.or(auto_single_connection);
 
+    let tab_id = tabular.next_tab_id;
+    tabular.next_tab_id += 1;
     let new_tab = models::structs::QueryTab {
+        id: tab_id,
         title: filename,
         content: content.clone(),
         file_path: Some(file_path.to_string()),
@@ -550,12 +560,21 @@ pub(crate) fn open_query_file(
         redis_browser_state: None,
         dba_monitor_state: None,
         user_manager_state: None,
+        git_state: None,
         tx_mode: false,
         tx_active: false,
         session: None,
         pinned_columns: std::collections::HashSet::new(),
+        is_pinned: false,
+        last_executed_sql: String::new(),
+        last_statement_type: models::structs::StatementType::Select,
+        last_affected_rows: None,
+        sql_filter_text: String::new(),
+        visual_filter: models::structs::VisualFilterState::default(),
     };
 
+    // Filter tab sebelumnya dititipkan ke tab itu sendiri; tab baru mulai tanpa filter.
+    crate::editor::stash_active_tab_filter(tabular);
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
@@ -709,5 +728,56 @@ mod tests {
         tabular.database_search_text = "".to_string();
         filter_queries_tree(&mut tabular);
         assert!(tabular.filtered_queries_tree.is_empty());
+
+        // 4. Search for folder name "admin" -> folder matches, so all children should be displayed!
+        tabular.database_search_text = "admin".to_string();
+        filter_queries_tree(&mut tabular);
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        assert_eq!(tabular.filtered_queries_tree[0].name, "Admin Queries");
+        assert!(tabular.filtered_queries_tree[0].is_expanded);
+        assert_eq!(tabular.filtered_queries_tree[0].children.len(), 2);
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[0].name,
+            "Select Users.sql"
+        );
+        assert_eq!(
+            tabular.filtered_queries_tree[0].children[1].name,
+            "Insert Products.sql"
+        );
+    }
+
+    #[test]
+    fn test_filter_queries_tree_nested_subfolders_recursive_expand() {
+        let mut tabular = window_egui::Tabular::default();
+
+        let q1 = TreeNode::new("Monthly Report.sql".to_string(), NodeType::Query);
+        let mut sub_folder = TreeNode::new("2026 Reports".to_string(), NodeType::QueryFolder);
+        sub_folder.children = vec![q1];
+        assert!(!sub_folder.is_expanded);
+
+        let mut root_folder = TreeNode::new("Finance".to_string(), NodeType::QueryFolder);
+        root_folder.children = vec![sub_folder];
+        assert!(!root_folder.is_expanded);
+
+        tabular.queries_tree = vec![root_folder];
+
+        // Search for root folder "Finance"
+        tabular.database_search_text = "finance".to_string();
+        filter_queries_tree(&mut tabular);
+
+        assert_eq!(tabular.filtered_queries_tree.len(), 1);
+        let root = &tabular.filtered_queries_tree[0];
+        assert_eq!(root.name, "Finance");
+        assert!(root.is_expanded, "Root folder must be auto-expanded");
+
+        assert_eq!(root.children.len(), 1);
+        let nested = &root.children[0];
+        assert_eq!(nested.name, "2026 Reports");
+        assert!(
+            nested.is_expanded,
+            "Nested subfolder must be recursively auto-expanded!"
+        );
+        assert_eq!(nested.children.len(), 1);
+        assert_eq!(nested.children[0].name, "Monthly Report.sql");
     }
 }

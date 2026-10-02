@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<!--
+  Kamus AppleScript Tabular (M4). Kode event harus sama dengan konstanta di
+  src/platform_macos.rs; perintah ditangani lewat NSAppleEventManager, bukan
+  Cocoa Scripting, jadi Info.plist sengaja tidak memakai NSAppleScriptEnabled.
+-->
+<dictionary title="Tabular Terminology">
+  <suite name="Tabular Suite" code="Tbul" description="Open connections, links and queries in Tabular.">
+    <command name="open deep link" code="TbulopUR" description="Open a tabular:// link or a database URL such as postgres://user@localhost:5432/app.">
+      <direct-parameter type="text" description="The tabular:// link or database URL."/>
+    </command>
+    <command name="open connection" code="TbulopCN" description="Open a saved connection in a new query tab.">
+      <direct-parameter type="text" description="Connection name (or Folder/Name) or numeric id."/>
+      <parameter name="database" code="kDB " type="text" optional="yes" description="Database to select.">
+        <cocoa key="database"/>
+      </parameter>
+      <parameter name="table" code="kTBL" type="text" optional="yes" description="Table to open.">
+        <cocoa key="table"/>
+      </parameter>
+    </command>
+    <command name="new query" code="TbulnwQY" description="Open a new query tab with the given SQL. The query is not run.">
+      <direct-parameter type="text" description="The SQL text."/>
+      <parameter name="connection" code="kCON" type="text" description="Connection name or id.">
+        <cocoa key="connection"/>
+      </parameter>
+      <parameter name="database" code="kDB " type="text" optional="yes" description="Database to select.">
+        <cocoa key="database"/>
+      </parameter>
+    </command>
+    <command name="connection names" code="TbullsCN" description="Names of the saved connections.">
+      <result description="Connection names.">
+        <type type="text" list="yes"/>
+      </result>
+    </command>
+  </suite>
+</dictionary>

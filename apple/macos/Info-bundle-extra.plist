@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Digabung cargo-bundle ke Info.plist .app (lihat [package.metadata.bundle]). -->
+<plist version="1.0">
+<dict>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>id.tabular.database.query</string>
+	</array>
+	<key>OSAScriptingDefinition</key>
+	<string>Tabular.sdef</string>
+</dict>
+</plist>

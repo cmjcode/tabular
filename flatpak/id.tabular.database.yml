@@ -49,7 +49,7 @@ modules:
       - install -Dm755 target/release/tabular /app/bin/tabular
       # Install desktop file; adapt for Flatpak
       - install -Dm644 tabular.desktop /app/share/applications/id.tabular.database.desktop
-      - sed -i 's|^Exec=.*$|Exec=tabular|' /app/share/applications/id.tabular.database.desktop
+      - sed -i 's|^Exec=.*$|Exec=tabular %u|' /app/share/applications/id.tabular.database.desktop
       - sed -i 's|^TryExec=.*$|TryExec=tabular|' /app/share/applications/id.tabular.database.desktop || true
       - sed -i 's|^Icon=.*$|Icon=id.tabular.database|' /app/share/applications/id.tabular.database.desktop
       # Install icon (use pre-resized 512x512 version)

@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use eframe::egui;
 
-use crate::models::structs::{
-    RedisBrowserState, RedisBrowserTypeFilter,
-};
+use crate::models::structs::{RedisBrowserState, RedisBrowserTypeFilter};
 
 #[derive(Clone, Debug)]
 pub enum RedisBrowserAction {
@@ -50,19 +48,28 @@ fn elide_middle(text: &str, max_chars: usize) -> String {
 }
 
 fn filtered_key_indices(state: &RedisBrowserState) -> Vec<usize> {
-    let needle = state.filter_text.trim().to_ascii_lowercase();
+    let query = crate::search_match::SearchQuery::new(&state.filter_text);
     state
         .keys
         .iter()
         .enumerate()
         .filter(|(_, entry)| {
             state.type_filter.matches_type(&entry.key_type)
-                && (needle.is_empty()
-                    || entry.key_name.to_ascii_lowercase().contains(&needle)
-                    || entry.key_type.to_ascii_lowercase().contains(&needle))
+                && query.matches_any([entry.key_name.as_str(), entry.key_type.as_str()])
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Apakah ada key lokal yang mengandung filter secara persis. Dipakai untuk
+/// memutuskan pencarian ke server (SCAN MATCH), yang hanya mengenal pola.
+fn has_exact_local_match(state: &RedisBrowserState) -> bool {
+    let needle = state.filter_text.trim().to_ascii_lowercase();
+    state.keys.iter().any(|entry| {
+        state.type_filter.matches_type(&entry.key_type)
+            && (entry.key_name.to_ascii_lowercase().contains(&needle)
+                || entry.key_type.to_ascii_lowercase().contains(&needle))
+    })
 }
 
 fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
@@ -116,10 +123,14 @@ fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
                                 ui.vertical(|ui| {
                                     for line_number in 1..=line_count {
                                         ui.label(
-                                            egui::RichText::new(format!("{:>width$}", line_number, width = line_count.to_string().len()))
-                                                .monospace()
-                                                .size(12.0)
-                                                .color(gutter_text),
+                                            egui::RichText::new(format!(
+                                                "{:>width$}",
+                                                line_number,
+                                                width = line_count.to_string().len()
+                                            ))
+                                            .monospace()
+                                            .size(12.0)
+                                            .color(gutter_text),
                                         );
                                     }
                                 });
@@ -145,7 +156,7 @@ pub fn render_redis_browser(
     if trimmed_filter.is_empty() {
         state.last_remote_search = None;
         state.remote_search_in_progress = false;
-    } else if filtered.is_empty()
+    } else if !has_exact_local_match(state)
         && !state.remote_search_in_progress
         && state.last_remote_search.as_deref() != Some(trimmed_filter.as_str())
     {
@@ -157,9 +168,7 @@ pub fn render_redis_browser(
 
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("Total: {}", state.keys.len())).strong(),
-            );
+            ui.label(egui::RichText::new(format!("Total: {}", state.keys.len())).strong());
             if !state.available_keyspaces.is_empty() {
                 ui.separator();
                 let mut selected_keyspace = state.keyspace_label.clone();
@@ -168,11 +177,7 @@ pub fn render_redis_browser(
                     .width(96.0)
                     .show_ui(ui, |ui| {
                         for keyspace in &state.available_keyspaces {
-                            ui.selectable_value(
-                                &mut selected_keyspace,
-                                keyspace.clone(),
-                                keyspace,
-                            );
+                            ui.selectable_value(&mut selected_keyspace, keyspace.clone(), keyspace);
                         }
                     });
                 if selected_keyspace != state.keyspace_label {
@@ -192,7 +197,10 @@ pub fn render_redis_browser(
             ui.separator();
             ui.label(format!("Visible: {}", filtered.len()));
             ui.separator();
-            if ui.checkbox(&mut state.auto_refresh_enabled, "Auto Refresh").changed() {
+            if ui
+                .checkbox(&mut state.auto_refresh_enabled, "Auto Refresh")
+                .changed()
+            {
                 state.auto_refresh_last_run = None;
             }
             let mut selected_interval = state.auto_refresh_interval_seconds.max(1);
@@ -201,7 +209,11 @@ pub fn render_redis_browser(
                 .width(72.0)
                 .show_ui(ui, |ui| {
                     for seconds in [1_u32, 2, 5, 10, 15, 30, 60, 120, 300] {
-                        ui.selectable_value(&mut selected_interval, seconds, format!("{}s", seconds));
+                        ui.selectable_value(
+                            &mut selected_interval,
+                            seconds,
+                            format!("{}s", seconds),
+                        );
                     }
                 });
             if selected_interval != state.auto_refresh_interval_seconds.max(1) {
@@ -236,10 +248,11 @@ pub fn render_redis_browser(
                     }
                 });
 
-            ui.add(
-                egui::TextEdit::singleline(&mut state.filter_text)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Filter by key name or pattern"),
+            crate::window_egui::style::render_search_field(
+                ui,
+                &mut state.filter_text,
+                "Filter by key name or pattern",
+                f32::INFINITY,
             );
         });
 
@@ -268,7 +281,8 @@ pub fn render_redis_browser(
                     .show(ui, |ui| {
                         for index in filtered {
                             let entry = &state.keys[index];
-                            let is_selected = state.selected_key.as_deref() == Some(&entry.key_name);
+                            let is_selected =
+                                state.selected_key.as_deref() == Some(&entry.key_name);
                             let dark = ui.visuals().dark_mode;
                             let fill = if is_selected {
                                 if dark {
@@ -286,11 +300,16 @@ pub fn render_redis_browser(
                                 .inner_margin(egui::Margin::symmetric(8, 6))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                         let badge = egui::RichText::new(display_key_type(&entry.key_type))
-                                             .size(10.0)
-                                             .color(egui::Color32::WHITE)
-                                             .background_color(crate::window_egui::style::theme_accent(ui.ctx()))
-                                             .strong();
+                                        let badge =
+                                            egui::RichText::new(display_key_type(&entry.key_type))
+                                                .size(10.0)
+                                                .color(egui::Color32::WHITE)
+                                                .background_color(
+                                                    crate::window_egui::style::theme_accent(
+                                                        ui.ctx(),
+                                                    ),
+                                                )
+                                                .strong();
                                         ui.label(badge);
 
                                         let display_key = elide_middle(&entry.key_name, 72);
@@ -306,11 +325,14 @@ pub fn render_redis_browser(
                                             });
                                         }
 
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(entry.size_label.clone());
-                                            ui.add_space(24.0);
-                                            ui.label(entry.ttl_label.clone());
-                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(entry.size_label.clone());
+                                                ui.add_space(24.0);
+                                                ui.label(entry.ttl_label.clone());
+                                            },
+                                        );
                                     });
                                 });
                             ui.add_space(2.0);

@@ -4,11 +4,12 @@
 //   databases   – fetch_databases_* (blocking, async, background)
 //   columns     – fetch_columns_from_database
 //   ddl         – fetch_view_definition, fetch_procedure_definition,
-//                 get_foreign_keys, fetch_table_definition
+//                 fetch_table_definition, FK cache write-through
 
-mod cache;
-mod databases;
+// `pub(crate)` agar lapisan headless `crate::agent` bisa memuat ulang cache skema.
+pub(crate) mod cache;
 mod columns;
+mod databases;
 mod ddl;
 pub(crate) mod staging;
 
@@ -20,12 +21,13 @@ pub(crate) use cache::fetch_and_cache_all_data;
 pub(crate) use staging::MetadataStaging;
 
 pub use databases::fetch_databases_background_task; // fully pub in original
+pub(crate) use databases::fetch_databases_from_connection_async;
 #[allow(deprecated)]
 pub(crate) use databases::fetch_databases_from_connection_blocking;
 
 pub(crate) use columns::fetch_columns_from_database;
 
 pub(crate) use ddl::{
-    compute_schema_diff,
-    fetch_procedure_definition, fetch_table_definition, fetch_view_definition, get_foreign_keys,
+    compute_schema_diff, fetch_mssql_foreign_keys, fetch_procedure_definition,
+    fetch_table_definition, fetch_view_definition, write_foreign_key_cache,
 };

@@ -1,5 +1,5 @@
-use eframe::egui;
 use crate::window_egui;
+use eframe::egui;
 
 pub(crate) fn clear_table_selection(tabular: &mut window_egui::Tabular) {
     tabular.selected_row = None;
@@ -95,7 +95,7 @@ pub(crate) fn handle_column_click(
     tabular.selected_cell = None;
 }
 
-pub(crate) fn copy_selected_rows_as_csv(tabular: &mut window_egui::Tabular) -> Option<String> {
+pub(crate) fn copy_selected_rows_as_csv(tabular: &window_egui::Tabular) -> Option<String> {
     if tabular.selected_rows.is_empty() {
         return None;
     }
@@ -119,7 +119,7 @@ pub(crate) fn copy_selected_rows_as_csv(tabular: &mut window_egui::Tabular) -> O
     Some(lines.join("\n"))
 }
 
-pub(crate) fn copy_selected_columns_as_csv(tabular: &mut window_egui::Tabular) -> Option<String> {
+pub(crate) fn copy_selected_columns_as_csv(tabular: &window_egui::Tabular) -> Option<String> {
     if tabular.selected_columns.is_empty() {
         return None;
     }
@@ -153,7 +153,7 @@ pub(crate) fn copy_selected_columns_as_csv(tabular: &mut window_egui::Tabular) -
 /// Build CSV for a rectangular block selection in the Data grid (inclusive bounds).
 /// Returns None if the selection is invalid or outside the current page.
 pub(crate) fn copy_selected_block_as_csv(
-    tabular: &mut window_egui::Tabular,
+    tabular: &window_egui::Tabular,
     a: (usize, usize),
     b: (usize, usize),
 ) -> Option<String> {
@@ -175,10 +175,11 @@ pub(crate) fn copy_selected_block_as_csv(
             let mut cols: Vec<String> = Vec::new();
             for c in cmin..=cmax {
                 if let Some(val) = row.get(c) {
+                    let val = super::grid_model::display_value(val);
                     if val.contains(',') || val.contains('"') || val.contains('\n') {
                         cols.push(format!("\"{}\"", val.replace('"', "\"\"")));
                     } else {
-                        cols.push(val.clone());
+                        cols.push(val.into_owned());
                     }
                 } else {
                     cols.push(String::new());
@@ -204,7 +205,24 @@ pub(crate) struct GridSummary {
     pub max: f64,
 }
 
+/// Header dan baris terpilih untuk copy/export. Nilai mentah grid
+/// (DEFAULT/NOW yang belum disimpan) diganti teks tampilannya.
 pub(crate) fn get_selected_subtable(
+    tabular: &window_egui::Tabular,
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let (headers, rows) = get_selected_subtable_raw(tabular)?;
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .map(|v| super::grid_model::display_value(v).into_owned())
+                .collect()
+        })
+        .collect();
+    Some((headers, rows))
+}
+
+fn get_selected_subtable_raw(
     tabular: &window_egui::Tabular,
 ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     if tabular.current_table_data.is_empty() || tabular.current_table_headers.is_empty() {
@@ -214,9 +232,13 @@ pub(crate) fn get_selected_subtable(
     // 1. Check block selection (table_sel_anchor + selected_cell)
     if let (Some((ar, ac)), Some((br, bc))) = (tabular.table_sel_anchor, tabular.selected_cell) {
         let rmin = ar.min(br);
-        let rmax = ar.max(br).min(tabular.current_table_data.len().saturating_sub(1));
+        let rmax = ar
+            .max(br)
+            .min(tabular.current_table_data.len().saturating_sub(1));
         let cmin = ac.min(bc);
-        let cmax = ac.max(bc).min(tabular.current_table_headers.len().saturating_sub(1));
+        let cmax = ac
+            .max(bc)
+            .min(tabular.current_table_headers.len().saturating_sub(1));
 
         if rmin <= rmax && cmin <= cmax {
             let headers = tabular.current_table_headers[cmin..=cmax].to_vec();
@@ -270,12 +292,17 @@ pub(crate) fn get_selected_subtable(
 
     // 4. Check single cell selection
     if let Some((r, c)) = tabular.selected_cell
-        && r < tabular.current_table_data.len() && c < tabular.current_table_headers.len() {
-            let headers = vec![tabular.current_table_headers[c].clone()];
-            let val = tabular.current_table_data[r].get(c).cloned().unwrap_or_default();
-            let rows = vec![vec![val]];
-            return Some((headers, rows));
-        }
+        && r < tabular.current_table_data.len()
+        && c < tabular.current_table_headers.len()
+    {
+        let headers = vec![tabular.current_table_headers[c].clone()];
+        let val = tabular.current_table_data[r]
+            .get(c)
+            .cloned()
+            .unwrap_or_default();
+        let rows = vec![vec![val]];
+        return Some((headers, rows));
+    }
 
     None
 }
@@ -295,16 +322,17 @@ pub(crate) fn calculate_grid_summary(tabular: &window_egui::Tabular) -> Option<G
             summary.total_cells += 1;
             let clean = cell.replace(',', "").trim().to_string();
             if let Ok(num) = clean.parse::<f64>()
-                && !num.is_nan() {
-                    summary.numeric_count += 1;
-                    summary.sum += num;
-                    if num < min_val {
-                        min_val = num;
-                    }
-                    if num > max_val {
-                        max_val = num;
-                    }
+                && !num.is_nan()
+            {
+                summary.numeric_count += 1;
+                summary.sum += num;
+                if num < min_val {
+                    min_val = num;
                 }
+                if num > max_val {
+                    max_val = num;
+                }
+            }
         }
     }
 
@@ -361,6 +389,8 @@ pub(crate) fn export_selected_to_markdown(tabular: &window_egui::Tabular) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -404,5 +434,3 @@ mod tests {
         assert!(md.contains("| 1 | 10.5 | Alice |"));
     }
 }
-
-

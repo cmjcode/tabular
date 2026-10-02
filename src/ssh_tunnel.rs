@@ -88,8 +88,8 @@ fn key_lock(key: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-fn lock_registry()
--> Result<std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>>, String> {
+fn lock_registry() -> Result<std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>>, String>
+{
     TUNNELS
         .lock()
         .map_err(|_| "Failed to lock SSH tunnel registry".to_string())
@@ -162,16 +162,20 @@ pub fn build_ssh_args(
         models::enums::SshAuthMethod::Password
     );
 
-    let mut args = Vec::new();
-    args.push("-N".to_string());
-    args.push("-o".to_string());
-    args.push("ExitOnForwardFailure=yes".to_string());
-    args.push("-o".to_string());
-    args.push("ServerAliveInterval=30".to_string());
-    args.push("-o".to_string());
-    args.push("ServerAliveCountMax=3".to_string());
-    args.push("-o".to_string());
-    args.push("ConnectTimeout=15".to_string());
+    let mut args: Vec<String> = [
+        "-N",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ConnectTimeout=15",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
 
     if use_password {
         args.push("-o".to_string());
@@ -265,7 +269,11 @@ fn spawn_tunnel(
         remote_port,
         connection.ssh_host.trim(),
         ssh_port,
-        if connection.ssh_jump_host.trim().is_empty() { "none" } else { connection.ssh_jump_host.trim() }
+        if connection.ssh_jump_host.trim().is_empty() {
+            "none"
+        } else {
+            connection.ssh_jump_host.trim()
+        }
     );
 
     let mut child = command.spawn().map_err(|e| {
@@ -451,6 +459,8 @@ pub fn cleanup_idle_tunnels(max_idle: Duration) {
 }
 
 #[cfg(test)]
+// Test lebih mudah dibaca dengan pola Default lalu set field satu per satu.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::models::enums::{DatabaseType, SshAuthMethod};
@@ -498,4 +508,3 @@ mod tests {
         assert!(args.contains(&"deploy@private-app-server.lan".to_string()));
     }
 }
-

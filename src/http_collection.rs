@@ -7,9 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::structs::{
-    HttpAuthType, HttpBodyType, HttpClientState, HttpMethod,
-};
+use crate::models::structs::{HttpAuthType, HttpBodyType, HttpClientState, HttpMethod};
 
 // ─── Core Data Model ─────────────────────────────────────────────────────────
 
@@ -18,23 +16,51 @@ use crate::models::structs::{
 pub struct SavedRequest {
     pub id: String,
     pub workspace_id: String,
+    #[serde(default)]
     pub folder_id: Option<String>,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub url: String,
+    #[serde(default)]
     pub method: HttpMethod,
+    #[serde(default)]
     pub params: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub headers: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub body_type: HttpBodyType,
+    #[serde(default)]
     pub body_text: String,
+    #[serde(default)]
     pub form_data: Vec<(String, String, bool)>,
+    #[serde(default)]
     pub auth_type: HttpAuthType,
+    #[serde(default)]
     pub bearer_token: String,
+    #[serde(default)]
     pub basic_user: String,
+    #[serde(default)]
     pub basic_pass: String,
+    #[serde(default)]
     pub api_key_name: String,
+    #[serde(default)]
     pub api_key_value: String,
+    #[serde(default)]
     pub api_key_in_header: bool,
+    #[serde(default)]
     pub description: String,
+    /// Tabel database yang dibaca/ditulis endpoint ini (hasil generate dari
+    /// repository). Dipakai untuk menautkan endpoint ke tabel di diagram.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<String>,
+    /// Lokasi definisi route di repository (`path/file:line`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Template path route (`/users/{id}`) bila request di-generate dari
+    /// repository; `url` bisa berisi contoh nilai parameter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 /// Extracts the endpoint path from a URL (e.g. "https://api.example.com/v1/users?a=1" -> "/v1/users").
@@ -121,35 +147,158 @@ impl SavedRequest {
 }
 
 /// A sub-folder that groups requests inside a workspace.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HttpFolder {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub parent_folder_id: Option<String>,
     /// Requests directly inside this folder (not in sub-folders).
+    #[serde(default)]
     pub requests: Vec<SavedRequest>,
     /// Child sub-folders (populated after full tree resolution).
+    #[serde(default)]
     pub children: Vec<HttpFolder>,
+    /// URL repository git berisi kode API folder ini. Menjadi kunci tautan ke
+    /// group diagram dengan URL yang sama (lihat [`crate::repo_links`]).
+    /// Folder project lokal disimpan personal di `diagram_repo_paths`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+}
+
+impl HttpFolder {
+    /// URL git bersama yang tidak kosong.
+    pub fn shared_repo_url(&self) -> Option<&str> {
+        self.repo_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Folder project personal folder ini di komputer ini.
+    pub fn local_repo_path(&self) -> Option<String> {
+        crate::diagram_repo_paths::http_folder_repo_path(&self.id)
+    }
+
+    /// Folder punya URL git atau folder project.
+    pub fn has_repository(&self) -> bool {
+        self.shared_repo_url().is_some() || self.local_repo_path().is_some()
+    }
+
+    /// Kunci repository (URL git ternormalisasi) untuk tautan ke diagram.
+    pub fn repo_key(&self) -> Option<String> {
+        crate::repo_scan::repo_key_for(self.shared_repo_url(), self.local_repo_path().as_deref())
+    }
+
+    /// Semua request di folder ini dan sub-foldernya.
+    pub fn all_requests(&self) -> Vec<&SavedRequest> {
+        let mut out: Vec<&SavedRequest> = self.requests.iter().collect();
+        for child in &self.children {
+            out.extend(child.all_requests());
+        }
+        out
+    }
+}
+
+/// Cari folder `folder_id` di pohon `folders`.
+pub fn find_folder<'a>(folders: &'a [HttpFolder], folder_id: &str) -> Option<&'a HttpFolder> {
+    folders.iter().find_map(|f| {
+        if f.id == folder_id {
+            Some(f)
+        } else {
+            find_folder(&f.children, folder_id)
+        }
+    })
+}
+
+/// Versi mutable dari [`find_folder`].
+pub fn find_folder_mut<'a>(
+    folders: &'a mut [HttpFolder],
+    folder_id: &str,
+) -> Option<&'a mut HttpFolder> {
+    for f in folders.iter_mut() {
+        if f.id == folder_id {
+            return Some(f);
+        }
+        if let Some(found) = find_folder_mut(&mut f.children, folder_id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Folder `folder_id` beserta workspace pemiliknya.
+pub fn find_workspace_folder<'a>(
+    workspaces: &'a [HttpWorkspace],
+    folder_id: &str,
+) -> Option<(&'a HttpWorkspace, &'a HttpFolder)> {
+    workspaces
+        .iter()
+        .find_map(|ws| find_folder(&ws.folders, folder_id).map(|f| (ws, f)))
+}
+
+/// Semua folder (termasuk sub-folder) di semua workspace, beserta workspace-nya.
+pub fn all_folders(workspaces: &[HttpWorkspace]) -> Vec<(&HttpWorkspace, &HttpFolder)> {
+    fn walk<'a>(
+        ws: &'a HttpWorkspace,
+        folders: &'a [HttpFolder],
+        out: &mut Vec<(&'a HttpWorkspace, &'a HttpFolder)>,
+    ) {
+        for f in folders {
+            out.push((ws, f));
+            walk(ws, &f.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    for ws in workspaces {
+        walk(ws, &ws.folders, &mut out);
+    }
+    out
+}
+
+/// Cari request `request_id` di semua workspace.
+pub fn find_request<'a>(
+    workspaces: &'a [HttpWorkspace],
+    request_id: &str,
+) -> Option<&'a SavedRequest> {
+    fn in_folders<'a>(folders: &'a [HttpFolder], id: &str) -> Option<&'a SavedRequest> {
+        folders.iter().find_map(|f| {
+            f.requests
+                .iter()
+                .find(|r| r.id == id)
+                .or_else(|| in_folders(&f.children, id))
+        })
+    }
+    workspaces.iter().find_map(|ws| {
+        ws.requests
+            .iter()
+            .find(|r| r.id == request_id)
+            .or_else(|| in_folders(&ws.folders, request_id))
+    })
 }
 
 /// A workspace (project) containing folders and top-level requests.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HttpWorkspace {
     pub id: String,
     pub name: String,
     /// Requests not inside any folder.
+    #[serde(default)]
     pub requests: Vec<SavedRequest>,
     /// Top-level folders (may be nested).
+    #[serde(default)]
     pub folders: Vec<HttpFolder>,
     /// Environment variables for this workspace.
+    #[serde(default)]
     pub environments: Vec<YaakEnvironment>,
 }
 
 /// An environment (set of key-value variables) from Yaak.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct YaakEnvironment {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub variables: Vec<(String, String)>, // (name, value)
 }
 
@@ -178,15 +327,29 @@ fn collections_dir() -> std::path::PathBuf {
 
 /// Persist a list of workspaces to disk.
 /// Each workspace is stored as `{app_data}/http_collections/{workspace_id}.json`.
-pub fn save_workspaces(workspaces: &[HttpWorkspace]) {
+/// Mengembalikan error pertama yang terjadi (semua workspace tetap dicoba ditulis).
+pub fn save_workspaces(workspaces: &[HttpWorkspace]) -> Result<(), String> {
     let dir = collections_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    let mut first_error = None;
     for ws in workspaces {
         let path = dir.join(format!("{}.json", ws.id));
-        if let Ok(json) = serde_json::to_string_pretty(ws) {
-            let _ = std::fs::write(path, json);
+        let result = serde_json::to_string_pretty(ws)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                crate::directory::write_file_atomically(&path, json.as_bytes())
+                    .map_err(|e| e.to_string())
+            });
+        if let Err(e) = result {
+            log::error!(
+                "Failed to save HTTP workspace '{}' to {}: {}",
+                ws.name,
+                path.display(),
+                e
+            );
+            first_error.get_or_insert(format!("Could not save workspace '{}': {}", ws.name, e));
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Load all persisted workspaces from disk.
@@ -201,13 +364,24 @@ pub fn load_workspaces() -> Vec<HttpWorkspace> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!(
+                    "Skipping unreadable HTTP workspace {}: {}",
+                    path.display(),
+                    e
+                );
+                continue;
+            }
         };
-        let Ok(ws) = serde_json::from_str::<HttpWorkspace>(&contents) else {
-            continue;
-        };
-        result.push(ws);
+        match serde_json::from_str::<HttpWorkspace>(&contents) {
+            Ok(ws) => result.push(ws),
+            Err(e) => {
+                // File tidak dihapus agar bisa dipulihkan manual.
+                log::warn!("Skipping corrupt HTTP workspace {}: {}", path.display(), e);
+            }
+        }
     }
     // Sort alphabetically by name for stable ordering.
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -222,9 +396,14 @@ pub fn delete_workspace(workspace_id: &str) {
 
 static ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn unique_id(prefix: &str) -> String {
+pub(crate) fn unique_id(prefix: &str) -> String {
     let count = ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{}_{}_{}", prefix, chrono::Utc::now().timestamp_millis(), count)
+    format!(
+        "{}_{}_{}",
+        prefix,
+        chrono::Utc::now().timestamp_millis(),
+        count
+    )
 }
 
 /// Create a new workspace/collection, persist it, and return the new workspace.
@@ -238,7 +417,8 @@ pub fn create_workspace(workspaces: &mut Vec<HttpWorkspace>, ws_name: &str) -> H
         environments: Vec::new(),
     };
     workspaces.push(new_ws.clone());
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+    let _ = save_workspaces(workspaces);
     new_ws
 }
 
@@ -256,6 +436,7 @@ pub fn create_folder_in_workspace(
         parent_folder_id: parent_folder_id.map(|s| s.to_string()),
         requests: Vec::new(),
         children: Vec::new(),
+        repo_url: None,
     };
 
     let ws = workspaces.iter_mut().find(|w| w.id == ws_id)?;
@@ -284,7 +465,9 @@ pub fn create_folder_in_workspace(
         ws.folders.push(new_folder.clone());
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     Some(new_folder)
 }
 
@@ -300,7 +483,8 @@ pub fn rename_workspace_in_workspaces(
     }
     if let Some(ws) = workspaces.iter_mut().find(|w| w.id == ws_id) {
         ws.name = trimmed.to_string();
-        save_workspaces(workspaces);
+        // Error sudah dicatat ke log di dalam save_workspaces.
+        let _ = save_workspaces(workspaces);
         true
     } else {
         false
@@ -332,7 +516,8 @@ pub fn rename_folder_in_workspaces(
     }
 
     if rename_in_tree(&mut ws.folders, folder_id, new_name) {
-        save_workspaces(workspaces);
+        // Error sudah dicatat ke log di dalam save_workspaces.
+        let _ = save_workspaces(workspaces);
         true
     } else {
         false
@@ -383,7 +568,11 @@ pub fn move_request(
     };
 
     if let Some(tf_id) = target_folder_id {
-        fn insert_into_folder(folders: &mut [HttpFolder], target_id: &str, req: SavedRequest) -> bool {
+        fn insert_into_folder(
+            folders: &mut [HttpFolder],
+            target_id: &str,
+            req: SavedRequest,
+        ) -> bool {
             for f in folders.iter_mut() {
                 if f.id == target_id {
                     f.requests.push(req);
@@ -402,7 +591,9 @@ pub fn move_request(
         target_ws.requests.push(req);
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     true
 }
 
@@ -492,7 +683,11 @@ pub fn move_folder(
     };
 
     if let Some(tf_id) = target_parent_folder_id {
-        fn insert_folder_into_parent(folders: &mut [HttpFolder], target_id: &str, folder: HttpFolder) -> bool {
+        fn insert_folder_into_parent(
+            folders: &mut [HttpFolder],
+            target_id: &str,
+            folder: HttpFolder,
+        ) -> bool {
             for f in folders.iter_mut() {
                 if f.id == target_id {
                     f.children.push(folder);
@@ -511,11 +706,11 @@ pub fn move_folder(
         target_ws.folders.push(folder);
     }
 
-    save_workspaces(workspaces);
+    // Error sudah dicatat ke log di dalam save_workspaces.
+
+    let _ = save_workspaces(workspaces);
     true
 }
-
-
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -576,6 +771,9 @@ pub fn snapshot_from_state(state: &HttpClientState, name: &str) -> SavedRequest 
         api_key_value: state.api_key_value.clone(),
         api_key_in_header: state.api_key_in_header,
         description: String::new(),
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -617,9 +815,7 @@ mod sqlite_raw {
 
     impl Conn {
         pub fn open_readonly(path: &Path) -> Result<Self, String> {
-            let path_str = path
-                .to_str()
-                .ok_or("Path is not valid UTF-8")?;
+            let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
             let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
             let mut db: *mut ffi::sqlite3 = std::ptr::null_mut();
             let rc = unsafe {
@@ -631,7 +827,11 @@ mod sqlite_raw {
                 )
             };
             if rc != ffi::SQLITE_OK as c_int {
-                return Err(format!("Cannot open Yaak DB ({}): {}", rc, sqlite_errmsg(db)));
+                return Err(format!(
+                    "Cannot open Yaak DB ({}): {}",
+                    rc,
+                    sqlite_errmsg(db)
+                ));
             }
             Ok(Conn(db))
         }
@@ -640,13 +840,7 @@ mod sqlite_raw {
             let c_sql = CString::new(sql).map_err(|e| e.to_string())?;
             let mut stmt: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
             let rc = unsafe {
-                ffi::sqlite3_prepare_v2(
-                    self.0,
-                    c_sql.as_ptr(),
-                    -1,
-                    &mut stmt,
-                    std::ptr::null_mut(),
-                )
+                ffi::sqlite3_prepare_v2(self.0, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
             };
             if rc != ffi::SQLITE_OK as c_int {
                 return Err(format!("prepare failed ({})", rc));
@@ -797,6 +991,7 @@ fn import_yaak_sqlite(db_path: &std::path::Path) -> Result<YaakImportResult, Str
                     parent_folder_id,
                     requests: Vec::new(),
                     children: Vec::new(),
+                    repo_url: None,
                 },
             );
         },
@@ -854,8 +1049,7 @@ fn import_yaak_sqlite(db_path: &std::path::Path) -> Result<YaakImportResult, Str
         let root_folder_ids: Vec<String> = folder_parent
             .iter()
             .filter(|(fid, parent)| {
-                folder_ws.get(*fid).map(|w| w == &ws.id).unwrap_or(false)
-                    && parent.is_none()
+                folder_ws.get(*fid).map(|w| w == &ws.id).unwrap_or(false) && parent.is_none()
             })
             .map(|(fid, _)| fid.clone())
             .collect();
@@ -900,10 +1094,7 @@ fn build_folder_tree(
 }
 
 /// Parse one row from `http_requests` into a `SavedRequest`.
-fn parse_yaak_request(
-    row: &sqlite_raw::Stmt,
-    _warnings: &mut Vec<String>,
-) -> SavedRequest {
+fn parse_yaak_request(row: &sqlite_raw::Stmt, _warnings: &mut Vec<String>) -> SavedRequest {
     let id = row.col_text(0);
     let workspace_id = row.col_text(1);
     let name = row.col_text(2);
@@ -922,8 +1113,15 @@ fn parse_yaak_request(
     let (body_type, body_text, form_data) = parse_body(&body_type_str, &body_json);
     let params = parse_yaak_kv_json(&params_json);
     let headers = parse_yaak_kv_json(&headers_json);
-    let (auth_type, bearer_token, basic_user, basic_pass, api_key_name, api_key_value, api_key_in_header) =
-        parse_auth(&auth_type_str, &auth_json);
+    let (
+        auth_type,
+        bearer_token,
+        basic_user,
+        basic_pass,
+        api_key_name,
+        api_key_value,
+        api_key_in_header,
+    ) = parse_auth(&auth_type_str, &auth_json);
 
     SavedRequest {
         id,
@@ -945,6 +1143,9 @@ fn parse_yaak_request(
         api_key_value,
         api_key_in_header,
         description,
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -980,7 +1181,10 @@ fn parse_body(
     };
 
     match body_type {
-        HttpBodyType::Json | HttpBodyType::Xml | HttpBodyType::GraphQL | HttpBodyType::OtherText => {
+        HttpBodyType::Json
+        | HttpBodyType::Xml
+        | HttpBodyType::GraphQL
+        | HttpBodyType::OtherText => {
             // Yaak stores text body as: {"text": "..."} or raw string
             let text = extract_json_text_field(body_json);
             (body_type, text, default_form_data())
@@ -1152,8 +1356,8 @@ pub fn import_from_postman(file_path: &std::path::Path) -> Result<PostmanImportR
 
 /// Parse Postman Collection v2.0/v2.1 or Postman Environment JSON string.
 pub fn import_postman_json(json_str: &str) -> Result<PostmanImportResult, String> {
-    let val: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| format!("Invalid JSON format: {}", e))?;
+    let val: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON format: {}", e))?;
 
     let mut warnings = Vec::new();
 
@@ -1279,11 +1483,13 @@ fn parse_postman_item(
             parent_folder_id,
             requests: child_requests,
             children: child_folders,
+            repo_url: None,
         });
     } else if let Some(req_val) = item.get("request") {
         // It's a request
         let req_id = format!("pm_req_{}_{}", total_requests, rand_id());
-        let saved_req = parse_postman_request(req_id, ws_id, parent_folder_id, name, req_val, warnings);
+        let saved_req =
+            parse_postman_request(req_id, ws_id, parent_folder_id, name, req_val, warnings);
         parent_requests.push(saved_req);
         *total_requests += 1;
     }
@@ -1326,6 +1532,9 @@ fn parse_postman_request(
             api_key_value: String::new(),
             api_key_in_header: true,
             description: String::new(),
+            tables: Vec::new(),
+            source: None,
+            route: None,
         };
     }
 
@@ -1338,8 +1547,15 @@ fn parse_postman_request(
     let (url, params) = parse_postman_url(req_val.get("url"));
     let headers = parse_postman_headers(req_val.get("header"));
     let (body_type, body_text, form_data) = parse_postman_body(req_val.get("body"));
-    let (auth_type, bearer_token, basic_user, basic_pass, api_key_name, api_key_value, api_key_in_header) =
-        parse_postman_auth(req_val.get("auth"));
+    let (
+        auth_type,
+        bearer_token,
+        basic_user,
+        basic_pass,
+        api_key_name,
+        api_key_value,
+        api_key_in_header,
+    ) = parse_postman_auth(req_val.get("auth"));
 
     let description = req_val
         .get("description")
@@ -1347,7 +1563,9 @@ fn parse_postman_request(
             if let Some(s) = d.as_str() {
                 Some(s.to_string())
             } else {
-                d.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())
+                d.get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string())
             }
         })
         .unwrap_or_default();
@@ -1372,6 +1590,9 @@ fn parse_postman_request(
         api_key_value,
         api_key_in_header,
         description,
+        tables: Vec::new(),
+        source: None,
+        route: None,
     }
 }
 
@@ -1394,8 +1615,16 @@ fn parse_postman_url(url_val: Option<&serde_json::Value>) -> (String, Vec<(Strin
 
     if let Some(query_arr) = val.get("query").and_then(|q| q.as_array()) {
         for q in query_arr {
-            let key = q.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
-            let value = q.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let key = q
+                .get("key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string();
+            let value = q
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let enabled = q
                 .get("disabled")
                 .and_then(|d| d.as_bool())
@@ -1416,8 +1645,16 @@ fn parse_postman_headers(header_val: Option<&serde_json::Value>) -> Vec<(String,
     let mut headers = Vec::new();
     if let Some(arr) = header_val.and_then(|h| h.as_array()) {
         for item in arr {
-            let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
-            let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let key = item
+                .get("key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string();
+            let value = item
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let enabled = item
                 .get("disabled")
                 .and_then(|d| d.as_bool())
@@ -1442,7 +1679,11 @@ fn parse_postman_body(
     let mode = val.get("mode").and_then(|m| m.as_str()).unwrap_or("");
     match mode {
         "raw" => {
-            let raw_text = val.get("raw").and_then(|r| r.as_str()).unwrap_or("").to_string();
+            let raw_text = val
+                .get("raw")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
             let lang = val
                 .get("options")
                 .and_then(|o| o.get("raw"))
@@ -1470,8 +1711,16 @@ fn parse_postman_body(
             let mut form = Vec::new();
             if let Some(arr) = val.get("urlencoded").and_then(|u| u.as_array()) {
                 for item in arr {
-                    let k = item.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let k = item
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let v = item
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let enabled = item
                         .get("disabled")
                         .and_then(|d| d.as_bool())
@@ -1487,8 +1736,16 @@ fn parse_postman_body(
             let mut form = Vec::new();
             if let Some(arr) = val.get("formdata").and_then(|f| f.as_array()) {
                 for item in arr {
-                    let k = item.get("key").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let k = item
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let v = item
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let enabled = item
                         .get("disabled")
                         .and_then(|d| d.as_bool())
@@ -1535,7 +1792,11 @@ fn parse_postman_auth(
             if let Some(arr) = val.get("bearer").and_then(|b| b.as_array()) {
                 for item in arr {
                     if item.get("key").and_then(|k| k.as_str()) == Some("token") {
-                        token = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        token = item
+                            .get("value")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                     }
                 }
             }
@@ -1555,7 +1816,11 @@ fn parse_postman_auth(
             if let Some(arr) = val.get("basic").and_then(|b| b.as_array()) {
                 for item in arr {
                     let k = item.get("key").and_then(|x| x.as_str());
-                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let v = item
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if k == Some("username") {
                         user = v;
                     } else if k == Some("password") {
@@ -1580,7 +1845,11 @@ fn parse_postman_auth(
             if let Some(arr) = val.get("apikey").and_then(|a| a.as_array()) {
                 for item in arr {
                     let k = item.get("key").and_then(|x| x.as_str());
-                    let v = item.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let v = item
+                        .get("value")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if k == Some("key") {
                         key_name = v;
                     } else if k == Some("value") {
@@ -1628,7 +1897,10 @@ fn parse_postman_environment(
         for item in arr {
             let key = item.get("key").and_then(|k| k.as_str()).unwrap_or("");
             let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            let enabled = item.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+            let enabled = item
+                .get("enabled")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(true);
             if enabled && !key.is_empty() {
                 variables.push((key.to_string(), value.to_string()));
             }
@@ -1757,13 +2029,25 @@ mod tests {
         let env = &ws.environments[0];
         assert_eq!(env.name, "Staging Environment");
         assert_eq!(env.variables.len(), 2);
-        assert_eq!(env.variables[0], ("baseUrl".to_string(), "https://staging.example.com".to_string()));
+        assert_eq!(
+            env.variables[0],
+            (
+                "baseUrl".to_string(),
+                "https://staging.example.com".to_string()
+            )
+        );
     }
 
     #[test]
     fn test_extract_endpoint_url() {
-        assert_eq!(extract_endpoint_url("https://api.example.com/v1/users/profile?query=1#ref"), "/v1/users/profile");
-        assert_eq!(extract_endpoint_url("http://localhost:8080/api/v1/orders"), "/api/v1/orders");
+        assert_eq!(
+            extract_endpoint_url("https://api.example.com/v1/users/profile?query=1#ref"),
+            "/v1/users/profile"
+        );
+        assert_eq!(
+            extract_endpoint_url("http://localhost:8080/api/v1/orders"),
+            "/api/v1/orders"
+        );
         assert_eq!(extract_endpoint_url("https://api.example.com"), "/");
         assert_eq!(extract_endpoint_url("https://api.example.com/"), "/");
         assert_eq!(extract_endpoint_url("/v1/auth/login"), "/v1/auth/login");
@@ -1801,12 +2085,8 @@ mod tests {
         }];
 
         // 1. Create root folder
-        let root_folder = create_folder_in_workspace(
-            &mut workspaces,
-            "ws-test",
-            None,
-            "Auth",
-        ).expect("Failed to create root folder");
+        let root_folder = create_folder_in_workspace(&mut workspaces, "ws-test", None, "Auth")
+            .expect("Failed to create root folder");
 
         assert_eq!(root_folder.name, "Auth");
         assert_eq!(workspaces[0].folders.len(), 1);
@@ -1814,12 +2094,9 @@ mod tests {
         let root_folder_id = root_folder.id.clone();
 
         // 2. Create subfolder inside root folder
-        let subfolder = create_folder_in_workspace(
-            &mut workspaces,
-            "ws-test",
-            Some(&root_folder_id),
-            "OAuth2",
-        ).expect("Failed to create subfolder");
+        let subfolder =
+            create_folder_in_workspace(&mut workspaces, "ws-test", Some(&root_folder_id), "OAuth2")
+                .expect("Failed to create subfolder");
 
         assert_eq!(subfolder.name, "OAuth2");
         assert_eq!(workspaces[0].folders[0].children.len(), 1);
@@ -1834,7 +2111,10 @@ mod tests {
             "OAuth2 Providers",
         );
         assert!(renamed);
-        assert_eq!(workspaces[0].folders[0].children[0].name, "OAuth2 Providers");
+        assert_eq!(
+            workspaces[0].folders[0].children[0].name,
+            "OAuth2 Providers"
+        );
 
         // 4. Rename root folder
         let renamed_root = rename_folder_in_workspaces(
@@ -1857,7 +2137,8 @@ mod tests {
             environments: vec![],
         }];
 
-        let renamed = rename_workspace_in_workspaces(&mut workspaces, "ws-test", "Renamed Workspace");
+        let renamed =
+            rename_workspace_in_workspaces(&mut workspaces, "ws-test", "Renamed Workspace");
         assert!(renamed);
         assert_eq!(workspaces[0].name, "Renamed Workspace");
 
@@ -1892,6 +2173,7 @@ mod tests {
                 parent_folder_id: None,
                 requests: vec![],
                 children: vec![],
+                repo_url: None,
             }],
             environments: vec![],
         }];
@@ -1902,7 +2184,10 @@ mod tests {
         assert_eq!(workspaces[0].requests.len(), 0);
         assert_eq!(workspaces[0].folders[0].requests.len(), 1);
         assert_eq!(workspaces[0].folders[0].requests[0].id, "req-1");
-        assert_eq!(workspaces[0].folders[0].requests[0].folder_id.as_deref(), Some("fld-1"));
+        assert_eq!(
+            workspaces[0].folders[0].requests[0].folder_id.as_deref(),
+            Some("fld-1")
+        );
 
         // 2. Move request back from folder to workspace root
         let moved_back = move_request(&mut workspaces, "req-1", "ws-test", None);
@@ -1931,7 +2216,9 @@ mod tests {
                         parent_folder_id: Some("fld-parent".to_string()),
                         requests: vec![],
                         children: vec![],
+                        repo_url: None,
                     }],
+                    repo_url: None,
                 },
                 HttpFolder {
                     id: "fld-sibling".to_string(),
@@ -1939,16 +2226,27 @@ mod tests {
                     parent_folder_id: None,
                     requests: vec![],
                     children: vec![],
+                    repo_url: None,
                 },
             ],
             environments: vec![],
         }];
 
         // 1. Moving folder into itself must fail
-        assert!(!move_folder(&mut workspaces, "fld-parent", "ws-test", Some("fld-parent")));
+        assert!(!move_folder(
+            &mut workspaces,
+            "fld-parent",
+            "ws-test",
+            Some("fld-parent")
+        ));
 
         // 2. Moving parent folder into its descendant must fail
-        assert!(!move_folder(&mut workspaces, "fld-parent", "ws-test", Some("fld-child")));
+        assert!(!move_folder(
+            &mut workspaces,
+            "fld-parent",
+            "ws-test",
+            Some("fld-child")
+        ));
 
         // 3. Moving child folder to sibling folder must succeed
         let moved = move_folder(&mut workspaces, "fld-child", "ws-test", Some("fld-sibling"));
@@ -1964,7 +2262,49 @@ mod tests {
         assert_eq!(workspaces[0].folders[2].id, "fld-child");
         assert_eq!(workspaces[0].folders[2].parent_folder_id, None);
     }
+
+    #[test]
+    fn test_http_workspace_serde_defaults() {
+        // Minimal workspace JSON without folders, environments, requests
+        let json = r#"{"id":"ws_minimal","name":"Minimal Collection"}"#;
+        let ws: HttpWorkspace =
+            serde_json::from_str(json).expect("Should deserialize with defaults");
+        assert_eq!(ws.id, "ws_minimal");
+        assert_eq!(ws.name, "Minimal Collection");
+        assert!(ws.requests.is_empty());
+        assert!(ws.folders.is_empty());
+        assert!(ws.environments.is_empty());
+
+        // Minimal saved request JSON
+        let req_json = r#"{"id":"req_min","workspace_id":"ws_minimal"}"#;
+        let req: SavedRequest =
+            serde_json::from_str(req_json).expect("Should deserialize with defaults");
+        assert_eq!(req.id, "req_min");
+        assert_eq!(req.workspace_id, "ws_minimal");
+        assert_eq!(req.name, "");
+        assert_eq!(req.url, "");
+        assert_eq!(req.display_name(), "Untitled Request");
+    }
+
+    #[test]
+    fn test_create_workspace_and_add_request() {
+        let mut workspaces = Vec::new();
+        let ws = create_workspace(&mut workspaces, "Test API");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(ws.name, "Test API");
+        assert!(ws.id.starts_with("ws_"));
+
+        let req = SavedRequest {
+            id: "req-123".to_string(),
+            workspace_id: ws.id.clone(),
+            folder_id: None,
+            name: "Get Users".to_string(),
+            url: "https://example.com/api/v1/users".to_string(),
+            ..Default::default()
+        };
+
+        workspaces[0].requests.push(req.clone());
+        assert_eq!(workspaces[0].requests.len(), 1);
+        assert_eq!(workspaces[0].requests[0].display_name(), "Get Users");
+    }
 }
-
-
-

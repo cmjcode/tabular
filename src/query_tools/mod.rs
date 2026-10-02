@@ -1,3 +1,9 @@
+pub mod statement_parser;
+pub mod text_actions;
+
+pub use statement_parser::{SqlStatementSpan, find_statement_at_cursor, split_statements};
+pub use text_actions::{duplicate_lines, move_lines, toggle_line_comments};
+
 use sqlformat::{FormatOptions, Indent};
 use std::ops::Range;
 
@@ -14,6 +20,8 @@ pub struct LintMessage {
     pub message: String,
     pub span: Option<Range<usize>>,
     pub hint: Option<String>,
+    /// SQL perbaikan siap salin (mis. `CREATE INDEX ...`).
+    pub fix: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +55,12 @@ const SNIPPETS: &[SnippetDefinition] = &[
         context: SnippetContext::Any,
     },
     SnippetDefinition {
+        label: "with -> WITH cte AS",
+        template: "WITH cte AS (\n    SELECT 1 AS id\n)\nSELECT * FROM cte;",
+        note: "Common Table Expression (CTE)",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
         label: "ins -> INSERT INTO",
         template: "INSERT INTO ",
         note: "Quick INSERT statement",
@@ -62,6 +76,24 @@ const SNIPPETS: &[SnippetDefinition] = &[
         label: "df -> DELETE FROM",
         template: "DELETE FROM ",
         note: "Quick DELETE statement",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "join -> JOIN ... ON",
+        template: "JOIN table_name ON condition",
+        note: "Inner JOIN statement",
+        context: SnippetContext::FromClause,
+    },
+    SnippetDefinition {
+        label: "gb -> GROUP BY",
+        template: "GROUP BY ",
+        note: "Group rows by column",
+        context: SnippetContext::Any,
+    },
+    SnippetDefinition {
+        label: "ob -> ORDER BY",
+        template: "ORDER BY ",
+        note: "Order rows by column",
         context: SnippetContext::Any,
     },
     SnippetDefinition {
@@ -196,6 +228,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "Avoid SELECT * to minimize payload and leverage indexes.".to_string(),
             span: Some(idx..idx + "SELECT *".len()),
             hint: Some("Enumerate the columns you actually need.".to_string()),
+            fix: None,
         });
     }
 
@@ -206,6 +239,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "DELETE without a WHERE clause will remove every row.".to_string(),
             span: None,
             hint: Some("Add a WHERE clause or run inside a transaction.".to_string()),
+            fix: None,
         });
     }
     if upper.starts_with("UPDATE") && !upper.contains("WHERE") {
@@ -214,6 +248,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "UPDATE without a WHERE clause will touch every row.".to_string(),
             span: None,
             hint: Some("Add a WHERE clause to scope the update.".to_string()),
+            fix: None,
         });
     }
     if upper.contains("DROP TABLE")
@@ -225,6 +260,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             message: "DROP TABLE without IF EXISTS may fail if the table is missing.".to_string(),
             span: Some(idx..idx + "DROP TABLE".len()),
             hint: Some("Consider DROP TABLE IF EXISTS ...".to_string()),
+            fix: None,
         });
     }
 
@@ -248,6 +284,19 @@ pub fn default_sqlformat_options() -> FormatOptions<'static> {
 
 pub fn format_sql(sql: &str) -> Option<String> {
     format_sql_with_options(sql, &default_sqlformat_options())
+}
+
+pub fn format_sql_with_casing(
+    sql: &str,
+    casing: crate::models::enums::KeywordCasing,
+) -> Option<String> {
+    let mut opts = default_sqlformat_options();
+    match casing {
+        crate::models::enums::KeywordCasing::Upper => opts.uppercase = Some(true),
+        crate::models::enums::KeywordCasing::Lower => opts.uppercase = Some(false),
+        crate::models::enums::KeywordCasing::Preserve => opts.uppercase = None,
+    }
+    format_sql_with_options(sql, &opts)
 }
 
 pub fn format_sql_with_options(sql: &str, options: &FormatOptions) -> Option<String> {

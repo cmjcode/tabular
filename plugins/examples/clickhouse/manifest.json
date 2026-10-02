@@ -1,0 +1,42 @@
+{
+  "abi": "tabular-driver-v1",
+  "kind": "wasm",
+  "version": "0.1.0",
+  "author": "Tabular",
+  "description": "ClickHouse over the HTTP interface (port 8123, or 8443 with TLS).",
+  "entry": "driver.wasm",
+  "permissions": {
+    "http_hosts": ["{connection.host}"]
+  },
+  "engine": {
+    "id": "clickhouse",
+    "name": "ClickHouse",
+    "icon": "🟨",
+    "default_port": 8123,
+    "standard_fields": {
+      "host": true,
+      "port": true,
+      "username": true,
+      "password": true,
+      "database": true
+    },
+    "options": [
+      {
+        "key": "compression",
+        "label": "HTTP compression",
+        "kind": "bool",
+        "default": "false",
+        "help": "Ask the server to compress responses (enable_http_compression=1)."
+      }
+    ],
+    "capabilities": {
+      "databases": true,
+      "schemas": false,
+      "query_language": "sql",
+      "sql_dialect": "clickhouse",
+      "cancel": true,
+      "ssh_tunnel": true,
+      "tls": true
+    }
+  }
+}

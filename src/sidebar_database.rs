@@ -16,6 +16,7 @@ fn database_type_order(db_type: &models::enums::DatabaseType) -> u8 {
         models::enums::DatabaseType::MsSQL => 4,
         models::enums::DatabaseType::MongoDB => 5,
         models::enums::DatabaseType::ApiHttp => 6,
+        models::enums::DatabaseType::Plugin(_) => 7,
     }
 }
 
@@ -156,6 +157,10 @@ fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
             models::enums::DatabaseType::SQLite => String::new(),
             models::enums::DatabaseType::MongoDB => "27017".into(),
             models::enums::DatabaseType::ApiHttp => String::new(),
+            models::enums::DatabaseType::Plugin(ref id) => crate::driver_api::registry::descriptor(id)
+                .and_then(|d| d.default_port)
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
         };
     }
 
@@ -204,35 +209,47 @@ pub(crate) fn render_connection_dialog(
             connection_data.database = temp_path.clone();
             connection_data.host = temp_path.clone();
             if connection_data.name.trim().is_empty() {
-                if let Some(file_stem) = std::path::Path::new(&temp_path).file_stem().and_then(|s| s.to_str()) {
+                if let Some(file_stem) = std::path::Path::new(&temp_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
                     connection_data.name = file_stem.to_string();
                 }
             }
         }
     }
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_backdrop_connection", should_show);
+
     egui::Window::new(title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(400.0)
+        .default_width(420.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
-        .open(&mut open)
         .show(ctx, |ui| {
+            let mut close_dialog = false;
+            crate::window_egui::style::render_modal_header(ui, title, &mut close_dialog);
+            if close_dialog {
+                open = false;
+            }
+
             ui.vertical(|ui| {
-                egui::Grid::new("connection_form")
-                    .num_columns(2)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Connection Type:");
+                crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                    egui::Grid::new("connection_form")
+                        .num_columns(2)
+                        .spacing([10.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("Connection Type:");
                         egui::ComboBox::from_label("")
-                            .selected_text(match connection_data.connection_type {
-                                models::enums::DatabaseType::MySQL => "MySQL",
-                                models::enums::DatabaseType::PostgreSQL => "PostgreSQL",
-                                models::enums::DatabaseType::SQLite => "SQLite",
-                                models::enums::DatabaseType::Redis => "Redis",
-                                models::enums::DatabaseType::MsSQL => "MsSQL",
-                                models::enums::DatabaseType::MongoDB => "MongoDB",
-                                models::enums::DatabaseType::ApiHttp => "API - HTTP",
+                            .selected_text(match &connection_data.connection_type {
+                                models::enums::DatabaseType::ApiHttp => "API - HTTP".to_string(),
+                                models::enums::DatabaseType::Plugin(_) => format!(
+                                    "🧩 {}",
+                                    connection_data.connection_type.display_name()
+                                ),
+                                other => other.display_name(),
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -270,6 +287,10 @@ pub(crate) fn render_connection_dialog(
                                     models::enums::DatabaseType::ApiHttp,
                                     "🌐 API - HTTP",
                                 );
+                                crate::window_egui::plugin_connection_form::render_engine_choices(
+                                    ui,
+                                    &mut connection_data,
+                                );
                             });
                         ui.end_row();
 
@@ -301,6 +322,14 @@ pub(crate) fn render_connection_dialog(
                             }
                             models::enums::DatabaseType::ApiHttp => {
                                 // API-HTTP: only Connection Name + Folder needed
+                            }
+                            models::enums::DatabaseType::Plugin(ref engine_id) => {
+                                let engine_id = engine_id.clone();
+                                crate::window_egui::plugin_connection_form::render_plugin_fields(
+                                    ui,
+                                    &mut connection_data,
+                                    &engine_id,
+                                );
                             }
                             _ => {
                                 ui.label("Host:");
@@ -343,8 +372,11 @@ pub(crate) fn render_connection_dialog(
                         };
                         ui.end_row();
 
-                        // Build and edit Connection URL inline (not shown for API-HTTP)
-                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
+                        // Build and edit Connection URL inline (not shown for API-HTTP
+                        // and plugin engines, whose URL format is engine-specific)
+                        if connection_data.connection_type != models::enums::DatabaseType::ApiHttp
+                            && connection_data.connection_type.plugin_id().is_none()
+                        {
                         let full_url = {
                             let host = connection_data.host.trim();
                             let port = connection_data.port.trim();
@@ -442,7 +474,8 @@ pub(crate) fn render_connection_dialog(
                                     };
                                     format!("mssql://{}{}:{}{}", auth, host, port, path)
                                 }
-                                models::enums::DatabaseType::ApiHttp => String::new(),
+                                models::enums::DatabaseType::ApiHttp
+                                | models::enums::DatabaseType::Plugin(_) => String::new(),
                             }
                         };
 
@@ -462,10 +495,15 @@ pub(crate) fn render_connection_dialog(
                         ui.end_row();
                         } // end if != ApiHttp (Connection URL section)
 
+                        let plugin_caps = connection_data
+                            .connection_type
+                            .plugin_id()
+                            .map(crate::driver_api::query::capabilities);
                         let ssh_supported = connection_data.connection_type
                             != models::enums::DatabaseType::SQLite
                             && connection_data.connection_type
-                                != models::enums::DatabaseType::ApiHttp;
+                                != models::enums::DatabaseType::ApiHttp
+                            && plugin_caps.as_ref().is_none_or(|c| c.ssh_tunnel);
 
                         // SSH Tunnel section: not applicable for API-HTTP connections
                         if connection_data.connection_type != models::enums::DatabaseType::ApiHttp {
@@ -566,7 +604,7 @@ pub(crate) fn render_connection_dialog(
                         let ssl_supported = matches!(
                             connection_data.connection_type,
                             models::enums::DatabaseType::MySQL | models::enums::DatabaseType::PostgreSQL
-                        );
+                        ) || plugin_caps.as_ref().is_some_and(|c| c.tls);
                         if ssl_supported {
                             ui.label("SSL / TLS:");
                             ui.checkbox(&mut connection_data.ssl_enabled, "Enable SSL / TLS & mTLS");
@@ -603,8 +641,9 @@ pub(crate) fn render_connection_dialog(
                             }
                         }
                     });
+                });
 
-                ui.separator();
+                ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     let save_button_text = if is_edit_mode { "Update" } else { "Save" };
@@ -697,7 +736,7 @@ pub(crate) fn render_connection_dialog(
                             // Kick off a background schema-cache sync so autocomplete works
                             // immediately. Shows a loading badge on the connection name and
                             // skips API-HTTP connections (no schema to cache).
-                            eprintln!(
+                            debug!(
                                 "[AUTO-SYNC] Add Connection done: new_conn_id={:?} is_api_http={}",
                                 new_conn_id, is_api_http
                             );
@@ -707,6 +746,7 @@ pub(crate) fn render_connection_dialog(
 
                             // Open HTTP client tab for API-HTTP connections
                             if is_api_http {
+                                tabular.selected_menu = "APIs".to_string();
                                 crate::editor::create_new_tab_with_connection(
                                     tabular,
                                     new_conn_name,
@@ -860,15 +900,29 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     let ssh_password = row.try_get::<String, _>("ssh_password").ok()?;
                     let ssh_accept_unknown_host_keys =
                         row.try_get::<i64, _>("ssh_accept_unknown_host_keys").ok()?;
-                    let ssh_jump_host = row.try_get::<String, _>("ssh_jump_host").unwrap_or_default();
+                    let ssh_jump_host = row
+                        .try_get::<String, _>("ssh_jump_host")
+                        .unwrap_or_default();
                     let ssl_enabled = row.try_get::<i64, _>("ssl_enabled").unwrap_or(0);
                     let ssl_ca_cert = row.try_get::<String, _>("ssl_ca_cert").unwrap_or_default();
-                    let ssl_client_cert = row.try_get::<String, _>("ssl_client_cert").unwrap_or_default();
-                    let ssl_client_key = row.try_get::<String, _>("ssl_client_key").unwrap_or_default();
-                    let ssl_key_passphrase = row.try_get::<String, _>("ssl_key_passphrase").unwrap_or_default();
+                    let ssl_client_cert = row
+                        .try_get::<String, _>("ssl_client_cert")
+                        .unwrap_or_default();
+                    let ssl_client_key = row
+                        .try_get::<String, _>("ssl_client_key")
+                        .unwrap_or_default();
+                    let ssl_key_passphrase = row
+                        .try_get::<String, _>("ssl_key_passphrase")
+                        .unwrap_or_default();
                     let ssl_verify_server = row.try_get::<i64, _>("ssl_verify_server").unwrap_or(1);
-                    let custom_views_json = row.try_get::<String, _>("custom_views").ok().unwrap_or_else(|| "[]".to_string());
-                    let replication_master_id = row.try_get::<Option<i64>, _>("replication_master_id").ok().flatten();
+                    let custom_views_json = row
+                        .try_get::<String, _>("custom_views")
+                        .ok()
+                        .unwrap_or_else(|| "[]".to_string());
+                    let replication_master_id = row
+                        .try_get::<Option<i64>, _>("replication_master_id")
+                        .ok()
+                        .flatten();
 
                     let (password, pw_rewrite) = crate::secrets::resolve_stored(
                         &crate::secrets::connection_secret_name(id, "password"),
@@ -894,20 +948,25 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
 
                     Some(models::structs::ConnectionConfig {
                         id: Some(id),
+                        plugin_options: Default::default(),
                         name,
                         host,
                         port,
                         username,
                         password,
                         database: database_name,
-                        connection_type: match connection_type.as_str() {
-                            "MySQL" => models::enums::DatabaseType::MySQL,
-                            "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                            "Redis" => models::enums::DatabaseType::Redis,
-                            "MsSQL" => models::enums::DatabaseType::MsSQL,
-                            "MongoDB" => models::enums::DatabaseType::MongoDB,
-                            "ApiHttp" => models::enums::DatabaseType::ApiHttp,
-                            _ => models::enums::DatabaseType::SQLite,
+                        connection_type: match models::enums::DatabaseType::from_db_str(
+                            &connection_type,
+                        ) {
+                            Some(ty) => ty,
+                            None => {
+                                log::warn!(
+                                    "[CONNECTIONS] Skipping connection {} with unknown type '{}'",
+                                    id,
+                                    connection_type
+                                );
+                                return None;
+                            }
                         },
                         folder,
                         ssh_enabled: ssh_enabled != 0,
@@ -932,16 +991,26 @@ pub(crate) fn load_connections(tabular: &mut window_egui::Tabular) {
                     })
                 })
                 .collect();
-            crate::log_startup_step(&format!("load_connections: resolved secrets for {} connections", tabular.connections.len()));
+            rt.block_on(crate::driver_api::connect::fill_plugin_options(
+                rewrite_pool.as_ref(),
+                &mut tabular.connections,
+            ));
+            crate::log_startup_step(&format!(
+                "load_connections: resolved secrets for {} connections",
+                tabular.connections.len()
+            ));
 
             for (id, field, value) in secret_rewrites {
                 // Field names are fixed identifiers above, never user input.
                 let _ = rt.block_on(async {
-                    sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE connections SET {} = ? WHERE id = ?", field)))
-                        .bind(value)
-                        .bind(id)
-                        .execute(rewrite_pool.as_ref())
-                        .await
+                    sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "UPDATE connections SET {} = ? WHERE id = ?",
+                        field
+                    )))
+                    .bind(value)
+                    .bind(id)
+                    .execute(rewrite_pool.as_ref())
+                    .await
                 });
             }
         }
@@ -970,20 +1039,19 @@ pub(crate) fn load_connection_folders(tabular: &mut window_egui::Tabular) {
     }
 }
 
-pub(crate) fn save_connection_folder(
-    tabular: &mut window_egui::Tabular,
-    path: &str,
-) -> bool {
+pub(crate) fn save_connection_folder(tabular: &mut window_egui::Tabular, path: &str) -> bool {
     let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let path = path.to_string();
-        let ok = rt.block_on(async {
-            sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
-                .bind(&path)
-                .execute(pool_clone.as_ref())
-                .await
-        }).is_ok();
+        let ok = rt
+            .block_on(async {
+                sqlx::query("INSERT OR IGNORE INTO connection_folders (path) VALUES (?)")
+                    .bind(&path)
+                    .execute(pool_clone.as_ref())
+                    .await
+            })
+            .is_ok();
         if ok && !tabular.connection_folders.contains(&path) {
             tabular.connection_folders.push(path);
         }
@@ -993,10 +1061,7 @@ pub(crate) fn save_connection_folder(
     }
 }
 
-pub(crate) fn delete_connection_folder(
-    tabular: &mut window_egui::Tabular,
-    folder_path: &str,
-) {
+pub(crate) fn delete_connection_folder(tabular: &mut window_egui::Tabular, folder_path: &str) {
     let rt = tabular.get_runtime();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
@@ -1023,7 +1088,9 @@ pub(crate) fn delete_connection_folder(
     // Remove deleted folder and subfolders from in-memory list so the tree
     // rebuild doesn't re-inject them as standalone empty folders.
     let prefix = format!("{}/", folder_path);
-    tabular.connection_folders.retain(|f| f != folder_path && !f.starts_with(&prefix));
+    tabular
+        .connection_folders
+        .retain(|f| f != folder_path && !f.starts_with(&prefix));
     // Reload connections (which also calls refresh_connections_tree at the end)
     load_connections(tabular);
 }
@@ -1158,13 +1225,15 @@ pub(crate) fn rename_connection_folder(
 
     // Reload connections and refresh tree
     load_connections(tabular);
-    tabular.toasts.success(format!("Renamed folder to '{}'", trimmed));
+    tabular
+        .toasts
+        .success(format!("Renamed folder to '{}'", trimmed));
     Ok(())
 }
 
 /// Move a connection's credentials into the secret store and rewrite the row
 /// so the columns only hold the sentinel (or plaintext if no backend worked).
-fn externalize_connection_secrets(
+pub(crate) fn externalize_connection_secrets(
     rt: &tokio::runtime::Runtime,
     pool: &std::sync::Arc<sqlx::SqlitePool>,
     connection_id: i64,
@@ -1212,6 +1281,7 @@ pub(crate) fn save_connection_to_database(
         let secret_password = connection.password.clone();
         let secret_ssh_key = connection.ssh_private_key.clone();
         let secret_ssh_password = connection.ssh_password.clone();
+        let with_options = connection.clone();
         let connection = connection.clone();
         let rt = tabular.get_runtime();
 
@@ -1225,7 +1295,7 @@ pub(crate) fn save_connection_to_database(
           .bind(connection.username)
           .bind(connection.password)
           .bind(connection.database)
-          .bind(format!("{:?}", connection.connection_type))
+          .bind(connection.connection_type.as_db_str().into_owned())
           .bind(connection.folder)
           .bind(if connection.ssh_enabled { 1 } else { 0 })
           .bind(connection.ssh_host)
@@ -1248,63 +1318,71 @@ pub(crate) fn save_connection_to_database(
             .await
        });
 
-          match result {
-              Ok(res) => {
-                  // Row id is only known after the insert; move the freshly
-                  // written plaintext credentials into the secret store now.
-                  externalize_connection_secrets(
-                      &rt,
-                      &pool_clone,
-                      res.last_insert_rowid(),
-                      &secret_password,
-                      &secret_ssh_key,
-                      &secret_ssh_password,
-                  );
-                  true
-              }
-              Err(_) => false,
-          }
-      } else {
-          false
-      }
-  }
+        match result {
+            Ok(res) => {
+                // Row id is only known after the insert; move the freshly
+                // written plaintext credentials into the secret store now.
+                externalize_connection_secrets(
+                    &rt,
+                    &pool_clone,
+                    res.last_insert_rowid(),
+                    &secret_password,
+                    &secret_ssh_key,
+                    &secret_ssh_password,
+                );
+                if let Err(e) = rt.block_on(crate::driver_api::connect::save_plugin_options(
+                    pool_clone.as_ref(),
+                    &with_options,
+                    res.last_insert_rowid(),
+                )) {
+                    log::warn!("[DRIVER-PLUGIN] Failed to save plugin options: {e}");
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    }
+}
 
-  // Externalize credentials to the secret store; columns get the
-  // sentinel (or plaintext when no backend is available).
-  fn externalize_credentials_for_update(
-      connection: &models::structs::ConnectionConfig,
-  ) -> (String, String, String) {
-      match connection.id {
-          Some(id) => (
-              crate::secrets::store_or_keep(
-                  &crate::secrets::connection_secret_name(id, "password"),
-                  &connection.password,
-              ),
-              crate::secrets::store_or_keep(
-                  &crate::secrets::connection_secret_name(id, "ssh_private_key"),
-                  &connection.ssh_private_key,
-              ),
-              crate::secrets::store_or_keep(
-                  &crate::secrets::connection_secret_name(id, "ssh_password"),
-                  &connection.ssh_password,
-              ),
-          ),
-          None => (
-              connection.password.clone(),
-              connection.ssh_private_key.clone(),
-              connection.ssh_password.clone(),
-          ),
-      }
-  }
+// Externalize credentials to the secret store; columns get the
+// sentinel (or plaintext when no backend is available).
+fn externalize_credentials_for_update(
+    connection: &models::structs::ConnectionConfig,
+) -> (String, String, String) {
+    match connection.id {
+        Some(id) => (
+            crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "password"),
+                &connection.password,
+            ),
+            crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                &connection.ssh_private_key,
+            ),
+            crate::secrets::store_or_keep(
+                &crate::secrets::connection_secret_name(id, "ssh_password"),
+                &connection.ssh_password,
+            ),
+        ),
+        None => (
+            connection.password.clone(),
+            connection.ssh_private_key.clone(),
+            connection.ssh_password.clone(),
+        ),
+    }
+}
 
-  async fn exec_update_connection(
-      pool: &SqlitePool,
-      connection: models::structs::ConnectionConfig,
-      password_stored: String,
-      ssh_key_stored: String,
-      ssh_password_stored: String,
-  ) -> Result<(), sqlx::Error> {
-      sqlx::query(
+async fn exec_update_connection(
+    pool: &SqlitePool,
+    connection: models::structs::ConnectionConfig,
+    password_stored: String,
+    ssh_key_stored: String,
+    ssh_password_stored: String,
+) -> Result<(), sqlx::Error> {
+    let with_options = connection.clone();
+    sqlx::query(
           "UPDATE connections SET name = ?, host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
       )
       .bind(connection.name)
@@ -1313,7 +1391,7 @@ pub(crate) fn save_connection_to_database(
       .bind(connection.username)
       .bind(password_stored)
       .bind(connection.database)
-      .bind(format!("{:?}", connection.connection_type))
+      .bind(connection.connection_type.as_db_str().into_owned())
       .bind(connection.folder)
       .bind(if connection.ssh_enabled { 1 } else { 0 })
       .bind(connection.ssh_host)
@@ -1334,70 +1412,73 @@ pub(crate) fn save_connection_to_database(
       .bind(if connection.ssl_verify_server { 1 } else { 0 })
       .bind(connection.id)
       .execute(pool)
-      .await
-      .map(|_| ())
-  }
+      .await?;
+    if let Some(id) = with_options.id {
+        crate::driver_api::connect::save_plugin_options(pool, &with_options, id).await?;
+    }
+    Ok(())
+}
 
-  pub(crate) fn update_connection_in_database(
-      tabular: &mut window_egui::Tabular,
-      connection: &models::structs::ConnectionConfig,
-  ) -> bool {
-      let Some(pool_clone) = tabular.db_pool.clone() else {
-          return false;
-      };
-      let connection = connection.clone();
-      // Shared runtime: a fresh Runtime per call spawns new worker threads on
-      // every save and stalls the UI thread far longer than the query itself.
-      let rt = tabular.get_runtime();
+pub(crate) fn update_connection_in_database(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) -> bool {
+    let Some(pool_clone) = tabular.db_pool.clone() else {
+        return false;
+    };
+    let connection = connection.clone();
+    // Shared runtime: a fresh Runtime per call spawns new worker threads on
+    // every save and stalls the UI thread far longer than the query itself.
+    let rt = tabular.get_runtime();
 
-      let (password_stored, ssh_key_stored, ssh_password_stored) =
-          externalize_credentials_for_update(&connection);
+    let (password_stored, ssh_key_stored, ssh_password_stored) =
+        externalize_credentials_for_update(&connection);
 
-      let result = rt.block_on(exec_update_connection(
-          pool_clone.as_ref(),
-          connection,
-          password_stored,
-          ssh_key_stored,
-          ssh_password_stored,
-      ));
+    let result = rt.block_on(exec_update_connection(
+        pool_clone.as_ref(),
+        connection,
+        password_stored,
+        ssh_key_stored,
+        ssh_password_stored,
+    ));
 
-      result.is_ok()
-  }
+    result.is_ok()
+}
 
-  /// Non-blocking variant of [`update_connection_in_database`]: the UPDATE runs
-  /// on the shared runtime and its result arrives via
-  /// `custom_view_save_receiver`, so the UI thread never waits on the pool.
-  pub(crate) fn update_connection_in_database_background(
-      tabular: &mut window_egui::Tabular,
-      connection: &models::structs::ConnectionConfig,
-  ) {
-      let Some(pool_clone) = tabular.db_pool.clone() else {
-          tabular
-              .toasts
-              .error("Cache database is not available; view not persisted");
-          return;
-      };
-      let connection = connection.clone();
-      let rt = tabular.get_runtime();
+/// Non-blocking variant of [`update_connection_in_database`]: the UPDATE runs
+/// on the shared runtime and its result arrives via
+/// `custom_view_save_receiver`, so the UI thread never waits on the pool.
+pub(crate) fn update_connection_in_database_background(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) {
+    let Some(pool_clone) = tabular.db_pool.clone() else {
+        tabular
+            .toasts
+            .error("Cache database is not available; view not persisted");
+        return;
+    };
+    let connection = connection.clone();
+    let rt = tabular.get_runtime();
 
-      let (password_stored, ssh_key_stored, ssh_password_stored) =
-          externalize_credentials_for_update(&connection);
+    let (password_stored, ssh_key_stored, ssh_password_stored) =
+        externalize_credentials_for_update(&connection);
 
-      let (tx, rx) = std::sync::mpsc::channel();
-      tabular.custom_view_save_receiver = Some(rx);
-      rt.spawn(async move {
-          let result = exec_update_connection(
-              pool_clone.as_ref(),
-              connection,
-              password_stored,
-              ssh_key_stored,
-              ssh_password_stored,
-          )
-          .await
-          .map_err(|e| e.to_string());
-          let _ = tx.send(result);
-      });
-  }
+    let (tx, rx) = std::sync::mpsc::channel();
+    tabular.custom_view_save_receiver = Some(rx);
+    rt.spawn(async move {
+        let result = exec_update_connection(
+            pool_clone.as_ref(),
+            connection,
+            password_stored,
+            ssh_key_stored,
+            ssh_password_stored,
+        )
+        .await
+        .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+}
 
 pub(crate) fn start_edit_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {
     // Find the connection to edit
@@ -1478,7 +1559,8 @@ pub struct DatabaseInitResult {
     pub connection_folders: Vec<String>,
     pub history_items: Vec<models::structs::HistoryItem>,
     pub teams: Vec<crate::sync::api_client::RemoteTeam>,
-    pub team_members: std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
+    pub team_members:
+        std::collections::HashMap<String, Vec<crate::sync::api_client::RemoteTeamMember>>,
     pub shared_folders_cache: Vec<crate::sync::api_client::RemoteSharedFolder>,
     pub sync_account: Option<crate::sync::TabularAccount>,
     pub connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>>,
@@ -1491,7 +1573,10 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         return None;
     }
 
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             error!("Failed to create runtime for background db init: {}", e);
@@ -1503,7 +1588,9 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
     let db_path = data_dir.join("connections.db");
     let db_path_str = db_path.to_string_lossy();
     let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
-    let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&connection_string) {
+    let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(
+        &connection_string,
+    ) {
         Ok(opts) => opts
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
@@ -1515,12 +1602,53 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         }
     };
 
-    let pool = rt.block_on(async {
-        sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(connect_opts)
-            .await
-    }).ok()?;
+    let pool = rt
+        .block_on(async {
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(connect_opts)
+                .await
+        })
+        .ok();
+
+    let pool = match pool {
+        Some(p) => p,
+        None => {
+            let local_default_dir = crate::config::get_local_data_dir().join("data");
+            if data_dir != local_default_dir {
+                warn!(
+                    "⚠️ Failed to connect to SQLite at {:?}. Retrying with local container fallback {:?}",
+                    data_dir, local_default_dir
+                );
+                let _ = std::fs::create_dir_all(&local_default_dir);
+                let fallback_db = local_default_dir.join("connections.db");
+                let fallback_conn_str =
+                    format!("sqlite://{}?mode=rwc", fallback_db.to_string_lossy());
+                if let Ok(opts) =
+                    <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(
+                        &fallback_conn_str,
+                    )
+                {
+                    let opts = opts
+                        .create_if_missing(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                        .busy_timeout(std::time::Duration::from_secs(5));
+                    rt.block_on(async {
+                        sqlx::sqlite::SqlitePoolOptions::new()
+                            .max_connections(5)
+                            .connect_with(opts)
+                            .await
+                    })
+                    .ok()?
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    };
 
     // Table verification and creations in single transaction
     rt.block_on(async {
@@ -1552,7 +1680,8 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                 ssl_key_passphrase TEXT NOT NULL DEFAULT '',
                 ssl_verify_server INTEGER NOT NULL DEFAULT 1,
                 custom_views TEXT NOT NULL DEFAULT '[]',
-                replication_master_id INTEGER DEFAULT NULL
+                replication_master_id INTEGER DEFAULT NULL,
+                plugin_options TEXT NOT NULL DEFAULT '{}'
             );
             CREATE TABLE IF NOT EXISTS connection_folders (path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS database_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL, database_name TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (connection_id) REFERENCES connections (id) ON DELETE CASCADE, UNIQUE(connection_id, database_name));
@@ -1587,11 +1716,16 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
             "ALTER TABLE connections ADD COLUMN ssl_client_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE connections ADD COLUMN ssl_key_passphrase TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE connections ADD COLUMN plugin_options TEXT NOT NULL DEFAULT '{}'",
         ] {
             let _ = sqlx::query(migration).execute(&pool).await;
         }
 
         let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(&pool).await;
+
+        // iOS only, and only when it has never been seeded: gives a first-time
+        // user something to open without a file picker, which iOS does not have.
+        crate::sample_data::ensure_sample_database(&pool).await;
     });
 
     // Load connections
@@ -1677,20 +1811,19 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
 
                 Some(models::structs::ConnectionConfig {
                     id: Some(id),
+                    plugin_options: Default::default(),
                     name,
                     host,
                     port,
                     username,
                     password,
                     database: database_name,
-                    connection_type: match connection_type.as_str() {
-                        "MySQL" => models::enums::DatabaseType::MySQL,
-                        "PostgreSQL" => models::enums::DatabaseType::PostgreSQL,
-                        "Redis" => models::enums::DatabaseType::Redis,
-                        "MsSQL" => models::enums::DatabaseType::MsSQL,
-                        "MongoDB" => models::enums::DatabaseType::MongoDB,
-                        "ApiHttp" => models::enums::DatabaseType::ApiHttp,
-                        _ => models::enums::DatabaseType::SQLite,
+                    connection_type: match models::enums::DatabaseType::from_db_str(&connection_type) {
+                        Some(ty) => ty,
+                        None => {
+                            log::warn!("[CONNECTIONS] Skipping connection {} with unknown type '{}'", id, connection_type);
+                            return None;
+                        }
                     },
                     folder,
                     ssh_enabled: ssh_enabled != 0,
@@ -1718,20 +1851,32 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
 
     for (id, field, value) in secret_rewrites {
         let _ = rt.block_on(async {
-            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE connections SET {} = ? WHERE id = ?", field)))
-                .bind(value)
-                .bind(id)
-                .execute(&pool)
-                .await
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE connections SET {} = ? WHERE id = ?",
+                field
+            )))
+            .bind(value)
+            .bind(id)
+            .execute(&pool)
+            .await
         });
     }
+    let mut connections = connections;
+    rt.block_on(crate::driver_api::connect::fill_plugin_options(
+        &pool,
+        &mut connections,
+    ));
 
     // Load connection folders
     let connection_folders: Vec<String> = rt.block_on(async {
         sqlx::query("SELECT path FROM connection_folders ORDER BY path")
             .fetch_all(&pool)
             .await
-            .map(|rows| rows.into_iter().filter_map(|r| r.try_get::<String, _>("path").ok()).collect())
+            .map(|rows| {
+                rows.into_iter()
+                    .filter_map(|r| r.try_get::<String, _>("path").ok())
+                    .collect()
+            })
             .unwrap_or_default()
     });
 
@@ -1756,32 +1901,38 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
 
     // Load cached Teams, Members, and Shared Folders from SQLite
     let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(&pool));
-    let team_members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(&pool));
-    let shared_folders_cache = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(&pool));
+    let team_members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(
+        &pool,
+    ));
+    let shared_folders_cache =
+        rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(&pool));
     let sync_account = crate::sync::api_client::load_account();
 
     // Load connection_sync_cache
-    let connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>> = rt.block_on(async {
-        let rows = sqlx::query_as::<_, (i64, String)>("SELECT connection_id, last_synced_at FROM connection_sync_cache")
+    let connection_last_synced: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>> = rt
+        .block_on(async {
+            let rows = sqlx::query_as::<_, (i64, String)>(
+                "SELECT connection_id, last_synced_at FROM connection_sync_cache",
+            )
             .fetch_all(&pool)
             .await
             .unwrap_or_default();
-        let mut map = std::collections::HashMap::new();
-        for (id, ts_str) in rows {
-            let dt_opt = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .ok()
-                .or_else(|| {
-                    chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
-                        .map(|ndt| ndt.and_utc())
-                        .ok()
-                });
-            if let Some(dt) = dt_opt {
-                map.insert(id, dt);
+            let mut map = std::collections::HashMap::new();
+            for (id, ts_str) in rows {
+                let dt_opt = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
+                            .map(|ndt| ndt.and_utc())
+                            .ok()
+                    });
+                if let Some(dt) = dt_opt {
+                    map.insert(id, dt);
+                }
             }
-        }
-        map
-    });
+            map
+        });
 
     crate::log_startup_step("initialize_database_background completed");
     Some(DatabaseInitResult {
@@ -1832,6 +1983,38 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 .max_connections(5)
                 .connect_with(connect_opts)
                 .await;
+
+            let pool = match pool {
+                Ok(p) => Ok(p),
+                Err(e) => {
+                    let local_default_dir = crate::config::get_local_data_dir().join("data");
+                    if data_dir != local_default_dir {
+                        warn!(
+                            "⚠️ Failed to connect to SQLite at {:?}: {}. Retrying with local container fallback {:?}",
+                            data_dir, e, local_default_dir
+                        );
+                        let _ = std::fs::create_dir_all(&local_default_dir);
+                        let fallback_db = local_default_dir.join("connections.db");
+                        let fallback_conn_str = format!("sqlite://{}?mode=rwc", fallback_db.to_string_lossy());
+                        match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&fallback_conn_str) {
+                            Ok(opts) => {
+                                let opts = opts
+                                    .create_if_missing(true)
+                                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                                    .busy_timeout(std::time::Duration::from_secs(5));
+                                sqlx::sqlite::SqlitePoolOptions::new()
+                                    .max_connections(5)
+                                    .connect_with(opts)
+                                    .await
+                            }
+                            Err(url_err) => Err(url_err),
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+            };
 
             match pool {
                 Ok(pool) => {
@@ -1970,6 +2153,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     let _ = sqlx::query(
                         "ALTER TABLE connections ADD COLUMN ssl_verify_server INTEGER NOT NULL DEFAULT 1"
+                    )
+                    .execute(&pool)
+                    .await;
+
+                    let _ = sqlx::query(
+                        "ALTER TABLE connections ADD COLUMN plugin_options TEXT NOT NULL DEFAULT '{}'"
                     )
                     .execute(&pool)
                     .await;
@@ -2228,9 +2417,15 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
         // Load cached Teams, Members, and Shared Folders from SQLite
         if let Some(ref pool) = tabular.db_pool.clone() {
-            let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(pool.as_ref()));
-            let members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(pool.as_ref()));
-            let shares = rt.block_on(crate::sync::sync_teams_cache::load_shared_folders_from_cache(pool.as_ref()));
+            let teams = rt.block_on(crate::sync::sync_teams_cache::load_teams_from_cache(
+                pool.as_ref(),
+            ));
+            let members = rt.block_on(crate::sync::sync_teams_cache::load_team_members_from_cache(
+                pool.as_ref(),
+            ));
+            let shares = rt.block_on(
+                crate::sync::sync_teams_cache::load_shared_folders_from_cache(pool.as_ref()),
+            );
             if !teams.is_empty() {
                 tabular.teams = teams;
             }
@@ -2243,10 +2438,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
             // Load connection sync timestamps
             let rows = rt.block_on(async {
-                sqlx::query_as::<_, (i64, String)>("SELECT connection_id, last_synced_at FROM connection_sync_cache")
-                    .fetch_all(pool.as_ref())
-                    .await
-                    .unwrap_or_default()
+                sqlx::query_as::<_, (i64, String)>(
+                    "SELECT connection_id, last_synced_at FROM connection_sync_cache",
+                )
+                .fetch_all(pool.as_ref())
+                .await
+                .unwrap_or_default()
             });
             for (id, ts_str) in rows {
                 let dt_opt = chrono::DateTime::parse_from_rfc3339(&ts_str)
@@ -2270,20 +2467,30 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
         if db_path.exists() {
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
             let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
-            warn!("⚠️ Recreating fresh connections.db after corruption (backing up to {:?})", backup_path);
+            warn!(
+                "⚠️ Recreating fresh connections.db after corruption (backing up to {:?})",
+                backup_path
+            );
             let _ = std::fs::rename(&db_path, &backup_path);
 
             // Second attempt connect to fresh empty file
             let db_path_str = db_path.to_string_lossy();
             let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
             let pool_res = rt.block_on(async {
-                if let Ok(opts) = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&connection_string) {
+                if let Ok(opts) =
+                    <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(
+                        &connection_string,
+                    )
+                {
                     let opts = opts
                         .create_if_missing(true)
                         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
                         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
                         .busy_timeout(std::time::Duration::from_secs(5));
-                    sqlx::sqlite::SqlitePoolOptions::new().max_connections(5).connect_with(opts).await
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(5)
+                        .connect_with(opts)
+                        .await
                 } else {
                     SqlitePool::connect(&connection_string).await
                 }
@@ -2386,9 +2593,6 @@ pub(crate) fn add_connection_to_tree(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) {
-    if connection.connection_type == models::enums::DatabaseType::ApiHttp {
-        return;
-    }
     if let Some(id) = connection.id {
         let folder_name = connection
             .folder
@@ -2436,9 +2640,6 @@ pub(crate) fn update_connection_in_tree(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) {
-    if connection.connection_type == models::enums::DatabaseType::ApiHttp {
-        return;
-    }
     if let Some(id) = connection.id {
         let new_folder = connection
             .folder
@@ -2537,106 +2738,102 @@ pub fn get_default_dba_views(
             (
                 "Users",
                 NodeType::UsersFolder,
-                "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed FROM mysql.user ORDER BY User, Host;"
+                "SELECT Host, User, plugin, account_locked, password_expired, password_last_changed FROM mysql.user ORDER BY User, Host;",
             ),
             (
                 "Privileges",
                 NodeType::PrivilegesFolder,
-                "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES ORDER BY GRANTEE, PRIVILEGE_TYPE;"
+                "SELECT GRANTEE, PRIVILEGE_TYPE, IS_GRANTABLE FROM INFORMATION_SCHEMA.USER_PRIVILEGES ORDER BY GRANTEE, PRIVILEGE_TYPE;",
             ),
             (
                 "Processes",
                 NodeType::ProcessesFolder,
-                "SHOW FULL PROCESSLIST;"
+                "SHOW FULL PROCESSLIST;",
             ),
-            (
-                "Status",
-                NodeType::StatusFolder,
-                "SHOW GLOBAL STATUS;"
-            ),
+            ("Status", NodeType::StatusFolder, "SHOW GLOBAL STATUS;"),
             (
                 "Blocked Query",
                 NodeType::BlockedQueriesFolder,
-                "SELECT * FROM information_schema.PROCESSLIST WHERE STATE LIKE '%lock%';"
+                "SELECT * FROM information_schema.PROCESSLIST WHERE STATE LIKE '%lock%';",
             ),
             (
                 "Replication Status",
                 NodeType::ReplicationStatusFolder,
-                "SHOW REPLICA STATUS;"
+                "SHOW REPLICA STATUS;",
             ),
             (
                 "Master Status",
                 NodeType::MasterStatusFolder,
-                "SHOW MASTER STATUS;"
+                "SHOW MASTER STATUS;",
             ),
             (
                 "User Active",
                 NodeType::MetricsUserActiveFolder,
-                "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;"
+                "SELECT USER, COUNT(*) AS session_count FROM information_schema.PROCESSLIST GROUP BY USER ORDER BY session_count DESC;",
             ),
         ],
         DatabaseType::PostgreSQL => vec![
             (
                 "Users",
                 NodeType::UsersFolder,
-                "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;"
+                "SELECT usename AS user, usesysid, usecreatedb, usesuper FROM pg_user ORDER BY usename;",
             ),
             (
                 "Privileges",
                 NodeType::PrivilegesFolder,
-                "SELECT grantee, table_catalog, table_schema, table_name, privilege_type FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;"
+                "SELECT grantee, table_catalog, table_schema, table_name, privilege_type FROM information_schema.table_privileges ORDER BY grantee, table_schema, table_name;",
             ),
             (
                 "Processes",
                 NodeType::ProcessesFolder,
-                "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;"
+                "SELECT pid, usename, application_name, client_addr, state, query_start, query FROM pg_stat_activity ORDER BY query_start DESC NULLS LAST;",
             ),
             (
                 "Status",
                 NodeType::StatusFolder,
-                "SELECT name, setting FROM pg_settings ORDER BY name;"
+                "SELECT name, setting FROM pg_settings ORDER BY name;",
             ),
             (
                 "Blocked Query",
                 NodeType::BlockedQueriesFolder,
-                "SELECT\n    blocked.pid AS blocked_pid,\n    blocked.usename AS blocked_user,\n    blocked.application_name AS blocked_app,\n    blocked.client_addr AS blocked_client,\n    blocked.wait_event_type,\n    blocked.wait_event,\n    blocked.query_start AS blocked_query_start,\n    blocked.query AS blocked_query,\n    blocking.pid AS blocking_pid,\n    blocking.usename AS blocking_user,\n    blocking.application_name AS blocking_app,\n    blocking.client_addr AS blocking_client,\n    blocking.query_start AS blocking_query_start,\n    blocking.query AS blocking_query\nFROM pg_stat_activity blocked\nJOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid AND NOT blocked_locks.granted\nJOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype\n    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database\n    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation\n    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page\n    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple\n    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid\n    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid\n    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid\n    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid\n    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid\nJOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid\nWHERE blocked.wait_event_type IS NOT NULL\nORDER BY blocked.query_start;"
+                "SELECT\n    blocked.pid AS blocked_pid,\n    blocked.usename AS blocked_user,\n    blocked.application_name AS blocked_app,\n    blocked.client_addr AS blocked_client,\n    blocked.wait_event_type,\n    blocked.wait_event,\n    blocked.query_start AS blocked_query_start,\n    blocked.query AS blocked_query,\n    blocking.pid AS blocking_pid,\n    blocking.usename AS blocking_user,\n    blocking.application_name AS blocking_app,\n    blocking.client_addr AS blocking_client,\n    blocking.query_start AS blocking_query_start,\n    blocking.query AS blocking_query\nFROM pg_stat_activity blocked\nJOIN pg_locks blocked_locks ON blocked.pid = blocked_locks.pid AND NOT blocked_locks.granted\nJOIN pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype\n    AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database\n    AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation\n    AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page\n    AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple\n    AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid\n    AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid\n    AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid\n    AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid\n    AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid\nJOIN pg_stat_activity blocking ON blocking.pid = blocking_locks.pid\nWHERE blocked.wait_event_type IS NOT NULL\nORDER BY blocked.query_start;",
             ),
             (
                 "User Active",
                 NodeType::MetricsUserActiveFolder,
-                "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;"
+                "SELECT usename AS user, COUNT(*) AS session_count FROM pg_stat_activity GROUP BY usename ORDER BY session_count DESC;",
             ),
         ],
         DatabaseType::MsSQL => vec![
             (
                 "Users",
                 NodeType::UsersFolder,
-                "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;"
+                "SELECT name, type_desc, create_date, modify_date FROM sys.server_principals WHERE type IN ('S','U','G') AND name NOT LIKE '##MS_%' ORDER BY name;",
             ),
             (
                 "Privileges",
                 NodeType::PrivilegesFolder,
-                "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc FROM sys.server_permissions sp JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id ORDER BY dp.name, sp.permission_name;"
+                "SELECT dp.name AS principal_name, sp.permission_name, sp.state_desc FROM sys.server_permissions sp JOIN sys.server_principals dp ON sp.grantee_principal_id = dp.principal_id ORDER BY dp.name, sp.permission_name;",
             ),
             (
                 "Processes",
                 NodeType::ProcessesFolder,
-                "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;"
+                "SELECT session_id, login_name, host_name, status, program_name, cpu_time, memory_usage FROM sys.dm_exec_sessions ORDER BY cpu_time DESC;",
             ),
             (
                 "Status",
                 NodeType::StatusFolder,
-                "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;"
+                "SELECT TOP 200 counter_name, instance_name, cntr_value FROM sys.dm_os_performance_counters ORDER BY counter_name;",
             ),
             (
                 "Blocked Query",
                 NodeType::BlockedQueriesFolder,
-                "SELECT\n    blocked_req.session_id AS blocked_session_id,\n    blocked.login_name AS blocked_login,\n    blocked.status AS blocked_status,\n    blocked_req.wait_time AS blocked_wait_ms,\n    blocked_req.last_wait_type AS blocked_last_wait_type,\n    DB_NAME(blocked_req.database_id) AS database_name,\n    blocked_text.text AS blocked_query,\n    blocked_req.blocking_session_id AS blocking_session_id,\n    blocking.login_name AS blocking_login,\n    blocking.status AS blocking_status,\n    blocking_text.text AS blocking_query\nFROM sys.dm_exec_requests blocked_req\nJOIN sys.dm_exec_sessions blocked ON blocked_req.session_id = blocked.session_id\nLEFT JOIN sys.dm_exec_sessions blocking ON blocked_req.blocking_session_id = blocking.session_id\nLEFT JOIN sys.dm_exec_requests blocking_req ON blocked_req.blocking_session_id = blocking_req.session_id\nOUTER APPLY sys.dm_exec_sql_text(blocked_req.sql_handle) AS blocked_text\nOUTER APPLY sys.dm_exec_sql_text(blocking_req.sql_handle) AS blocking_text\nWHERE blocked_req.blocking_session_id <> 0\nORDER BY blocked_req.wait_time DESC;"
+                "SELECT\n    blocked_req.session_id AS blocked_session_id,\n    blocked.login_name AS blocked_login,\n    blocked.status AS blocked_status,\n    blocked_req.wait_time AS blocked_wait_ms,\n    blocked_req.last_wait_type AS blocked_last_wait_type,\n    DB_NAME(blocked_req.database_id) AS database_name,\n    blocked_text.text AS blocked_query,\n    blocked_req.blocking_session_id AS blocking_session_id,\n    blocking.login_name AS blocking_login,\n    blocking.status AS blocking_status,\n    blocking_text.text AS blocking_query\nFROM sys.dm_exec_requests blocked_req\nJOIN sys.dm_exec_sessions blocked ON blocked_req.session_id = blocked.session_id\nLEFT JOIN sys.dm_exec_sessions blocking ON blocked_req.blocking_session_id = blocking.session_id\nLEFT JOIN sys.dm_exec_requests blocking_req ON blocked_req.blocking_session_id = blocking_req.session_id\nOUTER APPLY sys.dm_exec_sql_text(blocked_req.sql_handle) AS blocked_text\nOUTER APPLY sys.dm_exec_sql_text(blocking_req.sql_handle) AS blocking_text\nWHERE blocked_req.blocking_session_id <> 0\nORDER BY blocked_req.wait_time DESC;",
             ),
             (
                 "User Active",
                 NodeType::MetricsUserActiveFolder,
-                "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;"
+                "SELECT login_name AS [user], COUNT(*) AS session_count FROM sys.dm_exec_sessions GROUP BY login_name ORDER BY session_count DESC;",
             ),
         ],
         _ => vec![],
@@ -2670,18 +2867,19 @@ fn build_folder_nodes_for_level(
         return all_connections
             .iter()
             .filter_map(|conn| {
-                conn.id.map(|id| {
-                    models::structs::TreeNode::new_connection(conn.name.clone(), id)
-                })
+                conn.id
+                    .map(|id| models::structs::TreeNode::new_connection(conn.name.clone(), id))
             })
             .collect();
     }
 
-    let mut direct: Vec<(models::structs::TreeNode, models::enums::DatabaseType, String)> = Vec::new();
-    let mut sub_groups: std::collections::HashMap<
+    let mut direct: Vec<(
+        models::structs::TreeNode,
+        models::enums::DatabaseType,
         String,
-        Vec<&models::structs::ConnectionConfig>,
-    > = std::collections::HashMap::new();
+    )> = Vec::new();
+    let mut sub_groups: std::collections::HashMap<String, Vec<&models::structs::ConnectionConfig>> =
+        std::collections::HashMap::new();
 
     for conn in all_connections {
         // Always normalize — removes any leading/trailing slashes in stored data
@@ -2709,10 +2907,7 @@ fn build_folder_nodes_for_level(
         } else {
             // Find the FIRST non-empty segment (guards against paths like "/foo")
             if let Some(seg) = relative.split('/').find(|s| !s.is_empty()) {
-                sub_groups
-                    .entry(seg.to_string())
-                    .or_default()
-                    .push(conn);
+                sub_groups.entry(seg.to_string()).or_default().push(conn);
             } else {
                 // No valid segment found; fall back to direct child
                 if let Some(id) = conn.id {
@@ -2724,12 +2919,12 @@ fn build_folder_nodes_for_level(
     }
 
     // Sort direct connections: by DB type order, then name
-    direct.sort_by(|a, b| {
-        match database_type_order(&a.1).cmp(&database_type_order(&b.1)) {
+    direct.sort_by(
+        |a, b| match database_type_order(&a.1).cmp(&database_type_order(&b.1)) {
             std::cmp::Ordering::Equal => a.2.cmp(&b.2),
             other => other,
-        }
-    });
+        },
+    );
     let connections_vec: Vec<models::structs::TreeNode> =
         direct.into_iter().map(|(n, _, _)| n).collect();
 
@@ -2742,14 +2937,11 @@ fn build_folder_nodes_for_level(
             } else {
                 format!("{}/{}", folder_base, seg)
             };
-            let mut subfolder = models::structs::TreeNode::new(
-                seg.clone(),
-                models::enums::NodeType::CustomFolder,
-            );
+            let mut subfolder =
+                models::structs::TreeNode::new(seg.clone(), models::enums::NodeType::CustomFolder);
             subfolder.is_expanded = false;
             subfolder.file_path = Some(child_base.clone());
-            subfolder.children =
-                build_folder_nodes_for_level(&conns, &child_base, depth + 1);
+            subfolder.children = build_folder_nodes_for_level(&conns, &child_base, depth + 1);
             subfolder
         })
         .collect();
@@ -2786,9 +2978,9 @@ fn ensure_folder_exists_in_tree(
         format!("{}/{}", current_prefix, seg)
     };
 
-    let pos = nodes.iter().position(|n| {
-        n.name == seg && n.node_type == models::enums::NodeType::CustomFolder
-    });
+    let pos = nodes
+        .iter()
+        .position(|n| n.name == seg && n.node_type == models::enums::NodeType::CustomFolder);
 
     let idx = match pos {
         Some(i) => i,
@@ -2827,9 +3019,6 @@ pub(crate) fn create_connections_folder_structure(
     > = std::collections::HashMap::new();
 
     for conn in &tabular.connections {
-        if conn.connection_type == models::enums::DatabaseType::ApiHttp {
-            continue;
-        }
         let full_path = normalize_folder_path(conn.folder.as_deref());
         // Top-level segment — guaranteed non-empty after normalize_folder_path
         let top = full_path
@@ -2850,8 +3039,7 @@ pub(crate) fn create_connections_folder_structure(
             );
             folder_node.is_expanded = true;
             folder_node.file_path = Some(folder_name.clone());
-            folder_node.children =
-                build_folder_nodes_for_level(&conns, &folder_name, 0);
+            folder_node.children = build_folder_nodes_for_level(&conns, &folder_name, 0);
             folder_node
         })
         .collect();
@@ -2908,16 +3096,30 @@ pub(crate) fn render_create_subfolder_dialog(
     } else {
         format!("Create Subfolder in \"{}\"", parent)
     };
-    egui::Window::new(title)
+    crate::window_egui::style::render_modal_backdrop(
+        ctx,
+        "modal_create_subfolder",
+        tabular.show_create_subfolder_dialog,
+    );
+    let mut close_dialog = false;
+
+    egui::Window::new(&title)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(320.0)
+        .default_width(340.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Folder name:");
-            let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
-            resp.request_focus();
+            crate::window_egui::style::render_modal_header(ui, &title, &mut close_dialog);
+
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label("Folder name:");
+                let resp = ui.text_edit_singleline(&mut tabular.new_subfolder_name);
+                resp.request_focus();
+            });
+
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let ok = !tabular.new_subfolder_name.trim().is_empty();
@@ -2939,13 +3141,9 @@ pub(crate) fn render_create_subfolder_dialog(
                         tabular.new_subfolder_name.clear();
                     }
                 });
-                if ui.button("Cancel").clicked() {
-                    tabular.show_create_subfolder_dialog = false;
-                    tabular.new_subfolder_name.clear();
-                }
             });
         });
-    if !open {
+    if !open || close_dialog {
         tabular.show_create_subfolder_dialog = false;
         tabular.new_subfolder_name.clear();
     }
@@ -2964,26 +3162,35 @@ pub(crate) fn render_rename_connection_folder_dialog(
     let mut close_dialog = false;
     let mut confirm_rename = false;
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_connection_folder", true);
+
     egui::Window::new("Rename Connection Folder")
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .resizable(false)
-        .default_width(320.0)
+        .default_width(340.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("✏️ Rename Folder").strong());
-            ui.add_space(6.0);
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "✏️ Rename Folder",
+                &mut close_dialog,
+            );
 
-            ui.label(format!("Current folder: {}", current_name));
-            ui.add_space(4.0);
+            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.label(format!("Current folder: {}", current_name));
+                ui.add_space(4.0);
 
-            ui.label("New folder name:");
-            let resp = ui.text_edit_singleline(&mut edit_name);
-            resp.request_focus();
+                ui.label("New folder name:");
+                let resp = ui.text_edit_singleline(&mut edit_name);
+                resp.request_focus();
 
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                confirm_rename = true;
-                close_dialog = true;
-            }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    confirm_rename = true;
+                    close_dialog = true;
+                }
+            });
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -2998,9 +3205,6 @@ pub(crate) fn render_rename_connection_folder_dialog(
                         close_dialog = true;
                     }
                 });
-                if ui.button("Cancel").clicked() {
-                    close_dialog = true;
-                }
             });
         });
 
@@ -3025,13 +3229,17 @@ pub(crate) fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
             return true;
         }
         let msg = db_err.message().to_lowercase();
-        return msg.contains("malformed") || msg.contains("disk image is malformed") || msg.contains("corrupt");
+        return msg.contains("malformed")
+            || msg.contains("disk image is malformed")
+            || msg.contains("corrupt");
     }
     false
 }
 
 pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> bool {
-    warn!("⚠️ [reset_sqlite] Corruption (code 11) detected on connections.db! Recreating fresh database file while preserving all connections and history in memory...");
+    warn!(
+        "⚠️ [reset_sqlite] Corruption (code 11) detected on connections.db! Recreating fresh database file while preserving all connections and history in memory..."
+    );
 
     let data_dir = directory::get_data_dir();
     let db_path = data_dir.join("connections.db");
@@ -3048,7 +3256,10 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
     let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
     if db_path.exists() {
         if let Err(e) = std::fs::rename(&db_path, &backup_path) {
-            warn!("Failed to rename corrupt connections.db (attempting remove): {}", e);
+            warn!(
+                "Failed to rename corrupt connections.db (attempting remove): {}",
+                e
+            );
             let _ = std::fs::remove_file(&db_path);
         } else {
             info!("📦 Corrupted connections.db backed up to {:?}", backup_path);
@@ -3084,7 +3295,7 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(&conn.username)
                 .bind(&conn.password)
                 .bind(&conn.database)
-                .bind(format!("{:?}", conn.connection_type))
+                .bind(conn.connection_type.as_db_str().into_owned())
                 .bind(&conn.folder)
                 .bind(if conn.ssh_enabled { 1 } else { 0 })
                 .bind(&conn.ssh_host)
@@ -3098,6 +3309,10 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(conn.replication_master_id)
                 .execute(pool.as_ref())
                 .await;
+                if let Some(id) = conn.id {
+                    let _ = crate::driver_api::connect::save_plugin_options(pool.as_ref(), conn, id)
+                        .await;
+                }
             }
 
             // Restore query history
@@ -3120,10 +3335,14 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
         tabular.connections = preserved_connections;
         tabular.history_items = preserved_history;
         sidebar_history::load_query_history(tabular);
-        info!("✅ [reset_sqlite] Successfully recreated clean connections.db and restored all memory connections and query history!");
+        info!(
+            "✅ [reset_sqlite] Successfully recreated clean connections.db and restored all memory connections and query history!"
+        );
         true
     } else {
-        error!("❌ [reset_sqlite] Failed to initialize new connections.db pool after corruption reset");
+        error!(
+            "❌ [reset_sqlite] Failed to initialize new connections.db pool after corruption reset"
+        );
         false
     }
 }

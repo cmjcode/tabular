@@ -66,14 +66,13 @@ impl DatabaseExecutor for PostgresExecutor {
         }
 
         // Execute the query
-        let rows =
-            sqlx::query(sqlx::AssertSqlSafe(sql))
-                .fetch_all(&*pool)
-                .await
-                .map_err(|e| QueryAstError::Execution {
-                    query: sql.to_string(),
-                    reason: e.to_string(),
-                })?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .fetch_all(&*pool)
+            .await
+            .map_err(|e| QueryAstError::Execution {
+                query: sql.to_string(),
+                reason: e.to_string(),
+            })?;
 
         // Extract headers
         let headers = if let Some(first_row) = rows.first() {

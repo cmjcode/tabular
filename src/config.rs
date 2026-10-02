@@ -59,7 +59,7 @@ impl UiModePreference {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            UiModePreference::Auto => "Otomatis (Sesuai Layar / Perangkat)",
+            UiModePreference::Auto => "Automatic (screen / device)",
             UiModePreference::Desktop => "Desktop (Kompak & Mouse)",
             UiModePreference::TouchTablet => "Tablet / Touch (Area Sentuh Nyaman)",
         }
@@ -77,7 +77,9 @@ impl std::str::FromStr for UiModePreference {
     }
 }
 
-
+/// Penyedia model untuk backend HTTP API. Nilai persist lewat [`AiProvider::as_str`]
+/// / `FromStr` (preferensi) dan nama varian (serde); varian baru hanya boleh
+/// ditambahkan, jangan mengganti nama yang sudah ada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AiProvider {
     #[default]
@@ -86,9 +88,47 @@ pub enum AiProvider {
     Groq,
     GitHub,
     Custom,
+    /// Google Gemini API native (`generateContent`).
+    Gemini,
+    /// xAI (Grok), OpenAI-compatible.
+    XAi,
+    /// OpenRouter, OpenAI-compatible dengan header atribusi aplikasi.
+    OpenRouter,
+    /// Ollama lokal (endpoint OpenAI-compatible `/v1`), tanpa API key.
+    Ollama,
+    /// `llama-server` dari llama.cpp, tanpa API key.
+    LlamaCpp,
+    /// `mlx_lm.server` (Apple MLX), tanpa API key.
+    Mlx,
+}
+
+/// Format wire request yang dipakai sebuah provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiApiStyle {
+    /// `POST {base}/chat/completions` dengan bearer token (opsional).
+    OpenAiCompatible,
+    /// `POST {base}/messages` (Anthropic Messages API).
+    Anthropic,
+    /// `POST {base}/models/{model}:generateContent` (Gemini API).
+    Gemini,
 }
 
 impl AiProvider {
+    /// Urutan tampil di Settings.
+    pub const ALL: [AiProvider; 11] = [
+        AiProvider::OpenAI,
+        AiProvider::Anthropic,
+        AiProvider::Gemini,
+        AiProvider::XAi,
+        AiProvider::Groq,
+        AiProvider::OpenRouter,
+        AiProvider::GitHub,
+        AiProvider::Ollama,
+        AiProvider::LlamaCpp,
+        AiProvider::Mlx,
+        AiProvider::Custom,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             AiProvider::OpenAI => "OPENAI",
@@ -96,6 +136,12 @@ impl AiProvider {
             AiProvider::Groq => "GROQ",
             AiProvider::GitHub => "GITHUB",
             AiProvider::Custom => "CUSTOM",
+            AiProvider::Gemini => "GEMINI",
+            AiProvider::XAi => "XAI",
+            AiProvider::OpenRouter => "OPENROUTER",
+            AiProvider::Ollama => "OLLAMA",
+            AiProvider::LlamaCpp => "LLAMACPP",
+            AiProvider::Mlx => "MLX",
         }
     }
     pub fn display_name(self) -> &'static str {
@@ -105,7 +151,33 @@ impl AiProvider {
             AiProvider::Groq => "Groq",
             AiProvider::GitHub => "GitHub (Copilot/Models)",
             AiProvider::Custom => "Custom (OpenAI-compatible)",
+            AiProvider::Gemini => "Google Gemini",
+            AiProvider::XAi => "xAI (Grok)",
+            AiProvider::OpenRouter => "OpenRouter",
+            AiProvider::Ollama => "Ollama (local)",
+            AiProvider::LlamaCpp => "llama.cpp (local)",
+            AiProvider::Mlx => "MLX (local)",
         }
+    }
+    /// Format request yang dipakai provider ini.
+    pub fn api_style(self) -> AiApiStyle {
+        match self {
+            AiProvider::Anthropic => AiApiStyle::Anthropic,
+            AiProvider::Gemini => AiApiStyle::Gemini,
+            _ => AiApiStyle::OpenAiCompatible,
+        }
+    }
+    /// Server model berjalan di mesin user (default ke localhost).
+    pub fn is_local(self) -> bool {
+        matches!(
+            self,
+            AiProvider::Ollama | AiProvider::LlamaCpp | AiProvider::Mlx
+        )
+    }
+    /// Backend tidak bisa dipakai tanpa API key. Provider lokal dan endpoint
+    /// custom (mis. Ollama/LM Studio di jaringan sendiri) boleh tanpa key.
+    pub fn requires_api_key(self) -> bool {
+        !(self.is_local() || self == AiProvider::Custom)
     }
     pub fn default_model(self) -> &'static str {
         match self {
@@ -114,6 +186,13 @@ impl AiProvider {
             AiProvider::Groq => "llama3-70b-8192",
             AiProvider::GitHub => "gpt-4o-mini",
             AiProvider::Custom => "gpt-4o-mini",
+            AiProvider::Gemini => "gemini-2.5-flash",
+            AiProvider::XAi => "grok-3-mini",
+            AiProvider::OpenRouter => "openai/gpt-4o-mini",
+            AiProvider::Ollama => "llama3.2",
+            // llama-server melayani satu model yang dimuat; nama diabaikan.
+            AiProvider::LlamaCpp => "default",
+            AiProvider::Mlx => "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
         }
     }
     pub fn preset_models(self) -> &'static [&'static str] {
@@ -163,6 +242,35 @@ impl AiProvider {
                 "mistral",
                 "deepseek-coder",
             ],
+            AiProvider::Gemini => &[
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash",
+            ],
+            AiProvider::XAi => &["grok-3-mini", "grok-3", "grok-4", "grok-code-fast-1"],
+            AiProvider::OpenRouter => &[
+                "openai/gpt-4o-mini",
+                "anthropic/claude-sonnet-4",
+                "google/gemini-2.5-flash",
+                "x-ai/grok-3-mini",
+                "meta-llama/llama-3.3-70b-instruct",
+                "deepseek/deepseek-chat",
+            ],
+            AiProvider::Ollama => &[
+                "llama3.2",
+                "llama3.1",
+                "qwen2.5-coder",
+                "deepseek-coder-v2",
+                "mistral",
+                "gemma3",
+            ],
+            AiProvider::LlamaCpp => &["default"],
+            AiProvider::Mlx => &[
+                "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "mlx-community/Llama-3.2-3B-Instruct-4bit",
+                "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+            ],
         }
     }
     pub fn default_base_url(self) -> &'static str {
@@ -172,15 +280,29 @@ impl AiProvider {
             AiProvider::Groq => "https://api.groq.com/openai/v1",
             AiProvider::GitHub => "https://models.inference.ai.azure.com",
             AiProvider::Custom => "https://api.openai.com/v1",
+            AiProvider::Gemini => "https://generativelanguage.googleapis.com/v1beta",
+            AiProvider::XAi => "https://api.x.ai/v1",
+            AiProvider::OpenRouter => "https://openrouter.ai/api/v1",
+            AiProvider::Ollama => "http://localhost:11434/v1",
+            AiProvider::LlamaCpp => "http://localhost:8080/v1",
+            AiProvider::Mlx => "http://localhost:8080/v1",
         }
     }
     pub fn api_key_hint(self) -> &'static str {
         match self {
-            AiProvider::GitHub => "GitHub PAT (Settings → Developer settings → Personal access tokens)",
+            AiProvider::GitHub => {
+                "GitHub PAT (Settings → Developer settings → Personal access tokens)"
+            }
             AiProvider::OpenAI => "sk-… (platform.openai.com/api-keys)",
             AiProvider::Anthropic => "sk-ant-… (console.anthropic.com/settings/keys)",
             AiProvider::Groq => "gsk_… (console.groq.com/keys)",
-            AiProvider::Custom => "API key for your custom endpoint",
+            AiProvider::Custom => "API key for your custom endpoint (optional)",
+            AiProvider::Gemini => "AIza… (aistudio.google.com/apikey)",
+            AiProvider::XAi => "xai-… (console.x.ai)",
+            AiProvider::OpenRouter => "sk-or-… (openrouter.ai/keys)",
+            AiProvider::Ollama | AiProvider::LlamaCpp | AiProvider::Mlx => {
+                "Not required for a local server"
+            }
         }
     }
 }
@@ -193,9 +315,270 @@ impl std::str::FromStr for AiProvider {
             "GROQ" => AiProvider::Groq,
             "GITHUB" => AiProvider::GitHub,
             "CUSTOM" => AiProvider::Custom,
+            "GEMINI" => AiProvider::Gemini,
+            "XAI" => AiProvider::XAi,
+            "OPENROUTER" => AiProvider::OpenRouter,
+            "OLLAMA" => AiProvider::Ollama,
+            "LLAMACPP" => AiProvider::LlamaCpp,
+            "MLX" => AiProvider::Mlx,
             _ => AiProvider::OpenAI,
         })
     }
+}
+
+/// Cara panel AI Assistant menjangkau model: lewat HTTP API langsung
+/// (perilaku lama, butuh API key) atau lewat CLI agent lokal seperti
+/// Antigravity (`agy`) / Claude Code yang sudah login di mesin user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AiBackend {
+    #[default]
+    Api,
+    Cli,
+}
+
+impl AiBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AiBackend::Api => "API",
+            AiBackend::Cli => "CLI",
+        }
+    }
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AiBackend::Api => "HTTP API (API key)",
+            AiBackend::Cli => "CLI Agent (agy / Claude Code / …)",
+        }
+    }
+}
+
+impl std::str::FromStr for AiBackend {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLI" => AiBackend::Cli,
+            _ => AiBackend::Api,
+        })
+    }
+}
+
+/// Jenis CLI agent yang dipakai bila [`AiBackend::Cli`]. Menentukan argumen
+/// baris perintah dan parser output stream-json (lihat `agent::harness`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+pub enum CliAgentKind {
+    #[default]
+    Antigravity,
+    ClaudeCode,
+    GeminiCli,
+    Custom,
+}
+
+impl CliAgentKind {
+    /// Urutan tampil di Settings dan picker chat.
+    pub const ALL: [CliAgentKind; 4] = [
+        CliAgentKind::Antigravity,
+        CliAgentKind::ClaudeCode,
+        CliAgentKind::GeminiCli,
+        CliAgentKind::Custom,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "AGY",
+            CliAgentKind::ClaudeCode => "CLAUDE",
+            CliAgentKind::GeminiCli => "GEMINI",
+            CliAgentKind::Custom => "CUSTOM",
+        }
+    }
+    pub fn display_name(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "Antigravity (agy)",
+            CliAgentKind::ClaudeCode => "Claude Code (claude)",
+            CliAgentKind::GeminiCli => "Gemini CLI (gemini)",
+            CliAgentKind::Custom => "Custom command",
+        }
+    }
+    /// Nama binary yang dicari di PATH bila user tidak mengisi path manual.
+    pub fn default_binary(self) -> &'static str {
+        match self {
+            CliAgentKind::Antigravity => "agy",
+            CliAgentKind::ClaudeCode => "claude",
+            CliAgentKind::GeminiCli => "gemini",
+            CliAgentKind::Custom => "",
+        }
+    }
+    /// Model kosong berarti biarkan CLI memakai default akunnya sendiri.
+    pub fn preset_models(self) -> &'static [&'static str] {
+        match self {
+            CliAgentKind::Antigravity => &[
+                "gemini-3.8-flash-medium",
+                "gemini-3.8-flash-high",
+                "gemini-3.1-pro-high",
+                "claude-sonnet-4-6",
+                "claude-opus-4-6-thinking",
+            ],
+            CliAgentKind::ClaudeCode => &["sonnet", "opus", "haiku"],
+            CliAgentKind::GeminiCli => &["gemini-2.5-pro", "gemini-2.5-flash"],
+            CliAgentKind::Custom => &[],
+        }
+    }
+    /// Apakah CLI menerima flag `--effort`.
+    pub fn supports_effort(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::ClaudeCode)
+    }
+    /// Apakah percakapan bisa dilanjutkan lewat id sesi (`--conversation` /
+    /// `--resume`). Gemini CLI hanya menerima index sesi, jadi tiap giliran
+    /// dikirim sebagai percakapan baru.
+    pub fn supports_resume(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::ClaudeCode)
+    }
+    /// Apakah MCP server Tabular harus didaftarkan di konfigurasi global CLI
+    /// (tidak bisa dikirim per-invocation seperti `claude --mcp-config`).
+    pub fn needs_global_mcp_registration(self) -> bool {
+        matches!(self, CliAgentKind::Antigravity | CliAgentKind::GeminiCli)
+    }
+}
+
+impl std::str::FromStr for CliAgentKind {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLAUDE" => CliAgentKind::ClaudeCode,
+            "GEMINI" => CliAgentKind::GeminiCli,
+            "CUSTOM" => CliAgentKind::Custom,
+            _ => CliAgentKind::Antigravity,
+        })
+    }
+}
+
+/// Profil satu CLI agent. Satu slot tetap per `CliAgentKind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliAgentProfile {
+    pub kind: CliAgentKind,
+    /// Tampil di picker panel chat dan boleh dipakai sebagai default target.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path binary; kosong berarti cari `kind.default_binary()` di PATH.
+    #[serde(default)]
+    pub bin: String,
+    #[serde(default)]
+    pub model: String,
+    /// `low` | `medium` | `high`; kosong berarti default CLI.
+    #[serde(default)]
+    pub effort: String,
+    /// Argumen tambahan; untuk `Custom` adalah template dengan placeholder.
+    #[serde(default)]
+    pub extra_args: String,
+}
+
+impl CliAgentProfile {
+    pub fn new(kind: CliAgentKind) -> Self {
+        Self {
+            kind,
+            enabled: false,
+            bin: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        }
+    }
+
+    /// Empat profil default, urutan `CliAgentKind::ALL`.
+    pub fn defaults() -> Vec<CliAgentProfile> {
+        CliAgentKind::ALL.into_iter().map(Self::new).collect()
+    }
+}
+
+/// Siapa yang menjawab: HTTP API (provider di prefs) atau salah satu CLI agent.
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum ChatTarget {
+    #[default]
+    Api,
+    Cli(CliAgentKind),
+}
+
+impl ChatTarget {
+    pub fn backend(self) -> AiBackend {
+        match self {
+            ChatTarget::Api => AiBackend::Api,
+            ChatTarget::Cli(_) => AiBackend::Cli,
+        }
+    }
+
+    /// Bentuk string untuk tabel prefs: `"API"` atau `"CLI:AGY"`, `"CLI:CLAUDE"`, …
+    pub fn as_string(self) -> String {
+        match self {
+            ChatTarget::Api => "API".to_string(),
+            ChatTarget::Cli(kind) => format!("CLI:{}", kind.as_str()),
+        }
+    }
+}
+
+impl std::str::FromStr for ChatTarget {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "CLI:AGY" => ChatTarget::Cli(CliAgentKind::Antigravity),
+            "CLI:CLAUDE" => ChatTarget::Cli(CliAgentKind::ClaudeCode),
+            "CLI:GEMINI" => ChatTarget::Cli(CliAgentKind::GeminiCli),
+            "CLI:CUSTOM" => ChatTarget::Cli(CliAgentKind::Custom),
+            _ => ChatTarget::Api,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LegacyCliPrefs {
+    pub backend: Option<AiBackend>,
+    pub kind: Option<CliAgentKind>,
+    pub bin: String,
+    pub model: String,
+    pub effort: String,
+    pub extra_args: String,
+}
+
+/// Bangun profil dari preferensi format lama (satu agent aktif).
+pub fn migrate_legacy_cli_prefs(legacy: &LegacyCliPrefs) -> (Vec<CliAgentProfile>, ChatTarget) {
+    let mut profiles = CliAgentProfile::defaults();
+    let kind = legacy.kind.unwrap_or_default();
+    // Hanya aktifkan bila user memang pernah memakai CLI atau pernah mengisi sesuatu.
+    let had_cli = legacy.backend == Some(AiBackend::Cli)
+        || !legacy.bin.trim().is_empty()
+        || !legacy.model.trim().is_empty()
+        || !legacy.effort.trim().is_empty()
+        || !legacy.extra_args.trim().is_empty();
+    if had_cli {
+        if let Some(p) = profiles.iter_mut().find(|p| p.kind == kind) {
+            p.enabled = true;
+            p.bin = legacy.bin.clone();
+            p.model = legacy.model.clone();
+            p.effort = legacy.effort.clone();
+            p.extra_args = legacy.extra_args.clone();
+        }
+    }
+    let target = if legacy.backend == Some(AiBackend::Cli) {
+        ChatTarget::Cli(kind)
+    } else {
+        ChatTarget::Api
+    };
+    (profiles, target)
+}
+
+/// Pastikan tepat 4 entri profil, satu per kind, urutan `CliAgentKind::ALL`.
+pub fn normalize_profiles(profiles: &mut Vec<CliAgentProfile>) {
+    let mut normalized = Vec::with_capacity(CliAgentKind::ALL.len());
+    for kind in CliAgentKind::ALL {
+        if let Some(pos) = profiles.iter().position(|p| p.kind == kind) {
+            normalized.push(profiles.remove(pos));
+        } else {
+            normalized.push(CliAgentProfile::new(kind));
+        }
+    }
+    *profiles = normalized;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,14 +607,79 @@ pub struct AppPreferences {
     pub ai_provider: AiProvider,
     #[serde(default)]
     pub ai_base_url: String,
+    /// Target untuk fitur non-chat (blok inline `--AI`, HTTP client) dan nilai awal picker.
+    #[serde(default)]
+    pub ai_default_target: ChatTarget,
+    /// Pilihan terakhir di picker panel chat; `None` berarti ikut `ai_default_target`.
+    #[serde(default)]
+    pub ai_chat_target: Option<ChatTarget>,
+    /// Profil semua CLI agent; selalu 4 entri (satu per `CliAgentKind`).
+    #[serde(default = "CliAgentProfile::defaults")]
+    pub ai_cli_profiles: Vec<CliAgentProfile>,
+    /// Tulis blok `sql tabular:tab=…` dari agent langsung ke editor saat streaming.
+    #[serde(default = "default_true")]
+    pub ai_cli_auto_apply_edits: bool,
+    /// Folder vault Obsidian yang dipakai sebagai memory AI; kosong berarti
+    /// belum dipilih. Path lokal per mesin, tidak ikut sync.
+    #[serde(default)]
+    pub ai_obsidian_vault_path: String,
+    /// Sertakan catatan vault yang relevan di prompt dan buka tool notes MCP.
+    #[serde(default)]
+    pub ai_obsidian_enabled: bool,
+    /// Izinkan AI menulis catatan baru ke `<vault>/Tabular Memory/`.
+    #[serde(default)]
+    pub ai_obsidian_allow_write: bool,
+    /// Saran AI inline (ghost text) di editor SQL; default mati karena mengirim
+    /// teks editor ke provider AI.
+    #[serde(default)]
+    pub ai_inline_suggestions: bool,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
     pub sync_server_url: Option<String>,
+    /// Timeout query per statement dalam detik; 0 berarti tanpa batas.
+    #[serde(default)]
+    pub query_timeout_secs: u32,
+    /// Jumlah baris maksimum yang disimpan dari satu result set tanpa paginasi.
+    #[serde(default = "default_max_result_rows")]
+    pub max_result_rows: u32,
+    /// Buka kembali tab query dari sesi sebelumnya (termasuk draft yang belum disimpan).
+    #[serde(default = "default_true")]
+    pub restore_session: bool,
+    /// Tampilkan database/schema sistem (information_schema, pg_catalog, master, …) di sidebar.
+    #[serde(default)]
+    pub show_system_objects: bool,
+    /// Lebar panel AI Assistant di sebelah kanan (pixel).
+    #[serde(default = "default_ai_panel_width")]
+    pub ai_panel_width: f32,
+    /// Notifikasi OS saat query panjang selesai dan jendela tidak fokus.
+    #[serde(default = "default_true")]
+    pub notify_long_queries: bool,
+    /// Ambang durasi (detik) untuk notifikasi OS.
+    #[serde(default = "default_notify_threshold_secs")]
+    pub notify_threshold_secs: u32,
+}
+
+fn default_notify_threshold_secs() -> u32 {
+    crate::os_notify::DEFAULT_THRESHOLD_SECS
+}
+
+fn default_ai_panel_width() -> f32 {
+    350.0
 }
 
 fn default_redis_browser_auto_refresh_seconds() -> u32 {
     5
+}
+
+pub const DEFAULT_MAX_RESULT_ROWS: u32 = 50_000;
+
+fn default_max_result_rows() -> u32 {
+    DEFAULT_MAX_RESULT_ROWS
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppPreferences {
@@ -252,10 +700,162 @@ impl Default for AppPreferences {
             ai_model: String::new(),
             ai_provider: AiProvider::OpenAI,
             ai_base_url: String::new(),
+            ai_default_target: ChatTarget::Api,
+            ai_chat_target: None,
+            ai_cli_profiles: CliAgentProfile::defaults(),
+            ai_cli_auto_apply_edits: true,
+            ai_obsidian_vault_path: String::new(),
+            ai_obsidian_enabled: false,
+            ai_obsidian_allow_write: false,
+            ai_inline_suggestions: false,
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
+            query_timeout_secs: 0,
+            max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+            restore_session: true,
+            show_system_objects: false,
+            ai_panel_width: default_ai_panel_width(),
+            notify_long_queries: true,
+            notify_threshold_secs: default_notify_threshold_secs(),
         }
     }
+}
+
+pub(crate) fn apply_kv_pair(
+    prefs: &mut AppPreferences,
+    legacy: &mut LegacyCliPrefs,
+    saw_profiles: &mut bool,
+    ai_key_rewrite: &mut Option<String>,
+    k: &str,
+    v: &str,
+) {
+    match k {
+        "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
+        "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
+        // Legacy migration: old boolean flags
+        "is_dark_mode" => {
+            if v != "1" {
+                prefs.theme = AppTheme::Light;
+            }
+        }
+        "is_light_soft" => {
+            if v == "1" {
+                prefs.theme = AppTheme::LightSoft;
+            }
+        }
+        "link_editor_theme" => prefs.link_editor_theme = v == "1",
+        "editor_theme" => prefs.editor_theme = v.to_string(),
+        "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
+        "word_wrap" => prefs.word_wrap = v == "1",
+        "data_directory" => {
+            prefs.data_directory = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        }
+        "auto_check_updates" => prefs.auto_check_updates = v == "1",
+        "use_server_pagination" => prefs.use_server_pagination = v == "1",
+        "last_update_check_iso" => {
+            prefs.last_update_check_iso = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        }
+        "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
+        "ai_api_key" => {
+            let (real, rewrite) = crate::secrets::resolve_stored("pref:ai_api_key", v);
+            prefs.ai_api_key = real;
+            *ai_key_rewrite = rewrite;
+        }
+        "ai_model" => prefs.ai_model = v.to_string(),
+        "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
+        "ai_base_url" => prefs.ai_base_url = v.to_string(),
+        "ai_backend" => legacy.backend = Some(v.parse().unwrap_or(AiBackend::Api)),
+        "ai_cli_kind" => legacy.kind = Some(v.parse().unwrap_or(CliAgentKind::Antigravity)),
+        "ai_cli_bin" => legacy.bin = v.to_string(),
+        "ai_cli_model" => legacy.model = v.to_string(),
+        "ai_cli_effort" => legacy.effort = v.to_string(),
+        "ai_cli_extra_args" => legacy.extra_args = v.to_string(),
+        "ai_cli_profiles" => match serde_json::from_str::<Vec<CliAgentProfile>>(v) {
+            Ok(parsed) => {
+                prefs.ai_cli_profiles = parsed;
+                *saw_profiles = true;
+            }
+            Err(e) => {
+                log::warn!("[PREFS] Failed to parse ai_cli_profiles JSON: {e}");
+            }
+        },
+        "ai_default_target" => {
+            prefs.ai_default_target = v.parse().unwrap_or_default();
+        }
+        "ai_chat_target" => {
+            prefs.ai_chat_target = if v.trim().is_empty() {
+                None
+            } else {
+                Some(v.parse().unwrap_or_default())
+            };
+        }
+        "ai_cli_auto_apply_edits" => prefs.ai_cli_auto_apply_edits = v == "1",
+        "ai_obsidian_vault_path" => prefs.ai_obsidian_vault_path = v.to_string(),
+        "ai_obsidian_enabled" => prefs.ai_obsidian_enabled = v == "1",
+        "ai_obsidian_allow_write" => prefs.ai_obsidian_allow_write = v == "1",
+        "ai_inline_suggestions" => prefs.ai_inline_suggestions = v == "1",
+        "redis_browser_auto_refresh_seconds" => {
+            prefs.redis_browser_auto_refresh_seconds = v
+                .parse()
+                .unwrap_or(default_redis_browser_auto_refresh_seconds())
+        }
+        "sync_server_url" => {
+            prefs.sync_server_url = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            }
+        }
+        "query_timeout_secs" => prefs.query_timeout_secs = v.parse().unwrap_or(0),
+        "max_result_rows" => prefs.max_result_rows = v.parse().unwrap_or(DEFAULT_MAX_RESULT_ROWS),
+        "restore_session" => prefs.restore_session = v == "1",
+        "show_system_objects" => prefs.show_system_objects = v == "1",
+        "notify_long_queries" => prefs.notify_long_queries = v == "1",
+        "notify_threshold_secs" => {
+            prefs.notify_threshold_secs = v.parse().unwrap_or(default_notify_threshold_secs())
+        }
+        "ai_panel_width" => {
+            prefs.ai_panel_width = v
+                .parse()
+                .unwrap_or_else(|_| default_ai_panel_width())
+                .clamp(280.0, 800.0);
+        }
+        _ => {}
+    }
+}
+
+pub fn preferences_from_kv<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> AppPreferences {
+    let mut prefs = AppPreferences::default();
+    let mut legacy = LegacyCliPrefs::default();
+    let mut saw_profiles = false;
+    let mut rewrite = None;
+    for (k, v) in rows {
+        apply_kv_pair(
+            &mut prefs,
+            &mut legacy,
+            &mut saw_profiles,
+            &mut rewrite,
+            k,
+            v,
+        );
+    }
+    if !saw_profiles {
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        prefs.ai_cli_profiles = profiles;
+        prefs.ai_default_target = target;
+    }
+    normalize_profiles(&mut prefs.ai_cli_profiles);
+    prefs
 }
 
 pub struct ConfigStore {
@@ -303,17 +903,21 @@ impl ConfigStore {
 
         log::debug!("Attempting to create/open database at: {}", url);
 
-        let connect_opts = match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url) {
-            Ok(opts) => opts
-                .create_if_missing(true)
-                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-                .busy_timeout(std::time::Duration::from_secs(5)),
-            Err(e) => {
-                log::warn!("Invalid SQLite URL ({}), using JSON storage instead", e);
-                return Ok(Self { pool: None, use_json_fallback: true });
-            }
-        };
+        let connect_opts =
+            match <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(&url) {
+                Ok(opts) => opts
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .busy_timeout(std::time::Duration::from_secs(5)),
+                Err(e) => {
+                    log::warn!("Invalid SQLite URL ({}), using JSON storage instead", e);
+                    return Ok(Self {
+                        pool: None,
+                        use_json_fallback: true,
+                    });
+                }
+            };
 
         match SqlitePoolOptions::new()
             .max_connections(1)
@@ -363,14 +967,31 @@ impl ConfigStore {
                 ai_model: String::new(),
                 ai_provider: AiProvider::OpenAI,
                 ai_base_url: String::new(),
+                ai_default_target: ChatTarget::Api,
+                ai_chat_target: None,
+                ai_cli_profiles: CliAgentProfile::defaults(),
+                ai_cli_auto_apply_edits: true,
+                ai_obsidian_vault_path: String::new(),
+                ai_obsidian_enabled: false,
+                ai_obsidian_allow_write: false,
+                ai_inline_suggestions: false,
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
+                query_timeout_secs: 0,
+                max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+                restore_session: true,
+                show_system_objects: false,
+                ai_panel_width: default_ai_panel_width(),
+                notify_long_queries: true,
+                notify_threshold_secs: default_notify_threshold_secs(),
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
             // store during this load; the row is rewritten below.
             let mut ai_key_rewrite: Option<String> = None;
+            let mut legacy = LegacyCliPrefs::default();
+            let mut saw_profiles = false;
 
             if let Ok(rows) = sqlx::query("SELECT key, value FROM preferences")
                 .fetch_all(pool)
@@ -379,44 +1000,23 @@ impl ConfigStore {
                 for row in rows {
                     let k: String = row.get(0);
                     let v: String = row.get(1);
-                    match k.as_str() {
-                        "theme" => prefs.theme = v.parse().unwrap_or(AppTheme::Dark),
-                        "ui_mode" => prefs.ui_mode = v.parse().unwrap_or(UiModePreference::Auto),
-                        // Legacy migration: old boolean flags
-                        "is_dark_mode" => if v != "1" { prefs.theme = AppTheme::Light; },
-                        "is_light_soft" => if v == "1" { prefs.theme = AppTheme::LightSoft; },
-                        "link_editor_theme" => prefs.link_editor_theme = v == "1",
-                        "editor_theme" => prefs.editor_theme = v,
-                        "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
-                        "word_wrap" => prefs.word_wrap = v == "1",
-                        "data_directory" => {
-                            prefs.data_directory = if v.is_empty() { None } else { Some(v) }
-                        }
-                        "auto_check_updates" => prefs.auto_check_updates = v == "1",
-                        "use_server_pagination" => prefs.use_server_pagination = v == "1",
-                        "last_update_check_iso" => {
-                            prefs.last_update_check_iso = if v.is_empty() { None } else { Some(v) }
-                        }
-                        "enable_debug_logging" => prefs.enable_debug_logging = v == "1",
-                        "ai_api_key" => {
-                            let (real, rewrite) =
-                                crate::secrets::resolve_stored("pref:ai_api_key", &v);
-                            prefs.ai_api_key = real;
-                            ai_key_rewrite = rewrite;
-                        }
-                        "ai_model" => prefs.ai_model = v,
-                        "ai_provider" => prefs.ai_provider = v.parse().unwrap_or(AiProvider::OpenAI),
-                        "ai_base_url" => prefs.ai_base_url = v,
-                        "redis_browser_auto_refresh_seconds" => {
-                            prefs.redis_browser_auto_refresh_seconds = v.parse().unwrap_or(default_redis_browser_auto_refresh_seconds())
-                        }
-                        "sync_server_url" => {
-                            prefs.sync_server_url = if v.is_empty() { None } else { Some(v) }
-                        }
-                        _ => {}
-                    }
+                    apply_kv_pair(
+                        &mut prefs,
+                        &mut legacy,
+                        &mut saw_profiles,
+                        &mut ai_key_rewrite,
+                        &k,
+                        &v,
+                    );
                 }
             }
+
+            if !saw_profiles {
+                let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+                prefs.ai_cli_profiles = profiles;
+                prefs.ai_default_target = target;
+            }
+            normalize_profiles(&mut prefs.ai_cli_profiles);
 
             if let Some(value) = ai_key_rewrite {
                 let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
@@ -441,6 +1041,21 @@ impl ConfigStore {
             return prefs;
         }
 
+        // Fallback to JSON
+        let path = Self::json_path();
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(mut prefs) = serde_json::from_str::<AppPreferences>(&content)
+        {
+            // Resolve AI API key from keyring/file if stored as sentinel
+            let (real, rewrite) =
+                crate::secrets::resolve_stored("pref:ai_api_key", &prefs.ai_api_key);
+            prefs.ai_api_key = real;
+            if rewrite.is_some() {
+                let _ = self.save_to_json(&prefs);
+            }
+            normalize_profiles(&mut prefs.ai_cli_profiles);
+            return prefs;
+        }
         AppPreferences::default()
     }
 
@@ -464,11 +1079,28 @@ impl ConfigStore {
 
         if let Some(ref pool) = self.pool {
             let font_size_string = prefs.font_size.to_string();
-            let redis_browser_auto_refresh_seconds = prefs.redis_browser_auto_refresh_seconds.to_string();
+            let redis_browser_auto_refresh_seconds =
+                prefs.redis_browser_auto_refresh_seconds.to_string();
             // The key goes to the OS keychain; the row keeps only a sentinel.
             let ai_api_key_stored =
                 crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
-            let entries: [(&str, &str); 16] = [
+            let query_timeout_secs = prefs.query_timeout_secs.to_string();
+            let max_result_rows = prefs.max_result_rows.to_string();
+            let ai_default_target_str = prefs.ai_default_target.as_string();
+            let ai_chat_target_str = prefs
+                .ai_chat_target
+                .map(|t| t.as_string())
+                .unwrap_or_default();
+            let ai_cli_profiles_json = match serde_json::to_string(&prefs.ai_cli_profiles) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("[PREFS] Failed to serialize ai_cli_profiles: {e}");
+                    String::new()
+                }
+            };
+            let ai_panel_width_str = prefs.ai_panel_width.to_string();
+            let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
+            let entries: [(&str, &str); 31] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -502,11 +1134,65 @@ impl ConfigStore {
                 ("ai_model", prefs.ai_model.as_str()),
                 ("ai_provider", prefs.ai_provider.as_str()),
                 ("ai_base_url", prefs.ai_base_url.as_str()),
-                ("redis_browser_auto_refresh_seconds", &redis_browser_auto_refresh_seconds),
+                ("ai_default_target", ai_default_target_str.as_str()),
+                ("ai_chat_target", ai_chat_target_str.as_str()),
+                ("ai_cli_profiles", ai_cli_profiles_json.as_str()),
+                (
+                    "ai_cli_auto_apply_edits",
+                    if prefs.ai_cli_auto_apply_edits {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                ),
+                (
+                    "ai_obsidian_vault_path",
+                    prefs.ai_obsidian_vault_path.as_str(),
+                ),
+                (
+                    "ai_obsidian_enabled",
+                    if prefs.ai_obsidian_enabled { "1" } else { "0" },
+                ),
+                (
+                    "ai_obsidian_allow_write",
+                    if prefs.ai_obsidian_allow_write {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                ),
+                (
+                    "ai_inline_suggestions",
+                    if prefs.ai_inline_suggestions {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                ),
+                (
+                    "redis_browser_auto_refresh_seconds",
+                    &redis_browser_auto_refresh_seconds,
+                ),
                 (
                     "sync_server_url",
                     prefs.sync_server_url.as_deref().unwrap_or(""),
                 ),
+                ("query_timeout_secs", &query_timeout_secs),
+                ("max_result_rows", &max_result_rows),
+                (
+                    "restore_session",
+                    if prefs.restore_session { "1" } else { "0" },
+                ),
+                (
+                    "show_system_objects",
+                    if prefs.show_system_objects { "1" } else { "0" },
+                ),
+                ("ai_panel_width", &ai_panel_width_str),
+                (
+                    "notify_long_queries",
+                    if prefs.notify_long_queries { "1" } else { "0" },
+                ),
+                ("notify_threshold_secs", &notify_threshold_secs),
             ];
 
             for (k, v) in entries.iter() {
@@ -627,6 +1313,44 @@ impl ConfigStore {
     }
 }
 
+/// Pengaturan vault Obsidian yang dibutuhkan proses headless (`tabular mcp`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObsidianSettings {
+    pub vault_path: String,
+    pub enabled: bool,
+    pub allow_write: bool,
+}
+
+impl ObsidianSettings {
+    /// Root vault bila fitur aktif dan folder sudah dipilih.
+    pub fn active_root(&self) -> Option<PathBuf> {
+        (self.enabled && !self.vault_path.trim().is_empty())
+            .then(|| PathBuf::from(self.vault_path.trim()))
+    }
+
+    fn from_json(content: &str) -> Self {
+        let value: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+        Self {
+            vault_path: value["ai_obsidian_vault_path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            enabled: value["ai_obsidian_enabled"].as_bool().unwrap_or(false),
+            allow_write: value["ai_obsidian_allow_write"].as_bool().unwrap_or(false),
+        }
+    }
+
+    /// Baca dari `preferences.json` (cermin yang ditulis GUI tiap kali
+    /// preferensi disimpan). Sengaja tidak lewat [`ConfigStore::load`] supaya
+    /// proses headless tidak menyentuh keychain, dan dibaca ulang tiap
+    /// pemanggilan supaya perubahan toggle di GUI langsung berlaku.
+    pub fn load_headless() -> Self {
+        std::fs::read_to_string(ConfigStore::json_path())
+            .map(|content| Self::from_json(&content))
+            .unwrap_or_default()
+    }
+}
+
 /// Local config directory (~/.tabular) — never the custom data dir.
 ///
 /// Use this for files that must NOT be cloud-synced (e.g. `secrets.key`).
@@ -636,8 +1360,15 @@ pub fn get_local_data_dir() -> PathBuf {
     get_default_tabular_dir()
 }
 
-/// Get the default tabular directory in home folder
+/// Get the default tabular directory in home folder (or Documents on iOS)
 fn get_default_tabular_dir() -> PathBuf {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(doc) = dirs::document_dir() {
+            return doc.join(".tabular");
+        }
+    }
+
     if let Some(mut hd) = home_dir() {
         hd.push(".tabular");
         hd
@@ -682,16 +1413,30 @@ fn load_config_location() -> Option<String> {
     if config_file.exists() {
         match fs::read_to_string(&config_file) {
             Ok(content) => {
-                let path = content.trim();
-                if !path.is_empty() && PathBuf::from(path).exists() {
+                let path_str = content.trim();
+                let path = PathBuf::from(path_str);
+                if !path_str.is_empty() && path.exists() {
+                    // Check if path is actually accessible and writable.
+                    // In sandboxed environments (TestFlight / App Store), accessing paths
+                    // outside the sandbox container (e.g. Google Drive, external volumes)
+                    // fails with EPERM / PermissionDenied.
+                    let test_data = path.join("data");
+                    if fs::create_dir_all(&test_data).is_err() {
+                        log::warn!(
+                            "Config location path is not writable (App Sandbox restriction?): {}",
+                            path_str
+                        );
+                        return None;
+                    }
+
                     log::debug!(
                         "Loaded config location from {}: {}",
                         config_file.display(),
-                        path
+                        path_str
                     );
-                    return Some(path.to_string());
+                    return Some(path_str.to_string());
                 } else {
-                    log::warn!("Config location file contains invalid path: {}", path);
+                    log::warn!("Config location file contains invalid path: {}", path_str);
                     // Remove invalid config file
                     let _ = fs::remove_file(&config_file);
                 }
@@ -743,12 +1488,8 @@ pub fn get_data_dir() -> PathBuf {
         }
     }
 
-    // Default to ~/.tabular
-    if let Some(mut hd) = home_dir() {
-        hd.push(".tabular");
-        return hd;
-    }
-    PathBuf::from(".")
+    // Default to ~/.tabular (or Documents/.tabular on iOS)
+    get_default_tabular_dir()
 }
 
 pub fn set_data_dir(new_path: &str) -> Result<(), String> {
@@ -801,4 +1542,255 @@ pub fn load_fast_preferences() -> AppPreferences {
         return prefs;
     }
     AppPreferences::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_provider_persisted_values_round_trip() {
+        // Nilai lama harus tetap terbaca sama persis.
+        for (raw, p) in [
+            ("OPENAI", AiProvider::OpenAI),
+            ("ANTHROPIC", AiProvider::Anthropic),
+            ("GROQ", AiProvider::Groq),
+            ("GITHUB", AiProvider::GitHub),
+            ("CUSTOM", AiProvider::Custom),
+        ] {
+            assert_eq!(raw.parse::<AiProvider>(), Ok(p));
+        }
+        for p in AiProvider::ALL {
+            assert_eq!(p.as_str().parse::<AiProvider>(), Ok(p));
+            let json = serde_json::to_string(&p).expect("serialize provider");
+            let back: AiProvider = serde_json::from_str(&json).expect("deserialize provider");
+            assert_eq!(back, p);
+            assert!(p.preset_models().contains(&p.default_model()));
+            assert!(p.default_base_url().starts_with("http"));
+        }
+        assert_eq!("UNKNOWN".parse::<AiProvider>(), Ok(AiProvider::OpenAI));
+    }
+
+    #[test]
+    fn ai_provider_defaults_for_new_providers() {
+        assert_eq!(AiProvider::Gemini.api_style(), AiApiStyle::Gemini);
+        assert_eq!(AiProvider::Anthropic.api_style(), AiApiStyle::Anthropic);
+        for p in [
+            AiProvider::XAi,
+            AiProvider::OpenRouter,
+            AiProvider::Ollama,
+            AiProvider::LlamaCpp,
+            AiProvider::Mlx,
+        ] {
+            assert_eq!(p.api_style(), AiApiStyle::OpenAiCompatible);
+        }
+        for p in [AiProvider::Ollama, AiProvider::LlamaCpp, AiProvider::Mlx] {
+            assert!(p.is_local());
+            assert!(!p.requires_api_key());
+            assert!(p.default_base_url().starts_with("http://localhost:"));
+        }
+        assert!(!AiProvider::Custom.requires_api_key());
+        assert!(AiProvider::Gemini.requires_api_key());
+        assert!(AiProvider::OpenRouter.requires_api_key());
+        assert_eq!(AiProvider::XAi.default_base_url(), "https://api.x.ai/v1");
+        assert_eq!(
+            AiProvider::OpenRouter.default_base_url(),
+            "https://openrouter.ai/api/v1"
+        );
+    }
+
+    #[test]
+    fn obsidian_settings_read_from_prefs_json_mirror() {
+        let prefs = AppPreferences {
+            ai_obsidian_vault_path: "/vaults/work".into(),
+            ai_obsidian_enabled: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&prefs).expect("serialize prefs");
+        let settings = ObsidianSettings::from_json(&json);
+        assert_eq!(settings.vault_path, "/vaults/work");
+        assert!(settings.enabled && !settings.allow_write);
+        assert_eq!(settings.active_root(), Some(PathBuf::from("/vaults/work")));
+
+        // Mati, belum dipilih, atau file rusak -> tidak ada vault aktif.
+        let off = ObsidianSettings {
+            enabled: false,
+            ..settings.clone()
+        };
+        assert_eq!(off.active_root(), None);
+        assert_eq!(ObsidianSettings::from_json("{}").active_root(), None);
+        assert_eq!(
+            ObsidianSettings::from_json("not json"),
+            ObsidianSettings::default()
+        );
+    }
+
+    #[test]
+    fn chat_target_roundtrip() {
+        let targets = [
+            ChatTarget::Api,
+            ChatTarget::Cli(CliAgentKind::Antigravity),
+            ChatTarget::Cli(CliAgentKind::ClaudeCode),
+            ChatTarget::Cli(CliAgentKind::GeminiCli),
+            ChatTarget::Cli(CliAgentKind::Custom),
+        ];
+        for t in targets {
+            let s = t.as_string();
+            let parsed: ChatTarget = s.parse().unwrap();
+            assert_eq!(t, parsed);
+        }
+        // Unknown strings fallback to Api
+        assert_eq!("".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+        assert_eq!("UNKNOWN".parse::<ChatTarget>().unwrap(), ChatTarget::Api);
+        assert_eq!(
+            "CLI:UNKNOWN".parse::<ChatTarget>().unwrap(),
+            ChatTarget::Api
+        );
+    }
+
+    #[test]
+    fn profiles_json_roundtrip() {
+        let defaults = CliAgentProfile::defaults();
+        let json = serde_json::to_string(&defaults).expect("serialize defaults");
+        let restored: Vec<CliAgentProfile> =
+            serde_json::from_str(&json).expect("deserialize defaults");
+        assert_eq!(defaults, restored);
+    }
+
+    #[test]
+    fn migrate_legacy_cli_enables_selected_kind() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Cli),
+            kind: Some(CliAgentKind::ClaudeCode),
+            bin: "/x/claude".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            extra_args: "--verbose".into(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Cli(CliAgentKind::ClaudeCode));
+        assert_eq!(profiles.len(), 4);
+        let claude = profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::ClaudeCode)
+            .unwrap();
+        assert!(claude.enabled);
+        assert_eq!(claude.bin, "/x/claude");
+        assert_eq!(claude.model, "opus");
+        assert_eq!(claude.effort, "high");
+        assert_eq!(claude.extra_args, "--verbose");
+
+        for p in profiles
+            .iter()
+            .filter(|p| p.kind != CliAgentKind::ClaudeCode)
+        {
+            assert!(!p.enabled);
+            assert!(p.bin.is_empty());
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_api_backend_keeps_target_api() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Api),
+            kind: Some(CliAgentKind::Antigravity),
+            bin: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Api);
+        for p in profiles {
+            assert!(!p.enabled);
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_api_with_filled_bin_enables_profile() {
+        let legacy = LegacyCliPrefs {
+            backend: Some(AiBackend::Api),
+            kind: Some(CliAgentKind::Antigravity),
+            bin: "/usr/local/bin/agy".into(),
+            model: String::new(),
+            effort: String::new(),
+            extra_args: String::new(),
+        };
+        let (profiles, target) = migrate_legacy_cli_prefs(&legacy);
+        assert_eq!(target, ChatTarget::Api);
+        let agy = profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::Antigravity)
+            .unwrap();
+        assert!(agy.enabled);
+        assert_eq!(agy.bin, "/usr/local/bin/agy");
+    }
+
+    #[test]
+    fn normalize_profiles_fills_missing_and_dedups() {
+        let mut profiles = vec![
+            CliAgentProfile {
+                kind: CliAgentKind::ClaudeCode,
+                enabled: true,
+                bin: "claude1".into(),
+                ..CliAgentProfile::new(CliAgentKind::ClaudeCode)
+            },
+            CliAgentProfile {
+                kind: CliAgentKind::ClaudeCode,
+                enabled: false,
+                bin: "claude2".into(),
+                ..CliAgentProfile::new(CliAgentKind::ClaudeCode)
+            },
+        ];
+        normalize_profiles(&mut profiles);
+        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles[0].kind, CliAgentKind::Antigravity);
+        assert_eq!(profiles[1].kind, CliAgentKind::ClaudeCode);
+        assert_eq!(profiles[2].kind, CliAgentKind::GeminiCli);
+        assert_eq!(profiles[3].kind, CliAgentKind::Custom);
+        assert!(profiles[1].enabled);
+        assert_eq!(profiles[1].bin, "claude1");
+    }
+
+    #[test]
+    fn load_prefers_new_key_over_legacy() {
+        let mut custom_profile = CliAgentProfile::new(CliAgentKind::Custom);
+        custom_profile.enabled = true;
+        custom_profile.bin = "my-ai".into();
+        let mut expected_profiles = CliAgentProfile::defaults();
+        if let Some(p) = expected_profiles
+            .iter_mut()
+            .find(|p| p.kind == CliAgentKind::Custom)
+        {
+            *p = custom_profile;
+        }
+        let profiles_json = serde_json::to_string(&expected_profiles).unwrap();
+
+        let rows = [
+            ("ai_backend", "CLI"),
+            ("ai_cli_kind", "CLAUDE"),
+            ("ai_cli_bin", "/old/claude"),
+            ("ai_cli_profiles", profiles_json.as_str()),
+            ("ai_default_target", "CLI:CUSTOM"),
+        ];
+
+        let prefs = preferences_from_kv(rows);
+        assert_eq!(
+            prefs.ai_default_target,
+            ChatTarget::Cli(CliAgentKind::Custom)
+        );
+        let custom = prefs
+            .ai_cli_profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::Custom)
+            .unwrap();
+        assert!(custom.enabled);
+        assert_eq!(custom.bin, "my-ai");
+        let claude = prefs
+            .ai_cli_profiles
+            .iter()
+            .find(|p| p.kind == CliAgentKind::ClaudeCode)
+            .unwrap();
+        assert!(!claude.enabled);
+    }
 }

@@ -18,23 +18,14 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     render_postman_import_dialog(app, ui);
 
     // ── Search box ────────────────────────────────────────────────────────
-    let search_bg = if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(30, 32, 42)
-    } else {
-        egui::Color32::from_rgb(235, 238, 243)
-    };
-    let available_width = ui.available_width() - 5.0;
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        ui.add_sized(
-            [available_width, 24.0],
-            egui::TextEdit::singleline(&mut app.collection_search)
-                .hint_text("🔍 Filter requests…")
-                .background_color(search_bg),
-        );
-    });
+    crate::window_egui::style::render_search_field(
+        ui,
+        &mut app.collection_search,
+        "Filter requests…",
+        f32::INFINITY,
+    );
 
-    let filter = app.collection_search.to_lowercase();
+    let filter = app.collection_search.trim().to_lowercase();
     let accent = crate::window_egui::style::theme_accent(ui.ctx());
 
     // ── 1. HTTP Connections section ───────────────────────────────────────
@@ -129,15 +120,22 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click());
 
                     let is_hovered = label_response.hovered() || row_interact.hovered();
-                    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+                    let is_active = label_response.is_pointer_button_down_on()
+                        || row_interact.is_pointer_button_down_on();
                     if is_hovered || is_active {
                         let is_dark = ui.visuals().dark_mode;
                         let bg = if is_active {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+                            }
                         } else {
-                            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-                            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+                            if is_dark {
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+                            }
                         };
                         let bar_rect = egui::Rect::from_min_size(
                             egui::pos2(row_rect.left(), row_rect.top() + 2.0),
@@ -227,12 +225,18 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     let is_dnd_active = active_dnd_source.is_some();
 
     // Collect workspace ids to avoid borrow issues
-    let ws_ids: Vec<String> = app.yaak_workspaces.iter().map(|w| w.id.clone()).collect();
+    let ws_ids: Vec<String> = app
+        .yaak_workspaces
+        .iter()
+        .filter(|w| crate::window_egui::project_ui::http_workspace_visible(app, &w.id))
+        .map(|w| w.id.clone())
+        .collect();
 
     // Track actions requested from top-level and folder requests
     let mut req_action: Option<(SavedRequest, RequestAction)> = None;
     let mut ws_to_delete: Option<String> = None;
     let mut ws_to_rename: Option<(String, String)> = None;
+    let mut ws_to_convert: Option<String> = None;
     let mut folder_to_delete: Option<(String, String, String)> = None;
     let mut folder_to_create: Option<(String, Option<String>, String)> = None;
     let mut folder_to_rename: Option<(String, String, String)> = None;
@@ -253,14 +257,27 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             continue;
         }
 
-        let default_open = app.yaak_workspaces.len() == 1;
+        let is_just_saved = app.collection_just_saved_workspace.as_deref() == Some(ws_id.as_str());
 
-        let ws_header_resp = egui::CollapsingHeader::new(
-            egui::RichText::new(format!("📁  {}  ({})", ws_name, request_count)).strong(),
+        let ws_icon = if crate::window_egui::project_ui::project_of_workspace(app, ws_id).is_some()
+        {
+            egui_icons::icons::ICON_WORKSPACES.codepoint
+        } else {
+            "📁"
+        };
+        let mut ws_header = egui::CollapsingHeader::new(
+            egui::RichText::new(format!("{}  {}  ({})", ws_icon, ws_name, request_count)).strong(),
         )
         .id_salt(format!("sidebar_coll_ws_{}", ws_id))
-        .default_open(default_open)
-        .show(ui, |ui| {
+        .default_open(true);
+
+        if !filter.is_empty() || is_just_saved {
+            ws_header = ws_header.open(Some(true));
+        }
+
+        let ws_header_resp = ws_header.show(ui, |ui| {
+            let ws_matches = !filter.is_empty() && ws_name.to_lowercase().contains(&filter);
+
             // ── Top-level requests ────────────────────────────────────────
             let top_req_ids: Vec<String> = app.yaak_workspaces[ws_idx]
                 .requests
@@ -278,7 +295,8 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     None => continue,
                 };
                 let req = app.yaak_workspaces[ws_idx].requests[req_idx].clone();
-                if !filter.is_empty()
+                if !ws_matches
+                    && !filter.is_empty()
                     && !req.display_name().to_lowercase().contains(&filter)
                     && !req.url.to_lowercase().contains(&filter)
                 {
@@ -308,7 +326,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     None => continue,
                 };
                 let folder = app.yaak_workspaces[ws_idx].folders[folder_idx].clone();
-                if !filter.is_empty() && !folder_has_match(&folder, &filter) {
+                if !ws_matches && !filter.is_empty() && !folder_has_match(&folder, &filter) {
                     continue;
                 }
                 render_folder_node(
@@ -317,6 +335,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                     &folder,
                     &mut expanded_folders,
                     &filter,
+                    ws_matches,
                     accent,
                     active_dnd_source.as_ref(),
                     &mut req_action,
@@ -386,6 +405,11 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 ws_to_rename = Some((ws_id.clone(), ws_name.clone()));
                 ui.close();
             }
+            if ui.button("Convert to Project…").clicked() {
+                ws_to_convert = Some(ws_id.clone());
+                ui.close();
+            }
+            crate::http_repo::workspace_menu_items(ui);
             ui.separator();
             if ui.button("🗑 Delete Workspace").clicked() {
                 ws_to_delete = Some(ws_id.clone());
@@ -395,6 +419,11 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
     }
 
     app.collection_expanded_folders = expanded_folders;
+    app.collection_just_saved_workspace = None;
+
+    if let Some(ws_id) = ws_to_convert {
+        crate::window_egui::project_ui::convert_folder(app, "http", &ws_id);
+    }
 
     // Apply deferred actions after rendering loop
     if let Some((name, id)) = conn_to_open {
@@ -428,7 +457,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             }
             RequestAction::Duplicate => {
                 duplicate_request_in_workspaces(&mut app.yaak_workspaces, &req);
-                save_workspaces(&app.yaak_workspaces);
+                if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                    app.toasts.error(e);
+                }
                 app.toasts
                     .info(format!("Duplicated request '{}'", req.display_name()));
             }
@@ -492,7 +523,9 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             } else {
                 ws.requests.push(new_req.clone());
             }
-            save_workspaces(&app.yaak_workspaces);
+            if let Err(e) = save_workspaces(&app.yaak_workspaces) {
+                app.toasts.error(e);
+            }
             apply_collection_request_to_active_tab(app, &new_req);
             app.toasts
                 .success(format!("Added new HTTP request to '{}'", parent_name));
@@ -718,7 +751,9 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from {} workspace(s)",
@@ -762,7 +797,9 @@ fn render_postman_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                     .retain(|w| !imported_ids.contains(&w.id));
                 app.yaak_workspaces.extend(result.workspaces.clone());
                 app.yaak_workspaces.sort_by(|a, b| a.name.cmp(&b.name));
-                save_workspaces(&result.workspaces);
+                if let Err(e) = save_workspaces(&result.workspaces) {
+                    app.toasts.error(e);
+                }
 
                 let msg = format!(
                     "Imported {} requests from Postman ({})",
@@ -843,6 +880,7 @@ fn render_folder_node(
     folder: &crate::http_collection::HttpFolder,
     expanded_folders: &mut std::collections::HashSet<String>,
     filter: &str,
+    parent_matched: bool,
     accent: egui::Color32,
     active_dnd_source: Option<&HttpDndSource>,
     req_action_out: &mut Option<(SavedRequest, RequestAction)>,
@@ -851,7 +889,9 @@ fn render_folder_node(
     folder_to_rename: &mut Option<(String, String, String)>,
     folder_to_delete: &mut Option<(String, String, String)>,
 ) {
-    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty();
+    let folder_matches =
+        parent_matched || (!filter.is_empty() && folder.name.to_lowercase().contains(filter));
+    let is_expanded = expanded_folders.contains(&folder.id) || !filter.is_empty() || parent_matched;
     let is_being_dragged = active_dnd_source.is_some_and(
         |src| matches!(src, HttpDndSource::Folder { folder_id, .. } if folder_id == &folder.id),
     );
@@ -873,9 +913,15 @@ fn render_folder_node(
             ui.style().visuals.text_color()
         };
 
+        // Folder yang punya repository diberi ikon git.
+        let repo_mark = if folder.repo_url.is_some() || folder.local_repo_path().is_some() {
+            format!("  {}", egui_icons::icons::MDI_GIT.codepoint)
+        } else {
+            String::new()
+        };
         let lbl = ui.add(
             egui::Label::new(
-                egui::RichText::new(format!("📂  {}", folder.name))
+                egui::RichText::new(format!("📂  {}{repo_mark}", folder.name))
                     .small()
                     .strong()
                     .color(text_color),
@@ -920,11 +966,17 @@ fn render_folder_node(
         let is_dark = ui.visuals().dark_mode;
         let is_active = label_resp.is_pointer_button_down_on();
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(folder_row_rect.left(), folder_row_rect.top() + 2.0),
@@ -1018,6 +1070,7 @@ fn render_folder_node(
             *folder_to_rename = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }
+        crate::http_repo::folder_menu_items(ui, folder);
         ui.separator();
         if ui.button("🗑 Delete Folder").clicked() {
             *folder_to_delete = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
@@ -1028,7 +1081,8 @@ fn render_folder_node(
     if is_expanded {
         ui.indent(format!("fld_body_{}", folder.id), |ui| {
             for req in &folder.requests {
-                if !filter.is_empty()
+                if !folder_matches
+                    && !filter.is_empty()
                     && !req.display_name().to_lowercase().contains(filter)
                     && !req.url.to_lowercase().contains(filter)
                 {
@@ -1039,7 +1093,7 @@ fn render_folder_node(
                 }
             }
             for child in &folder.children {
-                if !filter.is_empty() && !folder_has_match(child, filter) {
+                if !folder_matches && !filter.is_empty() && !folder_has_match(child, filter) {
                     continue;
                 }
                 render_folder_node(
@@ -1048,6 +1102,7 @@ fn render_folder_node(
                     child,
                     expanded_folders,
                     filter,
+                    folder_matches,
                     accent,
                     active_dnd_source,
                     req_action_out,
@@ -1132,15 +1187,22 @@ fn render_request_row(
     let row_interact = ui.interact(row_rect, row_id, egui::Sense::click_and_drag());
 
     let is_hovered = label_response.hovered() || row_interact.hovered();
-    let is_active = label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
+    let is_active =
+        label_response.is_pointer_button_down_on() || row_interact.is_pointer_button_down_on();
     if is_hovered || is_active {
         let is_dark = ui.visuals().dark_mode;
         let bg = if is_active {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18)
+            }
         } else {
-            if is_dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14) }
-            else { egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10) }
+            if is_dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 10)
+            }
         };
         let bar_rect = egui::Rect::from_min_size(
             egui::pos2(row_rect.left(), row_rect.top() + 2.0),
@@ -1337,7 +1399,7 @@ pub(crate) fn delete_folder_from_workspaces(
 
 /// Load a saved request into an HTTP client tab.
 /// Automatically creates a new tab for different requests or switches to an existing tab if already open.
-fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
+pub(crate) fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest) {
     let display_title = req.display_name();
 
     // 1. If a tab for this exact saved request is already open, switch to that tab and refresh it
@@ -1390,6 +1452,9 @@ fn apply_collection_request_to_active_tab(app: &mut Tabular, req: &SavedRequest)
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 
 fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str) -> bool {
+    if ws.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &ws.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)
@@ -1406,6 +1471,9 @@ fn workspace_has_match(ws: &crate::http_collection::HttpWorkspace, filter: &str)
 }
 
 fn folder_has_match(folder: &crate::http_collection::HttpFolder, filter: &str) -> bool {
+    if folder.name.to_lowercase().contains(filter) {
+        return true;
+    }
     for req in &folder.requests {
         if req.display_name().to_lowercase().contains(filter)
             || req.url.to_lowercase().contains(filter)
@@ -1447,5 +1515,65 @@ fn method_color_for(method: &str) -> egui::Color32 {
         "PATCH" => egui::Color32::from_rgb(80, 227, 194),
         "HEAD" => egui::Color32::from_rgb(144, 150, 160),
         _ => egui::Color32::from_rgb(200, 200, 200),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_collection::{HttpFolder, HttpWorkspace, SavedRequest};
+
+    #[test]
+    fn test_folder_and_workspace_has_match() {
+        let req = SavedRequest {
+            id: "r1".to_string(),
+            name: "Get User Profile".to_string(),
+            url: "https://api.example.com/v1/users/me".to_string(),
+            ..Default::default()
+        };
+
+        let sub_folder = HttpFolder {
+            id: "sub1".to_string(),
+            name: "OAuth2 Flow".to_string(),
+            requests: vec![req],
+            children: vec![],
+            ..Default::default()
+        };
+
+        let parent_folder = HttpFolder {
+            id: "parent1".to_string(),
+            name: "Authentication".to_string(),
+            requests: vec![],
+            children: vec![sub_folder],
+            ..Default::default()
+        };
+
+        let ws = HttpWorkspace {
+            id: "ws1".to_string(),
+            name: "Core Backend API".to_string(),
+            requests: vec![],
+            folders: vec![parent_folder.clone()],
+            ..Default::default()
+        };
+
+        // Matching parent folder
+        assert!(folder_has_match(&parent_folder, "auth"));
+        assert!(workspace_has_match(&ws, "auth"));
+
+        // Matching nested subfolder
+        assert!(folder_has_match(&parent_folder, "oauth2"));
+        assert!(workspace_has_match(&ws, "oauth2"));
+
+        // Matching request name or url inside nested subfolder
+        assert!(folder_has_match(&parent_folder, "profile"));
+        assert!(folder_has_match(&parent_folder, "users/me"));
+        assert!(workspace_has_match(&ws, "profile"));
+
+        // Matching workspace name
+        assert!(workspace_has_match(&ws, "backend"));
+
+        // Non-matching
+        assert!(!folder_has_match(&parent_folder, "billing"));
+        assert!(!workspace_has_match(&ws, "billing"));
     }
 }

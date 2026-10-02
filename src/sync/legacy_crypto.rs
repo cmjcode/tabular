@@ -33,7 +33,9 @@ pub fn legacy_decrypt_best_effort(stored: &str, user_id: &str) -> Option<String>
 }
 
 fn legacy_aes_gcm_decrypt(encrypted: &str, user_id: &str) -> Option<String> {
-    let data = base64::engine::general_purpose::STANDARD.decode(encrypted).ok()?;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encrypted)
+        .ok()?;
     if data.len() < 12 {
         return None;
     }
@@ -57,7 +59,10 @@ mod tests {
     fn decrypts_base64_no_op_scheme() {
         let plaintext = r#"{"name":"legacy-plain"}"#;
         let stored = base64::engine::general_purpose::STANDARD.encode(plaintext);
-        assert_eq!(legacy_decrypt_best_effort(&stored, "some-user-id").as_deref(), Some(plaintext));
+        assert_eq!(
+            legacy_decrypt_best_effort(&stored, "some-user-id").as_deref(),
+            Some(plaintext)
+        );
     }
 
     #[test]
@@ -76,7 +81,10 @@ mod tests {
         combined.extend_from_slice(&ciphertext);
         let stored = base64::engine::general_purpose::STANDARD.encode(combined);
 
-        assert_eq!(legacy_decrypt_best_effort(&stored, user_id).as_deref(), Some(plaintext));
+        assert_eq!(
+            legacy_decrypt_best_effort(&stored, user_id).as_deref(),
+            Some(plaintext)
+        );
     }
 
     #[test]

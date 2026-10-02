@@ -49,13 +49,12 @@ impl BackupDialogState {
         let binary_info = match conn_type {
             DatabaseType::PostgreSQL => BinaryDetector::find_binary("pg_dump", None),
             DatabaseType::MySQL => BinaryDetector::find_binary("mysqldump", None),
+            DatabaseType::MongoDB => BinaryDetector::find_binary("mongodump", None),
+            DatabaseType::MsSQL => BinaryDetector::find_binary("sqlpackage", None),
             _ => None,
         };
 
-        let default_format = match conn_type {
-            DatabaseType::SQLite => BackupFormat::SqliteNative,
-            _ => BackupFormat::GzipSql,
-        };
+        let default_format = BackupFormat::default_for(&conn_type);
 
         let default_file_name = format!(
             "{}_{}.{}",
@@ -65,7 +64,7 @@ impl BackupDialogState {
         );
 
         let default_target = dirs::download_dir()
-            .or_else(|| dirs::home_dir())
+            .or_else(dirs::home_dir)
             .map(|p| p.join(&default_file_name));
 
         Self {
@@ -94,9 +93,11 @@ impl BackupDialogState {
 
     pub fn update_target_file_extension(&mut self) {
         if let Some(target) = &self.target_file {
+            // Ekstensi ganda (`.sql.gz`, `.archive.gz`) dibuang utuh.
             let stem = target
-                .file_stem()
-                .map_or("backup", |s| s.to_str().unwrap_or("backup"));
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map_or("backup", BackupFormat::strip_extension);
             let parent = target.parent().unwrap_or_else(|| std::path::Path::new(""));
             let new_filename = format!("{}.{}", stem, self.format.extension());
             self.target_file = Some(parent.join(new_filename));
@@ -134,6 +135,8 @@ impl RestoreDialogState {
             DatabaseType::PostgreSQL => BinaryDetector::find_binary("pg_restore", None)
                 .or_else(|| BinaryDetector::find_binary("psql", None)),
             DatabaseType::MySQL => BinaryDetector::find_binary("mysql", None),
+            DatabaseType::MongoDB => BinaryDetector::find_binary("mongorestore", None),
+            DatabaseType::MsSQL => BinaryDetector::find_binary("sqlpackage", None),
             _ => None,
         };
 
@@ -189,21 +192,39 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if let Some(state) = &mut tabular.backup_state {
         // Poll progress if tracker is active
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap().snapshot();
+            let snap = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            if state.is_running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
         }
     }
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_backdrop_backup", open);
+
     egui::Window::new("💾 Database Backup & Export")
         .open(&mut open)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .default_size(egui::vec2(580.0, 440.0))
-        .max_size(egui::vec2(660.0, (ctx.content_rect().height() * 0.85).max(360.0)))
+        .max_size(egui::vec2(
+            660.0,
+            (ctx.content_rect().height() * 0.85).max(360.0),
+        ))
         .resizable(true)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "💾 Database Backup & Export",
+                &mut close_dialog,
+            );
+
             if let Some(state) = &mut tabular.backup_state {
                 // ── Header Bar ─────────────────────────────────────────────
                 render_header_card(
@@ -214,7 +235,7 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     state.binary_info.as_ref(),
                 );
 
-                ui.add_space(6.0);
+                ui.add_space(8.0);
 
                 // Calculate scroll area height so bottom buttons are always visible
                 let scroll_height = (ui.available_height() - 44.0).max(100.0);
@@ -239,162 +260,231 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             // Section 1: Output Destination
-                            ui.group(|ui| {
-                                ui.label(egui::RichText::new("📁 Destination File").strong().small());
-                                ui.horizontal(|ui| {
-                                    let mut path_str = state
-                                        .target_file
-                                        .as_ref()
-                                        .map_or(String::new(), |p| p.to_string_lossy().to_string());
+                            crate::window_egui::style::render_modal_card(
+                                ui,
+                                Some("📁 Destination File"),
+                                Some("Choose where to save the backup file"),
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        let mut path_str =
+                                            state.target_file.as_ref().map_or(String::new(), |p| {
+                                                p.to_string_lossy().to_string()
+                                            });
 
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut path_str)
-                                            .desired_width(ui.available_width() - 95.0)
-                                            .hint_text("Choose target backup file path..."),
-                                    );
-                                    if resp.changed() {
-                                        state.target_file = Some(PathBuf::from(path_str));
-                                    }
-
-                                    if ui.button("Browse...").clicked() {
-                                        let default_name = state.target_file.as_ref().map_or_else(
-                                            || {
-                                                format!(
-                                                    "{}.{}",
-                                                    state.database_name,
-                                                    state.format.extension()
-                                                )
-                                            },
-                                            |p| {
-                                                p.file_name()
-                                                    .map_or("backup.sql".to_string(), |n| {
-                                                        n.to_string_lossy().to_string()
-                                                    })
-                                            },
+                                        let browse_w = 80.0;
+                                        let spacing = 8.0;
+                                        let path_w =
+                                            (ui.available_width() - browse_w - spacing).max(120.0);
+                                        let resp = crate::window_egui::style::render_text_field(
+                                            ui,
+                                            egui::TextEdit::singleline(&mut path_str)
+                                                .hint_text("Choose target backup file path..."),
+                                            path_w,
+                                            None,
                                         );
-
-                                        let ext = state.format.extension();
-                                        if let Some(path) = rfd::FileDialog::new()
-                                            .set_file_name(default_name)
-                                            .add_filter(state.format.display_label(), &[ext])
-                                            .save_file()
-                                        {
-                                            state.target_file = Some(path);
+                                        if resp.changed() {
+                                            state.target_file = Some(PathBuf::from(path_str));
                                         }
-                                    }
-                                });
-                            });
+                                        ui.add_space(spacing);
 
-                            ui.add_space(4.0);
+                                        if ui
+                                            .add(
+                                                crate::window_egui::style::btn_field_action(
+                                                    ui,
+                                                    "Browse...",
+                                                )
+                                                .min_size(egui::vec2(browse_w, 0.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            let default_name =
+                                                state.target_file.as_ref().map_or_else(
+                                                    || {
+                                                        format!(
+                                                            "{}.{}",
+                                                            state.database_name,
+                                                            state.format.extension()
+                                                        )
+                                                    },
+                                                    |p| {
+                                                        p.file_name()
+                                                            .map_or("backup.sql".to_string(), |n| {
+                                                                n.to_string_lossy().to_string()
+                                                            })
+                                                    },
+                                                );
+
+                                            let ext = state.format.extension();
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_file_name(default_name)
+                                                .add_filter(state.format.display_label(), &[ext])
+                                                .save_file()
+                                            {
+                                                state.target_file = Some(path);
+                                            }
+                                        }
+                                    });
+                                },
+                            );
+
+                            ui.add_space(6.0);
 
                             // Section 2: Format & Scope
-                            ui.group(|ui| {
-                                ui.label(egui::RichText::new("⚙️ Format & Scope").strong().small());
-                                ui.horizontal(|ui| {
-                                    ui.label("Format:");
-                                    let prev_format = state.format;
-                                    egui::ComboBox::from_id_salt("backup_format_combo")
-                                        .selected_text(state.format.display_label())
-                                        .show_ui(ui, |ui| {
-                                            for fmt in [
-                                                BackupFormat::GzipSql,
-                                                BackupFormat::PlainSql,
-                                                BackupFormat::PostgresCustom,
-                                                BackupFormat::PostgresTar,
-                                                BackupFormat::SqliteNative,
-                                            ] {
-                                                if fmt.supported_for(&state.connection_type) {
+                            crate::window_egui::style::render_modal_card(
+                                ui,
+                                Some("⚙️ Format & Scope"),
+                                Some("Select output format and content scope"),
+                                |ui| {
+                                    let combo_width = 180.0;
+                                    egui::Grid::new("backup_format_grid")
+                                        .num_columns(2)
+                                        .spacing([16.0, 8.0])
+                                        .show(ui, |ui| {
+                                            ui.label(egui::RichText::new("Format").weak().small());
+                                            let prev_format = state.format;
+                                            egui::ComboBox::from_id_salt("backup_format_combo")
+                                                .selected_text(state.format.display_label())
+                                                .width(combo_width)
+                                                .show_ui(ui, |ui| {
+                                                    for fmt in BackupFormat::ALL {
+                                                        // Format direktori pg_dump tidak punya
+                                                        // satu file tujuan untuk dialog simpan.
+                                                        if fmt != BackupFormat::PostgresDirectory
+                                                            && fmt.supported_for(&state.connection_type)
+                                                        {
+                                                            ui.selectable_value(
+                                                                &mut state.format,
+                                                                fmt,
+                                                                fmt.display_label(),
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                            if state.format != prev_format {
+                                                state.update_target_file_extension();
+                                            }
+                                            ui.end_row();
+
+                                            // Arsip mongodump dan paket sqlpackage tidak punya
+                                            // pilihan cakupan; DACPAC/BACPAC dipilih lewat format.
+                                            if !matches!(
+                                                state.connection_type,
+                                                DatabaseType::MongoDB | DatabaseType::MsSQL
+                                            ) {
+                                            ui.label(egui::RichText::new("Content").weak().small());
+                                            egui::ComboBox::from_id_salt("backup_scope_combo")
+                                                .selected_text(match state.scope {
+                                                    BackupContentScope::Both => "Schema & Data",
+                                                    BackupContentScope::SchemaOnly => "Schema Only",
+                                                    BackupContentScope::DataOnly => "Data Only",
+                                                })
+                                                .width(combo_width)
+                                                .show_ui(ui, |ui| {
                                                     ui.selectable_value(
-                                                        &mut state.format,
-                                                        fmt,
-                                                        fmt.display_label(),
+                                                        &mut state.scope,
+                                                        BackupContentScope::Both,
+                                                        "Schema & Data",
                                                     );
-                                                }
+                                                    ui.selectable_value(
+                                                        &mut state.scope,
+                                                        BackupContentScope::SchemaOnly,
+                                                        "Schema Only",
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut state.scope,
+                                                        BackupContentScope::DataOnly,
+                                                        "Data Only",
+                                                    );
+                                                });
+                                            ui.end_row();
                                             }
                                         });
+                                },
+                            );
 
-                                    if state.format != prev_format {
-                                        state.update_target_file_extension();
-                                    }
+                            ui.add_space(6.0);
 
-                                    ui.add_space(12.0);
-                                    ui.label("Content:");
-                                    egui::ComboBox::from_id_salt("backup_scope_combo")
-                                        .selected_text(match state.scope {
-                                            BackupContentScope::Both => "Schema & Data",
-                                            BackupContentScope::SchemaOnly => "Schema Only",
-                                            BackupContentScope::DataOnly => "Data Only",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut state.scope,
-                                                BackupContentScope::Both,
-                                                "Schema & Data",
+                            // Section 3: Advanced Options (opsi dump SQL; tidak berlaku
+                            // untuk arsip mongodump dan paket sqlpackage)
+                            if !matches!(
+                                state.connection_type,
+                                DatabaseType::MongoDB | DatabaseType::MsSQL
+                            ) {
+                            crate::window_egui::style::render_modal_card(
+                                ui,
+                                Some("🛠️ Advanced Options"),
+                                None,
+                                |ui| {
+                                    egui::Grid::new("backup_advanced_grid")
+                                        .num_columns(2)
+                                        .spacing([24.0, 6.0])
+                                        .show(ui, |ui| {
+                                            ui.checkbox(
+                                                &mut state.single_transaction,
+                                                "Single Transaction",
                                             );
-                                            ui.selectable_value(
-                                                &mut state.scope,
-                                                BackupContentScope::SchemaOnly,
-                                                "Schema Only",
+                                            ui.checkbox(
+                                                &mut state.include_triggers_routines,
+                                                "Include Triggers/Routines",
                                             );
-                                            ui.selectable_value(
-                                                &mut state.scope,
-                                                BackupContentScope::DataOnly,
-                                                "Data Only",
+                                            ui.end_row();
+
+                                            ui.checkbox(
+                                                &mut state.clean_before_recreate,
+                                                "DROP TABLE before CREATE",
                                             );
+                                            if state.connection_type == DatabaseType::PostgreSQL {
+                                                ui.checkbox(
+                                                    &mut state.no_owner,
+                                                    "No Owner (--no-owner)",
+                                                );
+                                            }
+                                            ui.end_row();
+
+                                            if state.connection_type == DatabaseType::PostgreSQL {
+                                                ui.checkbox(
+                                                    &mut state.no_privileges,
+                                                    "No Privileges (--no-privileges)",
+                                                );
+                                                ui.end_row();
+                                            }
                                         });
-                                });
-                            });
+                                },
+                            );
+                            }
 
-                            ui.add_space(4.0);
-
-                            // Section 3: Advanced Options
-                            ui.group(|ui| {
-                                ui.label(egui::RichText::new("🛠️ Advanced Options").strong().small());
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.checkbox(
-                                        &mut state.single_transaction,
-                                        "Single Transaction",
-                                    );
-                                    ui.checkbox(
-                                        &mut state.include_triggers_routines,
-                                        "Include Triggers/Routines",
-                                    );
-                                    ui.checkbox(
-                                        &mut state.clean_before_recreate,
-                                        "DROP TABLE before CREATE",
-                                    );
-                                    if state.connection_type == DatabaseType::PostgreSQL {
-                                        ui.checkbox(
-                                            &mut state.no_owner,
-                                            "No Owner (--no-owner)",
-                                        );
-                                        ui.checkbox(
-                                            &mut state.no_privileges,
-                                            "No Privileges (--no-privileges)",
-                                        );
-                                    }
-                                });
-                            });
-
-                            ui.add_space(4.0);
+                            ui.add_space(6.0);
 
                             // Section 4: Table Selection Filter (Collapsible to save vertical space)
                             if !state.available_tables.is_empty() {
-                                ui.group(|ui| {
-                                    let filter_title = if state.selected_tables.is_empty() {
-                                        format!("📋 Table Filter (All {} tables included)", state.available_tables.len())
-                                    } else {
-                                        format!("📋 Table Filter ({} of {} selected)", state.selected_tables.len(), state.available_tables.len())
-                                    };
+                                crate::window_egui::style::modal_card_frame(ui.ctx()).show(
+                                    ui,
+                                    |ui| {
+                                        let filter_title = if state.selected_tables.is_empty() {
+                                            format!(
+                                                "📋 Table Filter (All {} tables included)",
+                                                state.available_tables.len()
+                                            )
+                                        } else {
+                                            format!(
+                                                "📋 Table Filter ({} of {} selected)",
+                                                state.selected_tables.len(),
+                                                state.available_tables.len()
+                                            )
+                                        };
 
-                                    egui::CollapsingHeader::new(egui::RichText::new(filter_title).strong().small())
+                                        egui::CollapsingHeader::new(
+                                            egui::RichText::new(filter_title).strong().small(),
+                                        )
                                         .default_open(false)
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::TextEdit::singleline(&mut state.table_search_query)
-                                                        .hint_text("🔍 Filter table list...")
-                                                        .desired_width(ui.available_width() - 140.0),
+                                                let field_width = ui.available_width() - 140.0;
+                                                crate::window_egui::style::render_search_field(
+                                                    ui,
+                                                    &mut state.table_search_query,
+                                                    "Filter table list…",
+                                                    field_width,
                                                 );
 
                                                 if ui.button("Select All").clicked() {
@@ -407,9 +497,9 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                                 }
                                             });
 
-                                            egui::ScrollArea::vertical()
-                                                .max_height(100.0)
-                                                .show(ui, |ui| {
+                                            egui::ScrollArea::vertical().max_height(100.0).show(
+                                                ui,
+                                                |ui| {
                                                     let q = state.table_search_query.to_lowercase();
                                                     for table in &state.available_tables {
                                                         if !q.is_empty()
@@ -420,22 +510,31 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                                                         let mut is_checked =
                                                             state.selected_tables.contains(table);
-                                                        if ui.checkbox(&mut is_checked, table).changed() {
+                                                        if ui
+                                                            .checkbox(&mut is_checked, table)
+                                                            .changed()
+                                                        {
                                                             if is_checked {
-                                                                state.selected_tables.insert(table.clone());
+                                                                state
+                                                                    .selected_tables
+                                                                    .insert(table.clone());
                                                             } else {
                                                                 state.selected_tables.remove(table);
                                                             }
                                                         }
                                                     }
-                                                });
+                                                },
+                                            );
                                         });
-                                });
+                                    },
+                                );
                             }
                         });
                 }
 
-                ui.add_space(6.0);
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
 
                 // ── Action Buttons (ALWAYS pinned at bottom) ───────────────
                 ui.horizontal(|ui| {
@@ -444,13 +543,20 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             egui::Button::new(
                                 egui::RichText::new("⛔ Cancel Backup").color(egui::Color32::WHITE),
                             )
-                            .fill(egui::Color32::from_rgb(200, 40, 40)),
+                            .fill(egui::Color32::from_rgb(200, 40, 40))
+                            .min_size(egui::vec2(140.0, 32.0)),
                         );
                         if cancel_btn.clicked() {
                             cancel_requested = true;
                         }
                     } else if state.last_snapshot.is_some() {
-                        if ui.button("🔄 Start Another Backup").clicked() {
+                        let retry_btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("🔄 Start Another Backup").strong(),
+                            )
+                            .min_size(egui::vec2(180.0, 32.0)),
+                        );
+                        if retry_btn.clicked() {
                             state.last_snapshot = None;
                             state.tracker = None;
                             state.cancel_token = None;
@@ -464,18 +570,13 @@ pub fn render_backup_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(egui::Color32::from_rgb(30, 130, 70)),
+                            .fill(egui::Color32::from_rgb(30, 130, 70))
+                            .min_size(egui::vec2(140.0, 32.0)),
                         );
                         if start_btn.clicked() {
                             start_backup_requested = true;
                         }
                     }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            close_dialog = true;
-                        }
-                    });
                 });
             }
         });
@@ -554,21 +655,36 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     if let Some(state) = &mut tabular.restore_state {
         if let Some(tracker) = &state.tracker {
-            let snap = tracker.lock().unwrap().snapshot();
+            let snap = tracker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .snapshot();
             state.is_running = matches!(snap.status, OperationStatus::Running);
             state.last_snapshot = Some(snap);
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            if state.is_running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
         }
     }
 
+    crate::window_egui::style::render_modal_backdrop(ctx, "modal_backdrop_restore", open);
+
     egui::Window::new("📥 Database Restore & Import")
         .open(&mut open)
+        .title_bar(false)
+        .frame(crate::window_egui::style::modal_window_frame(ctx))
         .default_size(egui::vec2(580.0, 420.0))
         .max_size(egui::vec2(660.0, (ctx.content_rect().height() * 0.85).max(340.0)))
         .resizable(true)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
+            crate::window_egui::style::render_modal_header(
+                ui,
+                "📥 Database Restore & Import",
+                &mut close_dialog,
+            );
+
             if let Some(state) = &mut tabular.restore_state {
                 // Header
                 render_header_card(
@@ -601,7 +717,7 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             // Section 1: Source File Picker
-                            ui.group(|ui| {
+                            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                                 ui.label(egui::RichText::new("📂 Backup Source File").strong().small());
                                 ui.horizontal(|ui| {
                                     let mut path_str = state
@@ -609,22 +725,32 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .as_ref()
                                         .map_or(String::new(), |p| p.to_string_lossy().to_string());
 
-                                    let resp = ui.add(
+                                    let browse_w = 80.0;
+                                    let spacing = 8.0;
+                                    let path_w = (ui.available_width() - browse_w - spacing).max(120.0);
+                                    let resp = crate::window_egui::style::render_text_field(
+                                        ui,
                                         egui::TextEdit::singleline(&mut path_str)
-                                            .desired_width(ui.available_width() - 95.0)
-                                            .hint_text(
-                                                "Select .sql, .sql.gz, .dump, .tar or .sqlite file...",
-                                            ),
+                                            .hint_text("Select .sql, .sql.gz, .dump, .tar or .sqlite file..."),
+                                        path_w,
+                                        None,
                                     );
                                     if resp.changed() {
                                         state.source_file = Some(PathBuf::from(path_str));
                                     }
+                                    ui.add_space(spacing);
 
-                                    if ui.button("Browse...").clicked() {
+                                    if ui
+                                        .add(crate::window_egui::style::btn_field_action(ui, "Browse...").min_size(egui::vec2(browse_w, 0.0)))
+                                        .clicked()
+                                    {
                                         if let Some(path) = rfd::FileDialog::new()
                                             .add_filter(
                                                 "Database Backup Files",
-                                                &["sql", "gz", "dump", "pgdump", "tar", "sqlite", "db"],
+                                                &[
+                                                    "sql", "gz", "dump", "pgdump", "tar", "sqlite",
+                                                    "db", "archive", "bacpac", "dacpac",
+                                                ],
                                             )
                                             .pick_file()
                                         {
@@ -637,7 +763,7 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             ui.add_space(4.0);
 
                             // Section 2: Restore Options
-                            ui.group(|ui| {
+                            crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                                 ui.label(egui::RichText::new("⚙️ Restore Options").strong().small());
                                 ui.horizontal_wrapped(|ui| {
                                     ui.checkbox(
@@ -721,12 +847,6 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             start_restore_requested = true;
                         }
                     }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            close_dialog = true;
-                        }
-                    });
                 });
             }
         });
@@ -787,73 +907,127 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
 // ─── UI Helper Components ───────────────────────────────────────────────────
 
-fn render_header_card(
+pub(crate) fn render_header_card(
     ui: &mut egui::Ui,
     title: &str,
     database_name: &str,
     db_type: &DatabaseType,
     binary_info: Option<&NativeBinaryInfo>,
 ) {
-    ui.group(|ui| {
+    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(db_type.icon()).size(20.0));
+            ui.set_width(ui.available_width());
+            // Left: Icon + title
+            ui.label(egui::RichText::new(db_type.icon()).size(26.0));
+            ui.add_space(4.0);
             ui.vertical(|ui| {
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(title).strong());
-                    ui.label(
-                        egui::RichText::new(format!("[{}]", db_type.badge_label()))
-                            .color(egui::Color32::from_rgb(
-                                db_type.badge_color().0,
-                                db_type.badge_color().1,
-                                db_type.badge_color().2,
-                            ))
-                            .small(),
+                    ui.label(egui::RichText::new(title).strong().size(14.5));
+                    let badge_color = egui::Color32::from_rgb(
+                        db_type.badge_color().0,
+                        db_type.badge_color().1,
+                        db_type.badge_color().2,
                     );
+                    let badge_bg = egui::Color32::from_rgba_unmultiplied(
+                        db_type.badge_color().0,
+                        db_type.badge_color().1,
+                        db_type.badge_color().2,
+                        30,
+                    );
+                    egui::Frame::new()
+                        .fill(badge_bg)
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(db_type.badge_label())
+                                    .color(badge_color)
+                                    .size(10.5)
+                                    .strong(),
+                            );
+                        });
                 });
-                ui.label(egui::RichText::new(format!("Target DB: {}", database_name)).weak().small());
+                ui.label(
+                    egui::RichText::new(format!("Target DB:  {}", database_name))
+                        .weak()
+                        .size(11.5),
+                );
             });
 
+            // Right: Binary info status
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if *db_type == DatabaseType::SQLite {
-                    ui.label(
-                        egui::RichText::new("⚡ Pure-Rust Engine")
-                            .color(egui::Color32::from_rgb(40, 180, 90))
-                            .small(),
-                    );
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgba_unmultiplied(40, 180, 90, 20))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("⚡ Pure-Rust Engine")
+                                    .color(egui::Color32::from_rgb(40, 180, 90))
+                                    .size(11.0),
+                            );
+                        });
                 } else if let Some(info) = binary_info {
                     ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("✅ {} Detected", info.name))
-                                .color(egui::Color32::from_rgb(40, 180, 90))
-                                .small(),
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgba_unmultiplied(40, 180, 90, 20))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("✅ {} Detected", info.name))
+                                            .color(egui::Color32::from_rgb(40, 180, 90))
+                                            .size(11.0),
+                                    );
+                                });
+                        });
                         if let Some(ver) = &info.version {
                             let short_ver = ver.lines().next().unwrap_or("");
-                            ui.label(egui::RichText::new(short_ver).weak().small());
+                            // Truncate long version strings
+                            let display_ver = if short_ver.len() > 50 {
+                                format!("{}…", &short_ver[..50])
+                            } else {
+                                short_ver.to_string()
+                            };
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                ui.label(egui::RichText::new(display_ver).weak().size(10.0));
+                            });
                         }
                     });
                 } else {
-                    ui.label(
-                        egui::RichText::new("⚠️ Native CLI binary not found in PATH")
-                            .color(egui::Color32::from_rgb(220, 130, 20))
-                            .small(),
-                    );
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgba_unmultiplied(220, 130, 20, 20))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("⚠️ CLI not found in PATH")
+                                    .color(egui::Color32::from_rgb(220, 130, 20))
+                                    .size(11.0),
+                            );
+                        });
                 }
             });
         });
     });
 }
 
-fn render_progress_dashboard(
+pub(crate) fn render_progress_dashboard(
     ui: &mut egui::Ui,
     snapshot_opt: Option<&ProgressSnapshot>,
     _is_running: bool,
     _cancel_requested: &mut bool,
 ) {
     if let Some(snap) = snapshot_opt {
-        ui.group(|ui| {
+        crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
             // Status row
             ui.horizontal(|ui| {
+                ui.set_width(ui.available_width());
                 match &snap.status {
                     OperationStatus::Running => {
                         ui.spinner();
@@ -951,13 +1125,16 @@ fn render_progress_dashboard(
 
             egui::Frame::new()
                 .fill(console_bg)
-                .inner_margin(6.0)
+                .inner_margin(8.0)
                 .corner_radius(4.0)
                 .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     egui::ScrollArea::vertical()
-                        .max_height(160.0)
+                        .max_height(140.0)
+                        .auto_shrink([false, false])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             for line in &snap.log_lines {
                                 let text_color = if line.contains("❌") || line.contains("Error") {
                                     egui::Color32::from_rgb(230, 80, 80)
@@ -982,7 +1159,7 @@ fn render_progress_dashboard(
     }
 }
 
-fn format_byte_size(bytes: u64) -> String {
+pub(crate) fn format_byte_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {

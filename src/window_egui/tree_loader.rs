@@ -1,15 +1,62 @@
-use log::debug;
 use super::Tabular;
-use crate::{models, connection, cache_data, driver_mysql, driver_postgres, driver_sqlite, driver_redis};
+use crate::{
+    cache_data, connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
+};
+use log::debug;
 
 impl super::Tabular {
+    pub fn remove_database_from_connection_node(
+        conn_node: &mut models::structs::TreeNode,
+        database_name: &str,
+        matches_db: &dyn Fn(&str, &str) -> bool,
+    ) -> bool {
+        let mut removed = false;
+        // Case 1: Check inside DatabasesFolder
+        for child in &mut conn_node.children {
+            if child.node_type == models::enums::NodeType::DatabasesFolder {
+                let count_before = child.children.len();
+                child.children.retain(|db_node| {
+                    let d_name = db_node.database_name.as_deref().unwrap_or(&db_node.name);
+                    let keep = !matches_db(d_name, database_name);
+                    if !keep {
+                        debug!(
+                            "   ✅ Removed database '{}' from DatabasesFolder in tree",
+                            d_name
+                        );
+                    }
+                    keep
+                });
+                if child.children.len() < count_before {
+                    removed = true;
+                }
+            }
+        }
+        // Case 2: Check direct database children (e.g. for engines that don't have DatabasesFolder)
+        let count_before = conn_node.children.len();
+        conn_node.children.retain(|child| {
+            if child.node_type == models::enums::NodeType::Database {
+                let d_name = child.database_name.as_deref().unwrap_or(&child.name);
+                let keep = !matches_db(d_name, database_name);
+                if !keep {
+                    debug!("   ✅ Removed direct database '{}' from tree", d_name);
+                }
+                keep
+            } else {
+                true
+            }
+        });
+        if conn_node.children.len() < count_before {
+            removed = true;
+        }
+        removed
+    }
+
     pub fn remove_table_from_connection_node(
         conn_node: &mut models::structs::TreeNode,
         database_name: &str,
         table_name: &str,
         matches_table: &dyn Fn(&str, &str) -> bool,
     ) -> bool {
-
         // Navigate through the tree structure to find the table
         // Structure: Connection -> Databases Folder -> Database -> Tables Folder -> Table
         for child in &mut conn_node.children {
@@ -111,8 +158,15 @@ impl super::Tabular {
 
         false // Table not found
     }
-    pub fn load_connection_tables(&mut self, connection_id: i64, node: &mut models::structs::TreeNode) {
-        debug!("Loading connection tables (non-blocking) for ID: {}", connection_id);
+    pub fn load_connection_tables(
+        &mut self,
+        connection_id: i64,
+        node: &mut models::structs::TreeNode,
+    ) {
+        debug!(
+            "Loading connection tables (non-blocking) for ID: {}",
+            connection_id
+        );
 
         // Ensure background pool creation is initiated asynchronously
         crate::connection::ensure_background_pool_creation(self, connection_id);
@@ -120,7 +174,10 @@ impl super::Tabular {
         // Try using cached databases from memory/disk first to render immediately
         let cached_dbs = self.get_databases_cached(connection_id);
         if !cached_dbs.is_empty() {
-            debug!("Found cached databases for connection {}: {:?}", connection_id, cached_dbs);
+            debug!(
+                "Found cached databases for connection {}: {:?}",
+                connection_id, cached_dbs
+            );
             self.build_connection_structure_from_cache(connection_id, node, &cached_dbs, false);
             node.is_loaded = true;
         } else if let Some(connection) = self
@@ -150,6 +207,9 @@ impl super::Tabular {
                     crate::driver_mongodb::load_mongodb_structure(connection_id, &connection, node);
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    crate::window_egui::plugin_tree::load_structure(connection_id, &connection, node);
+                }
             }
             node.is_loaded = true;
         }
@@ -182,9 +242,10 @@ impl super::Tabular {
                     // Add each database from cache
                     for db_name in databases {
                         // Skip system databases for cleaner view
-                        if !["information_schema", "performance_schema", "mysql", "sys"]
-                            .contains(&db_name.as_str())
-                        {
+                        if !crate::schema_objects::hide_database(
+                            &models::enums::DatabaseType::MySQL,
+                            db_name,
+                        ) {
                             let mut db_node = models::structs::TreeNode::new(
                                 db_name.clone(),
                                 models::enums::NodeType::Database,
@@ -255,7 +316,6 @@ impl super::Tabular {
                         }
                     }
 
-
                     let mut dba_folder = models::structs::TreeNode::new(
                         "DBA Views".to_string(),
                         models::enums::NodeType::DBAViewsFolder,
@@ -264,7 +324,9 @@ impl super::Tabular {
 
                     let mut dba_children = Vec::new();
 
-                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MySQL) {
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(
+                        &models::enums::DatabaseType::MySQL,
+                    ) {
                         let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
                         node.connection_id = Some(connection_id);
                         node.is_loaded = false;
@@ -273,14 +335,18 @@ impl super::Tabular {
                     }
 
                     // Render Custom Views
-                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!(
+                        "Cache Builder: Rendering custom views for connection {}: found {}",
+                        connection_id,
+                        connection.custom_views.len()
+                    );
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
                         );
                         view_node.connection_id = Some(connection_id);
-                        view_node.query = Some(view.query.clone()); 
+                        view_node.query = Some(view.query.clone());
                         view_node.is_loaded = true;
                         dba_children.push(view_node);
                     }
@@ -297,17 +363,17 @@ impl super::Tabular {
                         );
                         replication_folder.connection_id = Some(connection_id);
                         replication_folder.is_loaded = true;
-                        
+
                         let mut status_node = models::structs::TreeNode::new(
                             "Status".to_string(),
                             models::enums::NodeType::ReplicationStatusFolder,
                         );
                         status_node.connection_id = Some(connection_id);
                         status_node.is_loaded = false;
-                        
+
                         main_children.push(replication_folder);
                     }
-                    
+
                     node.children = main_children;
                     return;
                 }
@@ -320,7 +386,10 @@ impl super::Tabular {
                     databases_folder.connection_id = Some(connection_id);
 
                     for db_name in databases {
-                        if !["template0", "template1", "postgres"].contains(&db_name.as_str()) {
+                        if !crate::schema_objects::hide_database(
+                            &models::enums::DatabaseType::PostgreSQL,
+                            db_name,
+                        ) {
                             let mut db_node = models::structs::TreeNode::new(
                                 db_name.clone(),
                                 models::enums::NodeType::Database,
@@ -360,23 +429,29 @@ impl super::Tabular {
 
                     let mut dba_children = Vec::new();
 
-                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::PostgreSQL) {
-                         let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
-                         node.connection_id = Some(connection_id);
-                         node.is_loaded = false;
-                         node.query = Some(query.to_string());
-                         dba_children.push(node);
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(
+                        &models::enums::DatabaseType::PostgreSQL,
+                    ) {
+                        let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
+                        node.connection_id = Some(connection_id);
+                        node.is_loaded = false;
+                        node.query = Some(query.to_string());
+                        dba_children.push(node);
                     }
 
                     // Render Custom Views
-                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!(
+                        "Cache Builder: Rendering custom views for connection {}: found {}",
+                        connection_id,
+                        connection.custom_views.len()
+                    );
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
                         );
                         view_node.connection_id = Some(connection_id);
-                        view_node.query = Some(view.query.clone()); 
+                        view_node.query = Some(view.query.clone());
                         view_node.is_loaded = true;
                         dba_children.push(view_node);
                     }
@@ -517,23 +592,29 @@ impl super::Tabular {
 
                     let mut dba_children = Vec::new();
 
-                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(&models::enums::DatabaseType::MsSQL) {
+                    for (name, node_type, query) in crate::sidebar_database::get_default_dba_views(
+                        &models::enums::DatabaseType::MsSQL,
+                    ) {
                         let mut node = models::structs::TreeNode::new(name.to_string(), node_type);
                         node.connection_id = Some(connection_id);
                         node.is_loaded = false;
                         node.query = Some(query.to_string());
                         dba_children.push(node);
-                   }
+                    }
 
                     // Render Custom Views
-                    log::debug!("Cache Builder: Rendering custom views for connection {}: found {}", connection_id, connection.custom_views.len());
+                    log::debug!(
+                        "Cache Builder: Rendering custom views for connection {}: found {}",
+                        connection_id,
+                        connection.custom_views.len()
+                    );
                     for view in connection.custom_views.iter() {
                         let mut view_node = models::structs::TreeNode::new(
                             view.name.clone(),
                             models::enums::NodeType::CustomView,
                         );
                         view_node.connection_id = Some(connection_id);
-                        view_node.query = Some(view.query.clone()); 
+                        view_node.query = Some(view.query.clone());
                         view_node.is_loaded = true;
                         dba_children.push(view_node);
                     }
@@ -544,6 +625,13 @@ impl super::Tabular {
                     main_children.push(dba_folder);
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    main_children = crate::window_egui::plugin_tree::structure_from_databases(
+                        connection_id,
+                        connection,
+                        databases,
+                    );
+                }
             }
 
             node.children = main_children;
@@ -593,11 +681,18 @@ impl super::Tabular {
             return;
         }
 
-        eprintln!("[TREE-LOADER] load_databases_for_folder conn={}", connection_id);
+        debug!(
+            "[TREE-LOADER] load_databases_for_folder conn={}",
+            connection_id
+        );
 
         // First check cache
         let cached_opt = cache_data::get_databases_from_cache(self, connection_id);
-        eprintln!("[TREE-LOADER] conn={} SQLite database_cache lookup returned: {:?}", connection_id, cached_opt);
+        debug!(
+            "[TREE-LOADER] conn={} SQLite database_cache lookup returned: {} dbs",
+            connection_id,
+            cached_opt.as_ref().map(|d| d.len()).unwrap_or(0)
+        );
 
         // Distinguish three cases:
         // 1. Some(non-empty) → cache hit, populate tree immediately
@@ -606,7 +701,11 @@ impl super::Tabular {
         // 3. None            → DB lookup failed entirely (no pool / first run) → trigger auto-sync
         match cached_opt {
             Some(cached_databases) if !cached_databases.is_empty() => {
-                eprintln!("[TREE-LOADER] conn={} CACHE HIT! Building tree nodes for {} databases: {:?}", connection_id, cached_databases.len(), cached_databases);
+                debug!(
+                    "[TREE-LOADER] conn={} CACHE HIT! Building tree nodes for {} databases",
+                    connection_id,
+                    cached_databases.len()
+                );
                 databases_folder.children.clear();
                 for db_name in &cached_databases {
                     let mut db_node = models::structs::TreeNode::new(
@@ -659,7 +758,10 @@ impl super::Tabular {
                 // Cache was queried successfully but returned an empty list — background sync
                 // is still in-flight and hasn't written database rows yet.  Do NOT re-trigger
                 // auto-sync here; just show a passive "Syncing..." placeholder.
-                eprintln!("[TREE-LOADER] conn={} cache Some([]) — sync in-flight, showing Syncing...", connection_id);
+                debug!(
+                    "[TREE-LOADER] conn={} cache Some([]) — sync in-flight, showing Syncing...",
+                    connection_id
+                );
                 databases_folder.children.clear();
                 let syncing_node = models::structs::TreeNode::new(
                     "Syncing databases...".to_string(),
@@ -671,16 +773,18 @@ impl super::Tabular {
             None => {
                 // Cache lookup returned None — DB pool not ready or connection never fetched databases.
                 // Fetch databases list in background if not already fetching.
-                eprintln!("[TREE-LOADER] conn={} CACHE MISS (None)! Dispatching FetchDatabases in background", connection_id);
+                debug!(
+                    "[TREE-LOADER] conn={} CACHE MISS (None)! Dispatching FetchDatabases in background",
+                    connection_id
+                );
 
                 if !self.fetching_databases.contains(&connection_id)
                     && !self.connection_errors.contains_key(&connection_id)
                 {
                     if let Some(sender) = &self.background_sender {
                         self.fetching_databases.insert(connection_id);
-                        let _ = sender.send(models::enums::BackgroundTask::FetchDatabases {
-                            connection_id,
-                        });
+                        let _ = sender
+                            .send(models::enums::BackgroundTask::FetchDatabases { connection_id });
                     }
                 }
 
@@ -728,7 +832,9 @@ impl super::Tabular {
                 models::enums::DatabaseType::MongoDB => {
                     vec!["admin".to_string(), "local".to_string()]
                 }
-                models::enums::DatabaseType::ApiHttp => vec![],
+                models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                    vec![]
+                }
             };
 
             // Clear loading message
@@ -881,10 +987,8 @@ impl super::Tabular {
                     db_name.clone()
                 };
 
-                let mut db_node = models::structs::TreeNode::new(
-                    display_name,
-                    models::enums::NodeType::Database,
-                );
+                let mut db_node =
+                    models::structs::TreeNode::new(display_name, models::enums::NodeType::Database);
                 db_node.connection_id = Some(connection_id);
                 db_node.database_name = Some(db_name.clone());
                 db_node.is_loaded = false;
@@ -931,7 +1035,10 @@ impl super::Tabular {
         db_node: &mut models::structs::TreeNode,
     ) {
         // If already fetching, do nothing — the background result will update the tree
-        if self.fetching_redis_keys.contains(&(connection_id, database_name.to_string())) {
+        if self
+            .fetching_redis_keys
+            .contains(&(connection_id, database_name.to_string()))
+        {
             log::debug!(
                 "[redis_keys] fetch already in progress for connection {} keyspace {}",
                 connection_id,
@@ -948,7 +1055,8 @@ impl super::Tabular {
         );
 
         // Mark as fetching and show a loading placeholder
-        self.fetching_redis_keys.insert((connection_id, database_name.to_string()));
+        self.fetching_redis_keys
+            .insert((connection_id, database_name.to_string()));
         db_node.children.clear();
         let loading_node = models::structs::TreeNode::new(
             "Loading keys...".to_string(),
@@ -980,28 +1088,35 @@ impl super::Tabular {
         if self.connection_errors.contains_key(&connection_id) {
             return Vec::new();
         }
-        
+
         // If not in cache or empty, trigger background fetch
         // Check if we are already fetching for this connection to avoid spamming
         let is_fetching = self.fetching_databases.contains(&connection_id);
-        
+
         if !is_fetching {
-             // Dispatch background task
-             if let Some(sender) = &self.background_sender {
-                 // Mark as fetching
-                 self.fetching_databases.insert(connection_id);
-                 let _ = sender.send(models::enums::BackgroundTask::FetchDatabases {
-                     connection_id,
-                 });
-             }
+            // Dispatch background task
+            if let Some(sender) = &self.background_sender {
+                // Mark as fetching
+                self.fetching_databases.insert(connection_id);
+                let _ =
+                    sender.send(models::enums::BackgroundTask::FetchDatabases { connection_id });
+            }
         }
 
         // Return empty for now; UI will update when background task completes
         Vec::new()
     }
 
-    pub fn get_schemas_cached(&mut self, _connection_id: i64, _database_name: Option<&str>) -> Vec<String> {
-        let mut schemas = vec!["public".to_string(), "information_schema".to_string(), "pg_catalog".to_string()];
+    pub fn get_schemas_cached(
+        &mut self,
+        _connection_id: i64,
+        _database_name: Option<&str>,
+    ) -> Vec<String> {
+        let mut schemas = vec![
+            "public".to_string(),
+            "information_schema".to_string(),
+            "pg_catalog".to_string(),
+        ];
         schemas.dedup();
         schemas
     }
@@ -1022,7 +1137,13 @@ impl super::Tabular {
 
             match connection.connection_type {
                 models::enums::DatabaseType::MySQL => {
-                    self.load_mysql_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
+                    self.load_mysql_folder_content(
+                        connection_id,
+                        &connection,
+                        node,
+                        folder_type,
+                        force_live_fetch,
+                    );
                 }
                 models::enums::DatabaseType::PostgreSQL => {
                     self.load_postgresql_folder_content(
@@ -1034,13 +1155,25 @@ impl super::Tabular {
                     );
                 }
                 models::enums::DatabaseType::SQLite => {
-                    self.load_sqlite_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
+                    self.load_sqlite_folder_content(
+                        connection_id,
+                        &connection,
+                        node,
+                        folder_type,
+                        force_live_fetch,
+                    );
                 }
                 models::enums::DatabaseType::Redis => {
                     self.load_redis_folder_content(connection_id, &connection, node, folder_type);
                 }
                 models::enums::DatabaseType::MsSQL => {
-                    self.load_mssql_folder_content(connection_id, &connection, node, folder_type, force_live_fetch);
+                    self.load_mssql_folder_content(
+                        connection_id,
+                        &connection,
+                        node,
+                        folder_type,
+                        force_live_fetch,
+                    );
                 }
                 models::enums::DatabaseType::MongoDB => {
                     // For MongoDB, TablesFolder represents collections
@@ -1052,12 +1185,13 @@ impl super::Tabular {
 
                     // Try cache first (skipped when force_live_fetch is true)
                     if !force_live_fetch
-                    && let Some(cached) = cache_data::get_tables_from_cache(
-                        self,
-                        connection_id,
-                        &database_name,
-                        table_type,
-                    ) && !cached.is_empty()
+                        && let Some(cached) = cache_data::get_tables_from_cache(
+                            self,
+                            connection_id,
+                            &database_name,
+                            table_type,
+                        )
+                        && !cached.is_empty()
                     {
                         node.children = cached
                             .into_iter()
@@ -1116,6 +1250,16 @@ impl super::Tabular {
                     }
                 }
                 models::enums::DatabaseType::ApiHttp => {}
+                models::enums::DatabaseType::Plugin(_) => {
+                    crate::window_egui::plugin_tree::load_folder_content(
+                        self,
+                        connection_id,
+                        &connection,
+                        node,
+                        &folder_type,
+                        force_live_fetch,
+                    );
+                }
             }
 
             node.is_loaded = true;
@@ -1150,14 +1294,16 @@ impl super::Tabular {
 
         // First try to get from cache (skipped when force_live_fetch is true)
         if !force_live_fetch
-        && let Some(cached_items) =
-            cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
+            && let Some(cached_items) =
+                cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached_items.is_empty()
         {
-            eprintln!(
-                "[TABULAR-DEBUG] MySQL load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, cached_items.len(),
-                cached_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] MySQL load_folder: CACHE HIT conn={} db={:?} type={:?} count={}",
+                connection_id,
+                database_name,
+                table_type,
+                cached_items.len()
             );
             // Create tree nodes from cached data
             let child_nodes: Vec<models::structs::TreeNode> = cached_items
@@ -1200,10 +1346,12 @@ impl super::Tabular {
             database_name,
             table_type,
         ) {
-            eprintln!(
-                "[TABULAR-DEBUG] MySQL load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, real_items.len(),
-                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] MySQL load_folder: LIVE FETCH conn={} db={:?} type={:?} count={}",
+                connection_id,
+                database_name,
+                table_type,
+                real_items.len()
             );
 
             // Save to cache for future use
@@ -1281,9 +1429,19 @@ impl super::Tabular {
     ) {
         let database_name = node.database_name.as_ref().unwrap_or(&connection.database);
 
-        let table_type = match folder_type {
-            models::enums::NodeType::TablesFolder => "table",
-            models::enums::NodeType::ViewsFolder => "view",
+        use crate::schema_objects::catalog::PgObjectKind;
+        let object_kind = match folder_type {
+            models::enums::NodeType::MaterializedViewsFolder => Some(PgObjectKind::MaterializedView),
+            models::enums::NodeType::TypesFolder => Some(PgObjectKind::UserType),
+            models::enums::NodeType::UserFunctionsFolder => Some(PgObjectKind::Function),
+            models::enums::NodeType::StoredProceduresFolder => Some(PgObjectKind::Procedure),
+            models::enums::NodeType::TriggersFolder => Some(PgObjectKind::Trigger),
+            _ => None,
+        };
+        let table_type = match (&folder_type, object_kind) {
+            (models::enums::NodeType::TablesFolder, _) => "table",
+            (models::enums::NodeType::ViewsFolder, _) => "view",
+            (_, Some(kind)) => kind.cache_key(),
             _ => {
                 node.children = vec![models::structs::TreeNode::new(
                     "Not supported for PostgreSQL".to_string(),
@@ -1292,28 +1450,37 @@ impl super::Tabular {
                 return;
             }
         };
+        let child_type = match folder_type {
+            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
+            models::enums::NodeType::MaterializedViewsFolder => {
+                models::enums::NodeType::MaterializedView
+            }
+            models::enums::NodeType::TypesFolder => models::enums::NodeType::UserType,
+            models::enums::NodeType::UserFunctionsFolder => models::enums::NodeType::UserFunction,
+            models::enums::NodeType::StoredProceduresFolder => {
+                models::enums::NodeType::StoredProcedure
+            }
+            models::enums::NodeType::TriggersFolder => models::enums::NodeType::Trigger,
+            _ => models::enums::NodeType::View,
+        };
 
         // Try cache first (skipped when force_live_fetch is true)
         if !force_live_fetch
-        && let Some(cached) =
-            cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
+            && let Some(cached) =
+                cache_data::get_tables_from_cache(self, connection_id, database_name, table_type)
             && !cached.is_empty()
         {
-            eprintln!(
-                "[TABULAR-DEBUG] PG load_folder: CACHE HIT conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, cached.len(),
-                cached.iter().any(|n| n.to_lowercase().contains("panen"))
+            debug!(
+                "[TREE-LOADER] PG load_folder: CACHE HIT conn={} db={:?} type={:?} count={}",
+                connection_id,
+                database_name,
+                table_type,
+                cached.len()
             );
             node.children = cached
                 .into_iter()
                 .map(|name| {
-                    let mut child = models::structs::TreeNode::new(
-                        name,
-                        match folder_type {
-                            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
-                            _ => models::enums::NodeType::View,
-                        },
-                    );
+                    let mut child = models::structs::TreeNode::new(name, child_type.clone());
                     child.connection_id = Some(connection_id);
                     child.database_name = Some(database_name.clone());
                     child.is_loaded = false;
@@ -1325,16 +1492,33 @@ impl super::Tabular {
         }
 
         // Fallback to live fetch
-        if let Some(real_items) = crate::driver_postgres::fetch_tables_from_postgres_connection(
-            self,
-            connection_id,
-            database_name,
-            table_type,
-        ) {
-            eprintln!(
-                "[TABULAR-DEBUG] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={} panen_found={}",
-                connection_id, database_name, table_type, real_items.len(),
-                real_items.iter().any(|n| n.to_lowercase().contains("panen"))
+        let live_items = match object_kind {
+            Some(kind) => {
+                let database = database_name.clone();
+                self.run_schema_sql_blocking(
+                    connection_id,
+                    Some(&database),
+                    &crate::schema_objects::catalog::pg_list_objects_sql(kind),
+                    15,
+                )
+                .map_err(|e| log::warn!("[TREE-LOADER] PG {} list failed: {}", table_type, e))
+                .ok()
+                .map(|sets| sets.first().map(|s| s.first_column()).unwrap_or_default())
+            }
+            None => crate::driver_postgres::fetch_tables_from_postgres_connection(
+                self,
+                connection_id,
+                database_name,
+                table_type,
+            ),
+        };
+        if let Some(real_items) = live_items {
+            debug!(
+                "[TREE-LOADER] PG load_folder: LIVE FETCH conn={} db={:?} type={:?} count={}",
+                connection_id,
+                database_name,
+                table_type,
+                real_items.len()
             );
             let table_data: Vec<(String, String)> = real_items
                 .iter()
@@ -1344,13 +1528,7 @@ impl super::Tabular {
             node.children = real_items
                 .into_iter()
                 .map(|name| {
-                    let mut child = models::structs::TreeNode::new(
-                        name,
-                        match folder_type {
-                            models::enums::NodeType::TablesFolder => models::enums::NodeType::Table,
-                            _ => models::enums::NodeType::View,
-                        },
-                    );
+                    let mut child = models::structs::TreeNode::new(name, child_type.clone());
                     child.connection_id = Some(connection_id);
                     child.database_name = Some(database_name.clone());
                     child.is_loaded = false;
@@ -1391,8 +1569,8 @@ impl super::Tabular {
 
         // Try cache first (skipped when force_live_fetch is true)
         if !force_live_fetch
-        && let Some(cached_items) =
-            cache_data::get_tables_from_cache(self, connection_id, "main", table_type)
+            && let Some(cached_items) =
+                cache_data::get_tables_from_cache(self, connection_id, "main", table_type)
             && !cached_items.is_empty()
         {
             debug!(
@@ -1562,8 +1740,8 @@ impl super::Tabular {
 
         // Try cache first (skipped when force_live_fetch is true)
         if !force_live_fetch
-        && let Some(cached) =
-            cache_data::get_tables_from_cache(self, connection_id, database_name, kind)
+            && let Some(cached) =
+                cache_data::get_tables_from_cache(self, connection_id, database_name, kind)
             && !cached.is_empty()
         {
             node.children = cached
@@ -1804,7 +1982,8 @@ impl super::Tabular {
                 self.load_table_columns_from_cache(connection_id, table_name, &database_name);
             let (indexes_list, pk_columns) =
                 self.extract_indexes_and_pks_from_cache(connection_id, &database_name, table_name);
-            let partitions_list = self.extract_partitions_from_cache(connection_id, &database_name, table_name);
+            let partitions_list =
+                self.extract_partitions_from_cache(connection_id, &database_name, table_name);
 
             let mut columns_folder = models::structs::TreeNode::new(
                 "Columns".to_string(),
@@ -1855,7 +2034,9 @@ impl super::Tabular {
             partitions_folder.connection_id = Some(connection_id);
             partitions_folder.database_name = Some(database_name.clone());
             partitions_folder.table_name = Some(table_name.to_string());
-            partitions_folder.is_loaded = true;
+            // Belum "loaded": saat dibuka, batas partisi dan jumlah baris diambil
+            // langsung dari server (lihat `load_partitions_folder`).
+            partitions_folder.is_loaded = false;
             partitions_folder.children = partitions_list
                 .into_iter()
                 .map(|part| {
@@ -1865,7 +2046,10 @@ impl super::Tabular {
                     } else {
                         part.name.clone()
                     };
-                    let mut n = models::structs::TreeNode::new(display_name, models::enums::NodeType::Index);
+                    let mut n = models::structs::TreeNode::new(
+                        display_name,
+                        models::enums::NodeType::Column,
+                    );
                     n.connection_id = Some(connection_id);
                     n.database_name = Some(database_name.clone());
                     n.table_name = Some(table_name.to_string());
@@ -1877,7 +2061,12 @@ impl super::Tabular {
                 })
                 .collect();
 
-            let subfolders = vec![columns_folder, indexes_folder, pks_folder, partitions_folder];
+            let subfolders = vec![
+                columns_folder,
+                indexes_folder,
+                pks_folder,
+                partitions_folder,
+            ];
 
             // Find the table node recursively and update it with subfolders
             let updated = Self::update_table_node_with_columns_recursive(
@@ -2047,21 +2236,13 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> (Vec<String>, Vec<String>) {
-        let pk_columns = if let Some(pks) =
+        let pk_columns =
             cache_data::get_primary_keys_from_cache(self, connection_id, database_name, table_name)
-        {
-            pks
-        } else {
-            Vec::new()
-        };
+                .unwrap_or_default();
 
-        let indexes_list = if let Some(names) =
+        let indexes_list =
             cache_data::get_index_names_from_cache(self, connection_id, database_name, table_name)
-        {
-            names
-        } else {
-            Vec::new()
-        };
+                .unwrap_or_default();
 
         (indexes_list, pk_columns)
     }
@@ -2071,8 +2252,15 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> Vec<models::structs::PartitionStructInfo> {
-        if let Some(cached_partitions) = cache_data::get_partitions_from_cache(self, connection_id, database_name, table_name) {
-            debug!("📚 Using cached partitions for {}/{} ({} partitions)", database_name, table_name, cached_partitions.len());
+        if let Some(cached_partitions) =
+            cache_data::get_partitions_from_cache(self, connection_id, database_name, table_name)
+        {
+            debug!(
+                "📚 Using cached partitions for {}/{} ({} partitions)",
+                database_name,
+                table_name,
+                cached_partitions.len()
+            );
             return cached_partitions;
         }
         Vec::new()
@@ -2124,7 +2312,10 @@ impl super::Tabular {
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA index_list('{}')", escaped);
-                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(sqlite_pool.as_ref()).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .fetch_all(sqlite_pool.as_ref())
+                            .await
+                        {
                             Ok(rows) => {
                                 use sqlx::Row;
                                 let mut names = Vec::new();
@@ -2188,7 +2379,9 @@ impl super::Tabular {
                     }
                 })
             }
-            models::enums::DatabaseType::ApiHttp => Vec::new(),
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -2262,7 +2455,10 @@ impl super::Tabular {
                     {
                         let escaped = table_name.replace("'", "''");
                         let q = format!("PRAGMA table_info('{}')", escaped);
-                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str())).fetch_all(sqlite_pool.as_ref()).await {
+                        match sqlx::query(sqlx::AssertSqlSafe(q.as_str()))
+                            .fetch_all(sqlite_pool.as_ref())
+                            .await
+                        {
                             Ok(rows) => {
                                 use sqlx::Row;
                                 let mut names = Vec::new();
@@ -2316,7 +2512,7 @@ impl super::Tabular {
             }
             models::enums::DatabaseType::Redis => Vec::new(),
             models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
-            models::enums::DatabaseType::ApiHttp => vec![],
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => vec![],
         }
     }
 
@@ -2337,6 +2533,8 @@ impl super::Tabular {
                     | models::enums::NodeType::UserFunctionsFolder
                     | models::enums::NodeType::TriggersFolder
                     | models::enums::NodeType::EventsFolder
+                    | models::enums::NodeType::MaterializedViewsFolder
+                    | models::enums::NodeType::TypesFolder
             );
 
             if reloadable

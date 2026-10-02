@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "0.14.3"
+version = "1.1.4"
 edition = "2024"
 
 [lib]
@@ -15,6 +15,10 @@ icon = ["assets/AppIcon.icns"]
 category = "Developer Tool"
 copyright = "Copyright © 2025 Y.N Pamungkas Jayuda"
 info = "Your SQL Editor, Forged with Rust: Fast, Safe, Efficient."
+# Deep link tabular:// (M1), kamus AppleScript (M4), tipe Handoff (M5).
+osx_url_schemes = ["tabular"]
+resources = ["apple/macos/Tabular.sdef"]
+osx_info_plist_exts = ["apple/macos/Info-bundle-extra.plist"]
 
 [dependencies]
 eframe = "0.36"
@@ -35,39 +39,65 @@ sqlx = { version = "0.9", features = [
 # NOTE: capped at 0.37 — sqlx-sqlite 0.9 requires libsqlite3-sys <0.38 and the
 # `links = "sqlite3"` constraint allows only one version in the tree.
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+# Vector search (vec_distance_cosine, dll.) untuk retrieval skema AI & history.
+# Dikompilasi dengan SQLITE_CORE, jadi memakai SQLite bundled di atas — tanpa
+# library SQLite kedua; jalan di desktop, iOS, dan Android.
+sqlite-vec = "0.1.9"
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.6.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
-mongodb = { version = "3.8.0", features = ["zlib-compression"] }
+mongodb = { version = "3.9.1", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 egui_extras = { version = "0.36", features = ["datepicker"] }
 egui_commonmark = { version = "0.25", features = ["pulldown_cmark"] }
+# Chart hasil query dan metrik EXPLAIN (C1/C2).
+egui_plot = "0.37"
+# Peta slippy untuk kolom geometry/PostGIS (C4).
+walkers = "0.60"
 # Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
 jiff = "0.2"
 colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dirs = "6.0"
+# JSON Schema untuk `outputSchema` tool MCP. Tipe hasil agent ikut dikompilasi di
+# iOS (tanpa rmcp), jadi derive-nya butuh schemars langsung; versi mayor harus
+# sama dengan yang dipakai rmcp.
+schemars = "1"
+dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.98"                           # Pure-Rust xlsx writer (no libclang/C toolchain)
-hex = "0.4.3"
-rust_decimal = "1.42.1"
-wasmi = "1.1.0"
-log = "0.4"
-env_logger = "0.11"
-dotenv = "0.15.0"
-md5 = "0.8"
-# Pinned exact: pre-1.0 API moves between minors (replaces tiberius + deadpool-tiberius)
-mssql-client = { version = ">=0.20.0", features = [
-       "chrono",
-       "decimal",
-       "uuid",
+rust_xlsxwriter = "0.99"                                          # Pure-Rust xlsx writer (no libclang/C toolchain)
+# Import/Data Files (H1/H4): pembaca XLSX murni Rust.
+calamine = "0.36"
+# Parquet native (H1/H2) lewat API record/kolom, tanpa fitur `arrow` supaya
+# Arrow/DataFusion tidak ikut ditarik.
+parquet = { version = "60", default-features = false, features = [
+       "snap",
+       "flate2-zlib-rs",
+       "lz4",
+       "zstd",
+       "brotli",
+       "json",
 ] }
-mssql-driver-pool = ">=0.20.0"
+# Encoding teks ekspor/impor (H5); sudah ada di tree lewat reqwest.
+encoding_rs = "0.8"
+# Data Files terkompresi `.zst` dan buffer untuk pembaca Parquet; keduanya
+# sudah ada di tree lewat parquet.
+zstd = { version = "0.14", default-features = false }
+bytes = "1"
+hex = "0.4.3"
+rust_decimal = "1.43.0"
+wasmi = "2.0.0"
+log = { version = "0.4", features = ["release_max_level_debug"] }
+env_logger = "0.11"
+dotenvy = "0.15.7"
+md5 = "0.8"
+# Dikunci ke 0.20.x: API pre-1.0 berubah antar minor (pengganti tiberius + deadpool-tiberius)
+mssql-client = { version = "0.20", features = ["chrono", "decimal", "uuid"] }
+mssql-driver-pool = "0.20"
 futures-util = "0.3"
 # Self-update dependencies
 reqwest = { version = "0.13", features = [
@@ -83,7 +113,7 @@ flate2 = "1.1"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
-tree-sitter = { version = "0.26", optional = true }
+tree-sitter = { version = "0.27.0", optional = true }
 tree-sitter-sequel = { version = "0.3.11", optional = true }
 tree-sitter-json = "0.24.8"
 tree-sitter-javascript = "0.25.0"
@@ -91,8 +121,9 @@ tree-sitter-javascript = "0.25.0"
 anyhow = { version = "1", optional = true }
 once_cell = "1"
 thiserror = "2"
+# Parsing deep link `tabular://` dan DSN (M1/M2); sudah ada di tree lewat reqwest.
+url = "2.5"
 async-trait = "0.1.92"
-cargo-deb = "3.7.0"
 # Cipher for the encrypted-file secret store fallback (src/secrets.rs);
 # the primary OS-keychain backends are declared per-target below.
 chacha20poly1305 = "0.11"
@@ -115,15 +146,15 @@ aes-gcm = { version = "0.11" } # symmetric encryption of synced payloads
 sha2 = { version = "0.11" } # hashing (checksums, KDF glue)
 base64 = "0.23"
 rand = { version = "0.10" } # AES-GCM nonce generation
-argon2 = { version = "0.5", features = [
-       "std",
+argon2 = { version = "0.6", features = [
+       "zeroize",
 ] } # Sync Passphrase -> KEK (Argon2id)
 crypto_box = { version = "0.9", features = [
        "seal",
        "std",
 ] } # X25519 sealed boxes for Team vault key sharing
 zeroize = { version = "1", features = [
-       "zeroize_derive",
+       "derive",
 ] } # scrub key material from memory
 
 # OS keychain backends (see src/secrets.rs). Linux is opt-in via the
@@ -132,13 +163,52 @@ zeroize = { version = "1", features = [
 # uses the encrypted-file store.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = "4"
+# Integrasi macOS (src/platform_macos.rs): Apple Event `tabular://` + AppleScript,
+# Handoff (NSUserActivity), Touch ID (LocalAuthentication lewat runtime ObjC).
+# Versi mengikuti objc2 0.6 yang sudah ditarik eframe/rfd, jadi tidak ada tree kedua.
+objc2 = "0.6"
+block2 = "0.6"
+# Apple Event dipanggil lewat msg_send! mentah: API bertipenya butuh crate
+# objc2-core-services tambahan.
+objc2-foundation = { version = "0.3", features = [
+       "NSArray",
+       "NSDictionary",
+       "NSLocale",
+       "NSObject",
+       "NSString",
+       "NSUserActivity",
+] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 rfd = "0.17"
+# Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
+# Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
+# sering mengubah API antar rilis. `elicitation`: konfirmasi statement tulis
+# lewat klien bila GUI tidak berjalan (K1). `client` + `transport-child-process`:
+# chat AI memanggil server MCP eksternal (K5).
+rmcp = { version = "3.4", features = [
+       "transport-io",
+       "elicitation",
+       "client",
+       "transport-child-process",
+] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }
 keyring = "4"
+# UIKit bridge for `self_update::open_url` — iOS has no `open`/`xdg-open`, so the
+# OAuth sign-in URL has to go through -[UIApplication openURL:options:...].
+# Pinned to the versions winit already pulls in (see patches/winit/Cargo.toml) so
+# the iOS build does not end up compiling two objc2 trees.
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = [
+       "NSString",
+       "NSURL",
+       "NSDictionary",
+] }
+# `block2` gates -[UIApplication openURL:options:completionHandler:]; without it
+# only the deprecated openURL: is generated.
+objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "block2"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = "4"
@@ -211,3 +281,20 @@ assets = [
 extended-description = "Tabular helps you explore and query SQL and NoSQL databases from a single desktop app."
 recommends = ["update-desktop-database", "gtk-update-icon-cache"]
 maintainer-scripts = "debian"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Proc-macro dan build script dikompilasi sebagai dylib yang di-dlopen oleh rustc.
+# `strip = true` (strip simbol penuh) memakai `strip` dari Xcode 27 yang membuat
+# LINKEDIT string pool tidak sejajar, sehingga dyld macOS 27 menolak memuatnya
+# ("mis-aligned LINKEDIT string pool" -> E0463 can't find crate serde_derive dll).
+# Untuk artefak host ini cukup buang debuginfo saja; binary akhir tetap strip penuh.
+[profile.release.build-override]
+strip = "debuginfo"
+
+[patch.crates-io]
+winit = { path = "patches/winit" }

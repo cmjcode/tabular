@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Enable App Sandbox (required for Mac App Store) -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+
+	<!-- Allow outgoing network connections (remote databases / cloud) -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+
+	<!-- Allow user-selected files read-write (SQLite, SQL scripts, CSV/JSON exports) -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+
+	<!-- Allow user-selected files read-only -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

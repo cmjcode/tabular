@@ -1,5 +1,6 @@
 target/
 target/*
+patches/**/Cargo.lock
 data/connections.db
 data/connections copy.db
 .vscode/
@@ -16,8 +17,14 @@ flatpak/cargo-vendor
 flatpak/repo
 .claude
 .agents
-Cargo.lock
 .idea
+
+# Databases and logs
+localhost
+*.db
+*.sqlite
+*.sqlite3
+*.log
 
 # iOS & Xcode build artifacts
 ios/Xcode/TabulariOS/Generated/
@@ -26,3 +33,8 @@ build/
 *.xcuserstate
 xcuserdata/
 DerivedData/
+.agent
+
+# Local environment (see .env.example)
+.env
+.venv

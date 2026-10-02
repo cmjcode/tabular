@@ -1,6 +1,5 @@
-use eframe::egui;
 pub use crate::config::UiModePreference;
-
+use eframe::egui;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeviceUiMetrics {
@@ -81,10 +80,12 @@ impl DeviceUiMetrics {
 
     /// Compute device metrics based on current context and user preference
     pub fn compute(ctx: &egui::Context, preference: UiModePreference) -> Self {
-        let screen_rect = ctx.input(|i| i.raw.screen_rect).unwrap_or(egui::Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(1024.0, 768.0),
-        ));
+        let screen_rect = ctx
+            .input(|i| i.raw.screen_rect)
+            .unwrap_or(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1024.0, 768.0),
+            ));
         let width = screen_rect.width();
         let height = screen_rect.height();
 
@@ -92,7 +93,10 @@ impl DeviceUiMetrics {
 
         let touch_detected = ctx.input(|i| {
             // Check if any touch events occurred or if raw touch inputs exist
-            !i.events.is_empty() && i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. }))
+            !i.events.is_empty()
+                && i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Touch { .. }))
         });
 
         let is_touch = match preference {

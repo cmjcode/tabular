@@ -2,8 +2,8 @@
 //! All network calls are async and return Results.
 //! The caller is responsible for scheduling them on the Tokio runtime.
 
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 use super::TabularAccount;
 
@@ -35,8 +35,16 @@ impl ApiClient {
         }
     }
 
+    /// Semua request sync lewat sini, jadi toggle privasi Cloud Sync cukup
+    /// dicek di satu tempat. Saat diblokir, URL diganti skema yang ditolak
+    /// reqwest sebelum ada koneksi jaringan (bahkan DNS), sehingga request
+    /// gagal dengan pesan jelas.
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.server_url, path)
+        let url = format!("{}{}", self.server_url, path);
+        match crate::privacy::check(crate::privacy::NetCategory::CloudSync, &url) {
+            Ok(()) => url,
+            Err(_) => format!("blocked-by-privacy-settings:{path}"),
+        }
     }
 
     /// Refresh the access token using the stored refresh token.
@@ -68,11 +76,15 @@ impl ApiClient {
     // ── Connections ──────────────────────────────────────────────────────────
 
     pub async fn list_connections(&self, token: &str) -> anyhow::Result<Vec<RemoteConnection>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/connections"))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteConnection>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteConnection>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -81,12 +93,16 @@ impl ApiClient {
         token: &str,
         req: &CreateConnectionReq,
     ) -> anyhow::Result<RemoteConnection> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(self.url("/api/v1/connections"))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteConnection>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteConnection>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -96,12 +112,16 @@ impl ApiClient {
         id: &str,
         req: &serde_json::Value,
     ) -> anyhow::Result<RemoteConnection> {
-        let resp = self.http
+        let resp = self
+            .http
             .put(self.url(&format!("/api/v1/connections/{}", id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteConnection>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteConnection>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -109,7 +129,9 @@ impl ApiClient {
         self.http
             .delete(self.url(&format!("/api/v1/connections/{}", id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
@@ -124,11 +146,15 @@ impl ApiClient {
         if let Some(s) = since {
             url.push_str(&format!("&since={}", s));
         }
-        let resp: serde_json::Value = self.http
+        let resp: serde_json::Value = self
+            .http
             .get(&url)
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
         let items: Vec<RemoteHistoryItem> = serde_json::from_value(resp["data"].clone())?;
         Ok(items)
     }
@@ -138,23 +164,31 @@ impl ApiClient {
         token: &str,
         items: Vec<HistoryPushItem>,
     ) -> anyhow::Result<u64> {
-        let resp: serde_json::Value = self.http
+        let resp: serde_json::Value = self
+            .http
             .post(self.url("/api/v1/history"))
             .bearer_auth(token)
             .json(&serde_json::json!({ "items": items }))
-            .send().await?.error_for_status()?
-            .json().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
         Ok(resp["inserted"].as_u64().unwrap_or(0))
     }
 
     // ── Saved Queries ────────────────────────────────────────────────────────
 
     pub async fn list_queries(&self, token: &str) -> anyhow::Result<Vec<RemoteSavedQuery>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/queries"))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteSavedQuery>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteSavedQuery>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -163,12 +197,16 @@ impl ApiClient {
         token: &str,
         req: &CreateQueryReq,
     ) -> anyhow::Result<RemoteSavedQuery> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(self.url("/api/v1/queries"))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteSavedQuery>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteSavedQuery>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -182,12 +220,16 @@ impl ApiClient {
         id: &str,
         req: &UpdateQueryReq,
     ) -> anyhow::Result<RemoteSavedQuery> {
-        let resp = self.http
+        let resp = self
+            .http
             .put(self.url(&format!("/api/v1/queries/{}", id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteSavedQuery>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteSavedQuery>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -195,18 +237,86 @@ impl ApiClient {
         self.http
             .delete(self.url(&format!("/api/v1/queries/{}", id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    // ── Diagrams ─────────────────────────────────────────────────────────────
+
+    pub async fn list_diagrams(&self, token: &str) -> anyhow::Result<Vec<RemoteDiagram>> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/diagrams"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteDiagram>>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn create_diagram(
+        &self,
+        token: &str,
+        req: &CreateDiagramReq,
+    ) -> anyhow::Result<RemoteDiagram> {
+        let resp = self
+            .http
+            .post(self.url("/api/v1/diagrams"))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteDiagram>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn update_diagram(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateDiagramReq,
+    ) -> anyhow::Result<RemoteDiagram> {
+        let resp = self
+            .http
+            .put(self.url(&format!("/api/v1/diagrams/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteDiagram>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_diagram(&self, token: &str, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/diagrams/{}", id)))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
     // ── HTTP Requests ────────────────────────────────────────────────────────
 
     pub async fn list_http_requests(&self, token: &str) -> anyhow::Result<Vec<RemoteHttpRequest>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/http-requests"))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteHttpRequest>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteHttpRequest>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -215,12 +325,16 @@ impl ApiClient {
         token: &str,
         req: &CreateHttpRequestReq,
     ) -> anyhow::Result<RemoteHttpRequest> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(self.url("/api/v1/http-requests"))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteHttpRequest>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteHttpRequest>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -230,12 +344,16 @@ impl ApiClient {
         id: &str,
         req: &UpdateHttpRequestReq,
     ) -> anyhow::Result<RemoteHttpRequest> {
-        let resp = self.http
+        let resp = self
+            .http
             .put(self.url(&format!("/api/v1/http-requests/{}", id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteHttpRequest>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteHttpRequest>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -243,18 +361,88 @@ impl ApiClient {
         self.http
             .delete(self.url(&format!("/api/v1/http-requests/{}", id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    // ── Projects ─────────────────────────────────────────────────────────────
+
+    pub async fn list_projects(&self, token: &str) -> anyhow::Result<Vec<RemoteProject>> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/projects"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteProject>>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Buat atau timpa project milik sendiri (upsert berdasarkan nama).
+    pub async fn upsert_project(
+        &self,
+        token: &str,
+        req: &UpsertProjectReq,
+    ) -> anyhow::Result<RemoteProject> {
+        let resp = self
+            .http
+            .post(self.url("/api/v1/projects"))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteProject>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// Perbarui project (juga milik orang lain bila akses `editor`).
+    pub async fn update_project(
+        &self,
+        token: &str,
+        id: &str,
+        req: &UpdateProjectReq,
+    ) -> anyhow::Result<RemoteProject> {
+        let resp = self
+            .http
+            .put(self.url(&format!("/api/v1/projects/{}", id)))
+            .bearer_auth(token)
+            .json(req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteProject>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    pub async fn delete_project(&self, token: &str, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/projects/{}", id)))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
     // ── Collab Rooms ─────────────────────────────────────────────────────────
 
     pub async fn list_rooms(&self, token: &str) -> anyhow::Result<Vec<super::CollabRoom>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/collab/rooms"))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<super::CollabRoom>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<super::CollabRoom>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -264,12 +452,16 @@ impl ApiClient {
         name: &str,
         description: Option<&str>,
     ) -> anyhow::Result<super::CollabRoom> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(self.url("/api/v1/collab/rooms"))
             .bearer_auth(token)
             .json(&serde_json::json!({ "name": name, "description": description }))
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<super::CollabRoom>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<super::CollabRoom>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -277,16 +469,26 @@ impl ApiClient {
         self.http
             .delete(self.url(&format!("/api/v1/collab/rooms/{}", room_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
-    pub async fn list_team_rooms(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<super::CollabRoom>> {
-        let resp = self.http
+    pub async fn list_team_rooms(
+        &self,
+        token: &str,
+        team_id: &str,
+    ) -> anyhow::Result<Vec<super::CollabRoom>> {
+        let resp = self
+            .http
             .get(self.url(&format!("/api/v1/teams/{}/rooms", team_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<super::CollabRoom>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<super::CollabRoom>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -296,33 +498,49 @@ impl ApiClient {
         team_id: &str,
         req: &CreateTeamRoomReq,
     ) -> anyhow::Result<super::CollabRoom> {
-        let resp = self.http
+        let resp = self
+            .http
             .post(self.url(&format!("/api/v1/teams/{}/rooms", team_id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<super::CollabRoom>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<super::CollabRoom>>()
+            .await?;
         Ok(resp.data)
     }
 
     // ── Teams ─────────────────────────────────────────────────────────────────
 
     pub async fn list_teams(&self, token: &str) -> anyhow::Result<Vec<RemoteTeam>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/teams"))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteTeam>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteTeam>>>()
+            .await?;
         Ok(resp.data)
     }
 
-    pub async fn create_team(&self, token: &str, req: &CreateTeamReq) -> anyhow::Result<RemoteTeam> {
-        let resp = self.http
+    pub async fn create_team(
+        &self,
+        token: &str,
+        req: &CreateTeamReq,
+    ) -> anyhow::Result<RemoteTeam> {
+        let resp = self
+            .http
             .post(self.url("/api/v1/teams"))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteTeam>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteTeam>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -330,60 +548,111 @@ impl ApiClient {
         self.http
             .delete(self.url(&format!("/api/v1/teams/{}", team_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
-    pub async fn list_team_members(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<RemoteTeamMember>> {
-        let resp = self.http
+    pub async fn list_team_members(
+        &self,
+        token: &str,
+        team_id: &str,
+    ) -> anyhow::Result<Vec<RemoteTeamMember>> {
+        let resp = self
+            .http
             .get(self.url(&format!("/api/v1/teams/{}/members", team_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteTeamMember>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteTeamMember>>>()
+            .await?;
         Ok(resp.data)
     }
 
-    pub async fn add_team_member(&self, token: &str, team_id: &str, req: &AddTeamMemberReq) -> anyhow::Result<()> {
+    pub async fn add_team_member(
+        &self,
+        token: &str,
+        team_id: &str,
+        req: &AddTeamMemberReq,
+    ) -> anyhow::Result<()> {
         self.http
             .post(self.url(&format!("/api/v1/teams/{}/members", team_id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
-    pub async fn remove_team_member(&self, token: &str, team_id: &str, user_id: &str) -> anyhow::Result<()> {
+    pub async fn remove_team_member(
+        &self,
+        token: &str,
+        team_id: &str,
+        user_id: &str,
+    ) -> anyhow::Result<()> {
         self.http
             .delete(self.url(&format!("/api/v1/teams/{}/members/{}", team_id, user_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
-    pub async fn list_shared_folders(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<RemoteSharedFolder>> {
-        let resp = self.http
+    pub async fn list_shared_folders(
+        &self,
+        token: &str,
+        team_id: &str,
+    ) -> anyhow::Result<Vec<RemoteSharedFolder>> {
+        let resp = self
+            .http
             .get(self.url(&format!("/api/v1/teams/{}/shared-folders", team_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteSharedFolder>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteSharedFolder>>>()
+            .await?;
         Ok(resp.data)
     }
 
-    pub async fn share_folder(&self, token: &str, team_id: &str, req: &ShareFolderReq) -> anyhow::Result<RemoteSharedFolder> {
-        let resp = self.http
+    pub async fn share_folder(
+        &self,
+        token: &str,
+        team_id: &str,
+        req: &ShareFolderReq,
+    ) -> anyhow::Result<RemoteSharedFolder> {
+        let resp = self
+            .http
             .post(self.url(&format!("/api/v1/teams/{}/shared-folders", team_id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteSharedFolder>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteSharedFolder>>()
+            .await?;
         Ok(resp.data)
     }
 
-    pub async fn unshare_folder(&self, token: &str, team_id: &str, folder_id: &str) -> anyhow::Result<()> {
+    pub async fn unshare_folder(
+        &self,
+        token: &str,
+        team_id: &str,
+        folder_id: &str,
+    ) -> anyhow::Result<()> {
         self.http
-            .delete(self.url(&format!("/api/v1/teams/{}/shared-folders/{}", team_id, folder_id)))
+            .delete(self.url(&format!(
+                "/api/v1/teams/{}/shared-folders/{}",
+                team_id, folder_id
+            )))
             .bearer_auth(token)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
@@ -398,7 +667,8 @@ impl ApiClient {
         username: Option<&str>,
         phone: Option<&str>,
     ) -> anyhow::Result<RemoteUser> {
-        let resp = self.http
+        let resp = self
+            .http
             .put(self.url("/api/v1/users/me"))
             .bearer_auth(token)
             .json(&serde_json::json!({
@@ -407,19 +677,122 @@ impl ApiClient {
                 "username": username,
                 "phone": phone,
             }))
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<RemoteUser>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteUser>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    // ── Moderation (App Store Guideline 1.2) ─────────────────────────────────
+
+    /// GET /api/v1/moderation/blocks — everyone the caller has blocked.
+    pub async fn list_blocks(&self, token: &str) -> anyhow::Result<Vec<BlockedUser>> {
+        let resp = self
+            .http
+            .get(self.url("/api/v1/moderation/blocks"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<BlockedUser>>>()
+            .await?;
+        Ok(resp.data)
+    }
+
+    /// POST /api/v1/moderation/blocks — block a user.
+    ///
+    /// The server also drops the pair out of every team they share, so the
+    /// caller should refresh teams afterwards.
+    pub async fn block_user(&self, token: &str, user_id: &str) -> anyhow::Result<()> {
+        self.http
+            .post(self.url("/api/v1/moderation/blocks"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "user_id": user_id }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// DELETE /api/v1/moderation/blocks/{user_id}
+    pub async fn unblock_user(&self, token: &str, user_id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(self.url(&format!("/api/v1/moderation/blocks/{}", user_id)))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// POST /api/v1/moderation/reports — report objectionable content or behaviour.
+    ///
+    /// `resource_type` is one of `user`, `team`, `shared_folder`, `room`;
+    /// `reason` one of `abuse`, `harassment`, `spam`, `illegal`, `other`.
+    pub async fn report_content(
+        &self,
+        token: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        reported_user_id: Option<&str>,
+        reason: &str,
+        details: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.http
+            .post(self.url("/api/v1/moderation/reports"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "reported_user_id": reported_user_id,
+                "reason": reason,
+                "details": details,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// DELETE /api/v1/users/me — irreversibly erases the account and every row
+    /// the server holds for it.
+    ///
+    /// App Store Review Guideline 5.1.1(v) requires an app that offers account
+    /// creation to offer deletion from inside the app. Callers must confirm with
+    /// the user first: this cannot be undone, and because `teams.owner_id`
+    /// cascades server-side it also removes any team this account owns for its
+    /// other members.
+    pub async fn delete_account(&self, token: &str) -> anyhow::Result<DeleteAccountResponse> {
+        let resp = self
+            .http
+            .delete(self.url("/api/v1/users/me"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<DeleteAccountResponse>>()
+            .await?;
         Ok(resp.data)
     }
 
     /// GET /api/v1/users/search?q= — exact match on email, username, or phone.
     pub async fn search_users(&self, token: &str, q: &str) -> anyhow::Result<Vec<RemoteUser>> {
-        let url = format!("{}?q={}", self.url("/api/v1/users/search"), percent_encode(q));
-        let resp = self.http
+        let url = format!(
+            "{}?q={}",
+            self.url("/api/v1/users/search"),
+            percent_encode(q)
+        );
+        let resp = self
+            .http
             .get(&url)
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<RemoteUser>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<RemoteUser>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -430,14 +803,19 @@ impl ApiClient {
 
     /// `None` when the caller has never created a vault yet (fresh account).
     pub async fn get_vault_keys(&self, token: &str) -> anyhow::Result<Option<RemoteVaultKeys>> {
-        let resp = self.http
+        let resp = self
+            .http
             .get(self.url("/api/v1/vault/keys"))
             .bearer_auth(token)
-            .send().await?;
+            .send()
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let wrapped = resp.error_for_status()?.json::<ApiWrapper<RemoteVaultKeys>>().await?;
+        let wrapped = resp
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteVaultKeys>>()
+            .await?;
         Ok(Some(wrapped.data))
     }
 
@@ -447,22 +825,36 @@ impl ApiClient {
             .put(self.url("/api/v1/vault/keys"))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
     /// Bulk-fetch X25519 public keys for the given user ids (used to grant a
     /// Team vault key to fellow members — the server never sees the key itself).
-    pub async fn list_public_keys(&self, token: &str, ids: &[String]) -> anyhow::Result<Vec<PublicKeyEntry>> {
+    pub async fn list_public_keys(
+        &self,
+        token: &str,
+        ids: &[String],
+    ) -> anyhow::Result<Vec<PublicKeyEntry>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let url = format!("{}?ids={}", self.url("/api/v1/users/public-keys"), percent_encode(&ids.join(",")));
-        let resp = self.http
+        let url = format!(
+            "{}?ids={}",
+            self.url("/api/v1/users/public-keys"),
+            percent_encode(&ids.join(","))
+        );
+        let resp = self
+            .http
             .get(&url)
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<PublicKeyEntry>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<PublicKeyEntry>>>()
+            .await?;
         Ok(resp.data)
     }
 
@@ -470,36 +862,60 @@ impl ApiClient {
 
     /// `None` when this team has no vault key yet, or the caller hasn't been
     /// granted one yet (waiting on another online member's client to grant it).
-    pub async fn get_my_key_envelope(&self, token: &str, team_id: &str) -> anyhow::Result<Option<RemoteKeyEnvelope>> {
-        let resp = self.http
+    pub async fn get_my_key_envelope(
+        &self,
+        token: &str,
+        team_id: &str,
+    ) -> anyhow::Result<Option<RemoteKeyEnvelope>> {
+        let resp = self
+            .http
             .get(self.url(&format!("/api/v1/teams/{}/key-envelopes/me", team_id)))
             .bearer_auth(token)
-            .send().await?;
+            .send()
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let wrapped = resp.error_for_status()?.json::<ApiWrapper<RemoteKeyEnvelope>>().await?;
+        let wrapped = resp
+            .error_for_status()?
+            .json::<ApiWrapper<RemoteKeyEnvelope>>()
+            .await?;
         Ok(Some(wrapped.data))
     }
 
     /// Team members who don't have a key envelope yet, with the public key
     /// needed to seal one for them.
-    pub async fn list_pending_key_grants(&self, token: &str, team_id: &str) -> anyhow::Result<Vec<PendingKeyGrant>> {
-        let resp = self.http
+    pub async fn list_pending_key_grants(
+        &self,
+        token: &str,
+        team_id: &str,
+    ) -> anyhow::Result<Vec<PendingKeyGrant>> {
+        let resp = self
+            .http
             .get(self.url(&format!("/api/v1/teams/{}/key-envelopes/pending", team_id)))
             .bearer_auth(token)
-            .send().await?.error_for_status()?
-            .json::<ApiWrapper<Vec<PendingKeyGrant>>>().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ApiWrapper<Vec<PendingKeyGrant>>>()
+            .await?;
         Ok(resp.data)
     }
 
     /// Upload one or more sealed Team-key envelopes (granting members access).
-    pub async fn put_key_envelopes(&self, token: &str, team_id: &str, req: &PutKeyEnvelopesReq) -> anyhow::Result<()> {
+    pub async fn put_key_envelopes(
+        &self,
+        token: &str,
+        team_id: &str,
+        req: &PutKeyEnvelopesReq,
+    ) -> anyhow::Result<()> {
         self.http
             .post(self.url(&format!("/api/v1/teams/{}/key-envelopes", team_id)))
             .bearer_auth(token)
             .json(req)
-            .send().await?.error_for_status()?;
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 
@@ -579,6 +995,25 @@ pub struct RemoteUser {
     pub phone: Option<String>,
 }
 
+/// One row of `GET /api/v1/moderation/blocks`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BlockedUser {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    #[allow(dead_code)]
+    pub avatar_url: Option<String>,
+}
+
+/// Payload of `DELETE /api/v1/users/me` — the email is echoed back so the
+/// confirmation toast can name the account that was removed.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DeleteAccountResponse {
+    #[allow(dead_code)]
+    pub deleted: bool,
+    pub email: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RemoteConnection {
     pub id: String,
@@ -638,6 +1073,9 @@ pub struct RemoteSavedQuery {
     #[serde(default)]
     pub crypto_version: i32,
     pub updated_at: String,
+    /// `owner`, `editor`, atau `viewer` (server lama tidak mengirimnya).
+    #[serde(default)]
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -656,6 +1094,43 @@ pub struct UpdateQueryReq {
     pub folder_path: Option<String>,
     pub query_text: Option<String>,
     pub connection_name: Option<String>,
+    pub client_checksum: Option<String>,
+    pub crypto_version: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteDiagram {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub folder_path: String,
+    pub encrypted_data: String,
+    pub client_checksum: Option<String>,
+    #[serde(default = "default_crypto_version")]
+    pub crypto_version: i32,
+    pub updated_at: String,
+    #[serde(default)]
+    pub access: String,
+}
+
+fn default_crypto_version() -> i32 {
+    1
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateDiagramReq {
+    pub name: String,
+    pub folder_path: Option<String>,
+    pub encrypted_data: String,
+    pub client_checksum: Option<String>,
+    pub crypto_version: i32,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct UpdateDiagramReq {
+    pub name: Option<String>,
+    pub folder_path: Option<String>,
+    pub encrypted_data: Option<String>,
     pub client_checksum: Option<String>,
     pub crypto_version: Option<i32>,
 }
@@ -759,6 +1234,43 @@ pub struct RemoteSharedFolder {
     pub created_at: String,
 }
 
+/// Project di server. `payload` adalah manifest terenkripsi
+/// ([`crate::sync::sync_projects::SharedProject`]).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteProject {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub payload: String,
+    #[serde(default)]
+    pub client_checksum: Option<String>,
+    #[serde(default)]
+    pub crypto_version: i32,
+    #[serde(default)]
+    pub updated_at: String,
+    /// `owner`, `editor`, atau `viewer`.
+    #[serde(default)]
+    pub access: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpsertProjectReq {
+    pub name: String,
+    pub payload: String,
+    pub client_checksum: Option<String>,
+    pub crypto_version: i32,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct UpdateProjectReq {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_checksum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crypto_version: Option<i32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ShareFolderReq {
     pub resource_type: String,
@@ -858,7 +1370,9 @@ pub struct PendingKeyGrant {
 
 /// Helper to load an image from HTTP/HTTPS URL, data URI (base64), or local path
 /// and decode it into an egui::ColorImage.
-pub async fn fetch_image_as_color_image(url_or_path: &str) -> Result<eframe::egui::ColorImage, String> {
+pub async fn fetch_image_as_color_image(
+    url_or_path: &str,
+) -> Result<eframe::egui::ColorImage, String> {
     let url_or_path = url_or_path.trim();
     if url_or_path.is_empty() {
         return Err("Empty image URL or path".to_string());
@@ -869,7 +1383,11 @@ pub async fn fetch_image_as_color_image(url_or_path: &str) -> Result<eframe::egu
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?;
-        let resp = client.get(url_or_path).send().await.map_err(|e| e.to_string())?;
+        let resp = client
+            .get(url_or_path)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("HTTP error {}", resp.status()));
         }
@@ -888,10 +1406,13 @@ pub async fn fetch_image_as_color_image(url_or_path: &str) -> Result<eframe::egu
         std::fs::read(url_or_path).map_err(|e| format!("Failed to read file: {}", e))?
     };
 
-    let image = image::load_from_memory(&bytes).map_err(|e| format!("Image decode error: {}", e))?;
+    let image =
+        image::load_from_memory(&bytes).map_err(|e| format!("Image decode error: {}", e))?;
     let rgba = image.to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = rgba.as_flat_samples();
-    Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()))
+    Ok(eframe::egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        pixels.as_slice(),
+    ))
 }
-

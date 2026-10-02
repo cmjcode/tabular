@@ -1,18 +1,67 @@
+// Lint yang sengaja diizinkan global karena perbaikannya struktural (fungsi
+// UI dengan banyak parameter, tipe callback kompleks) atau menyentuh ratusan
+// lokasi sekaligus (collapsible_if). Lint lain wajib lolos `clippy -D warnings`.
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 use eframe::egui;
 
+pub mod agent;
 pub mod ai_assistant;
+pub mod ai_chat_history;
+pub mod ai_query_fix;
+#[cfg(not(target_os = "ios"))]
+pub mod ai_tool_chat;
+pub mod ai_tool_calling;
+pub mod outside_mcp;
+#[cfg(not(target_os = "ios"))]
+pub mod outside_mcp_client;
+pub mod app_logging;
 pub mod auto_updater;
+pub mod autocomplete;
 pub mod backup_restore;
 pub mod cache_data;
 pub mod config;
 pub mod connection;
+pub mod connection_env;
 pub mod curl_import;
+pub mod deeplink;
 pub mod data_table;
+pub mod data_transfer;
 pub mod dba_monitor;
+pub mod diagram_api_rail;
+pub mod diagram_api_rail_view;
+pub mod diagram_endpoints_view;
+pub mod diagram_flow;
+pub mod diagram_flow_gen;
+pub mod diagram_flow_gen_view;
+pub mod diagram_flow_layout;
+pub mod diagram_flow_view;
+pub mod diagram_flow_play;
+pub mod diagram_flow_play_view;
+pub mod diagram_links;
+pub mod diagram_lod;
+pub mod diagram_mermaid;
+pub mod diagram_notes;
+pub mod diagram_notes_view;
+pub mod diagram_relations;
+pub mod diagram_relation_editor;
+pub mod diagram_repo;
+pub mod diagram_repo_paths;
+pub mod diagram_schema;
+pub mod diagram_search;
+pub mod diagram_storage;
+pub mod diagram_sync;
 pub mod diagram_view;
 pub mod dialog;
 pub mod dialog_backup_restore;
+pub mod dialog_copy_database;
+pub mod dialog_export_import_all;
 pub mod directory;
+pub mod driver_api;
 pub mod driver_mongodb;
 pub mod driver_mssql;
 pub mod driver_mysql;
@@ -22,31 +71,69 @@ pub mod driver_sqlite;
 pub mod editor;
 pub mod editor_autocomplete;
 pub mod editor_autocomplete_new; // temporary clean implementation backing the shim
+pub mod index_check;
 pub mod editor_buffer;
+pub mod editor_ghost;
 pub mod editor_selection;
 pub mod editor_state_adapter;
 pub mod export;
+pub mod export_import_all;
+pub mod geo_map;
+pub mod git;
+pub mod http_ai;
 pub mod http_client;
+pub mod http_client_widgets;
 pub mod http_code_export;
 pub mod http_collection;
+pub mod http_repo;
+pub mod http_send;
+pub mod http_tests;
+pub mod i18n;
+pub mod keymap;
+pub mod managed_policy;
 pub mod models;
 pub mod modules;
+pub mod obsidian;
+pub mod os_notify;
+#[cfg(target_os = "ios")]
+pub mod platform_ios;
+#[cfg(target_os = "macos")]
+pub mod platform_macos;
+pub mod platform_prefs;
 pub mod plugin_runtime;
+pub mod privacy;
+pub mod project;
+pub mod project_memory;
+pub mod query_diagram;
 pub mod query_profiler;
+pub mod query_stats;
 pub mod query_tools;
 pub mod quick_open;
+pub mod repo_endpoints;
+pub mod repo_links;
+pub mod repo_scan;
+pub mod result_chart;
 pub mod redis_browser;
 pub mod safety_guard;
+pub mod schema_objects;
+pub mod sample_data;
+pub mod search_match;
 pub mod secrets;
 pub mod self_update;
+pub mod server_metrics;
+pub mod session_restore;
 pub mod sidebar_collection;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
+#[cfg(not(target_os = "ios"))]
+pub mod single_instance;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
+pub mod url_opener;
 pub mod user_manager;
+pub mod vector_index;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
 pub mod query_ast;
@@ -124,46 +211,111 @@ pub mod rfd {
 pub static STARTUP_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 pub fn log_startup_step(step: &str) {
-    let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
-    let elapsed = start.elapsed();
-    eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+    #[cfg(debug_assertions)]
+    {
+        let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
+        let elapsed = start.elapsed();
+        eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        if std::env::var_os("TABULAR_DEBUG_STARTUP").is_some() {
+            let start = *STARTUP_TIME.get_or_init(std::time::Instant::now);
+            let elapsed = start.elapsed();
+            eprintln!("[STARTUP-TIMER {:>7.2?}] {}", elapsed, step);
+        }
+    }
 }
 
 /// Reusable entrypoint so other launchers (e.g., iOS) can run the UI.
 pub fn run() -> Result<(), eframe::Error> {
+    // Mode CLI (`tabular mcp`, `--help`, `--version`) tidak membuka jendela.
+    // Argumen lain (mis. `-psn_*` dari Finder) tetap jatuh ke GUI.
+    #[cfg(not(target_os = "ios"))]
+    if let Some(result) = agent::cli::try_run_from_args() {
+        return match result {
+            Ok(()) => Ok(()),
+            Err(message) => {
+                eprintln!("tabular: {message}");
+                std::process::exit(1);
+            }
+        };
+    }
+
     log_startup_step("run() entrypoint started");
-    dotenv::dotenv().ok();
+    // Harus sebelum pool SQLite pertama dibuka agar vec_* tersedia di semua koneksi.
+    vector_index::register_sqlite_vec();
+    dotenvy::dotenv().ok();
     log_startup_step("dotenv loaded");
     config::init_data_dir();
     log_startup_step("init_data_dir completed");
+    platform_prefs::load_from_disk();
 
-    let _ = env_logger::Builder::from_default_env()
-        // Enable info-level logs for our crate so users can see data source messages
-        .filter_module("tabular", log::LevelFilter::Info)
-        .filter_module("winit", log::LevelFilter::Warn)
-        .filter_module("tracing", log::LevelFilter::Warn)
-        .is_test(false)
-        .try_init();
+    // Log ke file + crash report; setelah init_data_dir agar folder log benar.
+    app_logging::init();
+    app_logging::install_panic_hook();
 
     log::debug!(
         "Application starting with data directory: {}",
         config::get_data_dir().display()
     );
 
+    // Deep link (M1): Apple Event harus terdaftar sebelum event loop agar URL
+    // yang meluncurkan aplikasi tidak hilang; listener single-instance
+    // menerima URL dari proses `tabular open` / klik link berikutnya.
+    #[cfg(target_os = "macos")]
+    platform_macos::install_apple_event_handlers();
+    #[cfg(not(target_os = "ios"))]
+    single_instance::start_global();
+
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
+    if let Some(geometry) = session_restore::saved_window_geometry() {
+        options.viewport.inner_size = Some(egui::vec2(geometry.width, geometry.height));
+        options.viewport.maximized = Some(geometry.maximized);
+    }
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }
     log_startup_step("starting eframe::run_native");
+
+    let fast_prefs = config::load_fast_preferences();
+    let initial_sys_theme = match fast_prefs.theme {
+        config::AppTheme::Dark => egui::SystemTheme::Dark,
+        config::AppTheme::Light | config::AppTheme::LightSoft => egui::SystemTheme::Light,
+    };
+
+    // `egui_icons::initialize` hanya mendaftarkan font ikon ke family Proportional,
+    // jadi teks dengan family Monospace (mis. badge shortcut) menampilkan ikon sebagai
+    // kotak pengganti. Daftarkan sendiri supaya kedua family terlayani. Prioritas
+    // Lowest menjaga font teks utama tetap dipakai lebih dulu.
+    fn initialize_icon_fonts(ctx: &egui::Context) {
+        use egui::epaint::text::{FontPriority, InsertFontFamily};
+
+        for mut insert in [egui_icons::font_insert(), egui_icons::font_insert_mdi()] {
+            insert.families.push(InsertFontFamily {
+                family: egui::FontFamily::Monospace,
+                priority: FontPriority::Lowest,
+            });
+            ctx.add_font(insert);
+        }
+    }
 
     eframe::run_native(
         "Tabular",
         options,
         Box::new(move |cc| {
             log_startup_step("eframe creation closure entered");
-            egui_icons::initialize(&cc.egui_ctx);
+            initialize_icon_fonts(&cc.egui_ctx);
+            // Delegate winit sudah ada di sini; di iOS closure ini berjalan di
+            // dalam didFinishLaunching sehingga URL cold-start tidak hilang.
+            #[cfg(target_os = "ios")]
+            platform_ios::install_url_receivers();
+            #[cfg(target_os = "macos")]
+            platform_macos::install_handoff_receiver();
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
             let app = window_egui::Tabular::new();
             log_startup_step("Tabular::new() returned");
             Ok(Box::new(app))
@@ -183,13 +335,11 @@ pub extern "C" fn tabular_version() -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn tabular_run() -> i32 {
-    let result = std::panic::catch_unwind(|| {
-        match run() {
-            Ok(_) => 0,
-            Err(e) => {
-                log::error!("eframe run error: {:?}", e);
-                1
-            }
+    let result = std::panic::catch_unwind(|| match run() {
+        Ok(_) => 0,
+        Err(e) => {
+            log::error!("eframe run error: {:?}", e);
+            1
         }
     });
     match result {

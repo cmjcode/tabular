@@ -41,6 +41,83 @@
   <content_rating type="oars-1.1" />
   
   <releases>
+    <release version="1.1.1" date="2026-09-25">
+      <description>
+        <p>Tabular v1.1.1 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.2" date="2026-09-25">
+      <description>
+        <p>Tabular v1.0.2 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.1" date="2026-09-19">
+      <description>
+        <p>Tabular v1.0.1 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-09-19">
+      <description>
+        <p>Tabular v1.0.0 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.18.1" date="2026-09-18">
+      <description>
+        <p>Tabular v0.18.1 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.18.0" date="2026-09-16">
+      <description>
+        <p>Tabular v0.18.0 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.17.0" date="2026-09-15">
+      <description>
+        <p>Tabular v0.17.0 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.16.3" date="2026-09-11">
+      <description>
+        <p>Tabular v0.16.3 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.16.2" date="2026-09-11">
+      <description>
+        <p>Tabular v0.16.2 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Added tab reordering and tab pinning support with smooth UI interactions</li>
+          <li>Enhanced sidebar search and workspace navigation</li>
+          <li>Improved database connection stability and safety guards</li>
+          <li>Fixed virtual scrolling and bottom spacer rendering in query results</li>
+          <li>Resolved table identifier quoting for SQLite and query AST rewrites</li>
+          <li>Performance optimizations and code quality enhancements</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.27" date="2025-12-17">
       <description>
         <p>Flatpak release with improvements and fixes</p>
