@@ -60,6 +60,8 @@ pub enum NodeType {
     Index,
     DiagramsFolder,
     Diagram,
+    // Folder pengelompokan tabel berdasarkan komentar database
+    TableGroupFolder,
 }
 
 impl NodeType {
@@ -99,6 +101,7 @@ impl NodeType {
                 | NodeType::PrimaryKeysFolder
                 | NodeType::PartitionsFolder
                 | NodeType::DiagramsFolder
+                | NodeType::TableGroupFolder
         )
     }
 }

@@ -133,6 +133,7 @@ pub mod single_instance;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
 pub mod sync;
+pub mod table_group;
 pub mod url_opener;
 pub mod user_manager;
 pub mod vector_index;

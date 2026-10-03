@@ -7,7 +7,9 @@
 //! Relasi yang diterima disimpan di `DiagramState::virtual_relations`, terpisah
 //! dari FK database, sehingga tidak tertimpa saat skema di-refresh.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use crate::models::structs::{
     DiagramNode, DiagramState, LinkedDatabase, RelationOrigin, VirtualRelation,
@@ -26,23 +28,95 @@ pub struct RelationSuggestion {
 /// Menggabungkan pencarian berbasis FK pattern (seperti `customer_id` -> `customers.id`)
 /// dan kemiripan nama kolom non-generik (seperti `imei`, `sku`, `uuid`) di seluruh diagram.
 pub fn suggest_relations(state: &DiagramState) -> Vec<RelationSuggestion> {
-    let tables: Vec<TableInfo> = state.nodes.iter().map(TableInfo::new).collect();
+    suggest_relations_data(
+        &state.nodes,
+        &state.virtual_relations,
+        &AtomicBool::new(false),
+    )
+    .unwrap_or_default()
+}
+
+/// Versi headless dari [`suggest_relations`]; `None` bila dibatalkan lewat `cancel`.
+///
+/// Diagram besar (ratusan tabel) punya puluhan ribu kolom, jadi membandingkan
+/// setiap kolom dengan setiap kolom lain tidak layak. Kemiripan hanya bergantung
+/// pada nama kolom, sehingga yang dibandingkan adalah nama *unik*; hasilnya lalu
+/// dijabarkan ke semua tabel yang memiliki nama tersebut.
+pub fn suggest_relations_data(
+    nodes: &[DiagramNode],
+    virtual_relations: &[VirtualRelation],
+    cancel: &AtomicBool,
+) -> Option<Vec<RelationSuggestion>> {
+    let tables: Vec<TableInfo> = nodes.iter().map(TableInfo::new).collect();
     let mut out: Vec<RelationSuggestion> = Vec::new();
 
+    // Indeks agar kandidat parent tidak dicari dengan memindai semua tabel.
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_sole_pk: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut first_by_id: HashMap<&str, usize> = HashMap::new();
+    for (i, t) in tables.iter().enumerate() {
+        for name in &t.names {
+            by_name.entry(name.as_str()).or_default().push(i);
+        }
+        if let [pk] = t.pks.as_slice() {
+            by_sole_pk
+                .entry(pk.to_ascii_lowercase())
+                .or_default()
+                .push(i);
+        }
+        first_by_id.entry(t.node.id.as_str()).or_insert(i);
+    }
+    let linked_columns: HashSet<(&str, &str)> = virtual_relations
+        .iter()
+        .map(|r| (r.child.as_str(), r.child_column.as_str()))
+        .collect();
+    let linked_pairs: HashSet<(&str, &str, &str, &str)> = virtual_relations
+        .iter()
+        .map(|r| {
+            (
+                r.child.as_str(),
+                r.child_column.as_str(),
+                r.parent.as_str(),
+                r.parent_column.as_str(),
+            )
+        })
+        .collect();
+
     // 1. Relasi berbasis Foreign Key pattern (misal `customer_id` -> `customers.id`)
+    let mut candidates: Vec<usize> = Vec::new();
     for child in &tables {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         for column in &child.node.columns {
             if child.node.is_fk_column(column)
-                || state
-                    .virtual_relations
-                    .iter()
-                    .any(|r| r.child == child.node.id && r.child_column == *column)
+                || linked_columns.contains(&(child.node.id.as_str(), column.as_str()))
             {
                 continue;
             }
             let lower = column.to_lowercase();
+            // Hanya tabel yang namanya cocok dengan stem kolom, atau yang PK
+            // tunggalnya bernama sama, yang bisa lolos `match_parent`.
+            candidates.clear();
+            if let Some(stem) = fk_stem(&lower) {
+                for key in [stem.to_string(), singular(stem)] {
+                    if let Some(found) = by_name.get(key.as_str()) {
+                        candidates.extend_from_slice(found);
+                    }
+                }
+            }
+            if let Some(found) = by_sole_pk.get(&column.to_ascii_lowercase()) {
+                candidates.extend_from_slice(found);
+            }
+            candidates.sort_unstable();
+            candidates.dedup();
+
             let mut best: Option<RelationSuggestion> = None;
-            for parent in tables.iter().filter(|t| t.node.id != child.node.id) {
+            for parent in candidates
+                .iter()
+                .map(|&i| &tables[i])
+                .filter(|t| t.node.id != child.node.id)
+            {
                 let Some((target, score, reason)) = match_parent(&lower, column, child, parent)
                 else {
                     continue;
@@ -69,128 +143,237 @@ pub fn suggest_relations(state: &DiagramState) -> Vec<RelationSuggestion> {
     }
 
     // 2. Relasi berbasis kemiripan nama kolom non-generik antar pasangan tabel (misal `imei`, `sku`, dsb.)
-    for (i, t1) in tables.iter().enumerate() {
-        for t2 in &tables[(i + 1)..] {
-            if t1.node.id == t2.node.id {
+    //
+    // Kumpulkan nama kolom unik beserta lokasinya (tabel, indeks kolom). Kolom generik
+    // dan kolom foreign key (`_id` / `id_`, ditangani Section 1) tidak ikut.
+    let mut name_ids: HashMap<&str, usize> = HashMap::new();
+    let mut features: Vec<ColumnFeatures> = Vec::new();
+    let mut occurrences: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut families: Vec<Vec<Option<String>>> = Vec::with_capacity(tables.len());
+    let mut pk_flags: Vec<Vec<bool>> = Vec::with_capacity(tables.len());
+    for (ti, t) in tables.iter().enumerate() {
+        families.push(
+            t.node
+                .columns
+                .iter()
+                .map(|c| t.type_of(c).map(type_family))
+                .collect(),
+        );
+        pk_flags.push(
+            t.node
+                .columns
+                .iter()
+                .map(|c| t.pks.iter().any(|pk| pk.eq_ignore_ascii_case(c)))
+                .collect(),
+        );
+        for (ci, c) in t.node.columns.iter().enumerate() {
+            if is_generic_column_name(c) || c.ends_with("_id") || c.starts_with("id_") {
                 continue;
             }
-            for c1 in &t1.node.columns {
-                if is_generic_column_name(c1) {
-                    continue;
-                }
-                // Kolom foreign key berakhiran `_id` atau berawalan `id_` ditangani oleh Section 1
-                if c1.ends_with("_id") || c1.starts_with("id_") {
-                    continue;
-                }
-                for c2 in &t2.node.columns {
-                    if is_generic_column_name(c2) {
+            let id = *name_ids.entry(c.as_str()).or_insert_with(|| {
+                features.push(ColumnFeatures::new(c));
+                occurrences.push(Vec::new());
+                features.len() - 1
+            });
+            occurrences[id].push((ti, ci));
+        }
+    }
+
+    for a in 0..features.len() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        for b in a..features.len() {
+            let Some(sim_ab) = similarity(&features[a], &features[b]) else {
+                continue;
+            };
+            // Skornya simetris, tapi teks alasannya mengikuti urutan argumen.
+            let sim_ba = if a == b {
+                None
+            } else {
+                similarity(&features[b], &features[a])
+            };
+            for &(ta, ca) in &occurrences[a] {
+                for &(tb, cb) in &occurrences[b] {
+                    if ta == tb || (a == b && ta > tb) {
                         continue;
                     }
-                    if c2.ends_with("_id") || c2.starts_with("id_") {
-                        continue;
-                    }
-                    let Some((sim_score, sim_reason)) = column_similarity(c1, c2) else {
-                        continue;
+                    // Tabel dengan indeks lebih kecil selalu menjadi sisi pertama.
+                    let (i1, x1, i2, x2, sim) = if ta < tb {
+                        (ta, ca, tb, cb, &sim_ab)
+                    } else {
+                        (tb, cb, ta, ca, sim_ba.as_ref().unwrap_or(&sim_ab))
                     };
-
-                    // Di suggest_relations global, tipe data harus kompatibel
-                    if !types_compatible(t1.type_of(c1), t2.type_of(c2)) {
+                    let (t1, t2) = (&tables[i1], &tables[i2]);
+                    if t1.node.id == t2.node.id {
                         continue;
                     }
-
-                    let t1_is_pk = t1.pks.iter().any(|pk| pk.eq_ignore_ascii_case(c1));
-                    let t2_is_pk = t2.pks.iter().any(|pk| pk.eq_ignore_ascii_case(c2));
+                    // Di suggest_relations global, tipe data harus kompatibel
+                    if let (Some(f1), Some(f2)) = (&families[i1][x1], &families[i2][x2])
+                        && f1 != f2
+                    {
+                        continue;
+                    }
+                    let t1_is_pk = pk_flags[i1][x1];
+                    let t2_is_pk = pk_flags[i2][x2];
 
                     // Jika keduanya adalah sole primary key, arahnya ambigu (1:1)
                     if t1.pks.len() == 1 && t2.pks.len() == 1 && t1_is_pk && t2_is_pk {
                         continue;
                     }
+                    let c1 = &t1.node.columns[x1];
+                    let c2 = &t2.node.columns[x2];
+                    let (sim_score, sim_reason) = sim;
 
                     let (child, child_col, parent, parent_col, reason, final_score) =
                         if t2_is_pk && !t1_is_pk {
                             (
-                                t1.node.id.clone(),
-                                c1.clone(),
-                                t2.node.id.clone(),
-                                c2.clone(),
+                                t1,
+                                c1,
+                                t2,
+                                c2,
                                 format!("`{c2}` is primary key of `{}`", t2.node.id),
                                 (sim_score + 0.05).min(1.0),
                             )
                         } else if t1_is_pk && !t2_is_pk {
                             (
-                                t2.node.id.clone(),
-                                c2.clone(),
-                                t1.node.id.clone(),
-                                c1.clone(),
+                                t2,
+                                c2,
+                                t1,
+                                c1,
                                 format!("`{c1}` is primary key of `{}`", t1.node.id),
                                 (sim_score + 0.05).min(1.0),
                             )
                         } else {
                             (
-                                t1.node.id.clone(),
-                                c1.clone(),
-                                t2.node.id.clone(),
-                                c2.clone(),
+                                t1,
+                                c1,
+                                t2,
+                                c2,
                                 format!("{sim_reason} in `{}`", t2.node.id),
-                                sim_score,
+                                *sim_score,
                             )
                         };
+                    let (child_id, parent_id) = (child.node.id.as_str(), parent.node.id.as_str());
 
-                    if !is_already_related(
-                        &state.nodes,
-                        &state.virtual_relations,
-                        &child,
-                        &child_col,
-                        &parent,
-                        &parent_col,
-                    ) {
-                        out.push(RelationSuggestion {
-                            relation: VirtualRelation {
-                                child,
-                                child_column: child_col,
-                                parent,
-                                parent_column: parent_col,
-                                origin: RelationOrigin::Inferred,
-                            },
-                            score: final_score,
-                            reason,
-                        });
+                    // Sudah ada sebagai relasi virtual atau FK database (kedua arah)?
+                    let declared = |from: &str, from_col: &str, to: &str, to_col: &str| {
+                        first_by_id.get(from).is_some_and(|&i| {
+                            tables[i].node.foreign_keys.iter().any(|fk| {
+                                fk.column_name.eq_ignore_ascii_case(from_col)
+                                    && fk.referenced_table_name.eq_ignore_ascii_case(to)
+                                    && fk.referenced_column_name.eq_ignore_ascii_case(to_col)
+                            })
+                        })
+                    };
+                    if linked_pairs.contains(&(child_id, child_col, parent_id, parent_col))
+                        || linked_pairs.contains(&(parent_id, parent_col, child_id, child_col))
+                        || declared(child_id, child_col, parent_id, parent_col)
+                        || declared(parent_id, parent_col, child_id, child_col)
+                    {
+                        continue;
                     }
+                    out.push(RelationSuggestion {
+                        relation: VirtualRelation {
+                            child: child_id.to_string(),
+                            child_column: child_col.clone(),
+                            parent: parent_id.to_string(),
+                            parent_column: parent_col.clone(),
+                            origin: RelationOrigin::Inferred,
+                        },
+                        score: final_score,
+                        reason,
+                    });
                 }
             }
         }
     }
 
-    // Deduplikasi di kedua arah relasi
-    let mut seen = HashSet::new();
-    out.retain(|s| {
-        let key1 = (
-            s.relation.child.clone(),
-            s.relation.child_column.clone(),
-            s.relation.parent.clone(),
-            s.relation.parent_column.clone(),
-        );
-        let key2 = (
-            s.relation.parent.clone(),
-            s.relation.parent_column.clone(),
-            s.relation.child.clone(),
-            s.relation.child_column.clone(),
-        );
-        if seen.contains(&key1) || seen.contains(&key2) {
-            false
-        } else {
-            seen.insert(key1);
-            true
-        }
-    });
+    // Deduplikasi di kedua arah relasi (yang pertama muncul dipertahankan)
+    let keep: Vec<bool> = {
+        let mut seen: HashSet<(&str, &str, &str, &str)> = HashSet::with_capacity(out.len());
+        out.iter()
+            .map(|s| {
+                let r = &s.relation;
+                let key = (
+                    r.child.as_str(),
+                    r.child_column.as_str(),
+                    r.parent.as_str(),
+                    r.parent_column.as_str(),
+                );
+                let reversed = (key.2, key.3, key.0, key.1);
+                !seen.contains(&reversed) && seen.insert(key)
+            })
+            .collect()
+    };
+    let mut keep = keep.into_iter();
+    out.retain(|_| keep.next().unwrap_or(false));
 
     out.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)
             .then_with(|| a.relation.child.cmp(&b.relation.child))
             .then_with(|| a.relation.child_column.cmp(&b.relation.child_column))
+            .then_with(|| a.relation.parent.cmp(&b.relation.parent))
+            .then_with(|| a.relation.parent_column.cmp(&b.relation.parent_column))
     });
-    out
+    Some(out)
+}
+
+/// Pencarian "Suggest from all similar columns" yang berjalan di thread terpisah
+/// agar UI tidak membeku pada diagram besar.
+#[derive(Clone, Debug)]
+pub struct RelationSuggestJob {
+    receiver: Arc<Mutex<mpsc::Receiver<Vec<RelationSuggestion>>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl RelationSuggestJob {
+    /// `on_done` dipanggil dari thread pekerja setelah hasil dikirim (mis. untuk
+    /// meminta repaint).
+    pub fn spawn(
+        nodes: Vec<DiagramNode>,
+        virtual_relations: Vec<VirtualRelation>,
+        on_done: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let spawned = std::thread::Builder::new()
+            .name("relation-suggest".to_string())
+            .spawn(move || {
+                if let Some(found) =
+                    suggest_relations_data(&nodes, &virtual_relations, &worker_cancel)
+                {
+                    let _ = sender.send(found);
+                }
+                on_done();
+            });
+        if let Err(e) = spawned {
+            // Sender ikut ter-drop, sehingga `poll` langsung melaporkan hasil kosong.
+            log::warn!("[DIAGRAM] failed to start relation suggestion thread: {e}");
+        }
+        Self {
+            receiver: Arc::new(Mutex::new(receiver)),
+            cancel,
+        }
+    }
+
+    /// `Some` bila pekerjaan sudah selesai (kosong bila thread gagal atau dibatalkan).
+    pub fn poll(&self) -> Option<Vec<RelationSuggestion>> {
+        let Ok(receiver) = self.receiver.lock() else {
+            return Some(Vec::new());
+        };
+        match receiver.try_recv() {
+            Ok(found) => Some(found),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Tambahkan relasi virtual bila belum ada (child + kolom + parent sama).
@@ -210,6 +393,36 @@ pub fn add_virtual_relation(state: &mut DiagramState, relation: VirtualRelation)
     }
     state.virtual_relations.push(relation);
     true
+}
+
+/// Tambahkan banyak relasi virtual sekaligus; mengembalikan jumlah yang benar-benar
+/// ditambahkan. Dipakai saat menerima ribuan saran, di mana `add_virtual_relation`
+/// per item akan memindai ulang seluruh daftar setiap kali.
+pub fn add_virtual_relations(
+    state: &mut DiagramState,
+    relations: impl IntoIterator<Item = VirtualRelation>,
+) -> usize {
+    type Key = (String, String, String, String);
+    let key = |r: &VirtualRelation| -> Key {
+        (
+            r.child.clone(),
+            r.child_column.clone(),
+            r.parent.clone(),
+            r.parent_column.clone(),
+        )
+    };
+    let mut existing: HashSet<Key> = state.virtual_relations.iter().map(key).collect();
+    let mut added = 0;
+    for relation in relations {
+        if relation.child == relation.parent && relation.child_column == relation.parent_column {
+            continue;
+        }
+        if existing.insert(key(&relation)) {
+            state.virtual_relations.push(relation);
+            added += 1;
+        }
+    }
+    added
 }
 
 /// Kolom-kolom umum yang tidak boleh dihubungkan otomatis hanya karena namanya sama,
@@ -343,32 +556,18 @@ fn is_already_related(
     false
 }
 
-fn levenshtein(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let a_len = a_chars.len();
-    let b_len = b_chars.len();
-    if a_len == 0 {
-        return b_len;
+/// Jarak edit tepat 1 (satu substitusi, sisipan, atau hapusan karakter).
+fn is_one_edit_apart(a: &[char], b: &[char]) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if long.len() - short.len() > 1 {
+        return false;
     }
-    if b_len == 0 {
-        return a_len;
+    let prefix = short.iter().zip(long).take_while(|(x, y)| x == y).count();
+    if short.len() == long.len() {
+        prefix < short.len() && short[prefix + 1..] == long[prefix + 1..]
+    } else {
+        short[prefix..] == long[prefix + 1..]
     }
-
-    let mut prev_row: Vec<usize> = (0..=b_len).collect();
-    let mut curr_row: Vec<usize> = vec![0; b_len + 1];
-
-    for (i, ca) in a_chars.iter().enumerate() {
-        curr_row[0] = i + 1;
-        for (j, cb) in b_chars.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr_row[j + 1] = (curr_row[j] + 1)
-                .min(prev_row[j + 1] + 1)
-                .min(prev_row[j] + cost);
-        }
-        prev_row.copy_from_slice(&curr_row);
-    }
-    prev_row[b_len]
 }
 
 pub fn strip_column_affixes(s: &str) -> &str {
@@ -435,58 +634,91 @@ pub fn column_tokens(s: &str) -> Vec<String> {
 /// Hitung tingkat kemiripan (similarity) antara dua nama kolom.
 /// Mengembalikan `Some((score, reason))` bila ada kecocokan atau kemiripan yang cukup kuat.
 pub fn column_similarity(a: &str, b: &str) -> Option<(f32, String)> {
-    let a_lower = a.to_lowercase();
-    let b_lower = b.to_lowercase();
+    similarity(&ColumnFeatures::new(a), &ColumnFeatures::new(b))
+}
+
+/// Turunan nama kolom yang dipakai `similarity`, dihitung sekali per nama agar
+/// perbandingan berulang tidak mengalokasi ulang.
+struct ColumnFeatures<'a> {
+    name: &'a str,
+    lower: String,
+    /// `lower` tanpa prefix/suffix umum (`no_`, `_code`, ...).
+    clean: String,
+    lower_chars: Vec<char>,
+    /// Token kata beserta penanda "cukup spesifik untuk dicocokkan".
+    tokens: Vec<(String, bool)>,
+}
+
+impl<'a> ColumnFeatures<'a> {
+    fn new(name: &'a str) -> Self {
+        let lower = name.to_lowercase();
+        let clean = strip_column_affixes(&lower).to_string();
+        let lower_chars = lower.chars().collect();
+        let tokens = column_tokens(name)
+            .into_iter()
+            .map(|t| {
+                let significant = t.len() >= 3 && !is_generic_column_name(&t);
+                (t, significant)
+            })
+            .collect();
+        Self {
+            name,
+            lower,
+            clean,
+            lower_chars,
+            tokens,
+        }
+    }
+}
+
+fn similarity(a: &ColumnFeatures, b: &ColumnFeatures) -> Option<(f32, String)> {
+    let b_name = b.name;
 
     // 1. Nama sama persis (case-insensitive)
-    if a_lower == b_lower {
-        return Some((0.95, format!("Matching column `{b}`")));
+    if a.lower == b.lower {
+        return Some((0.95, format!("Matching column `{b_name}`")));
     }
 
-    let a_clean = strip_column_affixes(&a_lower);
-    let b_clean = strip_column_affixes(&b_lower);
-
     // 2. Identik setelah pembersihan prefix/suffix (misal `no_imei` vs `imei`, `id_pelanggan` vs `pelanggan_id`)
-    if a_clean == b_clean && !a_clean.is_empty() {
-        return Some((0.90, format!("Matching column identifier `{b}`")));
+    if a.clean == b.clean && !a.clean.is_empty() {
+        return Some((0.90, format!("Matching column identifier `{b_name}`")));
     }
 
     // 3. Substring / contains (misal `device_imei` mengandung `imei`, atau `nomor_imei`)
-    let a_stem = if a_clean.len() >= 3 {
-        a_clean
+    let a_stem = if a.clean.len() >= 3 {
+        &a.clean
     } else {
-        &a_lower
+        &a.lower
     };
-    let b_stem = if b_clean.len() >= 3 {
-        b_clean
+    let b_stem = if b.clean.len() >= 3 {
+        &b.clean
     } else {
-        &b_lower
+        &b.lower
     };
 
-    if a_stem.len() >= 3 && (b_lower.contains(a_stem) || b_clean.contains(a_stem)) {
-        return Some((0.85, format!("Similar column `{b}`")));
+    if a_stem.len() >= 3 && (b.lower.contains(a_stem.as_str()) || b.clean.contains(a_stem.as_str()))
+    {
+        return Some((0.85, format!("Similar column `{b_name}`")));
     }
-    if b_stem.len() >= 3 && (a_lower.contains(b_stem) || a_clean.contains(b_stem)) {
-        return Some((0.85, format!("Similar column `{b}`")));
+    if b_stem.len() >= 3 && (a.lower.contains(b_stem.as_str()) || a.clean.contains(b_stem.as_str()))
+    {
+        return Some((0.85, format!("Similar column `{b_name}`")));
     }
 
     // 4. Token / keyword intersection (misal `device_imei` dan `tracker_imei` berbagi kata kunci `imei`)
-    let a_tokens = column_tokens(a);
-    let b_tokens = column_tokens(b);
-    for tok_a in &a_tokens {
-        if tok_a.len() >= 3 && !is_generic_column_name(tok_a) {
-            if b_tokens.iter().any(|tok_b| tok_b == tok_a) {
-                return Some((0.82, format!("Shared column keyword `{tok_a}` in `{b}`")));
-            }
+    for (tok_a, significant) in &a.tokens {
+        if *significant && b.tokens.iter().any(|(tok_b, _)| tok_b == tok_a) {
+            return Some((
+                0.82,
+                format!("Shared column keyword `{tok_a}` in `{b_name}`"),
+            ));
         }
     }
 
     // 5. Levenshtein edit distance (typo atau selisih 1 karakter bila panjang >= 4)
-    if a_lower.len() >= 4 && b_lower.len() >= 4 {
-        let dist = levenshtein(&a_lower, &b_lower);
-        if dist == 1 {
-            return Some((0.78, format!("Close spelling match `{b}`")));
-        }
+    if a.lower.len() >= 4 && b.lower.len() >= 4 && is_one_edit_apart(&a.lower_chars, &b.lower_chars)
+    {
+        return Some((0.78, format!("Close spelling match `{b_name}`")));
     }
 
     None
@@ -1335,6 +1567,14 @@ impl<'a> TableInfo<'a> {
     }
 }
 
+/// Bagian nama tabel dari kolom FK: `customer_id`, `id_customer`, `customerid`.
+fn fk_stem(lower: &str) -> Option<&str> {
+    lower
+        .strip_suffix("_id")
+        .or_else(|| lower.strip_prefix("id_"))
+        .or_else(|| lower.strip_suffix("id").filter(|s| s.len() >= 2))
+}
+
 /// Kolom `column` di `child` mengarah ke `parent`? Kembalikan kolom target,
 /// skor, dan alasan.
 fn match_parent(
@@ -1344,11 +1584,7 @@ fn match_parent(
     parent: &TableInfo,
 ) -> Option<(String, f32, String)> {
     // 1. Nama kolom = nama tabel + id: `customer_id`, `customerid`, `id_customer`.
-    let stem = lower
-        .strip_suffix("_id")
-        .or_else(|| lower.strip_prefix("id_"))
-        .or_else(|| lower.strip_suffix("id").filter(|s| s.len() >= 2));
-    if let Some(stem) = stem
+    if let Some(stem) = fk_stem(lower)
         && parent.matches_name(stem)
     {
         let target = if parent.pks.len() == 1 {
@@ -2030,5 +2266,503 @@ mod tests {
         assert!(glob_match("*by*", "updated_by_id"));
         assert!(!glob_match("*_by_id", "customer_id"));
         assert!(!glob_match("created_by_id", "created_by_id2"));
+    }
+
+    // --- Implementasi lama (O(kolom^2)) dipertahankan sebagai pembanding ---
+
+    fn levenshtein(a: &str, b: &str) -> usize {
+        let a_chars: Vec<char> = a.chars().collect();
+        let b_chars: Vec<char> = b.chars().collect();
+        let a_len = a_chars.len();
+        let b_len = b_chars.len();
+        if a_len == 0 {
+            return b_len;
+        }
+        if b_len == 0 {
+            return a_len;
+        }
+
+        let mut prev_row: Vec<usize> = (0..=b_len).collect();
+        let mut curr_row: Vec<usize> = vec![0; b_len + 1];
+
+        for (i, ca) in a_chars.iter().enumerate() {
+            curr_row[0] = i + 1;
+            for (j, cb) in b_chars.iter().enumerate() {
+                let cost = if ca == cb { 0 } else { 1 };
+                curr_row[j + 1] = (curr_row[j] + 1)
+                    .min(prev_row[j + 1] + 1)
+                    .min(prev_row[j] + cost);
+            }
+            prev_row.copy_from_slice(&curr_row);
+        }
+        prev_row[b_len]
+    }
+
+    fn naive_column_similarity(a: &str, b: &str) -> Option<(f32, String)> {
+        let a_lower = a.to_lowercase();
+        let b_lower = b.to_lowercase();
+
+        // 1. Nama sama persis (case-insensitive)
+        if a_lower == b_lower {
+            return Some((0.95, format!("Matching column `{b}`")));
+        }
+
+        let a_clean = strip_column_affixes(&a_lower);
+        let b_clean = strip_column_affixes(&b_lower);
+
+        // 2. Identik setelah pembersihan prefix/suffix (misal `no_imei` vs `imei`, `id_pelanggan` vs `pelanggan_id`)
+        if a_clean == b_clean && !a_clean.is_empty() {
+            return Some((0.90, format!("Matching column identifier `{b}`")));
+        }
+
+        // 3. Substring / contains (misal `device_imei` mengandung `imei`, atau `nomor_imei`)
+        let a_stem = if a_clean.len() >= 3 {
+            a_clean
+        } else {
+            &a_lower
+        };
+        let b_stem = if b_clean.len() >= 3 {
+            b_clean
+        } else {
+            &b_lower
+        };
+
+        if a_stem.len() >= 3 && (b_lower.contains(a_stem) || b_clean.contains(a_stem)) {
+            return Some((0.85, format!("Similar column `{b}`")));
+        }
+        if b_stem.len() >= 3 && (a_lower.contains(b_stem) || a_clean.contains(b_stem)) {
+            return Some((0.85, format!("Similar column `{b}`")));
+        }
+
+        // 4. Token / keyword intersection (misal `device_imei` dan `tracker_imei` berbagi kata kunci `imei`)
+        let a_tokens = column_tokens(a);
+        let b_tokens = column_tokens(b);
+        for tok_a in &a_tokens {
+            if tok_a.len() >= 3 && !is_generic_column_name(tok_a) {
+                if b_tokens.iter().any(|tok_b| tok_b == tok_a) {
+                    return Some((0.82, format!("Shared column keyword `{tok_a}` in `{b}`")));
+                }
+            }
+        }
+
+        // 5. Levenshtein edit distance (typo atau selisih 1 karakter bila panjang >= 4)
+        if a_lower.len() >= 4 && b_lower.len() >= 4 {
+            let dist = levenshtein(&a_lower, &b_lower);
+            if dist == 1 {
+                return Some((0.78, format!("Close spelling match `{b}`")));
+            }
+        }
+
+        None
+    }
+
+    fn naive_suggest_relations(state: &DiagramState) -> Vec<RelationSuggestion> {
+        let tables: Vec<TableInfo> = state.nodes.iter().map(TableInfo::new).collect();
+        let mut out: Vec<RelationSuggestion> = Vec::new();
+
+        // 1. Relasi berbasis Foreign Key pattern (misal `customer_id` -> `customers.id`)
+        for child in &tables {
+            for column in &child.node.columns {
+                if child.node.is_fk_column(column)
+                    || state
+                        .virtual_relations
+                        .iter()
+                        .any(|r| r.child == child.node.id && r.child_column == *column)
+                {
+                    continue;
+                }
+                let lower = column.to_lowercase();
+                let mut best: Option<RelationSuggestion> = None;
+                for parent in tables.iter().filter(|t| t.node.id != child.node.id) {
+                    let Some((target, score, reason)) = match_parent(&lower, column, child, parent)
+                    else {
+                        continue;
+                    };
+                    if !types_compatible(child.type_of(column), parent.type_of(&target)) {
+                        continue;
+                    }
+                    if best.as_ref().is_none_or(|b| score > b.score) {
+                        best = Some(RelationSuggestion {
+                            relation: VirtualRelation {
+                                child: child.node.id.clone(),
+                                child_column: column.clone(),
+                                parent: parent.node.id.clone(),
+                                parent_column: target,
+                                origin: RelationOrigin::Inferred,
+                            },
+                            score,
+                            reason,
+                        });
+                    }
+                }
+                out.extend(best);
+            }
+        }
+
+        // 2. Relasi berbasis kemiripan nama kolom non-generik antar pasangan tabel (misal `imei`, `sku`, dsb.)
+        for (i, t1) in tables.iter().enumerate() {
+            for t2 in &tables[(i + 1)..] {
+                if t1.node.id == t2.node.id {
+                    continue;
+                }
+                for c1 in &t1.node.columns {
+                    if is_generic_column_name(c1) {
+                        continue;
+                    }
+                    // Kolom foreign key berakhiran `_id` atau berawalan `id_` ditangani oleh Section 1
+                    if c1.ends_with("_id") || c1.starts_with("id_") {
+                        continue;
+                    }
+                    for c2 in &t2.node.columns {
+                        if is_generic_column_name(c2) {
+                            continue;
+                        }
+                        if c2.ends_with("_id") || c2.starts_with("id_") {
+                            continue;
+                        }
+                        let Some((sim_score, sim_reason)) = naive_column_similarity(c1, c2) else {
+                            continue;
+                        };
+
+                        // Di suggest_relations global, tipe data harus kompatibel
+                        if !types_compatible(t1.type_of(c1), t2.type_of(c2)) {
+                            continue;
+                        }
+
+                        let t1_is_pk = t1.pks.iter().any(|pk| pk.eq_ignore_ascii_case(c1));
+                        let t2_is_pk = t2.pks.iter().any(|pk| pk.eq_ignore_ascii_case(c2));
+
+                        // Jika keduanya adalah sole primary key, arahnya ambigu (1:1)
+                        if t1.pks.len() == 1 && t2.pks.len() == 1 && t1_is_pk && t2_is_pk {
+                            continue;
+                        }
+
+                        let (child, child_col, parent, parent_col, reason, final_score) =
+                            if t2_is_pk && !t1_is_pk {
+                                (
+                                    t1.node.id.clone(),
+                                    c1.clone(),
+                                    t2.node.id.clone(),
+                                    c2.clone(),
+                                    format!("`{c2}` is primary key of `{}`", t2.node.id),
+                                    (sim_score + 0.05).min(1.0),
+                                )
+                            } else if t1_is_pk && !t2_is_pk {
+                                (
+                                    t2.node.id.clone(),
+                                    c2.clone(),
+                                    t1.node.id.clone(),
+                                    c1.clone(),
+                                    format!("`{c1}` is primary key of `{}`", t1.node.id),
+                                    (sim_score + 0.05).min(1.0),
+                                )
+                            } else {
+                                (
+                                    t1.node.id.clone(),
+                                    c1.clone(),
+                                    t2.node.id.clone(),
+                                    c2.clone(),
+                                    format!("{sim_reason} in `{}`", t2.node.id),
+                                    sim_score,
+                                )
+                            };
+
+                        if !is_already_related(
+                            &state.nodes,
+                            &state.virtual_relations,
+                            &child,
+                            &child_col,
+                            &parent,
+                            &parent_col,
+                        ) {
+                            out.push(RelationSuggestion {
+                                relation: VirtualRelation {
+                                    child,
+                                    child_column: child_col,
+                                    parent,
+                                    parent_column: parent_col,
+                                    origin: RelationOrigin::Inferred,
+                                },
+                                score: final_score,
+                                reason,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplikasi di kedua arah relasi
+        let mut seen = HashSet::new();
+        out.retain(|s| {
+            let key1 = (
+                s.relation.child.clone(),
+                s.relation.child_column.clone(),
+                s.relation.parent.clone(),
+                s.relation.parent_column.clone(),
+            );
+            let key2 = (
+                s.relation.parent.clone(),
+                s.relation.parent_column.clone(),
+                s.relation.child.clone(),
+                s.relation.child_column.clone(),
+            );
+            if seen.contains(&key1) || seen.contains(&key2) {
+                false
+            } else {
+                seen.insert(key1);
+                true
+            }
+        });
+
+        out.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.relation.child.cmp(&b.relation.child))
+                .then_with(|| a.relation.child_column.cmp(&b.relation.child_column))
+        });
+        out
+    }
+
+    /// Generator acak deterministik kecil (tanpa dependensi tambahan).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % n
+        }
+    }
+
+    fn sorted_key(s: &[RelationSuggestion]) -> Vec<String> {
+        let mut v: Vec<String> = s
+            .iter()
+            .map(|s| {
+                let r = &s.relation;
+                format!(
+                    "{}.{}->{}.{} {:.3} {}",
+                    r.child, r.child_column, r.parent, r.parent_column, s.score, s.reason
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn random_state(seed: u64, table_count: usize) -> DiagramState {
+        const TABLES: &[&str] = &[
+            "users",
+            "tbl_device",
+            "orders",
+            "order_items",
+            "categories",
+            "mst_vendor",
+            "boxes",
+            "tracker",
+            "customer",
+            "invoice",
+            "payments",
+            "warehouse",
+        ];
+        const COLS: &[&str] = &[
+            "id",
+            "imei",
+            "no_imei",
+            "device_imei",
+            "trackerImei",
+            "sku",
+            "skus",
+            "sku_code",
+            "user_id",
+            "id_user",
+            "userid",
+            "customer_id",
+            "vendor_id",
+            "category_id",
+            "name",
+            "status",
+            "created_at",
+            "uuid",
+            "uuidx",
+            "email",
+            "e_mail",
+            "phone",
+            "phone_no",
+            "serial_number",
+            "serial_no",
+            "invoice_no",
+            "kode_gudang",
+            "gudang",
+            "IMEI",
+            "box_id",
+            "order_id",
+            "tracker_code",
+            "plate",
+            "plat",
+        ];
+        const TYPES: &[&str] = &["int", "bigint", "varchar(50)", "text", "", "uuid"];
+        let mut rng = Lcg(seed);
+        let mut nodes = Vec::new();
+        for t in 0..table_count {
+            let base = TABLES[rng.next(TABLES.len())];
+            let id = match TABLES.get(t) {
+                Some(name) => name.to_string(),
+                None => format!("{base}_{t}"),
+            };
+            let mut cols: Vec<(&str, &str, bool)> = Vec::new();
+            for _ in 0..(2 + rng.next(7)) {
+                let c = COLS[rng.next(COLS.len())];
+                if cols.iter().any(|x| x.0 == c) {
+                    continue;
+                }
+                let pk = rng.next(6) == 0;
+                cols.push((c, TYPES[rng.next(TYPES.len())], pk));
+            }
+            nodes.push(node(&id, &cols));
+        }
+        let mut st = state(nodes);
+        // Sebagian saran dijadikan relasi virtual agar jalur "sudah terhubung" ikut teruji.
+        let all = naive_suggest_relations(&st);
+        for (i, s) in all.into_iter().enumerate() {
+            if i % 5 == 0 {
+                st.virtual_relations.push(s.relation);
+            }
+        }
+        st
+    }
+
+    #[test]
+    fn indexed_suggestions_match_naive_implementation() {
+        for seed in 0..40u64 {
+            let st = random_state(seed, 6 + (seed as usize % 30));
+            assert!(!naive_suggest_relations(&st).is_empty(), "seed {seed}");
+            assert_eq!(
+                sorted_key(&suggest_relations(&st)),
+                sorted_key(&naive_suggest_relations(&st)),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn similarity_matches_naive_implementation() {
+        let names = [
+            "imei",
+            "no_imei",
+            "device_imei",
+            "trackerImei",
+            "IMEI",
+            "sku",
+            "skus",
+            "sku_code",
+            "uuid",
+            "uuidx",
+            "uuix",
+            "email",
+            "e_mail",
+            "emails",
+            "phone",
+            "phone_no",
+            "plat",
+            "plate",
+            "plates",
+            "id",
+            "ab",
+            "abc",
+            "serial_number",
+            "serial_no",
+            "kode_gudang",
+            "gudang",
+            "nama_gudang",
+            "",
+        ];
+        for a in names {
+            for b in names {
+                assert_eq!(
+                    column_similarity(a, b),
+                    naive_column_similarity(a, b),
+                    "{a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn suggestion_scan_can_be_cancelled() {
+        let st = random_state(7, 20);
+        let cancel = AtomicBool::new(true);
+        assert!(suggest_relations_data(&st.nodes, &st.virtual_relations, &cancel).is_none());
+    }
+
+    #[test]
+    fn suggest_job_delivers_result_from_worker_thread() {
+        let st = random_state(3, 20);
+        let expected = suggest_relations(&st);
+        let job = RelationSuggestJob::spawn(st.nodes.clone(), st.virtual_relations.clone(), || {});
+        let started = std::time::Instant::now();
+        let got = loop {
+            if let Some(found) = job.poll() {
+                break found;
+            }
+            assert!(started.elapsed().as_secs() < 30, "worker did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn bulk_add_skips_duplicates_and_self_links() {
+        let rel = |c: &str, cc: &str, p: &str, pc: &str| VirtualRelation {
+            child: c.into(),
+            child_column: cc.into(),
+            parent: p.into(),
+            parent_column: pc.into(),
+            origin: RelationOrigin::Inferred,
+        };
+        let mut st = state(Vec::new());
+        st.virtual_relations.push(rel("a", "x", "b", "x"));
+        let added = add_virtual_relations(
+            &mut st,
+            vec![
+                rel("a", "x", "b", "x"),
+                rel("a", "y", "b", "y"),
+                rel("a", "y", "b", "y"),
+                rel("a", "z", "a", "z"),
+            ],
+        );
+        assert_eq!(added, 1);
+        assert_eq!(st.virtual_relations.len(), 2);
+    }
+
+    /// Diagram besar harus selesai cepat; versi lama butuh puluhan detik di sini.
+    #[test]
+    fn large_diagram_scan_is_fast() {
+        let mut nodes = Vec::new();
+        for t in 0..600 {
+            let names: Vec<String> = (0..25)
+                .map(|c| match c {
+                    0 => "id".to_string(),
+                    1 => "tenant_ref".to_string(),
+                    _ => format!("col{:04}{:04}", (t % 40) * 137, c * 253),
+                })
+                .collect();
+            let cols: Vec<(&str, &str, bool)> = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), "varchar(50)", i == 0))
+                .collect();
+            nodes.push(node(&format!("table_{t}"), &cols));
+        }
+        let st = state(nodes);
+        let started = std::time::Instant::now();
+        let found = suggest_relations(&st);
+        assert!(!found.is_empty());
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "scan took {:?}",
+            started.elapsed()
+        );
     }
 }

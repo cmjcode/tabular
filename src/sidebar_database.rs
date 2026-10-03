@@ -1722,6 +1722,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         ] {
             let _ = sqlx::query(migration).execute(&pool).await;
         }
+        ensure_table_group_schema(&pool).await;
 
         let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(&pool).await;
 
@@ -2403,6 +2404,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 )
                 .execute(pool.as_ref())
                 .await;
+                ensure_table_group_schema(pool.as_ref()).await;
                 let _ = crate::sync::sync_teams_cache::init_teams_cache_tables(pool.as_ref()).await;
             });
         }
@@ -3361,4 +3363,146 @@ pub(crate) fn check_and_recover_sqlite_corruption(
         return reset_corrupted_sqlite_db(tabular);
     }
     false
+}
+
+/// Pastikan skema pendukung table grouping tersedia: kolom `table_cache.comment`
+/// dan tabel `table_group_settings`. Idempoten; wajib dipanggil di SEMUA jalur
+/// inisialisasi `connections.db` (startup background maupun restore sinkron).
+pub(crate) async fn ensure_table_group_schema(pool: &sqlx::SqlitePool) {
+    // Gagal bila kolom sudah ada; itu memang yang diharapkan.
+    let _ = sqlx::query("ALTER TABLE table_cache ADD COLUMN comment TEXT")
+        .execute(pool)
+        .await;
+    if let Err(e) = sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS table_group_settings (
+            connection_id INTEGER NOT NULL,
+            database_name TEXT NOT NULL DEFAULT '',
+            pattern TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(connection_id, database_name)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("[TABLE_GROUP] Failed to create table_group_settings: {}", e);
+    }
+}
+
+/// Ambil konfigurasi table grouping untuk koneksi/database tertentu dari SQLite `connections.db`.
+pub async fn get_table_group_config_async(
+    pool: &sqlx::SqlitePool,
+    connection_id: i64,
+    database_name: &str,
+) -> Option<crate::table_group::TableGroupConfig> {
+    let row = sqlx::query_as::<_, (String, i32)>(
+        "SELECT pattern, enabled FROM table_group_settings WHERE connection_id = ? AND database_name = ?",
+    )
+    .bind(connection_id)
+    .bind(database_name)
+    .fetch_optional(pool)
+    .await
+    .ok()?;
+
+    let (pattern, enabled) = if let Some(r) = row {
+        r
+    } else {
+        sqlx::query_as::<_, (String, i32)>(
+            "SELECT pattern, enabled FROM table_group_settings WHERE connection_id = ? AND database_name = ''",
+        )
+        .bind(connection_id)
+        .fetch_optional(pool)
+        .await
+        .ok()??
+    };
+
+    Some(crate::table_group::TableGroupConfig {
+        pattern,
+        enabled: enabled != 0,
+    })
+}
+
+/// Versi sinkron untuk `get_table_group_config_async`.
+pub fn get_table_group_config_sync(
+    pool: &sqlx::SqlitePool,
+    connection_id: i64,
+    database_name: &str,
+) -> Option<crate::table_group::TableGroupConfig> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| {
+            handle.block_on(get_table_group_config_async(pool, connection_id, database_name))
+        })
+    } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+        rt.block_on(get_table_group_config_async(pool, connection_id, database_name))
+    } else {
+        None
+    }
+}
+
+/// Simpan konfigurasi table grouping ke SQLite `connections.db`.
+pub async fn save_table_group_config(
+    pool: &sqlx::SqlitePool,
+    connection_id: i64,
+    database_name: &str,
+    cfg: &crate::table_group::TableGroupConfig,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO table_group_settings (connection_id, database_name, pattern, enabled)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(connection_id, database_name) DO UPDATE SET
+            pattern = excluded.pattern,
+            enabled = excluded.enabled
+        "#,
+    )
+    .bind(connection_id)
+    .bind(database_name)
+    .bind(&cfg.pattern)
+    .bind(if cfg.enabled { 1 } else { 0 })
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod table_group_tests {
+    use super::*;
+
+    /// `connections.db` lama (tanpa kolom `comment` dan tanpa `table_group_settings`)
+    /// harus bisa menyimpan lalu membaca konfigurasi setelah migrasi.
+    #[tokio::test]
+    async fn config_roundtrip_on_legacy_schema() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        sqlx::query("CREATE TABLE table_cache (id INTEGER PRIMARY KEY, table_name TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("legacy table_cache");
+
+        // Dipanggil dua kali untuk memastikan idempoten.
+        ensure_table_group_schema(&pool).await;
+        ensure_table_group_schema(&pool).await;
+
+        sqlx::query("INSERT INTO table_cache (table_name, comment) VALUES ('t', '[A]-[B]-[c]')")
+            .execute(&pool)
+            .await
+            .expect("comment column exists");
+
+        assert!(get_table_group_config_async(&pool, 1, "db").await.is_none());
+        let cfg = crate::table_group::TableGroupConfig {
+            pattern: "[GROUP]/[SUB GROUP]".to_string(),
+            enabled: true,
+        };
+        save_table_group_config(&pool, 1, "db", &cfg)
+            .await
+            .expect("save config");
+        assert_eq!(get_table_group_config_async(&pool, 1, "db").await, Some(cfg));
+    }
 }

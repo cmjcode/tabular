@@ -5236,6 +5236,9 @@ impl App for Tabular {
             crate::dialog_export_import_all::render_import_all_dialog(self, ctx);
         }
 
+        // Table Group settings dialog
+        crate::window_egui::table_group_dialog::render_table_group_dialog(self, ctx);
+
         // Show cache miss dialog (topmost)
         self.poll_diagram_schema_jobs(ctx);
         self.poll_diagram_repo_scan_jobs(ctx);

@@ -2008,6 +2008,16 @@ impl super::Tabular {
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new(ENV_SNAPSHOT_ID), env_snapshot));
 
+        // Tangani permintaan buka Table Group dialog dari menu konteks
+        let table_group_req: Option<(i64, String)> =
+            ui.ctx().data(|d| d.get_temp(egui::Id::new("open_table_group_dialog")));
+        if let Some((conn_id, db_name)) = table_group_req {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(i64, String)>(egui::Id::new("open_table_group_dialog"));
+            });
+            self.open_table_group_dialog(conn_id, db_name);
+        }
+
         // Handle "Add Connection Here" context menu request
         let add_to_folder: Option<String> = ui
             .ctx()
@@ -2314,7 +2324,8 @@ impl super::Tabular {
                     | models::enums::NodeType::RedisFolder
                     | models::enums::NodeType::MongoDBFolder
                     | models::enums::NodeType::MsSQLFolder => egui_icons::icons::ICON_FOLDER.codepoint,
-                    models::enums::NodeType::CustomFolder => egui_icons::icons::ICON_FOLDER.codepoint,
+                    models::enums::NodeType::CustomFolder
+                    | models::enums::NodeType::TableGroupFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::QueryFolder => egui_icons::icons::ICON_FOLDER.codepoint,
                     models::enums::NodeType::HistoryDateFolder => "",
                     models::enums::NodeType::DiagramsFolder => egui_icons::icons::ICON_FOLDER.codepoint,
@@ -2452,12 +2463,19 @@ impl super::Tabular {
                     }
 
                     // Left-align non-connection labels as well; rely on parent row width for truncation.
-                    ui.add(
+                    let mut resp = ui.add(
                         egui::Label::new(job)
                             .selectable(false)
                             .truncate()
                             .sense(egui::Sense::click()),
-                    )
+                    );
+                    if let Some(ref desc) = node.description {
+                        let trimmed = desc.trim();
+                        if !trimmed.is_empty() {
+                            resp = resp.on_hover_text(format!("💬 {}", trimmed));
+                        }
+                    }
+                    resp
                 };
 
                 if response.hovered() || response.is_pointer_button_down_on() {
@@ -2662,6 +2680,7 @@ impl super::Tabular {
                                     | models::enums::NodeType::PartitionsFolder
                                     | models::enums::NodeType::QueryFolder
                                     | models::enums::NodeType::CustomFolder
+                                    | models::enums::NodeType::TableGroupFolder
                             ))
                         && node.node_type != models::enums::NodeType::Table
                         && node.node_type != models::enums::NodeType::View;
@@ -4098,7 +4117,8 @@ impl super::Tabular {
                         | models::enums::NodeType::MsSQLFolder => {
                             egui_icons::icons::ICON_FOLDER.codepoint
                         }
-                        models::enums::NodeType::CustomFolder => {
+                        models::enums::NodeType::CustomFolder
+                        | models::enums::NodeType::TableGroupFolder => {
                             egui_icons::icons::ICON_FOLDER.codepoint
                         }
                         models::enums::NodeType::QueryFolder => {

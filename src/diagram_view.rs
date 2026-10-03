@@ -90,6 +90,10 @@ pub enum DiagramAction {
     /// Buka tab baru berisi flow card endpoint ini (id card) dan semua
     /// tabel yang tertaut dengannya.
     OpenFlowInNewTab(String),
+    /// Buka dialog konfigurasi Group & Sub Group tabel berbasis komentar.
+    ConfigureTableGroups,
+    /// Ambil ulang skema live supaya group dari komentar tabel dibangun lagi.
+    ReloadSchema,
     /// Buka request HTTP API sebuah endpoint yang tertaut ke tabel.
     OpenEndpointRequest {
         request_id: Option<String>,
@@ -476,6 +480,35 @@ pub(crate) fn animate_view_to(
     state.is_centered = true;
 }
 
+/// Mulai animasi viewport menuju pusat kelompok tabel `group_id` (tengah layar, zoom fokus).
+pub(crate) fn animate_to_group_center(
+    state: &mut DiagramState,
+    group_id: &str,
+    view_size: egui::Vec2,
+    now: f64,
+) {
+    let members = group_members(state, group_id);
+    let nodes: Vec<&DiagramNode> = state
+        .nodes
+        .iter()
+        .filter(|n| members.contains(&n.id))
+        .collect();
+    if !nodes.is_empty() {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for n in nodes {
+            min_x = min_x.min(n.pos.x);
+            min_y = min_y.min(n.pos.y);
+            max_x = max_x.max(n.pos.x + n.size.x);
+            max_y = max_y.max(n.pos.y + n.size.y);
+        }
+        let center = egui::pos2((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+        animate_view_to(state, center, FOCUS_ZOOM, view_size, now);
+    }
+}
+
 /// Seperti `start_view_animation`, plus partikel aliran data di relasi
 /// tabel tersebut (berhenti sendiri setelah `FLOW_ANIM_SECS`).
 fn start_focus_animation(state: &mut DiagramState, node_id: &str, view_size: egui::Vec2, now: f64) {
@@ -505,8 +538,38 @@ pub fn fit_diagram(state: &mut DiagramState, view_size: egui::Vec2) {
     }
     let zoom = crate::diagram_lod::fit_zoom(bounds.size(), view_size, MIN_ZOOM, DEFAULT_ZOOM);
     state.zoom = zoom;
-    state.pan = pan_to_center(bounds.center(), view_size, zoom);
+    // Diagram yang tidak muat pada zoom minimum: tengah bounding box bisa
+    // jatuh di celah kosong antar blok, jadi arahkan ke area terpadat.
+    let visible = view_size / zoom;
+    let center = if bounds.width() > visible.x || bounds.height() > visible.y {
+        densest_view_center(&state.nodes, visible).unwrap_or(bounds.center())
+    } else {
+        bounds.center()
+    };
+    state.pan = pan_to_center(center, view_size, zoom);
     state.view_anim = None;
+}
+
+/// Titik tengah jendela seukuran `visible` (koordinat diagram) yang memuat
+/// tabel terbanyak. Kandidatnya titik tengah tiap tabel; hasil imbang
+/// dimenangkan kandidat pertama supaya deterministik.
+fn densest_view_center(nodes: &[DiagramNode], visible: egui::Vec2) -> Option<egui::Pos2> {
+    let centers: Vec<egui::Pos2> = nodes.iter().map(|n| n.pos + n.size / 2.0).collect();
+    // Diagram sangat besar: kandidat dijarangkan agar tetap ringan.
+    let step = (centers.len() / 1500).max(1);
+    let mut best: Option<(usize, egui::Pos2)> = None;
+    for candidate in centers.iter().step_by(step) {
+        let window = egui::Rect::from_center_size(*candidate, visible);
+        let (count, sum) = centers
+            .iter()
+            .filter(|c| window.contains(**c))
+            .fold((0usize, egui::Vec2::ZERO), |(n, sum), c| (n + 1, sum + c.to_vec2()));
+        if best.is_none_or(|(n, _)| count > n) {
+            // Pusatkan ke rata-rata tabel di jendela, bukan ke tabel kandidat.
+            best = Some((count, (sum / count.max(1) as f32).to_pos2()));
+        }
+    }
+    best.map(|(_, center)| center)
 }
 
 /// Warna glow tabel asal pada diagram fokus. Dibedakan dari emas (relasi
@@ -576,6 +639,46 @@ pub fn find_table_id(state: &DiagramState, name: &str) -> Option<String> {
 }
 
 /// Id tabel anggota group `group_id`.
+/// ID group ini beserta sub group-nya (group berjudul `"<judul> - <sub>"`).
+pub fn group_with_sub_ids(state: &DiagramState, group_id: &str) -> Vec<String> {
+    let Some(title) = state.groups.iter().find(|g| g.id == group_id).map(|g| &g.title) else {
+        return Vec::new();
+    };
+    let sub_prefix = format!("{title} - ");
+    state
+        .groups
+        .iter()
+        .filter(|g| {
+            g.id == group_id
+                || (g.title.starts_with(&sub_prefix) && !crate::diagram_links::is_linked_id(&g.id))
+        })
+        .map(|g| g.id.clone())
+        .collect()
+}
+
+/// Hapus group dari diagram: catatan group ikut terhapus, tabel anggotanya
+/// tetap ada. Group turunan skema (`group_*`) dicatat di `deleted_group_ids`
+/// supaya tidak dibuat lagi oleh `merge_schema`.
+pub fn delete_groups(state: &mut DiagramState, group_ids: &[String]) {
+    for gid in group_ids {
+        let anchor = crate::models::structs::NoteAnchor::Group(gid.clone());
+        state.notes.retain(|n| n.anchor != anchor);
+        state.groups.retain(|g| &g.id != gid);
+        for node in &mut state.nodes {
+            node.remove_from_group(gid);
+        }
+        if gid.starts_with("group_") && !state.deleted_group_ids.contains(gid) {
+            state.deleted_group_ids.push(gid.clone());
+        }
+        if state.focus_group.as_deref() == Some(gid.as_str()) {
+            state.focus_group = None;
+        }
+    }
+    if !group_ids.is_empty() {
+        state.save_requested = true;
+    }
+}
+
 pub fn group_members(state: &DiagramState, group_id: &str) -> std::collections::HashSet<String> {
     state
         .nodes
@@ -1077,6 +1180,10 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                 state.add_group_popup = Some(diagram_pos);
                 state.new_group_buffer.clear();
             }
+        }
+        if ui.button("⚙ Configure Comment Groups…").clicked() {
+            action = Some(DiagramAction::ConfigureTableGroups);
+            ui.close();
         }
         ui.separator();
         if ui
@@ -1940,13 +2047,9 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
     }
     // Apply group deletion request
     if let Some(del_gid) = _group_delete_request {
-        let anchor = crate::models::structs::NoteAnchor::Group(del_gid.clone());
-        state.notes.retain(|n| n.anchor != anchor);
-        state.groups.retain(|g| g.id != del_gid);
-        for node in &mut state.nodes {
-            node.remove_from_group(&del_gid);
-        }
-        state.save_requested = true;
+        // Sub group ikut terhapus bersama group induknya.
+        let ids = group_with_sub_ids(state, &del_gid);
+        delete_groups(state, &ids);
     }
     // Apply deferred group move
     if let Some((group_id, delta)) = group_drag_delta {
@@ -2525,15 +2628,22 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
         }
 
+        let comment_str = state.table_comments.get(&node.id).map(|s| s.as_str()).unwrap_or("");
+        let comment_line = if !comment_str.is_empty() {
+            format!("\nComment: {comment_str}")
+        } else {
+            String::new()
+        };
+
         if !member_group_names.is_empty() {
             node_response.on_hover_text(format!(
-                "Table: {}\nGroups: {}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or manage groups",
+                "Table: {}{comment_line}\nGroups: {}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or manage groups",
                 node.title,
                 member_group_names.join(", ")
             ));
         } else {
             node_response.on_hover_text(format!(
-                "Table: {}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or add to a group",
+                "Table: {}{comment_line}\nDouble-click the title to zoom in and show data flow\nRight-click to focus or add to a group",
                 node.title
             ));
         }
@@ -3292,12 +3402,20 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.separator();
                         if ui.button("🔍 Suggest from all similar columns…").clicked() {
                             ui.close();
-                            let suggestions = crate::diagram_relations::suggest_relations(state);
+                            // Diagram besar bisa butuh beberapa detik; jalankan di background.
+                            // Jendela saran langsung terbuka dan menampilkan loading sampai
+                            // hasilnya diambil di render_relation_suggestions.
+                            let repaint_ctx = ui.ctx().clone();
+                            state.relation_suggest_job =
+                                Some(crate::diagram_relations::RelationSuggestJob::spawn(
+                                    state.nodes.clone(),
+                                    state.virtual_relations.clone(),
+                                    move || repaint_ctx.request_repaint(),
+                                ));
+                            state.relation_suggestions = Some(Vec::new());
                             state.relation_suggestions_title = Some("all tables".to_string());
                             state.relation_column_search_query.clear();
                             state.relation_database_filter = None;
-                            state.relation_suggestions =
-                                Some(suggestions.into_iter().map(|s| (s, true)).collect());
                         }
                         if ui.button("🔎 Search relations by column name…").clicked() {
                             ui.close();
@@ -3401,6 +3519,345 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         Some(None)
                     };
                 }
+
+                // --- 4c. Table Groups (Comment based) ---
+                let groups_btn = toolbar_square_button(
+                    ui,
+                    egui_icons::icons::ICON_FOLDER.codepoint,
+                    "Groups",
+                    state.focus_group.is_some(),
+                )
+                .on_hover_text("Table Groups\nView, focus, or open groups and sub groups created from table comments");
+                // Tetap terbuka saat diklik di dalam, supaya kolom filter bisa diketik.
+                egui::Popup::menu(&groups_btn)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                    ui.set_min_width(280.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("🏷️ Groups & Sub Groups").strong());
+                        if let Some(ref pat) = state.group_pattern {
+                            ui.label(egui::RichText::new(format!("({pat})")).weak().small());
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    // Tombol konfigurasi comment group ditaruh di ATAS agar selalu terlihat dan tidak terpotong layar
+                    if ui
+                        .button("⚙ Configure Comment Groups…")
+                        .on_hover_text("Configure pattern [GROUP]-[SUB GROUP] and enable/disable table grouping")
+                        .clicked()
+                    {
+                        action = Some(DiagramAction::ConfigureTableGroups);
+                        if let Some(cid) = state.nodes.iter().find_map(|n| n.connection_id) {
+                            let db = state
+                                .nodes
+                                .iter()
+                                .find_map(|n| n.database_name.clone())
+                                .unwrap_or_default();
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("open_table_group_dialog"), (cid, db));
+                            });
+                        }
+                        ui.close();
+                    }
+
+                    // Tombol reset fokus bila mode fokus sedang aktif
+                    if state.focus_group.is_some() || state.focus_table.is_some() {
+                        if ui.button("✖ Clear Focus / Show All Tables").clicked() {
+                            state.focus_group = None;
+                            state.focus_table = None;
+                            state.focus_flow = None;
+                            ui.close();
+                        }
+                    }
+
+                    // Group yang dihapus bisa dikembalikan: penandanya dibuang lalu
+                    // skema diambil ulang.
+                    if !state.deleted_group_ids.is_empty()
+                        && ui
+                            .button(format!(
+                                "Restore deleted groups ({})",
+                                state.deleted_group_ids.len()
+                            ))
+                            .on_hover_text("Bring back groups deleted from this diagram")
+                            .clicked()
+                    {
+                        state.deleted_group_ids.clear();
+                        state.save_requested = true;
+                        action = Some(DiagramAction::ReloadSchema);
+                    }
+
+                    // Search box filter untuk grup bila grup banyak
+                    let filter_id = ui.id().with("table_group_filter_text");
+                    let mut filter_text: String = ui.ctx().data(|d| d.get_temp(filter_id)).unwrap_or_default();
+                    let filter_edit = ui.add(
+                        egui::TextEdit::singleline(&mut filter_text)
+                            .hint_text("🔍 Filter groups…")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if filter_edit.changed() {
+                        ui.ctx().data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
+                    }
+
+                    // Konfirmasi hapus: (pesan, id group yang dihapus).
+                    let pending_delete_id = ui.id().with("table_group_pending_delete");
+                    let pending_delete: Option<(String, Vec<String>)> =
+                        ui.ctx().data(|d| d.get_temp(pending_delete_id));
+                    if let Some((message, ids)) = pending_delete {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(message).color(ui.visuals().warn_fg_color));
+                        ui.horizontal(|ui| {
+                            let delete_clicked = ui
+                                .button(
+                                    egui::RichText::new("Delete")
+                                        .color(egui::Color32::from_rgb(240, 80, 80)),
+                                )
+                                .clicked();
+                            if delete_clicked {
+                                delete_groups(state, &ids);
+                            }
+                            if delete_clicked || ui.button("Cancel").clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.remove_temp::<(String, Vec<String>)>(pending_delete_id)
+                                });
+                            }
+                        });
+                    }
+
+                    ui.separator();
+
+                    if state.groups.is_empty() {
+                        ui.label(egui::RichText::new("No groups found").weak());
+                    } else {
+                        // Kumpulkan dan kelompokkan berdasarkan nama Main Group
+                        struct SubItem {
+                            sub_name: String,
+                            group_id: String,
+                            count: usize,
+                            color: egui::Color32,
+                        }
+                        struct MainGroupHierarchy {
+                            main_name: String,
+                            main_group_id: Option<String>,
+                            sub_groups: Vec<SubItem>,
+                            total_count: usize,
+                            color: egui::Color32,
+                        }
+
+                        let mut main_map: std::collections::BTreeMap<String, MainGroupHierarchy> = std::collections::BTreeMap::new();
+
+                        for grp in &state.groups {
+                            let member_count = state
+                                .nodes
+                                .iter()
+                                .filter(|n| n.group_ids.contains(&grp.id) || n.group_id.as_deref() == Some(&grp.id))
+                                .count();
+
+                            if let Some((main_part, sub_part)) = grp.title.split_once(" - ") {
+                                let entry = main_map.entry(main_part.to_string()).or_insert_with(|| MainGroupHierarchy {
+                                    main_name: main_part.to_string(),
+                                    main_group_id: None,
+                                    sub_groups: Vec::new(),
+                                    total_count: 0,
+                                    color: grp.color,
+                                });
+                                entry.sub_groups.push(SubItem {
+                                    sub_name: sub_part.to_string(),
+                                    group_id: grp.id.clone(),
+                                    count: member_count,
+                                    color: grp.color,
+                                });
+                            } else {
+                                let entry = main_map.entry(grp.title.clone()).or_insert_with(|| MainGroupHierarchy {
+                                    main_name: grp.title.clone(),
+                                    main_group_id: Some(grp.id.clone()),
+                                    sub_groups: Vec::new(),
+                                    total_count: 0,
+                                    color: grp.color,
+                                });
+                                entry.main_group_id = Some(grp.id.clone());
+                                entry.color = grp.color;
+                            }
+                        }
+
+                        // Hitung total tabel per main group
+                        for entry in main_map.values_mut() {
+                            let mut member_set = std::collections::HashSet::new();
+                            if let Some(ref mg_id) = entry.main_group_id {
+                                for n in &state.nodes {
+                                    if n.is_in_group(mg_id) {
+                                        member_set.insert(&n.id);
+                                    }
+                                }
+                            }
+                            for sub in &entry.sub_groups {
+                                for n in &state.nodes {
+                                    if n.is_in_group(&sub.group_id) {
+                                        member_set.insert(&n.id);
+                                    }
+                                }
+                            }
+                            entry.total_count = member_set.len();
+                        }
+
+                        let active_focus = state.focus_group.clone();
+                        let mut focus_req: Option<String> = None;
+                        let mut delete_req: Option<(String, Vec<String>)> = None;
+                        let filter_needle = filter_text.trim().to_lowercase();
+                        let delete_button = |ui: &mut egui::Ui, hover: &str| {
+                            ui.small_button(
+                                egui::RichText::new(egui_icons::icons::ICON_DELETE.codepoint)
+                                    .color(egui::Color32::from_rgb(240, 80, 80)),
+                            )
+                            .on_hover_text(hover)
+                            .clicked()
+                        };
+
+                        egui::ScrollArea::vertical()
+                            .max_height(350.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let mut any_matched = false;
+                                for (_name, entry) in main_map {
+                                    if !filter_needle.is_empty() {
+                                        let main_match = entry.main_name.to_lowercase().contains(&filter_needle);
+                                        let sub_match = entry.sub_groups.iter().any(|s| s.sub_name.to_lowercase().contains(&filter_needle));
+                                        if !main_match && !sub_match {
+                                            continue;
+                                        }
+                                    }
+                                    any_matched = true;
+
+                                    if entry.sub_groups.is_empty() {
+                                        // Group tunggal tanpa sub-group
+                                        ui.horizontal(|ui| {
+                                            let (rect_badge, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                            ui.painter().rect_filled(rect_badge, 2.0, entry.color);
+                                            let is_focused = entry.main_group_id.as_ref() == active_focus.as_ref();
+                                            let label_text = if is_focused {
+                                                egui::RichText::new(format!("{} ({})", entry.main_name, entry.total_count)).strong().underline()
+                                            } else {
+                                                egui::RichText::new(format!("{} ({})", entry.main_name, entry.total_count))
+                                            };
+                                            if ui.button(label_text).clicked() {
+                                                if let Some(ref mg_id) = entry.main_group_id {
+                                                    focus_req = Some(mg_id.clone());
+                                                    ui.close();
+                                                }
+                                            }
+                                            if let Some(ref mg_id) = entry.main_group_id {
+                                                if ui.small_button("↗").on_hover_text("Open in new diagram tab").clicked() {
+                                                    action = Some(DiagramAction::OpenGroupInNewTab(mg_id.clone()));
+                                                    ui.close();
+                                                }
+                                                if delete_button(ui, "Delete this group") {
+                                                    delete_req = Some((
+                                                        format!("Delete group \"{}\"? Its tables are kept.", entry.main_name),
+                                                        vec![mg_id.clone()],
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    } else {
+                                        // Main group dengan sub-groups
+                                        let id = ui.make_persistent_id(&entry.main_name);
+                                        // Hapus group utama ikut menghapus semua sub group-nya.
+                                        let cascade_ids: Vec<String> = entry
+                                            .main_group_id
+                                            .iter()
+                                            .cloned()
+                                            .chain(entry.sub_groups.iter().map(|s| s.group_id.clone()))
+                                            .collect();
+                                        let sub_total = entry.sub_groups.len();
+                                        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+                                            .show_header(ui, |ui| {
+                                                let (rect_badge, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                                ui.painter().rect_filled(rect_badge, 2.0, entry.color);
+                                                let is_focused = entry.main_group_id.as_ref() == active_focus.as_ref();
+                                                let text = if is_focused {
+                                                    egui::RichText::new(format!("{} ({})", entry.main_name, entry.total_count)).strong().underline()
+                                                } else {
+                                                    egui::RichText::new(format!("{} ({})", entry.main_name, entry.total_count)).strong()
+                                                };
+                                                if ui.selectable_label(is_focused, text).clicked() {
+                                                    if let Some(ref mg_id) = entry.main_group_id {
+                                                        focus_req = Some(mg_id.clone());
+                                                        ui.close();
+                                                    }
+                                                }
+                                                if let Some(ref mg_id) = entry.main_group_id {
+                                                    if ui.small_button("↗").on_hover_text("Open all tables in this group in new tab").clicked() {
+                                                        action = Some(DiagramAction::OpenGroupInNewTab(mg_id.clone()));
+                                                        ui.close();
+                                                    }
+                                                }
+                                                if delete_button(ui, "Delete this group and all its sub groups") {
+                                                    delete_req = Some((
+                                                        format!(
+                                                            "Delete group \"{}\" and its {} sub group(s)? Its tables are kept.",
+                                                            entry.main_name, sub_total
+                                                        ),
+                                                        cascade_ids.clone(),
+                                                    ));
+                                                }
+                                            })
+                                            .body(|ui| {
+                                                for sub in entry.sub_groups {
+                                                    if !filter_needle.is_empty()
+                                                        && !entry.main_name.to_lowercase().contains(&filter_needle)
+                                                        && !sub.sub_name.to_lowercase().contains(&filter_needle)
+                                                    {
+                                                        continue;
+                                                    }
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(8.0);
+                                                        let (rect_sub, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                                        ui.painter().rect_filled(rect_sub, 1.5, sub.color);
+                                                        let is_sub_focused = active_focus.as_deref() == Some(&sub.group_id);
+                                                        let sub_text = if is_sub_focused {
+                                                            egui::RichText::new(format!("{} ({})", sub.sub_name, sub.count)).underline()
+                                                        } else {
+                                                            egui::RichText::new(format!("{} ({})", sub.sub_name, sub.count))
+                                                        };
+                                                        if ui.selectable_label(is_sub_focused, sub_text).clicked() {
+                                                            focus_req = Some(sub.group_id.clone());
+                                                            ui.close();
+                                                        }
+                                                        if ui.small_button("↗").on_hover_text("Open this sub group in new tab").clicked() {
+                                                            action = Some(DiagramAction::OpenGroupInNewTab(sub.group_id.clone()));
+                                                            ui.close();
+                                                        }
+                                                        if delete_button(ui, "Delete this sub group") {
+                                                            delete_req = Some((
+                                                                format!(
+                                                                    "Delete sub group \"{} - {}\"? Its tables are kept.",
+                                                                    entry.main_name, sub.sub_name
+                                                                ),
+                                                                vec![sub.group_id.clone()],
+                                                            ));
+                                                        }
+                                                    });
+                                                }
+                                            });
+                                    }
+                                }
+                                if !any_matched {
+                                    ui.label(egui::RichText::new("No groups match filter").weak());
+                                }
+                            });
+
+                        if let Some(req) = delete_req {
+                            ui.ctx().data_mut(|d| d.insert_temp(pending_delete_id, req));
+                        }
+                        if let Some(gid) = focus_req {
+                            state.focus_group = Some(gid.clone());
+                            state.focus_table = None;
+                            state.focus_flow = None;
+                            animate_to_group_center(state, &gid, rect.size(), now);
+                        }
+                    }
+                });
 
                 ui.separator();
 
@@ -5918,14 +6375,28 @@ fn render_relation_suggestions(
     let mut close = false;
     let mut result = None;
 
-    // Cache saran awal (sebelum user mengetik kolom pencarian baru)
+    // Cache saran awal (sebelum user mengetik kolom pencarian baru). Disimpan dalam
+    // Arc: `get_temp` meng-clone nilainya setiap frame, dan daftar ini bisa sangat besar.
+    type BaseSuggestions = std::sync::Arc<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>;
     let base_id = egui::Id::new("rel_suggest_base");
-    if state.relation_column_search_query.is_empty() && !state.relation_pair_mode {
+    let showing_base = state.relation_column_search_query.is_empty() && !state.relation_pair_mode;
+
+    // Hasil pencarian background: selalu jadi cache awal, dan langsung ditampilkan
+    // kecuali user sudah beralih ke pencarian lain selagi menunggu.
+    if let Some(found) = state.relation_suggest_job.as_ref().and_then(|job| job.poll()) {
+        state.relation_suggest_job = None;
+        let found: Vec<_> = found.into_iter().map(|s| (s, true)).collect();
+        if showing_base {
+            suggestions = found.clone();
+        }
+        ctx.data_mut(|d| d.insert_temp(base_id, BaseSuggestions::new(found)));
+    }
+    let loading = state.relation_suggest_job.is_some();
+
+    if showing_base && !loading {
         ctx.data_mut(|d| {
-            if d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id)
-                .is_none()
-            {
-                d.insert_temp(base_id, suggestions.clone());
+            if d.get_temp::<BaseSuggestions>(base_id).is_none() {
+                d.insert_temp(base_id, BaseSuggestions::new(suggestions.clone()));
             }
         });
     }
@@ -6132,12 +6603,8 @@ fn render_relation_suggestions(
             if search_triggered {
                 let trimmed = state.relation_column_search_query.trim();
                 if trimmed.is_empty() {
-                    if let Some(base) = ctx.data(|d| {
-                        d.get_temp::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(
-                            base_id,
-                        )
-                    }) {
-                        suggestions = base;
+                    if let Some(base) = ctx.data(|d| d.get_temp::<BaseSuggestions>(base_id)) {
+                        suggestions = base.as_ref().clone();
                     } else if !state.relation_pair_mode {
                         suggestions = Vec::new();
                     }
@@ -6311,6 +6778,27 @@ fn render_relation_suggestions(
                     job
                 };
 
+                if loading && showing_base {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), list_h),
+                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                        |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space((list_h - 60.0).max(0.0) / 2.0);
+                                ui.spinner();
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Comparing columns across {} tables…",
+                                        state.nodes.len()
+                                    ))
+                                    .weak(),
+                                );
+                            });
+                        },
+                    );
+                    return;
+                }
                 if total == 0 {
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), list_h),
@@ -6464,18 +6952,14 @@ fn render_relation_suggestions(
                     .min_size(egui::vec2(0.0, 28.0));
 
                     if ui.add_enabled(chosen > 0, btn).clicked() {
-                        let mut added = 0;
-                        for &idx in &visible_indices {
-                            let (s, on) = &suggestions[idx];
-                            if *on
-                                && crate::diagram_relations::add_virtual_relation(
-                                    state,
-                                    s.relation.clone(),
-                                )
-                            {
-                                added += 1;
-                            }
-                        }
+                        let accepted: Vec<_> = visible_indices
+                            .iter()
+                            .map(|&idx| &suggestions[idx])
+                            .filter(|(_, on)| *on)
+                            .map(|(s, _)| s.relation.clone())
+                            .collect();
+                        let added =
+                            crate::diagram_relations::add_virtual_relations(state, accepted);
                         state.save_requested = true;
                         result = Some(DiagramAction::Info(format!("Added {added} relation(s)")));
                         close = true;
@@ -6494,8 +6978,11 @@ fn render_relation_suggestions(
         state.relation_suggestions = Some(suggestions);
     } else {
         ctx.data_mut(|d| {
-            d.remove::<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>(base_id);
+            d.remove::<BaseSuggestions>(base_id);
         });
+        if let Some(job) = state.relation_suggest_job.take() {
+            job.cancel();
+        }
         state.relation_column_search_query.clear();
         state.relation_database_filter = None;
         state.relation_min_match = 0;
@@ -8721,6 +9208,30 @@ mod tests {
         assert!(min.x >= -1.0 && min.y >= -1.0, "{min:?}");
         assert!(max.x <= view.x + 1.0 && max.y <= view.y + 1.0, "{max:?}");
         assert!(state.zoom >= MIN_ZOOM && state.zoom <= DEFAULT_ZOOM);
+    }
+
+    /// Diagram yang terlalu besar untuk zoom minimum: Fit mengarah ke blok
+    /// tabel terpadat, bukan ke celah kosong di tengah bounding box.
+    #[test]
+    fn test_fit_diagram_lands_on_tables_when_too_large() {
+        let mut state = crate::diagram_lod::synthetic_state(40, 0, 0, 0);
+        // Blok kecil yang sangat jauh di bawah membuat celah kosong besar.
+        for (i, n) in state.nodes.iter_mut().enumerate().take(5) {
+            n.pos = egui::pos2(i as f32 * 300.0, 140_000.0);
+        }
+        let view = egui::vec2(1600.0, 1000.0);
+        fit_diagram(&mut state, view);
+        assert_eq!(state.zoom, MIN_ZOOM);
+        let view_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, view);
+        let visible = state
+            .nodes
+            .iter()
+            .filter(|n| {
+                let c = n.pos + n.size / 2.0;
+                view_rect.contains(egui::Pos2::ZERO + state.pan + c.to_vec2() * state.zoom)
+            })
+            .count();
+        assert_eq!(visible, 35, "Fit harus menampilkan blok terbesar");
     }
 
     /// Benchmark manual (tidak jalan di CI):

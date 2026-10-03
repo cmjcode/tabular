@@ -27,6 +27,8 @@ pub struct SchemaSnapshot {
     pub foreign_keys: Option<Vec<ForeignKey>>,
     pub columns: Option<HashMap<String, Vec<DiagramColumn>>>,
     pub tables: Option<Vec<String>>,
+    pub table_comments: Option<HashMap<String, String>>,
+    pub group_config: Option<crate::table_group::TableGroupConfig>,
     /// Diagram di tabel `diagram_by_tabular`: `Some(Ok(None))` = belum ada,
     /// `Some(Err)` = gagal dibaca, `None` = tidak diperiksa.
     pub shared: Option<Result<Option<crate::diagram_storage::DiagramRecord>, String>>,
@@ -110,14 +112,40 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
             _ => None,
         }
     });
-    let tables = timed(async {
+    let tables_and_comments = timed(async {
         match &pool {
-            DatabasePool::MySQL(p) => crate::driver_mysql::list_mysql_tables(p, db, "table").await,
-            DatabasePool::PostgreSQL(_) => {
-                crate::driver_postgres::list_postgres_tables(conn, db, "table").await
+            DatabasePool::MySQL(p) => {
+                let list = crate::driver_mysql::list_mysql_tables_with_comments(p, db, "table").await?;
+                let mut names = Vec::new();
+                let mut comments = HashMap::new();
+                for (t, c) in list {
+                    if let Some(comm) = c {
+                        comments.insert(t.clone(), comm);
+                    }
+                    names.push(t);
+                }
+                Some((names, comments))
             }
-            DatabasePool::SQLite(p) => crate::driver_sqlite::list_sqlite_tables(p, "table").await,
-            DatabasePool::MsSQL(p) => crate::driver_mssql::list_mssql_tables(p, "table").await,
+            DatabasePool::PostgreSQL(_) => {
+                let list = crate::driver_postgres::list_postgres_tables_with_comments(conn, db, "table").await?;
+                let mut names = Vec::new();
+                let mut comments = HashMap::new();
+                for (t, c) in list {
+                    if let Some(comm) = c {
+                        comments.insert(t.clone(), comm);
+                    }
+                    names.push(t);
+                }
+                Some((names, comments))
+            }
+            DatabasePool::SQLite(p) => {
+                let names = crate::driver_sqlite::list_sqlite_tables(p, "table").await?;
+                Some((names, HashMap::new()))
+            }
+            DatabasePool::MsSQL(p) => {
+                let names = crate::driver_mssql::list_mssql_tables(p, "table").await?;
+                Some((names, HashMap::new()))
+            }
             _ => None,
         }
     });
@@ -135,7 +163,17 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
         }
     };
 
-    let (foreign_keys, columns, tables, shared) = tokio::join!(fks, columns, tables, shared);
+    let (foreign_keys, columns, tables_res, shared) = tokio::join!(fks, columns, tables_and_comments, shared);
+    let (tables, table_comments) = match tables_res {
+        Some((t, c)) => (Some(t), Some(c)),
+        None => (None, None),
+    };
+
+    let group_config = if let Some(cache) = &req.cache_pool {
+        crate::sidebar_database::get_table_group_config_async(cache, conn_id, db).await
+    } else {
+        None
+    };
 
     if let (Some(cache), Some(keys)) = (&req.cache_pool, &foreign_keys) {
         crate::connection::metadata::write_foreign_key_cache(cache, conn_id, db, keys).await;
@@ -156,6 +194,8 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
         foreign_keys,
         columns,
         tables,
+        table_comments,
+        group_config,
         shared: Some(shared),
     })
 }
@@ -217,15 +257,105 @@ pub fn merge_schema(
             .collect();
     }
 
-    // Group berdasarkan prefix nama tabel; group yang sudah ada dibiarkan.
-    let mut groups_map: HashMap<&str, usize> = HashMap::new();
-    for table in &table_names {
-        *groups_map.entry(table_prefix(table)).or_default() += 1;
+    // Group berdasarkan komentar tabel jika konfigurasi aktif; jika tidak ada,
+    // fallback ke prefix nama tabel.
+    let mut table_to_group: HashMap<String, (String, Vec<String>)> = HashMap::new();
+    let mut comment_group_entries: Vec<(String, String)> = Vec::new();
+    let comment_grouping_active = snapshot
+        .group_config
+        .as_ref()
+        .is_some_and(|cfg| cfg.enabled)
+        && snapshot.table_comments.is_some();
+
+    if let Some(ref comments) = snapshot.table_comments {
+        state.table_comments = comments.clone();
     }
+    if let Some(ref cfg) = snapshot.group_config {
+        state.group_pattern = Some(cfg.pattern.clone());
+    }
+
+    if comment_grouping_active {
+        let pattern = &snapshot.group_config.as_ref().unwrap().pattern;
+        let comments = snapshot.table_comments.as_ref().unwrap();
+        for table in &table_names {
+            let raw_c = comments.get(table).map(|s| s.as_str());
+            let parsed = crate::table_group::parse_table_comment(pattern, raw_c);
+            if parsed.group != "Ungrouped" {
+                let main_slug: String = parsed.group
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                    .collect();
+                let main_group_id = format!("group_{main_slug}");
+                let main_title = parsed.group.clone();
+
+                if let Some(ref sub) = parsed.sub_group {
+                    let sub_combined = format!("{}_{}", parsed.group, sub);
+                    let sub_slug: String = sub_combined
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                        .collect();
+                    let sub_group_id = format!("group_{sub_slug}");
+                    let sub_title = format!("{} - {}", parsed.group, sub);
+
+                    comment_group_entries.push((main_group_id.clone(), main_title));
+                    comment_group_entries.push((sub_group_id.clone(), sub_title));
+
+                    table_to_group.insert(
+                        table.clone(),
+                        (sub_group_id.clone(), vec![main_group_id, sub_group_id]),
+                    );
+                } else {
+                    comment_group_entries.push((main_group_id.clone(), main_title));
+                    table_to_group.insert(
+                        table.clone(),
+                        (main_group_id.clone(), vec![main_group_id]),
+                    );
+                }
+            }
+        }
+    }
+
+    // Group yang sudah dihapus user tidak dibuat lagi; tabelnya turun ke group
+    // induk yang tersisa, atau tanpa group.
+    let deleted_groups: HashSet<String> = state.deleted_group_ids.iter().cloned().collect();
+    if !deleted_groups.is_empty() {
+        comment_group_entries.retain(|(id, _)| !deleted_groups.contains(id));
+        for (primary, all) in table_to_group.values_mut() {
+            all.retain(|g| !deleted_groups.contains(g));
+            if let Some(last) = all.last() {
+                *primary = last.clone();
+            }
+        }
+    }
+
     let mut existing_group_ids: HashSet<String> =
         state.groups.iter().map(|g| g.id.clone()).collect();
     let colors = crate::diagram_view::GROUP_COLORS;
     let mut color_idx = 0;
+
+    // Daftarkan group dari komentar tabel
+    comment_group_entries.sort_by(|a, b| a.1.cmp(&b.1));
+    comment_group_entries.dedup();
+    for (group_id, title) in comment_group_entries {
+        if existing_group_ids.insert(group_id.clone()) {
+            state.groups.push(DiagramGroup {
+                id: group_id,
+                title,
+                color: colors[color_idx % colors.len()],
+                manual_pos: None,
+                repo_url: None,
+            });
+            color_idx += 1;
+        }
+    }
+
+    // Group berdasarkan prefix nama tabel untuk tabel yang belum punya group
+    let mut groups_map: HashMap<&str, usize> = HashMap::new();
+    for table in &table_names {
+        if !table_to_group.contains_key(table) {
+            *groups_map.entry(table_prefix(table)).or_default() += 1;
+        }
+    }
     let mut prefixes: Vec<&str> = groups_map
         .iter()
         .filter(|(_, n)| **n > 1)
@@ -235,6 +365,9 @@ pub fn merge_schema(
     prefixes.sort_unstable();
     for prefix in prefixes {
         let group_id = format!("group_{prefix}");
+        if deleted_groups.contains(&group_id) {
+            continue;
+        }
         if existing_group_ids.insert(group_id.clone()) {
             let mut chars = prefix.chars();
             let title = chars
@@ -272,8 +405,13 @@ pub fn merge_schema(
         let hash: u64 = table.bytes().fold(5381, |acc, c| {
             acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64)
         });
-        let target_group = format!("group_{}", table_prefix(table));
-        let has_group = existing_group_ids.contains(&target_group);
+        let (target_group, all_groups, has_group) = if let Some((primary, all)) = table_to_group.get(table) {
+            (primary.clone(), all.clone(), !all.is_empty())
+        } else {
+            let tg = format!("group_{}", table_prefix(table));
+            let hg = existing_group_ids.contains(&tg);
+            (tg.clone(), vec![tg], hg)
+        };
         state.nodes.push(DiagramNode {
             id: table.clone(),
             title: table.clone(),
@@ -283,7 +421,7 @@ pub fn merge_schema(
             ),
             size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
             group_ids: if has_group {
-                vec![target_group.clone()]
+                all_groups
             } else {
                 Vec::new()
             },
@@ -293,6 +431,17 @@ pub fn merge_schema(
             connection_name: conn_name.map(str::to_string),
             ..Default::default()
         });
+    }
+
+    // Perbarui group_id untuk node yang sudah ada jika ada group dari komentar
+    for node in &mut state.nodes {
+        if crate::diagram_links::is_linked_id(&node.id) {
+            continue;
+        }
+        if let Some((primary, all)) = table_to_group.get(&node.id) {
+            node.group_id = (!all.is_empty()).then(|| primary.clone());
+            node.group_ids = all.clone();
+        }
     }
 
     // Segarkan kolom + metadata + FK semua node tabel yang ada di skema.
@@ -396,8 +545,83 @@ mod tests {
             foreign_keys: Some(fks),
             columns: None,
             tables: Some(tables.iter().map(|t| t.to_string()).collect()),
+            table_comments: None,
+            group_config: None,
             shared: None,
         }
+    }
+
+    #[test]
+    fn merge_with_comment_groups_creates_groups() {
+        let mut state = DiagramState::default();
+        let mut comments = HashMap::new();
+        comments.insert("users".to_string(), "[AUTH]-[USER]-[Tabel akun]".to_string());
+        comments.insert("roles".to_string(), "[AUTH]-[ROLE]-[Tabel peran]".to_string());
+        comments.insert("payroll".to_string(), "[HR]-[PAYROLL]-[Gaji]".to_string());
+
+        let snap = SchemaSnapshot {
+            foreign_keys: Some(vec![]),
+            columns: None,
+            tables: Some(vec!["users".into(), "roles".into(), "payroll".into(), "misc".into()]),
+            table_comments: Some(comments),
+            group_config: Some(crate::table_group::TableGroupConfig {
+                pattern: "[GROUP]-[SUB GROUP]-[Comment Table]".to_string(),
+                enabled: true,
+            }),
+            shared: None,
+        };
+
+        merge_schema(&mut state, &snap, 1, "shop", Some("local"));
+
+        assert_eq!(state.nodes.len(), 4);
+        assert!(state.groups.iter().any(|g| g.title == "AUTH"));
+        assert!(state.groups.iter().any(|g| g.title == "AUTH - USER"));
+        assert!(state.groups.iter().any(|g| g.title == "AUTH - ROLE"));
+        assert!(state.groups.iter().any(|g| g.title == "HR"));
+        assert!(state.groups.iter().any(|g| g.title == "HR - PAYROLL"));
+
+        let u = state.nodes.iter().find(|n| n.id == "users").unwrap();
+        assert_eq!(u.group_id.as_deref(), Some("group_auth_user"));
+        assert!(u.group_ids.contains(&"group_auth".to_string()));
+        assert!(u.group_ids.contains(&"group_auth_user".to_string()));
+    }
+
+    /// Group yang dihapus user tidak muncul lagi saat skema disinkron ulang.
+    #[test]
+    fn merge_skips_deleted_groups() {
+        let mut comments = HashMap::new();
+        comments.insert("users".to_string(), "[AUTH]-[USER]-[Tabel akun]".to_string());
+        comments.insert("roles".to_string(), "[AUTH]-[ROLE]-[Tabel peran]".to_string());
+        comments.insert("payroll".to_string(), "[HR]-[PAYROLL]-[Gaji]".to_string());
+        let snap = SchemaSnapshot {
+            foreign_keys: Some(vec![]),
+            columns: None,
+            tables: Some(vec!["users".into(), "roles".into(), "payroll".into()]),
+            table_comments: Some(comments),
+            group_config: Some(crate::table_group::TableGroupConfig {
+                pattern: "[GROUP]-[SUB GROUP]-[Comment Table]".to_string(),
+                enabled: true,
+            }),
+            shared: None,
+        };
+
+        let mut state = DiagramState::default();
+        merge_schema(&mut state, &snap, 1, "shop", Some("local"));
+        // Hapus sub group AUTH - USER dan seluruh group HR.
+        crate::diagram_view::delete_groups(&mut state, &["group_auth_user".to_string()]);
+        let hr = crate::diagram_view::group_with_sub_ids(&state, "group_hr");
+        assert_eq!(hr.len(), 2);
+        crate::diagram_view::delete_groups(&mut state, &hr);
+
+        merge_schema(&mut state, &snap, 1, "shop", Some("local"));
+
+        let titles: Vec<&str> = state.groups.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, ["AUTH", "AUTH - ROLE"]);
+        let u = state.nodes.iter().find(|n| n.id == "users").unwrap();
+        assert_eq!(u.group_ids, ["group_auth"]);
+        assert_eq!(u.group_id.as_deref(), Some("group_auth"));
+        let p = state.nodes.iter().find(|n| n.id == "payroll").unwrap();
+        assert!(p.group_ids.is_empty() && p.group_id.is_none());
     }
 
     #[test]

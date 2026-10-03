@@ -388,6 +388,7 @@ pub struct TreeNode {
     pub file_path: Option<String>,     // For query files
     pub table_name: Option<String>,    // For storing table context for subfolders/items
     pub query: Option<String>,         // For storing custom view queries
+    pub description: Option<String>,   // Optional description / table comment
 }
 
 impl TreeNode {
@@ -403,6 +404,7 @@ impl TreeNode {
             file_path: None,
             table_name: None,
             query: None,
+            description: None,
         }
     }
 
@@ -419,6 +421,7 @@ impl TreeNode {
             file_path: None,
             table_name: None,
             query: None,
+            description: None,
         }
     }
 
@@ -434,6 +437,7 @@ impl TreeNode {
             file_path: None,
             table_name: None,
             query: None,
+            description: None,
         }
     }
 
@@ -874,6 +878,10 @@ pub struct DiagramState {
     pub nodes: Vec<DiagramNode>,
     pub edges: Vec<DiagramEdge>,
     pub groups: Vec<DiagramGroup>,
+    /// ID group turunan skema (komentar/prefix tabel) yang dihapus user.
+    /// Tanpa penanda ini `merge_schema` akan membuatnya lagi di sinkron berikutnya.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_group_ids: Vec<String>,
     #[serde(with = "serde_vec2")]
     pub pan: eframe::egui::Vec2,
     pub zoom: f32,
@@ -904,6 +912,10 @@ pub struct DiagramState {
     pub add_group_popup: Option<eframe::egui::Pos2>, // Popup for adding group
     #[serde(skip)]
     pub new_group_buffer: String,
+    #[serde(skip)]
+    pub table_comments: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub group_pattern: Option<String>,
     #[serde(skip)]
     pub search_query: String,
     #[serde(skip)]
@@ -950,6 +962,9 @@ pub struct DiagramState {
     /// Jendela saran relasi yang sedang terbuka: (saran, dicentang).
     #[serde(skip)]
     pub relation_suggestions: Option<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>,
+    /// Pencarian saran relasi seluruh diagram yang sedang berjalan di background.
+    #[serde(skip)]
+    pub relation_suggest_job: Option<crate::diagram_relations::RelationSuggestJob>,
     /// Judul / target kolom pencarian relasi (misal "devices.imei" atau "imei").
     #[serde(skip)]
     pub relation_suggestions_title: Option<String>,
@@ -1622,6 +1637,9 @@ impl Default for DiagramState {
             selected_column: None,
             add_group_popup: None,
             new_group_buffer: String::new(),
+            table_comments: std::collections::HashMap::new(),
+            group_pattern: None,
+            deleted_group_ids: Vec::new(),
             search_query: String::new(),
             show_search: false,
             search_tables: true,
@@ -1639,6 +1657,7 @@ impl Default for DiagramState {
             virtual_relations: Vec::new(),
             selected_virtual: None,
             relation_suggestions: None,
+            relation_suggest_job: None,
             relation_suggestions_title: None,
             relation_column_search_query: String::new(),
             relation_database_filter: None,

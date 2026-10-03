@@ -1271,6 +1271,98 @@ impl super::Tabular {
             debug!("ERROR: Connection with ID {} not found!", connection_id);
         }
     }
+    /// Muat ulang node TablesFolder untuk koneksi dan database tertentu setelah pengaturan group berubah.
+    pub fn reload_tables_tree_node(&mut self, conn_id: i64, database_name: &str) {
+        let mut items_tree = std::mem::take(&mut self.items_tree);
+        fn find_and_reload(
+            tabular: &mut Tabular,
+            nodes: &mut [models::structs::TreeNode],
+            conn_id: i64,
+            database_name: &str,
+        ) -> bool {
+            for node in nodes.iter_mut() {
+                if node.node_type == models::enums::NodeType::TablesFolder
+                    && node.connection_id == Some(conn_id)
+                    && (database_name.is_empty()
+                        || node.database_name.as_deref() == Some(database_name)
+                        || node.database_name.is_none())
+                {
+                    node.is_loaded = false;
+                    node.children.clear();
+                    tabular.load_folder_content(conn_id, node, models::enums::NodeType::TablesFolder, false);
+                    return true;
+                }
+                if find_and_reload(tabular, &mut node.children, conn_id, database_name) {
+                    return true;
+                }
+            }
+            false
+        }
+        find_and_reload(self, &mut items_tree, conn_id, database_name);
+        self.items_tree = items_tree;
+        self.needs_refresh = true;
+    }
+
+    /// Buka dialog konfigurasi Group & Sub Group tabel untuk koneksi dan database tertentu.
+    pub fn open_table_group_dialog(&mut self, connection_id: i64, database_name: String) {
+        let (pattern, enabled) = if let Some(ref pool) = self.db_pool {
+            if let Some(cfg) = crate::sidebar_database::get_table_group_config_sync(
+                pool.as_ref(),
+                connection_id,
+                &database_name,
+            ) {
+                (cfg.pattern, cfg.enabled)
+            } else {
+                let default_cfg = crate::table_group::TableGroupConfig::default();
+                (default_cfg.pattern, default_cfg.enabled)
+            }
+        } else {
+            let default_cfg = crate::table_group::TableGroupConfig::default();
+            (default_cfg.pattern, default_cfg.enabled)
+        };
+
+        let cached = crate::cache_data::get_tables_with_comments_from_cache(
+            self,
+            connection_id,
+            &database_name,
+            "table",
+        );
+        let samples = cached.unwrap_or_default().into_iter().take(15).collect();
+
+        self.table_group_dialog.connection_id = Some(connection_id);
+        self.table_group_dialog.database_name = database_name;
+        self.table_group_dialog.pattern = pattern;
+        self.table_group_dialog.enabled = enabled;
+        self.table_group_dialog.sample_tables = samples;
+        self.table_group_dialog.show = true;
+    }
+
+    /// Susun child nodes untuk TablesFolder sesuai TableGroupConfig (group & sub-group atau daftar datar).
+    pub fn build_tables_folder_children(
+        &self,
+        connection_id: i64,
+        database_name: &str,
+        tables_with_comments: &[(String, Option<String>)],
+    ) -> Vec<models::structs::TreeNode> {
+        // Sidebar Tables selalu menampilkan daftar tabel datar (flat list) tanpa folder grup
+        let mut list: Vec<models::structs::TreeNode> = tables_with_comments
+            .iter()
+            .map(|(tbl_name, comment)| {
+                let mut child = models::structs::TreeNode::new(
+                    tbl_name.clone(),
+                    models::enums::NodeType::Table,
+                );
+                child.connection_id = Some(connection_id);
+                child.database_name = Some(database_name.to_string());
+                child.description = comment.clone();
+                child.is_loaded = false;
+                child
+            })
+            .collect();
+        list.sort_by_key(|a| a.name.to_lowercase());
+        list
+    }
+
     pub fn load_mysql_folder_content(
         &mut self,
         connection_id: i64,
@@ -1295,6 +1387,45 @@ impl super::Tabular {
                 return;
             }
         };
+
+        // Khusus folder tabel: muat beserta komentar database untuk mendukung pengelompokan
+        if folder_type == models::enums::NodeType::TablesFolder {
+            if !force_live_fetch
+                && let Some(cached_items) =
+                    cache_data::get_tables_with_comments_from_cache(self, connection_id, database_name, table_type)
+                && !cached_items.is_empty()
+            {
+                debug!(
+                    "[TREE-LOADER] MySQL load_folder: CACHE HIT (with comments) conn={} db={:?} count={}",
+                    connection_id,
+                    database_name,
+                    cached_items.len()
+                );
+                node.children = self.build_tables_folder_children(connection_id, database_name, &cached_items);
+                return;
+            }
+
+            if let Some(real_items) = driver_mysql::fetch_tables_with_comments_from_mysql_connection(
+                self,
+                connection_id,
+                database_name,
+                table_type,
+            ) {
+                debug!(
+                    "[TREE-LOADER] MySQL load_folder: LIVE FETCH (with comments) conn={} db={:?} count={}",
+                    connection_id,
+                    database_name,
+                    real_items.len()
+                );
+                let table_data: Vec<(String, String, Option<String>)> = real_items
+                    .iter()
+                    .map(|(name, comment)| (name.clone(), table_type.to_string(), comment.clone()))
+                    .collect();
+                cache_data::save_tables_with_comments_to_cache(self, connection_id, database_name, &table_data);
+                node.children = self.build_tables_folder_children(connection_id, database_name, &real_items);
+                return;
+            }
+        }
 
         // First try to get from cache (skipped when force_live_fetch is true)
         if !force_live_fetch
@@ -1470,6 +1601,45 @@ impl super::Tabular {
             _ => models::enums::NodeType::View,
         };
 
+        // Khusus folder tabel: muat beserta komentar database untuk mendukung pengelompokan
+        if folder_type == models::enums::NodeType::TablesFolder {
+            if !force_live_fetch
+                && let Some(cached_items) =
+                    cache_data::get_tables_with_comments_from_cache(self, connection_id, database_name, table_type)
+                && !cached_items.is_empty()
+            {
+                debug!(
+                    "[TREE-LOADER] PG load_folder: CACHE HIT (with comments) conn={} db={:?} count={}",
+                    connection_id,
+                    database_name,
+                    cached_items.len()
+                );
+                node.children = self.build_tables_folder_children(connection_id, database_name, &cached_items);
+                return;
+            }
+
+            if let Some(real_items) = crate::driver_postgres::fetch_tables_with_comments_from_postgres_connection(
+                self,
+                connection_id,
+                database_name,
+                table_type,
+            ) {
+                debug!(
+                    "[TREE-LOADER] PG load_folder: LIVE FETCH (with comments) conn={} db={:?} count={}",
+                    connection_id,
+                    database_name,
+                    real_items.len()
+                );
+                let table_data: Vec<(String, String, Option<String>)> = real_items
+                    .iter()
+                    .map(|(name, comment)| (name.clone(), table_type.to_string(), comment.clone()))
+                    .collect();
+                cache_data::save_tables_with_comments_to_cache(self, connection_id, database_name, &table_data);
+                node.children = self.build_tables_folder_children(connection_id, database_name, &real_items);
+                return;
+            }
+        }
+
         // Try cache first (skipped when force_live_fetch is true)
         if !force_live_fetch
             && let Some(cached) =
@@ -1572,6 +1742,18 @@ impl super::Tabular {
                 return;
             }
         };
+
+        // Khusus folder tabel: muat dari cache dengan build_tables_folder_children
+        if folder_type == models::enums::NodeType::TablesFolder {
+            if !force_live_fetch
+                && let Some(cached_items) =
+                    cache_data::get_tables_with_comments_from_cache(self, connection_id, "main", table_type)
+                && !cached_items.is_empty()
+            {
+                node.children = self.build_tables_folder_children(connection_id, "main", &cached_items);
+                return;
+            }
+        }
 
         // Try cache first (skipped when force_live_fetch is true)
         if !force_live_fetch

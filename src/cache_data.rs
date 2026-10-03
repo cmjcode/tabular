@@ -61,6 +61,52 @@ pub(crate) fn get_tables_from_cache(
     }
 }
 
+pub(crate) fn get_tables_with_comments_from_cache(
+    tabular: &Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    if let Some(ref pool) = tabular.db_pool {
+        let pool_clone = pool.clone();
+        let fut = async {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT table_name, comment FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = ? ORDER BY table_name",
+            )
+            .bind(connection_id)
+            .bind(database_name)
+            .bind(table_type)
+            .fetch_all(pool_clone.as_ref())
+            .await
+        };
+        let result = if let Some(rt) = tabular.runtime.clone() {
+            rt.block_on(fut)
+        } else {
+            tokio::runtime::Runtime::new().unwrap().block_on(fut)
+        };
+
+        match result {
+            Ok(rows) => {
+                let mut seen = std::collections::HashSet::new();
+                let deduped: Vec<(String, Option<String>)> = rows
+                    .into_iter()
+                    .filter(|(name, _)| seen.insert(name.clone()))
+                    .collect();
+                Some(deduped)
+            }
+            Err(e) => {
+                debug!(
+                    "get_tables_with_comments_from_cache error: conn={} db={:?} type={:?} err={}",
+                    connection_id, database_name, table_type, e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
 /// Like `get_tables_from_cache` but NOT scoped to a database — returns every
 /// cached table/view of `table_type` for the connection across all databases.
 /// Used as an autocomplete fallback when the active editor tab isn't pinned to a
@@ -527,23 +573,19 @@ pub(crate) fn fetch_and_cache_connection_data(
     }
 }
 
-pub(crate) fn save_tables_to_cache(
+pub(crate) fn save_tables_with_comments_to_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
     database_name: &str,
-    tables: &[(String, String)],
+    tables: &[(String, String, Option<String>)],
 ) {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let tables_clone = tables.to_vec();
         let database_name = database_name.to_string();
-        // Collect the unique table_types present in this batch so we only
-        // delete entries of those types (not ALL types for the database).
-        // This prevents expanding "Views" from wiping "Tables" from cache.
         let types_to_replace: std::collections::HashSet<String> =
-            tables_clone.iter().map(|(_, t)| t.clone()).collect();
+            tables_clone.iter().map(|(_, t, _)| t.clone()).collect();
         let fut = async move {
-            // Delete only entries of the types we are about to replace
             for table_type in &types_to_replace {
                 let _ = sqlx::query(
                     "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = ?",
@@ -555,19 +597,32 @@ pub(crate) fn save_tables_to_cache(
                 .await;
             }
 
-            // Insert new table names with types
-            for (table_name, table_type) in tables_clone {
-                let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type) VALUES (?, ?, ?, ?)")
+            for (table_name, table_type, comment) in tables_clone {
+                let _ = sqlx::query("INSERT OR REPLACE INTO table_cache (connection_id, database_name, table_name, table_type, comment) VALUES (?, ?, ?, ?, ?)")
                      .bind(connection_id)
                      .bind(&database_name)
                      .bind(table_name)
                      .bind(table_type)
+                     .bind(comment)
                      .execute(pool_clone.as_ref())
                      .await;
             }
         };
         spawn_cache_write(tabular, fut);
     }
+}
+
+pub(crate) fn save_tables_to_cache(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    tables: &[(String, String)],
+) {
+    let with_comments: Vec<(String, String, Option<String>)> = tables
+        .iter()
+        .map(|(name, t_type)| (name.clone(), t_type.clone(), None))
+        .collect();
+    save_tables_with_comments_to_cache(tabular, connection_id, database_name, &with_comments);
 }
 
 pub(crate) fn save_columns_to_cache(

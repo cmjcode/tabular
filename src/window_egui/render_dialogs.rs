@@ -1883,7 +1883,8 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
         }
     }
 
-    if !open {
+    // `close_dialog` diisi tombol X / Esc di header; `open` hanya berubah lewat title bar bawaan.
+    if !open || close_dialog {
         tabular.show_schema_diff_dialog = false;
     }
 }

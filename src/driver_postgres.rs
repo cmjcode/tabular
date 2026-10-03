@@ -343,6 +343,69 @@ pub(crate) async fn list_postgres_tables(
         .map(|rows| rows.into_iter().map(|(n,)| n).collect())
 }
 
+pub(crate) fn fetch_tables_with_comments_from_postgres_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    let conn = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))?
+        .clone();
+    rt.block_on(list_postgres_tables_with_comments(&conn, database_name, table_type))
+}
+
+pub(crate) async fn list_postgres_tables_with_comments(
+    conn: &models::structs::ConnectionConfig,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    if table_type == "table" {
+        let sql = "SELECT c.relname, COALESCE(pg_catalog.obj_description(c.oid, 'pg_class'), '') \
+                   FROM pg_catalog.pg_class c \
+                   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                   WHERE n.nspname = 'public' AND c.relkind = 'r' \
+                   ORDER BY c.relname";
+        let conn_str = format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            conn.username, conn.password, conn.host, conn.port, database_name
+        );
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect(&conn_str)
+            .await
+            .ok()?;
+        let rows = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sqlx::query_as::<_, (String, String)>(sql).fetch_all(&pool),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        pool.close().await;
+
+        Some(
+            rows.into_iter()
+                .map(|(name, comment)| {
+                    let c = if comment.trim().is_empty() {
+                        None
+                    } else {
+                        Some(comment)
+                    };
+                    (name, c)
+                })
+                .collect(),
+        )
+    } else {
+        let list = list_postgres_tables(conn, database_name, table_type).await?;
+        Some(list.into_iter().map(|n| (n, None)).collect())
+    }
+}
+
 /// Mengubah satu nilai PostgreSQL menjadi teks tampilan.
 ///
 /// sqlx mengecek kompatibilitas tipe secara ketat (kolom `INT4` tidak bisa dibaca

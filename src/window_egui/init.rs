@@ -703,6 +703,7 @@ impl super::Tabular {
             show_import_all_dialog: false,
             export_all_state: None,
             import_all_state: None,
+            table_group_dialog: Default::default(),
             // ── Sync & Collaboration ─────────────────────────────────────────
             sync_account: loaded_account,
             sync_server_url: std::env::var("TABULAR_SERVER_URL")

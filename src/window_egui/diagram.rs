@@ -270,6 +270,22 @@ impl super::Tabular {
             DiagramAction::OpenFlowInNewTab(card_id) => {
                 self.open_flow_subset_tab(conn_id, db_name, state, &card_id)
             }
+            DiagramAction::ConfigureTableGroups => {
+                let cid = conn_id.or_else(|| state.nodes.iter().find_map(|n| n.connection_id));
+                let db = db_name.or_else(|| state.nodes.iter().find_map(|n| n.database_name.clone()));
+                if let (Some(cid), Some(db)) = (cid, db) {
+                    self.open_table_group_dialog(cid, db);
+                } else {
+                    self.toasts.warning("Cannot configure table groups: no connection or database selected");
+                }
+            }
+            DiagramAction::ReloadSchema => {
+                let cid = conn_id.or_else(|| state.nodes.iter().find_map(|n| n.connection_id));
+                let db = db_name.or_else(|| state.nodes.iter().find_map(|n| n.database_name.clone()));
+                if let (Some(cid), Some(db)) = (cid, db) {
+                    self.request_diagram_schema(cid, &db);
+                }
+            }
             DiagramAction::Save => self.save_diagram_with_defaults(conn_id, db_name, state),
             DiagramAction::Info(msg) => self.toasts.success(msg),
             DiagramAction::Error(msg) => self.toasts.error(msg),

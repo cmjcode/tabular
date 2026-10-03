@@ -57,6 +57,7 @@ pub mod settings;
 pub mod sidebar_tree;
 pub mod style;
 pub mod sync_tick;
+pub mod table_group_dialog;
 pub mod table_wizard;
 pub(crate) mod transfer_compare_ui;
 pub(crate) mod transfer_dialogs;
@@ -1031,6 +1032,7 @@ pub struct Tabular {
     pub show_import_all_dialog: bool,
     pub export_all_state: Option<crate::dialog_export_import_all::ExportAllDialogState>,
     pub import_all_state: Option<crate::dialog_export_import_all::ImportAllDialogState>,
+    pub table_group_dialog: crate::window_egui::table_group_dialog::TableGroupDialogState,
 
     // ─── Async Startup Loaders ───────────────────────────────────────────────
     /// Background receiver for loading saved queries from directory

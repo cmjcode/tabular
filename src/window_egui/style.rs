@@ -1241,7 +1241,7 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(251, 191, 36),  // Amber-400
                 egui::Color32::from_rgb(253, 230, 138), // Amber-200
             ),
-            NodeType::TablesFolder | NodeType::Table => (
+            NodeType::TablesFolder | NodeType::Table | NodeType::TableGroupFolder => (
                 egui::Color32::from_rgb(56, 189, 248),  // Sky-400
                 egui::Color32::from_rgb(186, 230, 253), // Sky-200
             ),
@@ -1332,7 +1332,7 @@ pub fn sidebar_node_colors(
                 egui::Color32::from_rgb(180, 83, 9),  // Amber-700
                 egui::Color32::from_rgb(120, 53, 15), // Amber-900
             ),
-            NodeType::TablesFolder | NodeType::Table => (
+            NodeType::TablesFolder | NodeType::Table | NodeType::TableGroupFolder => (
                 egui::Color32::from_rgb(2, 132, 199), // Sky-600
                 egui::Color32::from_rgb(12, 74, 110), // Sky-900
             ),

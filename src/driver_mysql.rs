@@ -679,6 +679,24 @@ pub(crate) fn fetch_tables_from_mysql_connection(
     })
 }
 
+pub(crate) fn fetch_tables_with_comments_from_mysql_connection(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+    rt.block_on(async {
+        let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
+        match pool {
+            models::enums::DatabasePool::MySQL(mysql_pool) => {
+                list_mysql_tables_with_comments(&mysql_pool, database_name, table_type).await
+            }
+            _ => None,
+        }
+    })
+}
+
 /// Daftar objek (`table`, `view`, `procedure`, ...) satu database MySQL lewat
 /// pool yang sudah ada. Aman dipanggil dari task async (tanpa runtime baru).
 pub(crate) async fn list_mysql_tables(
@@ -749,6 +767,53 @@ pub(crate) async fn list_mysql_tables(
             );
             None
         }
+    }
+}
+
+/// Daftar objek (`table`, `view`, ...) dengan komentar masing-masing (bila didukung).
+pub(crate) async fn list_mysql_tables_with_comments(
+    mysql_pool: &MySqlPool,
+    database_name: &str,
+    table_type: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    fn decode_str_col(row: &sqlx::mysql::MySqlRow, idx: usize) -> Option<String> {
+        if let Ok(s) = row.try_get::<String, _>(idx) {
+            return Some(s);
+        }
+        if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+            return Some(s);
+        }
+        if let Ok(bytes) = row.try_get::<Vec<u8>, _>(idx) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
+        if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+            return Some(String::from_utf8_lossy(&bytes).to_string());
+        }
+        None
+    }
+
+    if table_type == "table" {
+        let query = "SELECT TABLE_NAME, TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME";
+        let rows_res = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sqlx::query(query).bind(database_name).fetch_all(mysql_pool),
+        )
+        .await
+        .ok()?
+        .ok()?;
+
+        let mut res = Vec::new();
+        for r in rows_res {
+            if let Some(tbl) = decode_str_col(&r, 0) {
+                let comment = decode_str_col(&r, 1).filter(|c| !c.trim().is_empty());
+                res.push((tbl, comment));
+            }
+        }
+        res.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(res)
+    } else {
+        let list = list_mysql_tables(mysql_pool, database_name, table_type).await?;
+        Some(list.into_iter().map(|n| (n, None)).collect())
     }
 }
 
