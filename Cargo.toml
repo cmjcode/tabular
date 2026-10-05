@@ -1,6 +1,6 @@
 [package]
 name = "tabular"
-version = "1.2.2"
+version = "1.2.3"
 edition = "2024"
 
 [lib]
@@ -45,7 +45,7 @@ libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 sqlite-vec = "0.1.9"
 sqlparser = { version = "0.62", optional = true }
 sqlformat = "0.5.0"
-redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.7.1", features = ["tokio-comp", "connection-manager"] }
 bson = { version = "3", features = ["uuid-1"] }
 mongodb = { version = "3.9.1", features = ["zlib-compression"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -186,7 +186,7 @@ rfd = "0.17"
 # sering mengubah API antar rilis. `elicitation`: konfirmasi statement tulis
 # lewat klien bila GUI tidak berjalan (K1). `client` + `transport-child-process`:
 # chat AI memanggil server MCP eksternal (K5).
-rmcp = { version = "3.4", features = [
+rmcp = { version = "3.5", features = [
        "transport-io",
        "elicitation",
        "client",
