@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::catalog::{self, Endpoint};
 use super::types::SourceColumn;
 use super::values::{ValueKind, kind_from_type, sql_value};
-use super::{TableData, is_null_cell};
+use super::{NULL_MARKER, TableData};
 use crate::models::enums::DatabaseType;
 use crate::schema_objects::sql::quote_ident;
 
@@ -23,7 +23,8 @@ pub struct CompareOptions {
     pub key_columns: Vec<String>,
     /// Filter baris kedua sisi (isi klausa `WHERE`).
     pub where_clause: Option<String>,
-    /// Baris maksimum yang dibaca per sisi.
+    /// Baris maksimum yang dibaca per sisi. `None` = tanpa batas: query
+    /// dikirim tanpa klausa batas dan kedua tabel dimuat utuh ke memori.
     pub row_limit: Option<u64>,
     pub ignore_columns: Vec<String>,
     /// Abaikan spasi di akhir nilai (padding `CHAR`).
@@ -67,13 +68,34 @@ impl DiffKind {
 
 /// Satu baris yang berbeda. `source`/`target` sejajar dengan
 /// [`CompareResult::columns`]; kosong bila baris tidak ada di sisi itu.
+/// Sel NULL ditulis sebagai penanda teks untuk ditampilkan; nullness yang
+/// sebenarnya ada di `source_nulls`/`target_nulls` (sejajar, `true` = NULL).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowDiff {
     pub kind: DiffKind,
     pub source: Vec<String>,
     pub target: Vec<String>,
+    pub source_nulls: Vec<bool>,
+    pub target_nulls: Vec<bool>,
     /// Indeks kolom yang nilainya berbeda (hanya untuk `Changed`).
     pub changed: Vec<usize>,
+}
+
+impl RowDiff {
+    /// Nilai sisi sumber dengan nullness (`None` = SQL NULL).
+    pub fn source_value(&self, col: usize) -> Option<&str> {
+        side_value(&self.source, &self.source_nulls, col)
+    }
+
+    /// Nilai sisi tujuan dengan nullness (`None` = SQL NULL).
+    pub fn target_value(&self, col: usize) -> Option<&str> {
+        side_value(&self.target, &self.target_nulls, col)
+    }
+}
+
+fn side_value<'a>(cells: &'a [String], nulls: &[bool], col: usize) -> Option<&'a str> {
+    let cell = cells.get(col)?;
+    (!nulls.get(col).copied().unwrap_or(false)).then_some(cell.as_str())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -118,12 +140,10 @@ fn looks_like_timestamp(v: &str) -> bool {
         && b[..4].iter().all(u8::is_ascii_digit)
 }
 
-/// Bentuk kanonik nilai untuk dibandingkan.
-fn normalize(value: &str, opts: &CompareOptions) -> String {
-    if is_null_cell(value) {
-        // Penanda yang tidak mungkin sama dengan teks biasa.
-        return "\u{0}NULL".to_string();
-    }
+/// Bentuk kanonik nilai untuk dibandingkan. `None` = SQL NULL, yang tidak
+/// pernah sama dengan teks apa pun (termasuk string `NULL`).
+fn normalize(value: Option<&str>, opts: &CompareOptions) -> Option<String> {
+    let value = value?;
     let mut v = if opts.trim_trailing_space {
         value.trim_end().to_string()
     } else {
@@ -131,12 +151,12 @@ fn normalize(value: &str, opts: &CompareOptions) -> String {
     };
     if opts.tolerant_values {
         match v.to_ascii_lowercase().as_str() {
-            "true" | "t" => return "1".to_string(),
-            "false" | "f" => return "0".to_string(),
+            "true" | "t" => return Some("1".to_string()),
+            "false" | "f" => return Some("0".to_string()),
             _ => {}
         }
         if let Ok(d) = rust_decimal::Decimal::from_str(&v) {
-            return d.normalize().to_string();
+            return Some(d.normalize().to_string());
         }
         if looks_like_timestamp(&v) {
             v.replace_range(10..11, " ");
@@ -150,11 +170,61 @@ fn normalize(value: &str, opts: &CompareOptions) -> String {
     if opts.case_insensitive {
         v = v.to_lowercase();
     }
-    v
+    Some(v)
 }
 
 fn position(headers: &[String], name: &str) -> Option<usize> {
     headers.iter().position(|h| h.eq_ignore_ascii_case(name))
+}
+
+/// Kunci baris yang sudah dinormalkan.
+type Key = Vec<Option<String>>;
+
+/// Hash 128-bit kunci. Indeks baris menyimpan hash ini, bukan salinan
+/// kuncinya; tabrakan tetap ditangani dengan membandingkan kunci aslinya.
+fn key_hash(key: &[Option<String>]) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let half = |seed: u8| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        seed.hash(&mut hasher);
+        key.hash(&mut hasher);
+        hasher.finish()
+    };
+    (u128::from(half(0)) << 64) | u128::from(half(1))
+}
+
+/// Baris-baris dengan hash kunci yang sama. Hampir selalu satu; `Many` hanya
+/// muncul saat hash bertabrakan.
+enum Bucket {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl Bucket {
+    fn rows(&self) -> &[usize] {
+        match self {
+            Bucket::One(row) => std::slice::from_ref(row),
+            Bucket::Many(rows) => rows,
+        }
+    }
+
+    fn push(&mut self, row: usize) {
+        match self {
+            Bucket::One(first) => *self = Bucket::Many(vec![*first, row]),
+            Bucket::Many(rows) => rows.push(row),
+        }
+    }
+
+    fn replace(&mut self, old: usize, new: usize) {
+        match self {
+            Bucket::One(row) => *row = new,
+            Bucket::Many(rows) => {
+                if let Some(slot) = rows.iter_mut().find(|r| **r == old) {
+                    *slot = new;
+                }
+            }
+        }
+    }
 }
 
 /// Bandingkan dua tabel di memori. `opts.key_columns` wajib diisi.
@@ -163,6 +233,22 @@ pub fn diff_tables(
     target: &TableData,
     opts: &CompareOptions,
 ) -> Result<CompareResult, String> {
+    diff_tables_with(source, target, opts, &key_hash)
+}
+
+/// [`diff_tables`] dengan fungsi hash yang bisa diganti (tes tabrakan).
+///
+/// Kedua tabel hanya dibaca di tempat: tidak ada salinan baris terproyeksi,
+/// dan indeks kunci berisi hash 128-bit + nomor baris, bukan kunci utuh.
+/// Baris baru disalin hanya untuk yang masuk ke daftar perbedaan.
+fn diff_tables_with(
+    source: &TableData,
+    target: &TableData,
+    opts: &CompareOptions,
+    hash: &dyn Fn(&[Option<String>]) -> u128,
+) -> Result<CompareResult, String> {
+    use std::collections::hash_map::Entry;
+
     if opts.key_columns.is_empty() {
         return Err("Choose at least one key column".to_string());
     }
@@ -201,82 +287,153 @@ pub fn diff_tables(
         result.key_indices.push(idx);
     }
 
-    let project = |row: &[String], pick: &dyn Fn(&(usize, usize)) -> usize| -> Vec<String> {
-        pairs
+    let key_indices = &result.key_indices;
+    let source_key = |row: usize| -> Key {
+        key_indices
             .iter()
-            .map(|p| {
-                row.get(pick(p))
-                    .cloned()
-                    .unwrap_or_else(|| super::NULL_MARKER.to_string())
-            })
+            .map(|i| normalize(source.value(row, pairs[*i].0), opts))
             .collect()
     };
-    let key_of = |row: &[String]| -> Vec<String> {
-        result
-            .key_indices
+    let target_key = |row: usize| -> Key {
+        key_indices
             .iter()
-            .map(|i| normalize(&row[*i], opts))
+            .map(|i| normalize(target.value(row, pairs[*i].1), opts))
             .collect()
+    };
+    // Salinan baris untuk daftar perbedaan: teks tampilan + nullness.
+    let project = |data: &TableData, row: usize, pick: &dyn Fn(&(usize, usize)) -> usize| {
+        let mut cells = Vec::with_capacity(pairs.len());
+        let mut nulls = Vec::with_capacity(pairs.len());
+        for pair in &pairs {
+            match data.value(row, pick(pair)) {
+                Some(text) => {
+                    cells.push(text.to_string());
+                    nulls.push(false);
+                }
+                None => {
+                    cells.push(NULL_MARKER.to_string());
+                    nulls.push(true);
+                }
+            }
+        }
+        (cells, nulls)
     };
 
-    let mut target_index: HashMap<Vec<String>, usize> = HashMap::new();
-    let target_rows: Vec<Vec<String>> = target.rows.iter().map(|r| project(r, &|p| p.1)).collect();
+    // Indeks tujuan: per kunci, baris terakhir yang memilikinya.
+    let mut target_index: HashMap<u128, Bucket> = HashMap::with_capacity(target.rows.len());
     let mut duplicates = 0usize;
-    for (i, row) in target_rows.iter().enumerate() {
-        if target_index.insert(key_of(row), i).is_some() {
-            duplicates += 1;
+    for row in 0..target.rows.len() {
+        let key = target_key(row);
+        match target_index.entry(hash(&key)) {
+            Entry::Vacant(slot) => {
+                slot.insert(Bucket::One(row));
+            }
+            Entry::Occupied(mut slot) => {
+                let same = slot
+                    .get()
+                    .rows()
+                    .iter()
+                    .copied()
+                    .find(|other| target_key(*other) == key);
+                match same {
+                    Some(old) => {
+                        duplicates += 1;
+                        slot.get_mut().replace(old, row);
+                    }
+                    None => slot.get_mut().push(row),
+                }
+            }
         }
     }
-    let mut matched = vec![false; target_rows.len()];
-    let mut seen_source: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+
+    let mut matched = vec![false; target.rows.len()];
+    // Kunci sumber yang sudah terlihat: baris pertama per kunci yang dipakai.
+    let mut seen_source: HashMap<u128, Bucket> = HashMap::with_capacity(source.rows.len());
     let mut diffs = Vec::new();
     let mut identical = 0usize;
-    for row in &source.rows {
-        let src = project(row, &|p| p.0);
-        let key = key_of(&src);
-        if !seen_source.insert(key.clone()) {
-            duplicates += 1;
-            continue;
+    for row in 0..source.rows.len() {
+        let key = source_key(row);
+        let h = hash(&key);
+        match seen_source.entry(h) {
+            Entry::Vacant(slot) => {
+                slot.insert(Bucket::One(row));
+            }
+            Entry::Occupied(mut slot) => {
+                if slot
+                    .get()
+                    .rows()
+                    .iter()
+                    .any(|other| source_key(*other) == key)
+                {
+                    duplicates += 1;
+                    continue;
+                }
+                slot.get_mut().push(row);
+            }
         }
-        match target_index.get(&key) {
-            Some(&ti) => {
+        let hit = target_index.get(&h).and_then(|bucket| {
+            bucket
+                .rows()
+                .iter()
+                .copied()
+                .find(|other| target_key(*other) == key)
+        });
+        match hit {
+            Some(ti) => {
                 matched[ti] = true;
-                let dst = &target_rows[ti];
-                let changed: Vec<usize> = (0..src.len())
-                    .filter(|c| normalize(&src[*c], opts) != normalize(&dst[*c], opts))
+                let changed: Vec<usize> = pairs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (s, t))| {
+                        normalize(source.value(row, *s), opts)
+                            != normalize(target.value(ti, *t), opts)
+                    })
+                    .map(|(c, _)| c)
                     .collect();
                 if changed.is_empty() {
                     identical += 1;
                 } else {
+                    let (src, source_nulls) = project(source, row, &|p| p.0);
+                    let (dst, target_nulls) = project(target, ti, &|p| p.1);
                     diffs.push(RowDiff {
                         kind: DiffKind::Changed,
                         source: src,
-                        target: dst.clone(),
+                        target: dst,
+                        source_nulls,
+                        target_nulls,
                         changed,
                     });
                 }
             }
-            None => diffs.push(RowDiff {
-                kind: DiffKind::OnlyInSource,
-                source: src,
-                target: Vec::new(),
-                changed: Vec::new(),
-            }),
+            None => {
+                let (src, source_nulls) = project(source, row, &|p| p.0);
+                diffs.push(RowDiff {
+                    kind: DiffKind::OnlyInSource,
+                    source: src,
+                    target: Vec::new(),
+                    source_nulls,
+                    target_nulls: Vec::new(),
+                    changed: Vec::new(),
+                });
+            }
         }
     }
     // Baris tujuan yang kuncinya kembar tidak ikut indeks; yang dilaporkan
     // hanya baris terindeks yang tidak punya pasangan.
     let mut unmatched: Vec<usize> = target_index
         .values()
-        .copied()
+        .flat_map(|bucket| bucket.rows().iter().copied())
         .filter(|i| !matched[*i])
         .collect();
     unmatched.sort_unstable();
     for i in unmatched {
+        let (dst, target_nulls) = project(target, i, &|p| p.1);
         diffs.push(RowDiff {
             kind: DiffKind::OnlyInTarget,
             source: Vec::new(),
-            target: target_rows[i].clone(),
+            target: dst,
+            source_nulls: Vec::new(),
+            target_nulls,
             changed: Vec::new(),
         });
     }
@@ -316,16 +473,14 @@ pub fn sync_statements(
 ) -> Vec<String> {
     let kind = |i: usize| kinds.get(i).copied().unwrap_or_default();
     let col = |i: usize| quote_ident(db, &result.target_columns[i]);
-    let where_key = |row: &[String]| -> String {
+    // Baris tujuan dikenali lewat nilai kuncinya di sisi tujuan.
+    let where_key = |diff: &RowDiff| -> String {
         result
             .key_indices
             .iter()
-            .map(|i| {
-                if is_null_cell(&row[*i]) {
-                    format!("{} IS NULL", col(*i))
-                } else {
-                    format!("{} = {}", col(*i), sql_value(db, &row[*i], kind(*i)))
-                }
+            .map(|i| match diff.target_value(*i) {
+                None => format!("{} IS NULL", col(*i)),
+                Some(v) => format!("{} = {}", col(*i), sql_value(db, Some(v), kind(*i))),
             })
             .collect::<Vec<_>>()
             .join(" AND ")
@@ -339,11 +494,8 @@ pub fn sync_statements(
     for diff in &result.diffs {
         match diff.kind {
             DiffKind::OnlyInSource if parts.insert_missing => {
-                let values: Vec<String> = diff
-                    .source
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| sql_value(db, v, kind(i)))
+                let values: Vec<String> = (0..diff.source.len())
+                    .map(|i| sql_value(db, diff.source_value(i), kind(i)))
                     .collect();
                 out.push(format!(
                     "INSERT INTO {target_sql} ({column_list}) VALUES ({});",
@@ -358,20 +510,20 @@ pub fn sync_statements(
                         format!(
                             "{} = {}",
                             col(*i),
-                            sql_value(db, &diff.source[*i], kind(*i))
+                            sql_value(db, diff.source_value(*i), kind(*i))
                         )
                     })
                     .collect();
                 out.push(format!(
                     "UPDATE {target_sql} SET {} WHERE {};",
                     sets.join(", "),
-                    where_key(&diff.target)
+                    where_key(diff)
                 ));
             }
             DiffKind::OnlyInTarget if parts.delete_extra => {
                 out.push(format!(
                     "DELETE FROM {target_sql} WHERE {};",
-                    where_key(&diff.target)
+                    where_key(diff)
                 ));
             }
             _ => {}
@@ -413,32 +565,35 @@ async fn fetch_side(
     opts: &CompareOptions,
 ) -> Result<(TableData, Vec<SourceColumn>, bool), String> {
     let columns = catalog::fetch_columns(ep, table).await?;
-    let select: Vec<String> = columns
-        .iter()
-        .map(|c| catalog::select_expr(ep.db_type(), c))
-        .collect();
+    // Indikator NULL ikut di-SELECT, jadi string `NULL` tidak tertukar NULL.
+    let select = catalog::PageSelect::new(ep.db_type(), &columns, &[]);
     let order: Vec<String> = columns
         .iter()
         .filter(|c| c.primary_key)
         .map(|c| quote_ident(ep.db_type(), &c.name))
         .collect();
-    // Satu baris ekstra untuk tahu apakah batas memotong data.
-    let limit = opts.row_limit.unwrap_or(u64::from(u32::MAX));
-    let sql = catalog::select_page_sql(
+    // Satu baris ekstra untuk tahu apakah batas memotong data. Tanpa batas,
+    // query tidak diberi klausa batas sama sekali.
+    let sql = catalog::select_ordered_sql(
         ep.db_type(),
         &ep.table_sql(table),
-        &select,
+        &select.select_list,
         opts.where_clause.as_deref(),
         &order,
-        limit.saturating_add(1),
-        0,
+        opts.row_limit.map(|limit| limit.saturating_add(1)),
     );
     let mut rows = ep.query(&sql).await?.rows;
-    let truncated = rows.len() as u64 > limit;
-    rows.truncate(limit as usize);
-    catalog::pad_rows(&mut rows, columns.len());
+    let truncated = match opts.row_limit {
+        Some(limit) => {
+            let over = rows.len() as u64 > limit;
+            rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+            over
+        }
+        None => false,
+    };
     let headers = columns.iter().map(|c| c.name.clone()).collect();
-    Ok((TableData::new(headers, rows), columns, truncated))
+    let data = TableData::from_cells(headers, select.decode(rows));
+    Ok((data, columns, truncated))
 }
 
 /// Baca kedua tabel dan bandingkan.
@@ -764,6 +919,123 @@ mod tests {
         );
         opts.ignore_columns = vec!["TS".to_string(), "v".to_string()];
         assert_eq!(diff_tables(&src, &dst, &opts).unwrap().identical, 1);
+    }
+
+    fn explicit(headers: &[&str], rows: &[&[Option<&str>]]) -> TableData {
+        TableData::from_cells(
+            headers.iter().map(|s| s.to_string()).collect(),
+            rows.iter()
+                .map(|r| r.iter().map(|c| c.map(str::to_string)).collect())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn explicit_null_differs_from_the_string_null() {
+        // Sumber punya string `NULL`, tujuan SQL NULL (dan sebaliknya).
+        let src = explicit(
+            &["id", "v"],
+            &[
+                &[Some("1"), Some("NULL")],
+                &[Some("2"), None],
+                &[Some("3"), None],
+                &[Some("NULL"), Some("k")],
+            ],
+        );
+        let dst = explicit(
+            &["id", "v"],
+            &[
+                &[Some("1"), None],
+                &[Some("2"), Some("NULL")],
+                &[Some("3"), None],
+                &[None, Some("k")],
+            ],
+        );
+        let r = diff_tables(&src, &dst, &keyed("id")).unwrap();
+        assert_eq!(r.identical, 1);
+        // Kunci string `NULL` dan kunci NULL adalah dua baris berbeda.
+        assert_eq!(r.counts(), (1, 1, 2));
+        let script = sync_script(
+            &r,
+            &DatabaseType::PostgreSQL,
+            "\"t\"",
+            &[ValueKind::Text, ValueKind::Text],
+            SyncParts {
+                delete_extra: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            script,
+            "UPDATE \"t\" SET \"v\" = 'NULL' WHERE \"id\" = '1';\n\
+             UPDATE \"t\" SET \"v\" = NULL WHERE \"id\" = '2';\n\
+             INSERT INTO \"t\" (\"id\", \"v\") VALUES ('NULL', 'k');\n\
+             DELETE FROM \"t\" WHERE \"id\" IS NULL;\n"
+        );
+        let changed = &r.diffs[0];
+        assert_eq!(changed.source_value(1), Some("NULL"));
+        assert_eq!(changed.target_value(1), None);
+        // Teks tampilan tetap memakai penanda di kedua sisi.
+        assert_eq!(changed.source[1], "NULL");
+        assert_eq!(changed.target[1], "NULL");
+    }
+
+    #[test]
+    fn duplicate_keys_and_hash_collisions_do_not_change_the_result() {
+        let src = table(
+            &["id", "grp", "v"],
+            &[
+                &["1", "a", "first"],
+                &["1", "a", "second source duplicate"],
+                &["2", "a", "x"],
+                &["1", "b", "y"],
+                &["9", "z", "only source"],
+            ],
+        );
+        let dst = table(
+            &["id", "grp", "v"],
+            &[
+                &["1", "a", "older target duplicate"],
+                &["2", "a", "x"],
+                &["1", "a", "first"],
+                &["1.0", "b", "changed"],
+                &["7", "q", "only target"],
+                &["7", "q", "only target, last wins"],
+            ],
+        );
+        let opts = CompareOptions {
+            key_columns: vec!["id".to_string(), "grp".to_string()],
+            ..Default::default()
+        };
+        let real = diff_tables(&src, &dst, &opts).unwrap();
+        assert_eq!(real.duplicate_keys, 3);
+        assert_eq!(real.identical, 2);
+        assert_eq!(real.counts(), (1, 1, 1));
+        // Baris sumber pertama dan baris tujuan terakhir per kunci yang dipakai.
+        let only_target = real
+            .diffs
+            .iter()
+            .find(|d| d.kind == DiffKind::OnlyInTarget)
+            .unwrap();
+        assert_eq!(only_target.target[2], "only target, last wins");
+        let changed = real
+            .diffs
+            .iter()
+            .find(|d| d.kind == DiffKind::Changed)
+            .unwrap();
+        assert_eq!(changed.source[2], "y");
+        assert_eq!(changed.target[2], "changed");
+
+        // Semua kunci jatuh ke satu ember (tabrakan total), lalu ke dua ember:
+        // hasilnya harus sama persis karena kunci asli tetap dibandingkan.
+        let one_bucket = diff_tables_with(&src, &dst, &opts, &|_| 7).unwrap();
+        assert_eq!(one_bucket, real);
+        let two_buckets = diff_tables_with(&src, &dst, &opts, &|key| key_hash(key) % 2).unwrap();
+        assert_eq!(two_buckets, real);
+        assert_ne!(
+            key_hash(&[Some("a".into()), None]),
+            key_hash(&[None, Some("a".into())])
+        );
     }
 
     #[test]

@@ -8,6 +8,13 @@ use crate::{
     spreadsheet::SpreadsheetOperations,
 };
 
+/// Jeda tanpa perubahan sebelum preferensi yang berubah terus-menerus
+/// (lebar panel) benar-benar ditulis ke storage.
+const PREFS_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Batas waktu perintah drop collection MongoDB.
+const DROP_COLLECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Tabular {
     /// Render the "Auto Refresh Interval" modal dialog when requested.
     /// Extracted verbatim from `update()` (behavior-preserving).
@@ -904,6 +911,10 @@ impl Tabular {
             }
         }
 
+        // Petakan job ke tab asalnya dan batalkan job milik tab yang sudah
+        // ditutup sebelum hasilnya diproses.
+        self.sync_job_tabs();
+        self.cancel_jobs_of_closed_tabs();
         while let Ok(message) = self.query_result_receiver.try_recv() {
             self.handle_query_result_message(message);
             ctx.request_repaint();
@@ -1582,7 +1593,10 @@ impl Tabular {
             let actual_w = panel_response.response.rect.width();
             if actual_w >= 280.0 && (actual_w - self.ai_panel_width).abs() > 1.0 {
                 self.ai_panel_width = actual_w;
-                self.prefs_dirty = true;
+                // Debounce: saat diseret lebar berubah tiap frame; simpan
+                // sekali setelah berhenti berubah (lihat `flush_debounced_prefs`).
+                self.prefs_save_due = Some(std::time::Instant::now() + PREFS_SAVE_DEBOUNCE);
+                ctx.request_repaint_after(PREFS_SAVE_DEBOUNCE);
             }
         }
     }
@@ -3053,7 +3067,7 @@ impl Tabular {
                             let db_type = conn.map(|c| c.connection_type.clone())
                                 .or_else(|| conn_id.and_then(|cid| self.cached_connection_types.get(&cid).cloned()))
                                 .or_else(|| conn_id.and_then(|cid| self.connection_pools.get(&cid).map(|p| p.db_type())))
-                                .or_else(|| conn_id.and_then(|cid| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&cid).map(|pool| pool.db_type()))));
+                                .or_else(|| conn_id.and_then(|cid| crate::connection::pool::lock_or_recover(&self.shared_connection_pools).get(&cid).map(|pool| pool.db_type())));
                             let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
                             dba_conn_info = Some((conn_id, db_type.clone()));
 
@@ -3088,7 +3102,7 @@ impl Tabular {
                             let db_type = conn.map(|c| c.connection_type.clone())
                                 .or_else(|| conn_id.and_then(|cid| self.cached_connection_types.get(&cid).cloned()))
                                 .or_else(|| conn_id.and_then(|cid| self.connection_pools.get(&cid).map(|p| p.db_type())))
-                                .or_else(|| conn_id.and_then(|cid| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&cid).map(|pool| pool.db_type()))));
+                                .or_else(|| conn_id.and_then(|cid| crate::connection::pool::lock_or_recover(&self.shared_connection_pools).get(&cid).map(|pool| pool.db_type())));
                             let conn_name = conn.map(|c| c.name.clone()).unwrap_or_else(|| "Database".to_string());
                             let db_name = tab.database_name.clone();
                             let schema_name = tab.schema_name.clone();
@@ -3332,7 +3346,7 @@ impl Tabular {
                             let active_tab = self.active_tab_index;
                             crate::connection::ensure_background_pool_creation(self, conn_id);
                             let direct_pool = self.connection_pools.get(&conn_id).cloned()
-                                .or_else(|| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&conn_id).cloned()));
+                                .or_else(|| crate::connection::pool::lock_or_recover(&self.shared_connection_pools).get(&conn_id).cloned());
                             let shared_pools = self.shared_connection_pools.clone();
                             let rt_opt = self.runtime.clone();
 
@@ -3474,7 +3488,7 @@ impl Tabular {
                                 let sender = self.user_manager_result_sender.clone();
                                 let ctx = ui.ctx().clone();
                                 let direct_pool = self.connection_pools.get(&conn_id).cloned()
-                                    .or_else(|| self.shared_connection_pools.lock().ok().and_then(|p| p.get(&conn_id).cloned()));
+                                    .or_else(|| crate::connection::pool::lock_or_recover(&self.shared_connection_pools).get(&conn_id).cloned());
                                 let shared_pools = self.shared_connection_pools.clone();
                                 let rt_opt = self.runtime.clone();
 
@@ -3761,6 +3775,7 @@ impl Tabular {
                     self.render_delete_http_workspace_confirmation(ui.ctx());
                     self.render_rename_http_workspace_dialog(ui.ctx());
 
+                    self.poll_drop_collection_results();
                     // Render MongoDB drop collection confirmation dialog if pending
                     if let Some((conn_id, ref db, ref coll)) = self.pending_drop_collection.clone() {
                         crate::window_egui::style::render_modal_backdrop(
@@ -3791,26 +3806,9 @@ impl Tabular {
                                         .button(egui::RichText::new("Confirm").color(egui::Color32::from_rgb(255, 0, 0)))
                                         .clicked()
                                     {
-                                        // Execute drop via Mongo driver
-                                        let (cid, dbn, colln) = (conn_id, db.clone(), coll.clone());
-                                        let mut ok = false;
-                                        if let Some(rt) = self.runtime.clone() {
-                                            ok = rt.block_on(async {
-                                                crate::driver_mongodb::drop_collection(self, cid, &dbn, &colln).await
-                                            });
-                                        } else if let Ok(rt) = tokio::runtime::Runtime::new() {
-                                            ok = rt.block_on(async {
-                                                crate::driver_mongodb::drop_collection(self, cid, &dbn, &colln).await
-                                            });
-                                        }
-                                        if ok {
-                                            // Clear caches and refresh connection tree
-                                            self.clear_connection_cache(conn_id);
-                                            self.refresh_connection(conn_id);
-                                            self.toasts.success(format!("Collection '{}.{}' dropped", db, coll));
-                                        } else {
-                                            self.toasts.error(format!("Failed to drop collection '{}.{}'", db, coll));
-                                        }
+                                        // Drop dijalankan di runtime latar; hasilnya
+                                        // diproses `poll_drop_collection_results`.
+                                        self.spawn_drop_collection(ui.ctx(), conn_id, db.clone(), coll.clone());
                                         self.pending_drop_collection = None;
                                     }
                                 });
@@ -4186,6 +4184,101 @@ impl Tabular {
         }
     }
 
+    /// Jalankan drop collection MongoDB di runtime latar supaya UI tidak
+    /// membeku saat server lambat/tidak terjangkau.
+    fn spawn_drop_collection(
+        &mut self,
+        ctx: &egui::Context,
+        conn_id: i64,
+        database: String,
+        collection: String,
+    ) {
+        let direct_pool = self.connection_pools.get(&conn_id).cloned();
+        if direct_pool.is_none() {
+            crate::connection::ensure_background_pool_creation(self, conn_id);
+        }
+        let shared_pools = self.shared_connection_pools.clone();
+        let sender = self.drop_collection_channel.0.clone();
+        let ctx = ctx.clone();
+        let rt = self.get_runtime();
+        self.toasts
+            .info(format!("Dropping collection '{}.{}'...", database, collection));
+        rt.spawn(async move {
+            let result = match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
+                Ok(models::enums::DatabasePool::MongoDB(client)) => {
+                    let coll = client
+                        .database(&database)
+                        .collection::<mongodb::bson::Document>(&collection);
+                    match tokio::time::timeout(DROP_COLLECTION_TIMEOUT, coll.drop()).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(e)) => Err(e.to_string()),
+                        Err(_) => Err(format!(
+                            "timed out after {}s",
+                            DROP_COLLECTION_TIMEOUT.as_secs()
+                        )),
+                    }
+                }
+                Ok(_) => Err("connection is not a MongoDB connection".to_string()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = &result {
+                log::warn!(
+                    "[MONGO] drop collection {}.{} gagal: {}",
+                    database,
+                    collection,
+                    e
+                );
+            }
+            let _ = sender.send(super::DropCollectionOutcome {
+                connection_id: conn_id,
+                database,
+                collection,
+                result,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Proses hasil drop collection yang sudah selesai di latar.
+    fn poll_drop_collection_results(&mut self) {
+        while let Ok(outcome) = self.drop_collection_channel.1.try_recv() {
+            let super::DropCollectionOutcome {
+                connection_id,
+                database,
+                collection,
+                result,
+            } = outcome;
+            match result {
+                Ok(()) => {
+                    // Clear caches and refresh connection tree
+                    self.clear_connection_cache(connection_id);
+                    self.refresh_connection(connection_id);
+                    self.toasts
+                        .success(format!("Collection '{}.{}' dropped", database, collection));
+                }
+                Err(e) => self.toasts.error(format!(
+                    "Failed to drop collection '{}.{}': {}",
+                    database, collection, e
+                )),
+            }
+        }
+    }
+
+    /// Tandai preferensi kotor bila tenggat debounce sudah lewat; bila belum,
+    /// jadwalkan repaint tepat pada tenggatnya.
+    fn flush_debounced_prefs(&mut self, ctx: &egui::Context) {
+        let Some(due) = self.prefs_save_due else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if now >= due {
+            self.prefs_save_due = None;
+            self.prefs_dirty = true;
+        } else {
+            ctx.request_repaint_after(due - now);
+        }
+    }
+
     /// Persist preferences immediately when `prefs_dirty` is set.
     /// Extracted from the former `try_save_prefs` closure in `update()`.
     pub(crate) fn try_save_prefs(&mut self) {
@@ -4249,6 +4342,8 @@ impl Tabular {
                 );
                 self.last_saved_prefs = Some(prefs);
                 self.prefs_dirty = false;
+                // Simpan ini sudah memuat nilai yang sedang di-debounce.
+                self.prefs_save_due = None;
             } else {
                 log::error!("Cannot save preferences: config store or runtime not initialized");
             }
@@ -4267,6 +4362,9 @@ impl App for Tabular {
         // egui 0.34: App::update(ctx) became App::ui(ui); the body below is
         // ctx-based (panels via ctx), so rebind ctx from the root Ui.
         let ctx = &root_ui.ctx().clone();
+        if self.egui_ctx.is_none() {
+            self.egui_ctx = Some(ctx.clone());
+        }
         self.window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
 
         // Track user interaction for idle detection (> 3 min)
@@ -4320,8 +4418,21 @@ impl App for Tabular {
         // `if let Some(state) = egui::TextEdit::load_state(ctx, query_id)`
         // `state.cursor.range()` tells us the selection!
         // Drain background Database & Connection initialization receiver
-        if let Some(ref rx) = self.db_init_receiver {
-            if let Ok(res) = rx.try_recv() {
+        let db_init_state = self.db_init_receiver.as_ref().map(|rx| rx.try_recv());
+        // Thread latar berhenti tanpa hasil (mis. connections.db terkunci atau
+        // korup): jalur sinkron tahu cara menangani keduanya dan memberi tahu user.
+        if matches!(
+            db_init_state,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected))
+        ) {
+            self.db_init_receiver = None;
+            if self.db_pool.is_none() {
+                log::warn!("[DB] background init produced no pool; running the synchronous init");
+                let _ = crate::sidebar_database::initialize_database(self);
+            }
+        }
+        if let Some(Ok(res)) = db_init_state {
+            {
                 self.set_db_pool(Some(res.db_pool));
                 self.connections = res.connections;
                 self.connection_folders = res.connection_folders;
@@ -4414,6 +4525,10 @@ impl App for Tabular {
             || self.db_icons_receiver.is_some()
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else if !self.jobs.active.is_empty() {
+            // Hasil query membangunkan UI lewat `ResultWakeHook`; ini hanya
+            // jaring pengaman lambat (dan penyegar penghitung waktu berjalan).
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
 
         // Handle forced refresh flag
@@ -4619,13 +4734,13 @@ impl App for Tabular {
             if let Some(conn_id) = self.pool_wait_connection_id {
                 if self.connection_pools.contains_key(&conn_id) {
                     ready = true;
-                } else if let Ok(shared) = self.shared_connection_pools.lock()
-                    && shared.contains_key(&conn_id)
+                } else if let Some(pool) =
+                    crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                        .get(&conn_id)
+                        .cloned()
                 {
                     // Move to local cache for speed
-                    if let Some(pool) = shared.get(&conn_id).cloned() {
-                        self.connection_pools.insert(conn_id, pool);
-                    }
+                    self.connection_pools.insert(conn_id, pool);
                     ready = true;
                 }
             }
@@ -5553,6 +5668,7 @@ impl App for Tabular {
 
         // Persist preferences if dirty and config store ready (outside of window render to avoid borrow issues)
         // Final attempt (in case any change slipped through)
+        self.flush_debounced_prefs(ctx);
         self.try_save_prefs();
 
         // M11: Split View / Slide Over iPad — sembunyikan panel samping saat sempit.
@@ -5606,9 +5722,20 @@ impl App for Tabular {
         // Simpan sesi terakhir (jaring pengaman jika close_requested terlewat,
         // misalnya saat OS mematikan aplikasi).
         crate::session_restore::save_now(self, None);
+        // Simpan preferensi yang masih menunggu debounce (mis. lebar panel AI).
+        if self.prefs_save_due.take().is_some() {
+            self.prefs_dirty = true;
+        }
+        self.try_save_prefs();
         // Unwind connects that are still mid-handshake so their SSH child
         // processes are killed rather than orphaned when the app goes away.
         crate::connection::cancel_all_connection_attempts(self);
+        // Matikan semua proses `ssh` tunnel secara sinkron; thread detached
+        // tidak dijamin sempat berjalan setelah proses mulai keluar.
+        let closed_tunnels = crate::ssh_tunnel::shutdown_all();
+        if closed_tunnels > 0 {
+            log::info!("[SSH] closed {} tunnel(s) at exit", closed_tunnels);
+        }
         self.platform_on_exit();
     }
 } // end impl App for Tabular
@@ -5629,15 +5756,17 @@ async fn wait_for_connection_pool(
         conn_id
     );
     for attempt in 0..100 {
-        if let Ok(guard) = shared_pools.lock() {
-            if let Some(p) = guard.get(&conn_id).cloned() {
-                log::debug!(
-                    "[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}",
-                    attempt,
-                    conn_id
-                );
-                return Ok(p);
-            }
+        // Guard dilepas sebelum `await` di bawah.
+        let found = crate::connection::pool::lock_or_recover(&shared_pools)
+            .get(&conn_id)
+            .cloned();
+        if let Some(p) = found {
+            log::debug!(
+                "[POOL-WAIT] Background pool acquired on attempt {} for conn_id={}",
+                attempt,
+                conn_id
+            );
+            return Ok(p);
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }

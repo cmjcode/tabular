@@ -1757,7 +1757,9 @@ impl Tabular {
                     .into_iter()
                     .filter(|s| !s.trim_start().starts_with("--"))
                     .collect();
-                target.execute(&exec_statements).await?;
+                // Satu transaksi: skrip sinkronisasi diterapkan seluruhnya
+                // atau tidak sama sekali.
+                target.execute_atomic(&exec_statements).await?;
                 Ok(exec_statements.len())
             }));
         }

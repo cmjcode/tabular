@@ -1,7 +1,7 @@
 //! Literal SQL dari sel teks, penyusun batch `INSERT`, dan inferensi tipe
 //! kolom untuk data dari file. Fungsi murni tanpa I/O.
 
-use super::{TableData, is_null_cell};
+use super::{TableData, cell_from_executor};
 use crate::models::enums::DatabaseType;
 use crate::schema_objects::sql::sql_literal;
 
@@ -77,11 +77,12 @@ fn binary_hex(v: &str) -> Option<&str> {
     (hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
 }
 
-/// Literal SQL untuk satu sel sesuai dialek `db`.
-pub fn sql_value(db: &DatabaseType, value: &str, kind: ValueKind) -> String {
-    if is_null_cell(value) {
+/// Literal SQL untuk satu sel sesuai dialek `db`. `None` = SQL NULL; string
+/// `NULL` adalah string biasa dan ditulis berkutip.
+pub fn sql_value(db: &DatabaseType, value: Option<&str>, kind: ValueKind) -> String {
+    let Some(value) = value else {
         return "NULL".to_string();
-    }
+    };
     match kind {
         ValueKind::Number => {
             if value.is_empty() {
@@ -151,19 +152,56 @@ impl InsertLimits {
     }
 }
 
+/// Sumber baris untuk penyusun `INSERT`, dengan nullness eksplisit per sel.
+pub trait CellRows {
+    fn row_count(&self) -> usize;
+    /// `None` = SQL NULL (juga untuk sel yang tidak ada).
+    fn cell(&self, row: usize, col: usize) -> Option<&str>;
+}
+
+impl CellRows for TableData {
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<&str> {
+        self.value(row, col)
+    }
+}
+
+impl CellRows for [Vec<Option<String>>] {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<&str> {
+        self.get(row)?.get(col)?.as_deref()
+    }
+}
+
+impl CellRows for Vec<Vec<Option<String>>> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<&str> {
+        self.as_slice().cell(row, col)
+    }
+}
+
 /// Susun statement `INSERT` multi-baris. `table_sql` dan `columns_sql` sudah
 /// dikutip pemanggil. `source_cols[i]` adalah indeks sel sumber untuk kolom
 /// ke-`i`; `kinds[i]` jenis literalnya (default teks).
-pub fn build_insert_batches(
+pub fn build_insert_batches<R: CellRows + ?Sized>(
     db: &DatabaseType,
     table_sql: &str,
     columns_sql: &[String],
-    rows: &[Vec<String>],
+    rows: &R,
     source_cols: &[usize],
     kinds: &[ValueKind],
     limits: InsertLimits,
 ) -> Vec<String> {
-    if rows.is_empty() || source_cols.is_empty() {
+    if rows.row_count() == 0 || source_cols.is_empty() {
         return Vec::new();
     }
     let limits = limits.for_engine(db);
@@ -175,16 +213,16 @@ pub fn build_insert_batches(
     let mut batches = Vec::new();
     let mut current = String::new();
     let mut current_rows = 0usize;
-    for row in rows {
+    for row in 0..rows.row_count() {
         let values: Vec<String> = source_cols
             .iter()
             .enumerate()
             .map(|(i, src)| {
-                let cell = row
-                    .get(*src)
-                    .map(String::as_str)
-                    .unwrap_or(super::NULL_MARKER);
-                sql_value(db, cell, kinds.get(i).copied().unwrap_or_default())
+                sql_value(
+                    db,
+                    rows.cell(row, *src),
+                    kinds.get(i).copied().unwrap_or_default(),
+                )
             })
             .collect();
         let tuple = format!("({})", values.join(", "));
@@ -295,9 +333,13 @@ pub fn infer_types(data: &TableData) -> Vec<InferredType> {
         .map(|col| {
             let mut seen = false;
             let (mut int, mut real, mut boolean, mut date, mut ts) = (true, true, true, true, true);
-            for row in &data.rows {
-                let v = row.get(col).map(|s| s.trim()).unwrap_or("");
-                if v.is_empty() || is_null_cell(v) {
+            for row in 0..data.rows.len() {
+                let Some(v) = data.value(row, col).map(str::trim) else {
+                    continue;
+                };
+                // Grid tidak membawa nullness: ` NULL ` berspasi pun penanda.
+                let marker = !data.has_explicit_nulls() && cell_from_executor(v).is_none();
+                if v.is_empty() || marker {
                     continue;
                 }
                 seen = true;
@@ -336,19 +378,34 @@ mod tests {
             .collect()
     }
 
+    fn cells(data: &[&[&str]]) -> Vec<Vec<Option<String>>> {
+        data.iter()
+            .map(|r| r.iter().map(|s| Some(s.to_string())).collect())
+            .collect()
+    }
+
     #[test]
     fn literals_follow_kind_and_dialect() {
         let pg = DatabaseType::PostgreSQL;
         let my = DatabaseType::MySQL;
-        assert_eq!(sql_value(&pg, "NULL", ValueKind::Text), "NULL");
-        assert_eq!(sql_value(&pg, "42", ValueKind::Number), "42");
-        assert_eq!(sql_value(&pg, "", ValueKind::Number), "NULL");
-        assert_eq!(sql_value(&pg, "1; DROP", ValueKind::Number), "'1; DROP'");
-        assert_eq!(sql_value(&pg, "t", ValueKind::Bool), "TRUE");
-        assert_eq!(sql_value(&my, "false", ValueKind::Bool), "0");
-        assert_eq!(sql_value(&my, "a\\b'c", ValueKind::Text), "'a\\\\b''c'");
+        assert_eq!(sql_value(&pg, None, ValueKind::Text), "NULL");
+        // String berisi `NULL` adalah string, bukan SQL NULL.
+        assert_eq!(sql_value(&pg, Some("NULL"), ValueKind::Text), "'NULL'");
+        assert_eq!(sql_value(&pg, Some("NULL"), ValueKind::Number), "'NULL'");
+        assert_eq!(sql_value(&pg, Some("42"), ValueKind::Number), "42");
+        assert_eq!(sql_value(&pg, Some(""), ValueKind::Number), "NULL");
         assert_eq!(
-            sql_value(&DatabaseType::MsSQL, "é", ValueKind::Text),
+            sql_value(&pg, Some("1; DROP"), ValueKind::Number),
+            "'1; DROP'"
+        );
+        assert_eq!(sql_value(&pg, Some("t"), ValueKind::Bool), "TRUE");
+        assert_eq!(sql_value(&my, Some("false"), ValueKind::Bool), "0");
+        assert_eq!(
+            sql_value(&my, Some("a\\b'c"), ValueKind::Text),
+            "'a\\\\b''c'"
+        );
+        assert_eq!(
+            sql_value(&DatabaseType::MsSQL, Some("é"), ValueKind::Text),
             "N'é'"
         );
     }
@@ -356,27 +413,31 @@ mod tests {
     #[test]
     fn binary_literals_per_engine() {
         assert_eq!(
-            sql_value(&DatabaseType::PostgreSQL, "0xDEADBEEF", ValueKind::Binary),
+            sql_value(
+                &DatabaseType::PostgreSQL,
+                Some("0xDEADBEEF"),
+                ValueKind::Binary
+            ),
             "'\\xDEADBEEF'"
         );
         assert_eq!(
-            sql_value(&DatabaseType::MySQL, "\\xdead", ValueKind::Binary),
+            sql_value(&DatabaseType::MySQL, Some("\\xdead"), ValueKind::Binary),
             "0xdead"
         );
         assert_eq!(
-            sql_value(&DatabaseType::SQLite, "0x00ff", ValueKind::Binary),
+            sql_value(&DatabaseType::SQLite, Some("0x00ff"), ValueKind::Binary),
             "X'00ff'"
         );
         // Bukan heksadesimal: diperlakukan sebagai teks.
         assert_eq!(
-            sql_value(&DatabaseType::MySQL, "hello", ValueKind::Binary),
+            sql_value(&DatabaseType::MySQL, Some("hello"), ValueKind::Binary),
             "'hello'"
         );
     }
 
     #[test]
     fn insert_batches_respect_row_and_byte_limits() {
-        let data = rows(&[&["1", "a"], &["2", "b"], &["3", "c"]]);
+        let data = cells(&[&["1", "a"], &["2", "b"], &["3", "c"]]);
         let cols = vec!["\"id\"".to_string(), "\"name\"".to_string()];
         let kinds = [ValueKind::Number, ValueKind::Text];
         let by_rows = build_insert_batches(
@@ -416,6 +477,42 @@ mod tests {
         );
         assert_eq!(by_bytes.len(), 3);
         assert!(by_bytes.iter().all(|s| s.ends_with(';')));
+    }
+
+    #[test]
+    fn insert_batches_carry_nullness_explicitly() {
+        let cols = vec!["\"v\"".to_string()];
+        let explicit: Vec<Vec<Option<String>>> =
+            vec![vec![Some("NULL".into())], vec![None], vec![]];
+        let sql = build_insert_batches(
+            &DatabaseType::PostgreSQL,
+            "\"t\"",
+            &cols,
+            &explicit,
+            &[0],
+            &[ValueKind::Text],
+            InsertLimits::default(),
+        );
+        assert_eq!(
+            sql,
+            vec!["INSERT INTO \"t\" (\"v\") VALUES\n('NULL'),\n(NULL),\n(NULL);"]
+        );
+
+        // Tabel dari grid: penanda teks tetap berarti NULL (batasan eksekutor).
+        let grid = TableData::new(vec!["v".into()], rows(&[&["NULL"], &["x"]]));
+        let sql = build_insert_batches(
+            &DatabaseType::PostgreSQL,
+            "\"t\"",
+            &cols,
+            &grid,
+            &[0],
+            &[ValueKind::Text],
+            InsertLimits::default(),
+        );
+        assert_eq!(
+            sql,
+            vec!["INSERT INTO \"t\" (\"v\") VALUES\n(NULL),\n('x');"]
+        );
     }
 
     #[test]

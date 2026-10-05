@@ -1358,20 +1358,127 @@ fn import_read_options(
         sheet: state.source.sheet.clone(),
         passphrase: (!state.source.passphrase.is_empty()).then(|| state.source.passphrase.clone()),
         max_rows,
+        // Teks NULL pilihan pengguna diterapkan saat menyusun `INSERT`
+        // (`csv_quote_value`), untuk semua format, bukan hanya CSV.
+        null_text: None,
     }
 }
 
-/// Baca pratinjau file (CSV/TSV, JSON, NDJSON, spreadsheet, Parquet; juga
-/// terkompresi atau terenkripsi) dan perbarui state wizard: format, encoding,
-/// sheet, dan mapping kolom.
-fn load_import_preview(
+type PreviewResult =
+    Result<crate::data_transfer::readers::LoadedFile, crate::data_transfer::readers::ReadError>;
+
+/// Pembacaan pratinjau yang sedang berjalan di thread kerja. File terkompresi,
+/// spreadsheet, dan Parquet harus dibaca utuh walau hanya lima baris yang
+/// ditampilkan, jadi pembacaannya tidak boleh menahan frame UI.
+struct ImportPreviewJob {
+    path: std::path::PathBuf,
+    /// File baru dipilih (bukan sekadar ganti opsi baca file yang sama).
+    new_file: bool,
+    result: Option<PreviewResult>,
+}
+
+type ImportPreviewHandle = std::sync::Arc<std::sync::Mutex<ImportPreviewJob>>;
+
+fn import_preview_id() -> egui::Id {
+    egui::Id::new("csv_import_preview_job")
+}
+
+fn import_job_id() -> egui::Id {
+    egui::Id::new("csv_import_job")
+}
+
+fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Mulai membaca pratinjau `path` di thread kerja. Pratinjau lama yang belum
+/// selesai ditinggalkan: hasilnya tidak lagi dirujuk dan dibuang.
+fn start_import_preview(
+    ctx: &egui::Context,
     state: &mut crate::models::structs::CsvImportState,
-    path: &std::path::Path,
+    path: std::path::PathBuf,
     sniff: bool,
-) -> Result<(), String> {
-    use crate::data_transfer::readers::{self, FileKind, ReadError};
+    new_file: bool,
+) {
     let opts = import_read_options(state, sniff, Some(5));
-    match readers::read_file(path, &opts) {
+    let handle: ImportPreviewHandle =
+        std::sync::Arc::new(std::sync::Mutex::new(ImportPreviewJob {
+            path: path.clone(),
+            new_file,
+            result: None,
+        }));
+    let worker = handle.clone();
+    let repaint = ctx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tabular-import-preview".to_string())
+        .spawn(move || {
+            let result = crate::data_transfer::readers::read_file(&path, &opts);
+            lock_or_recover(&worker).result = Some(result);
+            repaint.request_repaint();
+        });
+    match spawned {
+        Ok(_) => {
+            ctx.data_mut(|d| d.insert_temp(import_preview_id(), handle));
+            state.status = crate::models::structs::CsvImportStatus::Idle;
+            state.progress_message = "Reading file...".to_string();
+        }
+        Err(e) => {
+            log::warn!("[IMPORT] could not start the preview thread: {e}");
+            state.status = crate::models::structs::CsvImportStatus::Failed(e.to_string());
+            state.progress_message = format!("Could not read file: {e}");
+        }
+    }
+}
+
+/// True bila pratinjau masih dibaca.
+fn import_preview_pending(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<ImportPreviewHandle>(import_preview_id()))
+        .is_some()
+}
+
+/// Ambil hasil pratinjau bila sudah selesai dan terapkan ke state wizard:
+/// format, encoding, sheet, dan mapping kolom.
+fn poll_import_preview(ctx: &egui::Context, state: &mut crate::models::structs::CsvImportState) {
+    let Some(handle) = ctx.data(|d| d.get_temp::<ImportPreviewHandle>(import_preview_id())) else {
+        return;
+    };
+    let (path, new_file, result) = {
+        let mut job = lock_or_recover(&handle);
+        let Some(result) = job.result.take() else {
+            return;
+        };
+        (job.path.clone(), job.new_file, result)
+    };
+    ctx.data_mut(|d| d.remove::<ImportPreviewHandle>(import_preview_id()));
+    match apply_import_preview(state, result) {
+        Ok(()) => {
+            if new_file {
+                state.file_path = Some(path);
+            }
+            state.status = crate::models::structs::CsvImportStatus::Idle;
+            state.progress_message = String::new();
+        }
+        Err(e) => {
+            // File terenkripsi tetap dipilih supaya passphrase bisa diisi.
+            if new_file && state.source.needs_passphrase {
+                state.file_path = Some(path);
+            }
+            state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
+            state.progress_message = format!("Parse error: {}", e);
+        }
+    }
+}
+
+/// Terapkan hasil baca pratinjau (CSV/TSV, JSON, NDJSON, spreadsheet,
+/// Parquet; juga terkompresi atau terenkripsi) ke state wizard.
+fn apply_import_preview(
+    state: &mut crate::models::structs::CsvImportState,
+    result: PreviewResult,
+) -> Result<(), String> {
+    use crate::data_transfer::readers::{FileKind, ReadError};
+    match result {
         Ok(loaded) => {
             let src = &mut state.source;
             src.needs_passphrase = false;
@@ -1400,6 +1507,8 @@ fn load_import_preview(
             state.column_mappings =
                 build_auto_mappings(&loaded.data.headers, &loaded.data.rows, named, &table_cols);
             state.preview_headers = loaded.data.headers;
+            // Sel NULL tampil sebagai penanda teks; nullness yang sebenarnya
+            // dibaca ulang dari file saat impor.
             state.preview_rows = loaded.data.rows;
             Ok(())
         }
@@ -1412,16 +1521,20 @@ fn load_import_preview(
     }
 }
 
+/// Literal SQL untuk satu sel impor. `None` adalah NULL dari file (JSON
+/// `null`, sel spreadsheet kosong, kolom yang tidak ada di baris). Teks hanya
+/// menjadi NULL bila sama dengan `null_value` pilihan pengguna; dengan
+/// `null_value` kosong itu berarti sel kosong. String `NULL` tetap string
+/// kecuali pengguna mengisi `NULL` di "NULL representation".
 fn csv_quote_value(
-    v: &str,
+    v: Option<&str>,
     null_value: &str,
     db_type: &crate::models::enums::DatabaseType,
 ) -> String {
-    // Pembaca JSON/spreadsheet/Parquet menandai nilai kosong dengan penanda NULL.
-    if v == null_value
-        || (null_value.is_empty() && v.is_empty())
-        || crate::data_transfer::is_null_cell(v)
-    {
+    let Some(v) = v else {
+        return "NULL".to_string();
+    };
+    if v == null_value {
         return "NULL".to_string();
     }
     match db_type {
@@ -1440,85 +1553,389 @@ fn csv_quote_ident(s: &str, db_type: &crate::models::enums::DatabaseType) -> Str
     }
 }
 
-fn build_csv_insert_batches(
-    table_name: &str,
-    database_name: Option<&str>,
-    db_type: &crate::models::enums::DatabaseType,
-    column_mappings: &[crate::models::structs::CsvColumnMapping],
-    all_rows: &[Vec<String>],
-    null_value: &str,
-) -> Vec<String> {
-    let active_indices: Vec<(usize, &str)> = column_mappings
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.target_column != "__skip__" && !m.target_column.is_empty())
-        .map(|(i, m)| (i, m.target_column.as_str()))
-        .collect();
+/// Keadaan impor yang dibaca dialog tiap frame.
+#[derive(Default)]
+struct ImportProgress {
+    /// File sudah terbaca; baris sedang dikirim.
+    inserting: bool,
+    rows_done: usize,
+    rows_total: usize,
+    /// Koneksi tujuan; dipakai jalur lama walau dialog sudah ditutup.
+    connection_id: i64,
+    outcome: Option<Result<ImportOutcome, String>>,
+}
 
-    if active_indices.is_empty() || all_rows.is_empty() {
-        return vec![];
-    }
+type ImportHandle = std::sync::Arc<std::sync::Mutex<ImportProgress>>;
 
-    let full_table = match (db_type, database_name) {
-        (crate::models::enums::DatabaseType::MySQL, Some(db)) => {
-            format!(
-                "{}.{}",
-                csv_quote_ident(db, db_type),
-                csv_quote_ident(table_name, db_type)
-            )
-        }
-        (crate::models::enums::DatabaseType::PostgreSQL, Some(schema)) => {
-            format!(
-                "{}.{}",
-                csv_quote_ident(schema, db_type),
-                csv_quote_ident(table_name, db_type)
-            )
-        }
-        (crate::models::enums::DatabaseType::MsSQL, Some(db)) => {
-            format!("[{}].dbo.{}", db, csv_quote_ident(table_name, db_type))
-        }
-        _ => csv_quote_ident(table_name, db_type),
-    };
+enum ImportOutcome {
+    /// Semua baris tersimpan dalam satu transaksi.
+    Imported(usize),
+    /// Engine tanpa jalur transaksi headless (plugin): statement dijalankan
+    /// lewat antrean query biasa di thread UI, tidak atomik.
+    Legacy {
+        statements: Vec<String>,
+        rows: usize,
+    },
+}
 
-    let col_list: String = active_indices
-        .iter()
-        .map(|(_, col)| csv_quote_ident(col, db_type))
-        .collect::<Vec<_>>()
-        .join(", ");
+/// Penyusun `INSERT` multi-baris untuk impor, satu statement per panggilan
+/// `next`. Baris yang sudah ditulis dilepas dari memori, jadi skrip lengkap
+/// tidak pernah ada di memori bersamaan dengan seluruh isi file.
+struct InsertChunks {
+    cells: Vec<Vec<Option<String>>>,
+    pos: usize,
+    /// Indeks kolom file yang dipakai.
+    active: Vec<usize>,
+    head: String,
+    null_value: String,
+    db_type: crate::models::enums::DatabaseType,
+    limits: crate::data_transfer::values::InsertLimits,
+    progress: Option<(ImportHandle, egui::Context)>,
+}
 
-    let mut batches = Vec::new();
-    for chunk in all_rows.chunks(100) {
-        let rows_sql: Vec<String> = chunk
+impl InsertChunks {
+    /// `None` bila tidak ada kolom yang dipetakan.
+    fn new(
+        table_name: &str,
+        database_name: Option<&str>,
+        db_type: &crate::models::enums::DatabaseType,
+        column_mappings: &[crate::models::structs::CsvColumnMapping],
+        cells: Vec<Vec<Option<String>>>,
+        null_value: &str,
+    ) -> Option<Self> {
+        let active: Vec<(usize, &str)> = column_mappings
             .iter()
-            .map(|row| {
-                let vals: Vec<String> = active_indices
-                    .iter()
-                    .map(|(ci, _)| {
-                        let v = row.get(*ci).map(String::as_str).unwrap_or("");
-                        csv_quote_value(v, null_value, db_type)
-                    })
-                    .collect();
-                format!("({})", vals.join(", "))
-            })
+            .enumerate()
+            .filter(|(_, m)| m.target_column != "__skip__" && !m.target_column.is_empty())
+            .map(|(i, m)| (i, m.target_column.as_str()))
             .collect();
-        batches.push(format!(
-            "INSERT INTO {} ({}) VALUES\n{};",
-            full_table,
-            col_list,
-            rows_sql.join(",\n")
-        ));
+        if active.is_empty() {
+            return None;
+        }
+        let full_table = match (db_type, database_name) {
+            (crate::models::enums::DatabaseType::MySQL, Some(db)) => {
+                format!(
+                    "{}.{}",
+                    csv_quote_ident(db, db_type),
+                    csv_quote_ident(table_name, db_type)
+                )
+            }
+            (crate::models::enums::DatabaseType::PostgreSQL, Some(schema)) => {
+                format!(
+                    "{}.{}",
+                    csv_quote_ident(schema, db_type),
+                    csv_quote_ident(table_name, db_type)
+                )
+            }
+            (crate::models::enums::DatabaseType::MsSQL, Some(db)) => {
+                format!("[{}].dbo.{}", db, csv_quote_ident(table_name, db_type))
+            }
+            _ => csv_quote_ident(table_name, db_type),
+        };
+        let col_list: String = active
+            .iter()
+            .map(|(_, col)| csv_quote_ident(col, db_type))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(Self {
+            cells,
+            pos: 0,
+            active: active.iter().map(|(i, _)| *i).collect(),
+            head: format!("INSERT INTO {} ({}) VALUES\n", full_table, col_list),
+            null_value: null_value.to_string(),
+            db_type: db_type.clone(),
+            // Batas terbesar yang diterima semua engine (SQL Server: 1000 baris).
+            limits: crate::data_transfer::values::InsertLimits::default().for_engine(db_type),
+            progress: None,
+        })
     }
-    batches
+
+    fn with_progress(mut self, handle: ImportHandle, ctx: egui::Context) -> Self {
+        self.progress = Some((handle, ctx));
+        self
+    }
+}
+
+impl Iterator for InsertChunks {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        if self.pos >= self.cells.len() {
+            return None;
+        }
+        let mut sql = self.head.clone();
+        let mut rows = 0usize;
+        while self.pos < self.cells.len() {
+            let over_rows = self.limits.max_rows > 0 && rows >= self.limits.max_rows;
+            let over_bytes =
+                self.limits.max_bytes > 0 && rows > 0 && sql.len() >= self.limits.max_bytes;
+            if over_rows || over_bytes {
+                break;
+            }
+            let row = std::mem::take(&mut self.cells[self.pos]);
+            self.pos += 1;
+            let vals: Vec<String> = self
+                .active
+                .iter()
+                .map(|ci| {
+                    csv_quote_value(
+                        row.get(*ci).and_then(|c| c.as_deref()),
+                        &self.null_value,
+                        &self.db_type,
+                    )
+                })
+                .collect();
+            if rows > 0 {
+                sql.push_str(",\n");
+            }
+            sql.push('(');
+            sql.push_str(&vals.join(", "));
+            sql.push(')');
+            rows += 1;
+        }
+        sql.push(';');
+        if let Some((handle, ctx)) = &self.progress {
+            let mut progress = lock_or_recover(handle);
+            progress.inserting = true;
+            // Statement ini baru akan dikirim: yang selesai adalah sebelumnya.
+            progress.rows_done = self.pos - rows;
+            drop(progress);
+            ctx.request_repaint();
+        }
+        Some(sql)
+    }
+}
+
+/// Data impor yang dibawa ke task latar; tidak menyentuh state GUI.
+struct ImportJob {
+    path: std::path::PathBuf,
+    read_opts: crate::data_transfer::readers::ReadOptions,
+    table_name: String,
+    database_name: Option<String>,
+    db_type: crate::models::enums::DatabaseType,
+    mappings: Vec<crate::models::structs::CsvColumnMapping>,
+    null_value: String,
+    endpoint: crate::data_transfer::catalog::Endpoint,
+}
+
+/// Baca seluruh file dan impor isinya. Pembacaan dan penyusunan SQL berjalan
+/// di luar thread UI. Untuk engine SQL bawaan semua `INSERT` dijalankan
+/// dalam satu transaksi: bila satu baris ditolak, tidak ada yang tersimpan.
+async fn run_import(
+    job: ImportJob,
+    handle: ImportHandle,
+    ctx: egui::Context,
+) -> Result<ImportOutcome, String> {
+    let ImportJob {
+        path,
+        read_opts,
+        table_name,
+        database_name,
+        db_type,
+        mappings,
+        null_value,
+        endpoint,
+    } = job;
+    let cells = tokio::task::spawn_blocking(move || {
+        crate::data_transfer::readers::read_file(&path, &read_opts)
+            .map(|loaded| loaded.data.into_cells())
+            .map_err(|e| format!("Failed to read file: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Failed to read file: {e}"))??;
+    let total = cells.len();
+    lock_or_recover(&handle).rows_total = total;
+    ctx.request_repaint();
+    let chunks = InsertChunks::new(
+        &table_name,
+        database_name.as_deref(),
+        &db_type,
+        &mappings,
+        cells,
+        &null_value,
+    )
+    .filter(|_| total > 0)
+    .ok_or_else(|| "No data or all columns skipped.".to_string())?;
+
+    if !crate::data_transfer::catalog::supports_sql(&db_type) {
+        return Ok(ImportOutcome::Legacy {
+            statements: chunks.collect(),
+            rows: total,
+        });
+    }
+    let endpoint = endpoint.connect().await?;
+    endpoint
+        .execute_atomic(chunks.with_progress(handle, ctx))
+        .await
+        .map_err(|e| format!("{e}. The transaction was rolled back; no rows were imported."))?;
+    Ok(ImportOutcome::Imported(total))
+}
+
+/// Jalur lama untuk engine tanpa transaksi headless: satu job query per
+/// statement lewat antrean biasa. Statement yang gagal menghentikan sisanya,
+/// tetapi yang sudah jalan tidak dibatalkan.
+fn spawn_legacy_import_jobs(
+    tabular: &mut window_egui::Tabular,
+    connection_id: i64,
+    batches: Vec<String>,
+    total_rows: usize,
+) -> Result<String, String> {
+    let batch_count = batches.len();
+    let mut jobs = Vec::new();
+    for (i, sql) in batches.into_iter().enumerate() {
+        let job_id = tabular.jobs.allocate_id();
+        let job = crate::connection::prepare_query_job(tabular, connection_id, sql, job_id)
+            .map_err(|e| format!("Failed to prepare batch: {:?}", e))?;
+        tabular.jobs.active.insert(
+            job_id,
+            crate::connection::QueryJobStatus {
+                job_id,
+                connection_id,
+                query_preview: format!("CSV import batch {}/{}", i + 1, batch_count),
+                started_at: std::time::Instant::now(),
+                completed: false,
+            },
+        );
+        jobs.push(job);
+    }
+    let sender = tabular.query_result_sender.clone();
+    crate::connection::spawn_query_job_batch(tabular, jobs, sender)
+        .map_err(|e| format!("Failed to start import: {:?}", e))?;
+    Ok(format!(
+        "Importing {} rows in {} batch(es) (not transactional on this engine)...",
+        total_rows, batch_count
+    ))
+}
+
+/// Kumpulkan data impor dari state wizard dan jalankan di runtime.
+fn start_import(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let Some(state) = tabular.csv_import_state.as_ref() else {
+        return;
+    };
+    let Some(path) = state.file_path.clone() else {
+        return;
+    };
+    let db_type = state.db_type.clone();
+    // Nama tabel di `INSERT` sudah berkualifikasi. Database aktif tab dipakai
+    // seperti jalur query biasa; untuk PostgreSQL `database_name` wizard
+    // adalah schema, bukan database, jadi tidak dipakai di sini.
+    let tab_database = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .filter(|d| !d.trim().is_empty());
+    let database = match db_type {
+        crate::models::enums::DatabaseType::PostgreSQL => tab_database,
+        crate::models::enums::DatabaseType::SQLite => None,
+        _ => tab_database.or_else(|| state.database_name.clone()),
+    };
+    let endpoint =
+        tabular.transfer_endpoint(state.connection_id, database.as_deref().unwrap_or(""));
+    let Some(endpoint) = endpoint else {
+        let state = tabular.csv_import_state.as_mut().unwrap();
+        state.status =
+            crate::models::structs::CsvImportStatus::Failed("Connection not found".to_string());
+        state.progress_message = "Connection not found".to_string();
+        return;
+    };
+    let job = ImportJob {
+        path,
+        read_opts: import_read_options(state, false, None),
+        table_name: state.table_name.clone(),
+        database_name: state.database_name.clone(),
+        db_type,
+        mappings: state.column_mappings.clone(),
+        null_value: state.null_value.clone(),
+        endpoint,
+    };
+    let handle: ImportHandle = std::sync::Arc::new(std::sync::Mutex::new(ImportProgress {
+        connection_id: state.connection_id,
+        ..Default::default()
+    }));
+    ctx.data_mut(|d| d.insert_temp(import_job_id(), handle.clone()));
+    let worker_ctx = ctx.clone();
+    tabular.get_runtime().spawn(async move {
+        let outcome = run_import(job, handle.clone(), worker_ctx.clone()).await;
+        lock_or_recover(&handle).outcome = Some(outcome);
+        worker_ctx.request_repaint();
+    });
+    let state = tabular.csv_import_state.as_mut().unwrap();
+    state.status = crate::models::structs::CsvImportStatus::Importing;
+    state.progress_message = "Reading file...".to_string();
+}
+
+/// Ambil kemajuan/hasil impor latar. Dipanggil tiap frame, juga saat dialog
+/// sudah ditutup: impor tetap selesai dan hasilnya dilaporkan lewat toast.
+fn poll_import_job(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    use crate::models::structs::CsvImportStatus;
+    let Some(handle) = ctx.data(|d| d.get_temp::<ImportHandle>(import_job_id())) else {
+        return;
+    };
+    let (connection_id, outcome, inserting, done, total) = {
+        let mut progress = lock_or_recover(&handle);
+        (
+            progress.connection_id,
+            progress.outcome.take(),
+            progress.inserting,
+            progress.rows_done,
+            progress.rows_total,
+        )
+    };
+    let Some(outcome) = outcome else {
+        if let Some(state) = tabular.csv_import_state.as_mut() {
+            state.status = CsvImportStatus::Importing;
+            state.progress_message = if inserting {
+                format!("Importing... {done} of {total} rows")
+            } else {
+                "Reading file...".to_string()
+            };
+        }
+        return;
+    };
+    ctx.data_mut(|d| d.remove::<ImportHandle>(import_job_id()));
+    let (status, message) = match outcome {
+        Ok(ImportOutcome::Imported(rows)) => (
+            CsvImportStatus::Done(rows),
+            format!("Imported {rows} rows in one transaction."),
+        ),
+        Ok(ImportOutcome::Legacy { statements, rows }) => {
+            match spawn_legacy_import_jobs(tabular, connection_id, statements, rows) {
+                Ok(message) => (CsvImportStatus::Importing, message),
+                Err(e) => (CsvImportStatus::Failed(e.clone()), e),
+            }
+        }
+        Err(e) => (
+            CsvImportStatus::Failed(e.clone()),
+            format!("Import failed: {e}"),
+        ),
+    };
+    match tabular.csv_import_state.as_mut() {
+        Some(state) => {
+            state.status = status;
+            state.progress_message = message;
+        }
+        None => match status {
+            CsvImportStatus::Failed(_) => {
+                log::warn!("[IMPORT] {message}");
+                tabular.toasts.error(message);
+            }
+            _ => tabular.toasts.success(message),
+        },
+    }
 }
 
 pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    // Impor latar dipantau walau dialog sudah ditutup.
+    poll_import_job(tabular, ctx);
     if !tabular.show_csv_import_dialog {
         return;
     }
-    if tabular.csv_import_state.is_none() {
+    let Some(state) = tabular.csv_import_state.as_mut() else {
         tabular.show_csv_import_dialog = false;
         return;
-    }
+    };
+    poll_import_preview(ctx, state);
+    let preview_pending = import_preview_pending(ctx);
 
     window_egui::style::render_modal_backdrop(
         ctx,
@@ -1577,7 +1994,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
 
             // ── Header Description ───────────────────────────────────────────
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("📥").size(20.0));
+                ui.label(egui::RichText::new(egui_icons::icons::ICON_DOWNLOAD.codepoint).size(20.0));
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(format!("Import Data into Table: {}", table_name))
@@ -1610,7 +2027,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             .inner_margin(egui::Vec2::new(14.0, 12.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("📄").size(24.0));
+                                    ui.label(egui::RichText::new(egui_icons::icons::ICON_DESCRIPTION.codepoint).size(24.0));
                                     ui.add_space(4.0);
                                     ui.vertical(|ui| {
                                         let file_name = path
@@ -1649,11 +2066,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     });
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.button("✖ Remove").on_hover_text("Deselect this file").clicked() {
+                                        if ui.button(format!("{} Remove", egui_icons::icons::ICON_CLOSE.codepoint)).on_hover_text("Deselect this file").clicked() {
                                             reset_file = true;
                                         }
                                         ui.add_space(4.0);
-                                        if ui.button("🔄 Change File...").clicked() {
+                                        if ui.button(format!("{} Change File...", egui_icons::icons::ICON_REFRESH.codepoint)).clicked() {
                                             trigger_file_pick = true;
                                         }
                                     });
@@ -1669,7 +2086,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             .show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
                                     ui.add_space(6.0);
-                                    ui.label(egui::RichText::new("📁").size(32.0));
+                                    ui.label(egui::RichText::new(egui_icons::icons::ICON_FOLDER.codepoint).size(32.0));
                                     ui.add_space(4.0);
                                     ui.label(
                                         egui::RichText::new("Choose a File to Import")
@@ -1684,7 +2101,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     );
                                     ui.add_space(10.0);
                                     if ui
-                                        .add(window_egui::style::btn_primary_ctx(ctx, "📂  Browse File..."))
+                                        .add(window_egui::style::btn_primary_ctx(ctx, format!("{}  Browse File...", egui_icons::icons::ICON_FOLDER_OPEN.codepoint)))
                                         .clicked()
                                     {
                                         trigger_file_pick = true;
@@ -1705,7 +2122,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             // Selebar kartu lain, berapa pun lebar isinya.
                             ui.set_min_width(ui.available_width());
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("⚙ Parsing Options").strong());
+                                ui.label(egui::RichText::new(format!("{} Parsing Options", egui_icons::icons::ICON_SETTINGS.codepoint)).strong());
                             });
                             ui.add_space(8.0);
 
@@ -1782,11 +2199,17 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                                     redelimit = true;
                                 }
                                 ui.add_space(16.0);
-                                ui.label(egui::RichText::new("NULL representation:").color(muted));
+                                ui.label(egui::RichText::new("NULL representation:").color(muted))
+                                    .on_hover_text(
+                                        "Cells equal to this text are imported as SQL NULL. \
+                                         Leave it empty to import empty cells as NULL; the text \
+                                         NULL is then kept as a string. Type NULL here to import \
+                                         it as SQL NULL instead.",
+                                    );
                                 crate::window_egui::style::render_text_field(
                                     ui,
                                     egui::TextEdit::singleline(&mut state.null_value)
-                                        .hint_text("e.g. NULL or \\N"),
+                                        .hint_text("empty cells"),
                                     110.0,
                                     None,
                                 );
@@ -1891,7 +2314,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             .inner_margin(egui::Vec2::new(14.0, 12.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("🔀 Column Mapping").strong());
+                                    ui.label(egui::RichText::new(format!("{} Column Mapping", egui_icons::icons::ICON_SHUFFLE.codepoint)).strong());
                                     ui.add_space(6.0);
                                     let mapped_count = state
                                         .column_mappings
@@ -2016,7 +2439,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             .inner_margin(egui::Vec2::new(14.0, 10.0))
                             .show(ui, |ui| {
                                 ui.collapsing(
-                                    egui::RichText::new(format!("👁 Data Preview (showing {} sample rows)", state.preview_rows.len()))
+                                    egui::RichText::new(format!(
+                                        "{} Data Preview (showing {} sample rows)",
+                                        egui_icons::icons::ICON_VISIBILITY.codepoint,
+                                        state.preview_rows.len()
+                                    ))
                                         .strong()
                                         .small(),
                                     |ui| {
@@ -2057,20 +2484,29 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
             ui.horizontal(|ui| {
                 // Status message on the left
                 if !state.progress_message.is_empty() {
+                    let importing =
+                        state.status == crate::models::structs::CsvImportStatus::Importing;
                     let (icon, color) = match &state.status {
-                        crate::models::structs::CsvImportStatus::Failed(_) => {
-                            ("❌ ", window_egui::style::theme_danger(ui.ctx()))
-                        }
-                        crate::models::structs::CsvImportStatus::Done(_) => {
-                            ("✅ ", window_egui::style::theme_success(ui.ctx()))
-                        }
-                        crate::models::structs::CsvImportStatus::Importing => {
-                            ("⏳ ", accent)
-                        }
-                        _ => ("", muted),
+                        crate::models::structs::CsvImportStatus::Failed(_) => (
+                            Some(egui_icons::icons::ICON_ERROR),
+                            window_egui::style::theme_danger(ui.ctx()),
+                        ),
+                        crate::models::structs::CsvImportStatus::Done(_) => (
+                            Some(egui_icons::icons::ICON_CHECK_CIRCLE),
+                            window_egui::style::theme_success(ui.ctx()),
+                        ),
+                        crate::models::structs::CsvImportStatus::Importing => (None, accent),
+                        _ => (None, muted),
                     };
+                    // File sedang dibaca atau baris sedang dikirim di latar.
+                    if importing || preview_pending {
+                        ui.spinner();
+                    }
+                    if let Some(icon) = icon {
+                        ui.label(egui::RichText::new(icon.codepoint).small().color(color));
+                    }
                     ui.label(
-                        egui::RichText::new(format!("{}{}", icon, state.progress_message))
+                        egui::RichText::new(&state.progress_message)
                             .small()
                             .strong()
                             .color(color),
@@ -2085,6 +2521,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
                         .any(|m| m.target_column != "__skip__");
                     let can_import = state.file_path.is_some()
                         && has_valid_mapping
+                        && !preview_pending
                         && state.status != crate::models::structs::CsvImportStatus::Importing;
 
                     let import_text = if state.status == crate::models::structs::CsvImportStatus::Importing {
@@ -2105,6 +2542,7 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
         });
 
     if reset_file {
+        ctx.data_mut(|d| d.remove::<ImportPreviewHandle>(import_preview_id()));
         let state = tabular.csv_import_state.as_mut().unwrap();
         state.file_path = None;
         state.source = Default::default();
@@ -2136,19 +2574,11 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
     }
 
     // ── File pick (outside closure) ────────────────────────────────────────
-    if redelimit {
-        let state = tabular.csv_import_state.as_mut().unwrap();
-        let path = state.file_path.clone().unwrap();
-        match load_import_preview(state, &path, false) {
-            Ok(()) => {
-                state.status = crate::models::structs::CsvImportStatus::Idle;
-                state.progress_message = String::new();
-            }
-            Err(e) => {
-                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                state.progress_message = format!("Parse error: {}", e);
-            }
-        }
+    if redelimit
+        && let Some(state) = tabular.csv_import_state.as_mut()
+        && let Some(path) = state.file_path.clone()
+    {
+        start_import_preview(ctx, state, path, false, false);
     }
 
     if trigger_file_pick
@@ -2159,129 +2589,24 @@ pub(crate) fn render_csv_import_dialog(tabular: &mut window_egui::Tabular, ctx: 
             )
             .add_filter("All files", &["*"])
             .pick_file()
+        && let Some(state) = tabular.csv_import_state.as_mut()
     {
-        let state = tabular.csv_import_state.as_mut().unwrap();
         // File baru: format, sheet, dan passphrase file lama tidak berlaku.
         state.source = Default::default();
         state.preview_headers.clear();
         state.preview_rows.clear();
         state.column_mappings.clear();
-        match load_import_preview(state, &path, true) {
-            Ok(()) => {
-                state.file_path = Some(path);
-                state.status = crate::models::structs::CsvImportStatus::Idle;
-                state.progress_message = String::new();
-            }
-            Err(e) => {
-                // File terenkripsi tetap dipilih supaya passphrase bisa diisi.
-                if state.source.needs_passphrase {
-                    state.file_path = Some(path);
-                }
-                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                state.progress_message = format!("Parse error: {}", e);
-            }
-        }
+        start_import_preview(ctx, state, path, true, true);
     }
 
     if trigger_import {
-        let state = tabular.csv_import_state.as_ref().unwrap();
-        let path = state.file_path.clone().unwrap();
-        let read_opts = import_read_options(state, false, None);
-        let null_value = state.null_value.clone();
-        let table_name2 = state.table_name.clone();
-        let database_name = state.database_name.clone();
-        let db_type = state.db_type.clone();
-        let mappings = state.column_mappings.clone();
-        let connection_id = state.connection_id;
-
-        match crate::data_transfer::readers::read_file(&path, &read_opts)
-            .map(|loaded| loaded.data.rows)
-            .map_err(|e| e.to_string())
-        {
-            Ok(all_rows) => {
-                let total_rows = all_rows.len();
-                let batches = build_csv_insert_batches(
-                    &table_name2,
-                    database_name.as_deref(),
-                    &db_type,
-                    &mappings,
-                    &all_rows,
-                    &null_value,
-                );
-                if batches.is_empty() {
-                    let state = tabular.csv_import_state.as_mut().unwrap();
-                    state.status = crate::models::structs::CsvImportStatus::Failed(
-                        "No data or all columns skipped.".into(),
-                    );
-                    state.progress_message = "No data or all columns skipped.".into();
-                } else {
-                    let batch_count = batches.len();
-                    let mut jobs = Vec::new();
-                    let mut all_ok = true;
-                    for (i, sql) in batches.into_iter().enumerate() {
-                        let job_id = tabular.jobs.allocate_id();
-                        match crate::connection::prepare_query_job(
-                            tabular,
-                            connection_id,
-                            sql,
-                            job_id,
-                        ) {
-                            Ok(job) => {
-                                let preview = format!("CSV import batch {}/{}", i + 1, batch_count);
-                                tabular.jobs.active.insert(
-                                    job_id,
-                                    crate::connection::QueryJobStatus {
-                                        job_id,
-                                        connection_id,
-                                        query_preview: preview,
-                                        started_at: std::time::Instant::now(),
-                                        completed: false,
-                                    },
-                                );
-                                jobs.push(job);
-                            }
-                            Err(e) => {
-                                let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(
-                                    format!("{:?}", e),
-                                );
-                                state.progress_message =
-                                    format!("Failed to prepare batch: {:?}", e);
-                                all_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if all_ok && !jobs.is_empty() {
-                        let sender = tabular.query_result_sender.clone();
-                        match crate::connection::spawn_query_job_batch(tabular, jobs, sender) {
-                            Ok(_) => {
-                                let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Importing;
-                                state.progress_message = format!(
-                                    "Importing {} rows in {} batch(es) of up to 100...",
-                                    total_rows, batch_count
-                                );
-                            }
-                            Err(e) => {
-                                let state = tabular.csv_import_state.as_mut().unwrap();
-                                state.status = crate::models::structs::CsvImportStatus::Failed(
-                                    format!("{:?}", e),
-                                );
-                                state.progress_message = format!("Failed to start import: {:?}", e);
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let state = tabular.csv_import_state.as_mut().unwrap();
-                state.status = crate::models::structs::CsvImportStatus::Failed(e.clone());
-                state.progress_message = format!("Failed to read file: {}", e);
-            }
-        }
+        start_import(tabular, ctx);
     }
 
+    if !open_flag || should_close {
+        // Pratinjau yang masih dibaca tidak punya dialog untuk menerimanya.
+        ctx.data_mut(|d| d.remove::<ImportPreviewHandle>(import_preview_id()));
+    }
     if !open_flag || should_close {
         tabular.show_csv_import_dialog = false;
         tabular.csv_import_state = None;
@@ -2499,5 +2824,169 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
         tabular.show_unsafe_dml_dialog = false;
         let query = tabular.unsafe_dml_query.clone();
         editor::execute_query_bypass_checks(tabular, query);
+    }
+}
+
+#[cfg(test)]
+mod csv_import_tests {
+    use super::*;
+    use crate::data_transfer::catalog::Endpoint;
+    use crate::models::enums::{DatabasePool, DatabaseType};
+    use crate::models::structs::{ConnectionConfig, CsvColumnMapping};
+
+    fn mapping(pairs: &[(&str, &str)]) -> Vec<CsvColumnMapping> {
+        pairs
+            .iter()
+            .map(|(header, target)| CsvColumnMapping {
+                csv_header: header.to_string(),
+                target_column: target.to_string(),
+            })
+            .collect()
+    }
+
+    fn cells(rows: &[&[Option<&str>]]) -> Vec<Vec<Option<String>>> {
+        rows.iter()
+            .map(|r| r.iter().map(|c| c.map(str::to_string)).collect())
+            .collect()
+    }
+
+    #[test]
+    fn null_text_is_a_string_unless_the_user_chose_it() {
+        let pg = DatabaseType::PostgreSQL;
+        // Bawaan dialog (`null_value` kosong): sel kosong = NULL, teks `NULL` = string.
+        assert_eq!(csv_quote_value(Some("NULL"), "", &pg), "'NULL'");
+        assert_eq!(csv_quote_value(Some(""), "", &pg), "NULL");
+        assert_eq!(csv_quote_value(None, "", &pg), "NULL");
+        // Pilihan eksplisit: `NULL` jadi SQL NULL, sel kosong jadi string kosong.
+        assert_eq!(csv_quote_value(Some("NULL"), "NULL", &pg), "NULL");
+        assert_eq!(csv_quote_value(Some(""), "NULL", &pg), "''");
+        assert_eq!(csv_quote_value(None, "NULL", &pg), "NULL");
+        assert_eq!(
+            csv_quote_value(Some("a\\b'c"), "", &DatabaseType::MySQL),
+            "'a\\\\b''c'"
+        );
+    }
+
+    #[test]
+    fn insert_chunks_follow_mapping_and_row_limit() {
+        let maps = mapping(&[("a", "id"), ("b", "__skip__"), ("c", "note")]);
+        let data = cells(&[
+            &[Some("1"), Some("x"), Some("NULL")],
+            &[Some("2"), Some("y"), None],
+            &[Some("3")],
+        ]);
+        let mut chunks =
+            InsertChunks::new("t", Some("shop"), &DatabaseType::MySQL, &maps, data, "").unwrap();
+        chunks.limits.max_rows = 2;
+        let statements: Vec<String> = chunks.collect();
+        assert_eq!(
+            statements,
+            vec![
+                "INSERT INTO `shop`.`t` (`id`, `note`) VALUES\n('1', 'NULL'),\n('2', NULL);",
+                "INSERT INTO `shop`.`t` (`id`, `note`) VALUES\n('3', NULL);",
+            ]
+        );
+        // SQL Server dibatasi 1000 baris per `VALUES`; engine lain 500.
+        let skip_all = mapping(&[("a", "__skip__")]);
+        assert!(
+            InsertChunks::new("t", None, &DatabaseType::MsSQL, &skip_all, vec![], "").is_none()
+        );
+        let ms = InsertChunks::new("t", None, &DatabaseType::MsSQL, &maps, vec![], "").unwrap();
+        assert!(ms.limits.max_rows <= 1000);
+        assert_eq!(ms.count(), 0);
+    }
+
+    async fn sqlite_endpoint() -> Endpoint {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        Endpoint::new(
+            ConnectionConfig {
+                connection_type: DatabaseType::SQLite,
+                ..Default::default()
+            },
+            Some(DatabasePool::SQLite(std::sync::Arc::new(pool))),
+            None,
+        )
+    }
+
+    fn job(path: &std::path::Path, endpoint: &Endpoint, null_value: &str) -> ImportJob {
+        ImportJob {
+            path: path.to_path_buf(),
+            read_opts: Default::default(),
+            table_name: "people".to_string(),
+            database_name: None,
+            db_type: DatabaseType::SQLite,
+            mappings: mapping(&[("id", "id"), ("name", "name")]),
+            null_value: null_value.to_string(),
+            endpoint: endpoint.clone(),
+        }
+    }
+
+    #[tokio::test]
+    async fn import_is_atomic_and_keeps_the_text_null() {
+        let dir = std::env::temp_dir().join(format!("tabular_import_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = sqlite_endpoint().await;
+        endpoint
+            .query("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            .await
+            .unwrap();
+        let ctx = egui::Context::default();
+
+        // 1200 baris = tiga statement (500 + 500 + 200); baris 900 kosong dan
+        // ditolak NOT NULL.
+        let mut csv = String::from("id,name\n");
+        for i in 1..=1200 {
+            let name = match i {
+                900 => String::new(),
+                7 => "NULL".to_string(),
+                _ => format!("n{i}"),
+            };
+            csv.push_str(&format!("{i},{name}\n"));
+        }
+        let bad = dir.join("bad.csv");
+        std::fs::write(&bad, &csv).unwrap();
+        let handle = ImportHandle::default();
+        let err = run_import(job(&bad, &endpoint, ""), handle.clone(), ctx.clone())
+            .await
+            .err()
+            .expect("NOT NULL violation fails the import");
+        assert!(err.contains("rolled back"), "{err}");
+        // Statement pertama (500 baris) sudah jalan sebelum yang kedua gagal,
+        // tetapi tidak ada yang tertinggal.
+        let count = endpoint.query("SELECT COUNT(*) FROM people").await.unwrap();
+        assert_eq!(count.first_value(), Some("0"));
+        assert_eq!(lock_or_recover(&handle).rows_total, 1200);
+
+        let good = dir.join("good.csv");
+        std::fs::write(&good, csv.replace("900,\n", "900,ok\n")).unwrap();
+        let outcome = run_import(
+            job(&good, &endpoint, ""),
+            ImportHandle::default(),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, ImportOutcome::Imported(1200)));
+        let count = endpoint.query("SELECT COUNT(*) FROM people").await.unwrap();
+        assert_eq!(count.first_value(), Some("1200"));
+        // Teks `NULL` di CSV tersimpan sebagai string.
+        let name = endpoint
+            .query("SELECT name, name IS NULL FROM people WHERE id = 7")
+            .await
+            .unwrap();
+        assert_eq!(name.rows[0], vec!["NULL", "0"]);
+
+        // Semua kolom dilewati atau file kosong: tidak ada yang dijalankan.
+        let mut skipped = job(&good, &endpoint, "");
+        skipped.mappings = mapping(&[("id", "__skip__"), ("name", "__skip__")]);
+        let err = run_import(skipped, ImportHandle::default(), ctx)
+            .await
+            .err();
+        assert_eq!(err.as_deref(), Some("No data or all columns skipped."));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

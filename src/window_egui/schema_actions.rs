@@ -536,10 +536,9 @@ enum AfterSuccess {
 impl Tabular {
     fn pool_for(&self, conn_id: i64) -> Option<crate::models::enums::DatabasePool> {
         self.connection_pools.get(&conn_id).cloned().or_else(|| {
-            self.shared_connection_pools
-                .lock()
-                .ok()
-                .and_then(|p| p.get(&conn_id).cloned())
+            crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                .get(&conn_id)
+                .cloned()
         })
     }
 

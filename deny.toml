@@ -1,0 +1,34 @@
+# Konfigurasi cargo-deny (https://embarkstudios.github.io/cargo-deny/).
+# Dijalankan CI sebagai `cargo deny check advisories bans sources`. Job-nya
+# masih `continue-on-error` (lihat .github/workflows/rust.yml) sampai daftar
+# crate ganda di bawah selesai ditriase.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Crate yang ditarik (yanked) dilaporkan, belum menggagalkan.
+yanked = "warn"
+# Advisory yang sudah ditinjau dan diterima; sertakan alasannya.
+ignore = []
+
+[bans]
+# Versi ganda belum ditriase: bson 2 + 3 (mongodb memakai bson 2 kecuali fitur
+# `bson-3`), base64 0.21/0.22/0.23, penyedia kripto rustls ring + aws-lc-rs.
+# Naikkan ke "deny" setelah daftar `skip` diisi.
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+deny = [
+       # Hanya satu SQLite yang boleh di-link (sqlite-vec menaut ke yang ini).
+       { crate = "libsqlite3-sys", deny-multiple-versions = true },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

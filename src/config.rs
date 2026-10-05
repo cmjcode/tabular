@@ -1044,7 +1044,7 @@ impl ConfigStore {
         // Fallback to JSON
         let path = Self::json_path();
         if let Ok(content) = std::fs::read_to_string(&path)
-            && let Ok(mut prefs) = serde_json::from_str::<AppPreferences>(&content)
+            && let Some(mut prefs) = parse_prefs_json_or_quarantine(&path, &content)
         {
             // Resolve AI API key from keyring/file if stored as sentinel
             let (real, rewrite) =
@@ -1238,15 +1238,26 @@ impl ConfigStore {
     fn load_from_json(&self) -> Result<AppPreferences, Box<dyn std::error::Error>> {
         let path = Self::json_path();
         let content = std::fs::read_to_string(&path)?;
-        let mut prefs: AppPreferences = serde_json::from_str(&content)?;
+        let mut prefs: AppPreferences = match serde_json::from_str(&content) {
+            Ok(prefs) => prefs,
+            Err(e) => {
+                // Sisihkan file rusak supaya penyimpanan berikutnya tidak
+                // menimpa preferensi user yang mungkin masih bisa diselamatkan.
+                log::error!("[PREFS] {} is not valid JSON: {}", path.display(), e);
+                let _ = crate::directory::quarantine_corrupt_file(&path);
+                return Err(Box::new(e));
+            }
+        };
         let (real, rewrite) = crate::secrets::resolve_stored("pref:ai_api_key", &prefs.ai_api_key);
         if let Some(value) = rewrite {
             // Legacy plaintext key migrated to the secret store: rewrite the
             // JSON file so it only holds the sentinel.
             let mut sanitized = prefs.clone();
             sanitized.ai_api_key = value;
-            if let Ok(json) = serde_json::to_string_pretty(&sanitized) {
-                let _ = std::fs::write(&path, json);
+            if let Ok(json) = serde_json::to_string_pretty(&sanitized)
+                && let Err(e) = crate::directory::write_file_atomically(&path, json.as_bytes())
+            {
+                log::warn!("[PREFS] cannot rewrite {}: {}", path.display(), e);
             }
         }
         prefs.ai_api_key = real;
@@ -1269,7 +1280,7 @@ impl ConfigStore {
         let mut sanitized = prefs.clone();
         sanitized.ai_api_key = crate::secrets::store_or_keep("pref:ai_api_key", &prefs.ai_api_key);
         let content = serde_json::to_string_pretty(&sanitized)?;
-        std::fs::write(path, content)?;
+        crate::directory::write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -1393,7 +1404,7 @@ fn save_config_location(data_dir: &str) -> Result<(), String> {
     let config_file = default_dir.join(CONFIG_LOCATION_FILE);
 
     // Write the new data directory location
-    if let Err(e) = fs::write(&config_file, data_dir) {
+    if let Err(e) = crate::directory::write_file_atomically(&config_file, data_dir.as_bytes()) {
         return Err(format!("Cannot write config location file: {}", e));
     }
 
@@ -1458,9 +1469,7 @@ pub fn init_data_dir() {
     // First check if there's a saved config location
     if let Some(saved_location) = load_config_location() {
         log::debug!("Using saved config location: {}", saved_location);
-        unsafe {
-            std::env::set_var("TABULAR_DATA_DIR", &saved_location);
-        }
+        override_data_dir(PathBuf::from(saved_location));
         return;
     }
 
@@ -1479,7 +1488,31 @@ fn config_dir() -> PathBuf {
     get_data_dir()
 }
 
+/// Data dir hasil resolusi (lokasi tersimpan, pilihan user, atau fallback).
+/// Disimpan di static, bukan lewat `std::env::set_var`: mengubah environment
+/// saat thread lain berjalan adalah UB di Unix.
+static DATA_DIR_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Tetapkan data dir untuk sisa umur proses. Mengalahkan env
+/// `TABULAR_DATA_DIR`, yang hanya dibaca sebagai nilai awal.
+pub(crate) fn override_data_dir(path: PathBuf) {
+    match DATA_DIR_OVERRIDE.write() {
+        Ok(mut guard) => *guard = Some(path),
+        Err(poisoned) => *poisoned.into_inner() = Some(path),
+    }
+}
+
 pub fn get_data_dir() -> PathBuf {
+    let overridden = match DATA_DIR_OVERRIDE.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    if let Some(path) = overridden
+        && path.is_absolute()
+    {
+        return path;
+    }
+
     // Try to get custom data directory from environment variable first
     if let Ok(custom_dir) = std::env::var("TABULAR_DATA_DIR") {
         let path = PathBuf::from(custom_dir);
@@ -1520,20 +1553,47 @@ pub fn set_data_dir(new_path: &str) -> Result<(), String> {
         // Continue anyway, at least set environment variable
     }
 
-    // Set environment variable for this session
-    unsafe {
-        std::env::set_var("TABULAR_DATA_DIR", new_path);
-    }
+    // Berlaku untuk sesi ini (static, bukan environment variable).
+    override_data_dir(path);
 
     log::debug!("Data directory changed to: {}", new_path);
     Ok(())
+}
+
+/// Urai isi `preferences.json`. File yang berisi tetapi bukan JSON yang sah
+/// disisihkan (`quarantine_corrupt_file`) supaya penyimpanan berikutnya tidak
+/// menimpa preferensi user yang mungkin masih bisa diselamatkan.
+///
+/// Tidak pernah menyisihkan karena error I/O (pemanggil hanya masuk ke sini
+/// setelah berhasil membaca), file kosong, atau file yang sedang ditulis
+/// proses lain: isi dibaca ulang dan hanya disisihkan bila masih sama persis.
+fn parse_prefs_json_or_quarantine(path: &std::path::Path, content: &str) -> Option<AppPreferences> {
+    if content.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<AppPreferences>(content) {
+        Ok(prefs) => Some(prefs),
+        Err(e) => {
+            log::error!("[PREFS] {} is not valid JSON: {}", path.display(), e);
+            match std::fs::read_to_string(path) {
+                Ok(again) if again == content => {
+                    let _ = crate::directory::quarantine_corrupt_file(path);
+                }
+                _ => log::warn!(
+                    "[PREFS] {} changed while being read; leaving it in place",
+                    path.display()
+                ),
+            }
+            None
+        }
+    }
 }
 
 /// Load preferences quickly on startup without initializing Tokio runtime or SQLite pool.
 pub fn load_fast_preferences() -> AppPreferences {
     let path = ConfigStore::json_path();
     if let Ok(content) = std::fs::read_to_string(&path)
-        && let Ok(mut prefs) = serde_json::from_str::<AppPreferences>(&content)
+        && let Some(mut prefs) = parse_prefs_json_or_quarantine(&path, &content)
     {
         // Quickly resolve AI key if present
         if prefs.ai_api_key == crate::secrets::SECRET_SENTINEL {
@@ -1547,6 +1607,42 @@ pub fn load_fast_preferences() -> AppPreferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_prefs_json_is_quarantined_only_when_really_corrupt() {
+        let dir = std::env::temp_dir().join(format!("tabular_prefs_q_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("preferences.json");
+
+        // File kosong (mis. baru dibuat): dibiarkan.
+        std::fs::write(&path, "  \n").expect("write empty");
+        assert!(parse_prefs_json_or_quarantine(&path, "  \n").is_none());
+        assert!(path.exists());
+
+        // Isi di disk sudah berbeda dari yang dibaca (sedang ditulis): dibiarkan.
+        std::fs::write(&path, "{\"font_size\": 1").expect("write partial");
+        assert!(parse_prefs_json_or_quarantine(&path, "{\"font_").is_none());
+        assert!(path.exists());
+
+        // Benar-benar rusak: disisihkan, bukan dihapus.
+        std::fs::write(&path, "{not json").expect("write corrupt");
+        assert!(parse_prefs_json_or_quarantine(&path, "{not json").is_none());
+        assert!(!path.exists());
+        let kept = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+        assert!(kept, "corrupt file must be preserved");
+
+        // JSON sah tetap terbaca.
+        let json = serde_json::to_string(&AppPreferences::default()).expect("serialize");
+        std::fs::write(&path, &json).expect("write valid");
+        assert!(parse_prefs_json_or_quarantine(&path, &json).is_some());
+        assert!(path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ai_provider_persisted_values_round_trip() {

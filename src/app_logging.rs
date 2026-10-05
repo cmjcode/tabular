@@ -4,7 +4,7 @@
 //! `log::*` hilang total dan crash di mesin user tidak meninggalkan jejak.
 //! Modul ini:
 //! - menulis log ke `<data_dir>/logs/tabular.log` (sekaligus ke stderr), dengan
-//!   rotasi sederhana saat startup;
+//!   rotasi berbasis ukuran saat startup dan selama sesi berjalan;
 //! - memasang panic hook yang menyimpan `crash-<waktu>.log` berisi pesan,
 //!   lokasi, dan backtrace;
 //! - menyediakan ringkasan diagnostik untuk laporan bug.
@@ -18,7 +18,92 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// Jumlah crash report yang disimpan; yang lebih lama dihapus.
 const MAX_CRASH_REPORTS: usize = 10;
 
-static LOG_FILE: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
+/// Ukuran file diperiksa setiap sekian penulisan, bukan tiap baris.
+const ROTATE_CHECK_EVERY: u32 = 256;
+
+static LOG_FILE: OnceLock<Mutex<LogSink>> = OnceLock::new();
+
+/// File log aktif beserta state rotasinya. Selalu diakses di bawah mutex
+/// `LOG_FILE`, jadi rotasi tidak pernah balapan dengan penulisan.
+struct LogSink {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+    max_bytes: u64,
+    writes_since_check: u32,
+}
+
+impl LogSink {
+    fn open(path: PathBuf, max_bytes: u64) -> Self {
+        let mut sink = Self {
+            file: None,
+            path,
+            max_bytes,
+            writes_since_check: 0,
+        };
+        sink.rotate_if_needed();
+        if sink.file.is_none() {
+            sink.file = sink.open_append();
+        }
+        sink
+    }
+
+    fn open_append(&self) -> Option<std::fs::File> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).ok()?;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .ok()
+    }
+
+    fn rotated_path(&self) -> PathBuf {
+        let mut name = self
+            .path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        name.push(".1");
+        self.path.with_file_name(name)
+    }
+
+    /// Rotasi ke `<nama>.1` bila file aktif melewati batas, lalu buka ulang.
+    /// Ukuran dibaca dari path (bukan handle) supaya proses lain yang menulis
+    /// file yang sama (GUI vs `tabular mcp`) ikut terhitung dan ikut pindah ke
+    /// file baru setelah dirotasi proses lain.
+    fn rotate_if_needed(&mut self) {
+        let too_big = std::fs::metadata(&self.path)
+            .map(|m| m.len() > self.max_bytes)
+            .unwrap_or(false);
+        if too_big {
+            // Tutup handle dulu: di Windows file terbuka tidak bisa di-rename.
+            self.file = None;
+            let _ = std::fs::rename(&self.path, self.rotated_path());
+            self.file = self.open_append();
+        } else if self.file.is_some() && !self.path.exists() {
+            // File sudah dirotasi/dihapus proses lain: pindah ke file baru.
+            self.file = self.open_append();
+        }
+    }
+
+    fn write(&mut self, buf: &[u8]) {
+        self.writes_since_check += 1;
+        if self.writes_since_check >= ROTATE_CHECK_EVERY {
+            self.writes_since_check = 0;
+            self.rotate_if_needed();
+        }
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write_all(buf);
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.flush();
+        }
+    }
+}
 
 /// Folder tempat log dan crash report disimpan.
 pub fn logs_dir() -> PathBuf {
@@ -37,48 +122,29 @@ impl Write for TeeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = std::io::stderr().write_all(buf);
         if let Some(lock) = LOG_FILE.get()
-            && let Ok(mut guard) = lock.lock()
-            && let Some(file) = guard.as_mut()
+            && let Ok(mut sink) = lock.lock()
         {
-            let _ = file.write_all(buf);
+            sink.write(buf);
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         if let Some(lock) = LOG_FILE.get()
-            && let Ok(mut guard) = lock.lock()
-            && let Some(file) = guard.as_mut()
+            && let Ok(mut sink) = lock.lock()
         {
-            let _ = file.flush();
+            sink.flush();
         }
         std::io::stderr().flush()
     }
-}
-
-/// Buka file log (append) setelah merotasi file lama yang terlalu besar.
-fn open_log_file() -> Option<std::fs::File> {
-    let dir = logs_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = log_file_path();
-    if std::fs::metadata(&path)
-        .map(|m| m.len() > MAX_LOG_BYTES)
-        .unwrap_or(false)
-    {
-        let _ = std::fs::rename(&path, dir.join("tabular.log.1"));
-    }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .ok()
 }
 
 /// Inisialisasi logger global. Aman dipanggil lebih dari sekali; hanya
 /// panggilan pertama yang berpengaruh. Harus dipanggil setelah
 /// `config::init_data_dir()` supaya folder log berada di data dir yang benar.
 pub fn init() {
-    let _ = LOG_FILE.set(Mutex::new(open_log_file()));
+    // Membuka file sekaligus merotasi file lama yang terlalu besar.
+    let _ = LOG_FILE.set(Mutex::new(LogSink::open(log_file_path(), MAX_LOG_BYTES)));
 
     let result = env_logger::Builder::from_default_env()
         .filter_module("tabular", log::LevelFilter::Debug)
@@ -244,4 +310,80 @@ pub fn diagnostics_report() -> String {
             .unwrap_or_default(),
         log_tail
     )
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    fn tmp_log(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular-log-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir.join("tabular.log")
+    }
+
+    #[test]
+    fn oversized_log_is_rotated_at_open() {
+        let path = tmp_log("open");
+        std::fs::write(&path, vec![b'x'; 200]).expect("seed");
+        let mut sink = LogSink::open(path.clone(), 100);
+        sink.write(b"fresh\n");
+        sink.flush();
+        assert_eq!(std::fs::read_to_string(&path).expect("log"), "fresh\n");
+        assert_eq!(
+            std::fs::metadata(sink.rotated_path())
+                .expect("rotated")
+                .len(),
+            200
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn log_is_rotated_during_the_session() {
+        let path = tmp_log("session");
+        let mut sink = LogSink::open(path.clone(), 1024);
+        let line = [b'a'; 64];
+        // Cukup banyak baris untuk melewati batas dan beberapa kali pengecekan.
+        for _ in 0..(ROTATE_CHECK_EVERY * 3) {
+            sink.write(&line);
+        }
+        sink.flush();
+        let rotated = sink.rotated_path();
+        assert!(rotated.exists(), "log must rotate while running");
+        let active = std::fs::metadata(&path).expect("active log").len();
+        // File aktif tidak tumbuh tanpa batas: paling banyak satu jendela
+        // pengecekan di atas batas.
+        assert!(
+            active <= 1024 + u64::from(ROTATE_CHECK_EVERY) * 64,
+            "{active}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn writer_follows_a_log_rotated_by_another_process() {
+        let path = tmp_log("external");
+        let mut sink = LogSink::open(path.clone(), 1024 * 1024);
+        sink.write(b"before\n");
+        std::fs::rename(&path, sink.rotated_path()).expect("external rotate");
+        for _ in 0..ROTATE_CHECK_EVERY {
+            sink.write(b"after\n");
+        }
+        sink.flush();
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("new log")
+                .contains("after")
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
 }

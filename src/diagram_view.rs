@@ -113,17 +113,10 @@ pub enum DiagramAction {
     Error(String),
 }
 
-/// Tulis file secara atomik: tulis ke `.tmp` lalu rename, supaya crash di
-/// tengah penulisan tidak meninggalkan file setengah jadi.
+/// Tulis file secara atomik (file sementara unik + fsync + rename), supaya
+/// crash di tengah penulisan tidak meninggalkan file setengah jadi.
 pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
-    ));
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    crate::directory::write_file_atomically(path, contents)
 }
 
 fn export_json(state: &DiagramState) -> Option<DiagramAction> {

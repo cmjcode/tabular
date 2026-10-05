@@ -293,7 +293,9 @@ pub(crate) fn fetch_tables_from_postgres_connection(
     database_name: &str,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     let conn = tabular
         .connections
         .iter()
@@ -319,28 +321,48 @@ pub(crate) async fn list_postgres_tables(
         }
         _ => return None,
     };
-    let conn_str = format!(
-        "postgresql://{}:{}@{}:{}/{}",
-        conn.username, conn.password, conn.host, conn.port, database_name
-    );
-
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(std::time::Duration::from_secs(10))
-        .connect(&conn_str)
-        .await
-        .ok()?;
+    // Helper bersama: lewat tunnel SSH bila aktif, opsi SSL sama dengan pool
+    // utama, dan kredensial tidak disisipkan mentah ke URL.
+    let pool = match crate::connection::pool::connect_postgres_once(
+        conn,
+        database_name,
+        std::time::Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            log::warn!("[DRIVER-PG] Cannot list {}s: {}", table_type, e);
+            return None;
+        }
+    };
 
     let rows = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         sqlx::query_as::<_, (String,)>(sql).fetch_all(&pool),
     )
-    .await
-    .map_err(|_| sqlx::Error::PoolTimedOut)
-    .and_then(|r| r);
+    .await;
     pool.close().await;
-    rows.ok()
-        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
+    match rows {
+        Ok(Ok(rows)) => Some(rows.into_iter().map(|(n,)| n).collect()),
+        Ok(Err(e)) => {
+            log::warn!(
+                "[DRIVER-PG] Listing {}s of database '{}' failed: {}",
+                table_type,
+                database_name,
+                e
+            );
+            None
+        }
+        Err(_) => {
+            log::warn!(
+                "[DRIVER-PG] Listing {}s of database '{}' timed out",
+                table_type,
+                database_name
+            );
+            None
+        }
+    }
 }
 
 pub(crate) fn fetch_tables_with_comments_from_postgres_connection(
@@ -349,7 +371,9 @@ pub(crate) fn fetch_tables_with_comments_from_postgres_connection(
     database_name: &str,
     table_type: &str,
 ) -> Option<Vec<(String, Option<String>)>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     let conn = tabular
         .connections
         .iter()
@@ -369,24 +393,44 @@ pub(crate) async fn list_postgres_tables_with_comments(
                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                    WHERE n.nspname = 'public' AND c.relkind = 'r' \
                    ORDER BY c.relname";
-        let conn_str = format!(
-            "postgresql://{}:{}@{}:{}/{}",
-            conn.username, conn.password, conn.host, conn.port, database_name
-        );
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-            .connect(&conn_str)
-            .await
-            .ok()?;
+        let pool = match crate::connection::pool::connect_postgres_once(
+            conn,
+            database_name,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        {
+            Ok(pool) => pool,
+            Err(e) => {
+                log::warn!("[DRIVER-PG] Cannot list tables with comments: {}", e);
+                return None;
+            }
+        };
         let rows = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             sqlx::query_as::<_, (String, String)>(sql).fetch_all(&pool),
         )
-        .await
-        .ok()?
-        .ok()?;
+        .await;
+        // Tutup pool di semua cabang (versi lama membocorkannya saat error).
         pool.close().await;
+        let rows = match rows {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => {
+                log::warn!(
+                    "[DRIVER-PG] Listing tables with comments of database '{}' failed: {}",
+                    database_name,
+                    e
+                );
+                return None;
+            }
+            Err(_) => {
+                log::warn!(
+                    "[DRIVER-PG] Listing tables with comments of database '{}' timed out",
+                    database_name
+                );
+                return None;
+            }
+        };
 
         Some(
             rows.into_iter()

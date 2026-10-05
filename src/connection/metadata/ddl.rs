@@ -1,6 +1,5 @@
-use crate::{models, modules, window_egui};
+use crate::{models, window_egui};
 use log::debug;
-use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions};
 use std::collections::HashMap;
 
 pub(crate) fn fetch_view_definition(
@@ -24,22 +23,13 @@ pub(crate) fn fetch_view_definition(
                     return None;
                 }
 
-                let encoded_username = modules::url_encode(&connection_clone.username);
-                let encoded_password = modules::url_encode(&connection_clone.password);
-                let connection_string = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    encoded_username,
-                    encoded_password,
-                    connection_clone.host,
-                    connection_clone.port,
-                    db_name
-                );
-
-                match MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH dan opsi SSL sama dengan pool utama.
+                match crate::connection::pool::connect_mysql_once(
+                    &connection_clone,
+                    &db_name,
+                    std::time::Duration::from_secs(10),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let query = "SELECT VIEW_DEFINITION FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
@@ -103,20 +93,14 @@ pub(crate) fn fetch_view_definition(
                     return None;
                 }
 
-                let connection_string = format!(
-                    "postgresql://{}:{}@{}:{}/{}",
-                    connection_clone.username,
-                    connection_clone.password,
-                    connection_clone.host,
-                    connection_clone.port,
-                    db_name
-                );
-
-                match PgPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH, opsi SSL, dan kredensial tanpa
+                // perlu URL-encode (lihat `connect_postgres_once`).
+                match crate::connection::pool::connect_postgres_once(
+                    &connection_clone,
+                    &db_name,
+                    std::time::Duration::from_secs(10),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let query = "SELECT table_schema, pg_get_viewdef(format('%I.%I', table_schema, table_name)::regclass, true) AS definition FROM information_schema.views WHERE table_name = $1 ORDER BY CASE WHEN table_schema = 'public' THEN 0 ELSE 1 END LIMIT 1";
@@ -173,10 +157,7 @@ pub(crate) fn fetch_view_definition(
                         }
                     }
                     Err(e) => {
-                        debug!(
-                            "PostgreSQL connection error fetching view definition: {}",
-                            e
-                        );
+                        log::warn!("[METADATA] Cannot fetch view definition: {}", e);
                         None
                     }
                 }
@@ -368,22 +349,13 @@ pub(crate) fn fetch_procedure_definition(
                     return None;
                 }
 
-                let encoded_username = modules::url_encode(&connection_clone.username);
-                let encoded_password = modules::url_encode(&connection_clone.password);
-                let connection_string = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    encoded_username,
-                    encoded_password,
-                    connection_clone.host,
-                    connection_clone.port,
-                    db_name
-                );
-
-                match MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH dan opsi SSL sama dengan pool utama.
+                match crate::connection::pool::connect_mysql_once(
+                    &connection_clone,
+                    &db_name,
+                    std::time::Duration::from_secs(10),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let qualified = format!(
@@ -555,6 +527,9 @@ pub(crate) async fn write_foreign_key_cache(
         .execute(cache_pool)
         .await;
     }
+    // Memo proses di `cache_data` harus ikut dibuang agar grid/autocomplete
+    // langsung melihat FK baru, tidak menunggu TTL.
+    crate::cache_data::invalidate_foreign_key_memo(connection_id);
 }
 
 pub(crate) async fn fetch_mssql_foreign_keys(
@@ -637,22 +612,13 @@ pub(crate) fn fetch_table_definition(
                     return None;
                 }
 
-                let encoded_username = modules::url_encode(&connection_clone.username);
-                let encoded_password = modules::url_encode(&connection_clone.password);
-                let connection_string = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    encoded_username,
-                    encoded_password,
-                    connection_clone.host,
-                    connection_clone.port,
-                    db_name
-                );
-
-                match MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH dan opsi SSL sama dengan pool utama.
+                match crate::connection::pool::connect_mysql_once(
+                    &connection_clone,
+                    &db_name,
+                    std::time::Duration::from_secs(10),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let qualified = format!(
@@ -722,27 +688,22 @@ pub(crate) fn fetch_table_definition(
                 if db_name.is_empty() {
                     return None;
                 }
-                let conn_str = format!(
-                    "postgresql://{}:{}@{}:{}/{}",
-                    connection_clone.username,
-                    connection_clone.password,
-                    connection_clone.host,
-                    connection_clone.port,
-                    db_name
-                );
-                let pool = match sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(10))
-                    .connect(&conn_str)
-                    .await
+                let pool = match crate::connection::pool::connect_postgres_once(
+                    &connection_clone,
+                    &db_name,
+                    std::time::Duration::from_secs(10),
+                )
+                .await
                 {
                     Ok(p) => p,
                     Err(e) => {
-                        debug!("PG DDL connect error: {}", e);
+                        log::warn!("[METADATA] Cannot fetch table definition: {}", e);
                         return None;
                     }
                 };
-                generate_postgres_ddl(&pool, &tbl_name).await
+                let ddl = generate_postgres_ddl(&pool, &tbl_name).await;
+                pool.close().await;
+                ddl
             }
             models::enums::DatabaseType::MsSQL => {
                 generate_mssql_ddl(&connection_clone, &db_name, &tbl_name).await
@@ -1094,11 +1055,9 @@ pub(crate) fn compute_schema_diff(
         if let Some(p) = tabular.connection_pools.get(&conn_id) {
             return Some(p.clone());
         }
-        tabular
-            .shared_connection_pools
-            .lock()
-            .ok()
-            .and_then(|shared| shared.get(&conn_id).cloned())
+        crate::connection::pool::lock_or_recover(&tabular.shared_connection_pools)
+            .get(&conn_id)
+            .cloned()
     };
     let left_pool = get_pool(left_conn_id);
     let right_pool = get_pool(right_conn_id);

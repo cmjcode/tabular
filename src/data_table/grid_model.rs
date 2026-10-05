@@ -43,6 +43,23 @@ pub fn display_value(value: &str) -> Cow<'_, str> {
     }
 }
 
+/// Teks sel untuk ditampilkan: dipotong menjadi `max_chars - 3` karakter +
+/// "..." bila lebih panjang dari `max_chars`. Mengembalikan teks dan apakah
+/// dipotong. Hanya memeriksa `max_chars + 1` karakter pertama, jadi murah
+/// untuk sel berisi teks sangat panjang, dan tidak mengalokasi bila muat.
+pub fn truncate_for_cell(text: &str, max_chars: usize) -> (Cow<'_, str>, bool) {
+    if text.char_indices().nth(max_chars).is_none() {
+        return (Cow::Borrowed(text), false);
+    }
+    let keep = max_chars.saturating_sub(3);
+    let cut = text
+        .char_indices()
+        .nth(keep)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    (Cow::Owned(format!("{}...", &text[..cut])), true)
+}
+
 /// Pilihan cepat "Set Value" di context menu sel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickValue {
@@ -1188,5 +1205,43 @@ mod tests {
             Some(&"a".to_string())
         );
         assert_eq!(pending_inserted_rows(&ops), [5].into());
+    }
+
+    /// Implementasi lama (hitung semua karakter) sebagai acuan.
+    fn truncate_reference(text: &str, max_chars: usize) -> String {
+        if text.chars().count() > max_chars {
+            format!(
+                "{}...",
+                text.chars()
+                    .take(max_chars.saturating_sub(3))
+                    .collect::<String>()
+            )
+        } else {
+            text.to_string()
+        }
+    }
+
+    #[test]
+    fn truncate_for_cell_matches_reference() {
+        let samples = [
+            "",
+            "short",
+            "exactly10!",
+            "eleven char",
+            "a much longer value that certainly does not fit in the cell",
+            "héllo wörld ünïcödé strïng",
+            "日本語のテキストは長いですね、とても長い",
+            "emoji 😀😀😀😀😀😀😀😀😀😀 end",
+        ];
+        for text in samples {
+            for max_chars in [0usize, 1, 2, 3, 4, 10, 11, 22, 200] {
+                let (shown, truncated) = truncate_for_cell(text, max_chars);
+                assert_eq!(shown, truncate_reference(text, max_chars), "{text:?} / {max_chars}");
+                assert_eq!(truncated, text.chars().count() > max_chars);
+                if !truncated {
+                    assert!(matches!(shown, Cow::Borrowed(_)));
+                }
+            }
+        }
     }
 }

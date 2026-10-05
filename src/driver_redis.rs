@@ -145,6 +145,83 @@ fn parse_string_as_json(value: String) -> Value {
     serde_json::from_str(&value).unwrap_or(Value::String(value))
 }
 
+/// Indeks db dari nama keyspace (`db3` / `DB3` / `3`). `None` untuk nama
+/// yang bukan keyspace bernomor (mis. keyspace cluster).
+pub(crate) fn parse_redis_db_index(database_name: &str) -> Option<i64> {
+    let trimmed = database_name.trim();
+    let digits = trimmed
+        .strip_prefix("db")
+        .or_else(|| trimmed.strip_prefix("DB"))
+        .unwrap_or(trimmed);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<i64>().ok()
+}
+
+/// Bangun `Client` Redis. Kredensial dan indeks db diisi lewat
+/// `RedisConnectionInfo` (bukan disisipkan ke URL), jadi karakter khusus di
+/// password aman dan `db` ikut dipakai setiap kali koneksi dibuka ulang —
+/// `SELECT` manual hilang saat `ConnectionManager` reconnect.
+pub(crate) fn redis_client(
+    host: &str,
+    port: &str,
+    username: &str,
+    password: &str,
+    db: Option<i64>,
+) -> Result<Client, String> {
+    use redis::IntoConnectionInfo;
+
+    let info = format!("redis://{}:{}", host, port)
+        .into_connection_info()
+        .map_err(|error| format!("Invalid Redis address {}:{}: {}", host, port, error))?;
+
+    let mut settings = info.redis_settings().clone();
+    if !password.is_empty() {
+        settings = settings.set_password(password);
+        if !username.is_empty() {
+            settings = settings.set_username(username);
+        }
+    }
+    if let Some(db) = db {
+        settings = settings.set_db(db);
+    }
+
+    Client::open(info.set_redis_settings(settings)).map_err(|error| {
+        format!(
+            "Failed to open Redis client for {}:{}: {}",
+            host, port, error
+        )
+    })
+}
+
+/// Buka `ConnectionManager` dengan batas waktu. `ConnectionManager::new`
+/// mencoba ulang secara internal dan tidak punya timeout sendiri, sehingga
+/// server yang tidak menjawab menggantung pemanggilnya tanpa batas.
+pub(crate) async fn open_redis_manager(
+    host: &str,
+    port: &str,
+    username: &str,
+    password: &str,
+    db: Option<i64>,
+) -> Result<ConnectionManager, String> {
+    let client = redis_client(host, port, username, password, db)?;
+    let timeout = crate::connection::pool::DRIVER_TIMEOUT;
+    match tokio::time::timeout(timeout, ConnectionManager::new(client)).await {
+        Ok(Ok(manager)) => Ok(manager),
+        Ok(Err(error)) => Err(format!(
+            "Failed to create Redis connection manager for {}:{}: {}",
+            host, port, error
+        )),
+        Err(_) => Err(format!(
+            "Redis connection to {}:{} timed out after {}s",
+            host,
+            port,
+            timeout.as_secs()
+        )),
+    }
+}
+
 async fn create_redis_manager_for_target(
     connection: &models::structs::ConnectionConfig,
     database_name: &str,
@@ -155,39 +232,24 @@ async fn create_redis_manager_for_target(
         None => crate::connection::pool::resolve_connection_target_async(connection).await?,
     };
 
-    let connection_string =
-        build_redis_connection_string(&host, &port, &connection.username, &connection.password);
-    let client = Client::open(connection_string).map_err(|error| {
-        format!(
-            "Failed to open Redis client for {}:{}: {}",
-            host, port, error
-        )
-    })?;
-    let mut conn = ConnectionManager::new(client).await.map_err(|error| {
-        format!(
-            "Failed to create Redis connection manager for {}:{}: {}",
-            host, port, error
-        )
-    })?;
+    // Indeks db masuk ke info koneksi, bukan lewat `SELECT` setelah konek:
+    // reconnect otomatis manager tetap berada di db yang benar.
+    let db = if database_name.starts_with("db") {
+        Some(parse_redis_db_index(database_name).ok_or_else(|| {
+            format!("Invalid Redis database '{}'", database_name)
+        })?)
+    } else {
+        None
+    };
 
-    if database_name.starts_with("db") {
-        let db_num = database_name
-            .trim_start_matches("db")
-            .parse::<i32>()
-            .map_err(|error| format!("Invalid Redis database '{}': {}", database_name, error))?;
-        redis::cmd("SELECT")
-            .arg(db_num)
-            .query_async::<()>(&mut conn)
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to SELECT {} on {}:{}: {}",
-                    db_num, host, port, error
-                )
-            })?;
-    }
-
-    Ok(conn)
+    open_redis_manager(
+        &host,
+        &port,
+        &connection.username,
+        &connection.password,
+        db,
+    )
+    .await
 }
 
 async fn retry_on_moved_string_command(
@@ -368,12 +430,8 @@ pub(crate) fn fetch_redis_browser_preview(
 
     let resolved_key_type =
         if key_type.trim().is_empty() || key_type.eq_ignore_ascii_case("unknown") {
-            let runtime = tokio::runtime::Runtime::new().map_err(|error| {
-                format!(
-                    "Failed to create runtime for Redis key type lookup: {}",
-                    error
-                )
-            })?;
+            // Runtime aplikasi yang berumur panjang, bukan runtime sekali pakai.
+            let runtime = tabular.get_runtime();
             runtime.block_on(async {
                 retry_on_moved_required_string_command(
                     &connection,
@@ -396,12 +454,7 @@ pub(crate) fn fetch_redis_browser_preview(
         &resolved_key_type,
     )?;
 
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| {
-        format!(
-            "Failed to create runtime for Redis preview metadata: {}",
-            error
-        )
-    })?;
+    let runtime = tabular.get_runtime();
 
     let resolved_key_type_for_length = resolved_key_type.clone();
     let (ttl_label, size_label, length_label) = runtime.block_on(async move {
@@ -489,18 +542,10 @@ pub(crate) fn load_redis_browser_state(
         }
     };
 
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            return models::structs::RedisBrowserState {
-                last_error: Some(format!(
-                    "Failed to create runtime for Redis browser: {}",
-                    error
-                )),
-                ..Default::default()
-            };
-        }
-    };
+    // Pool yang dibuat di sini di-cache di `tabular`; ia harus hidup di runtime
+    // aplikasi. Di runtime sekali pakai, task latar `ConnectionManager` mati
+    // begitu runtime di-drop dan pool yang ter-cache menjadi rusak.
+    let runtime = tabular.get_runtime();
 
     let result = runtime.block_on(async {
         let pool = connection::get_or_create_connection_pool(tabular, connection_id)
@@ -729,8 +774,7 @@ pub(crate) fn fetch_redis_key_pretty_json(
         .cloned()
         .ok_or_else(|| format!("Redis connection {} not found", connection_id))?;
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| format!("Failed to create runtime for Redis preview: {}", error))?;
+    let runtime = tabular.get_runtime();
 
     runtime.block_on(async move {
         let value = match key_type.to_lowercase().as_str() {
@@ -821,16 +865,6 @@ pub(crate) fn fetch_redis_key_pretty_json(
         }))
         .map_err(|error| format!("Failed to format Redis key preview as JSON: {}", error))
     })
-}
-
-fn build_redis_connection_string(host: &str, port: &str, username: &str, password: &str) -> String {
-    if password.is_empty() {
-        format!("redis://{}:{}", host, port)
-    } else if username.is_empty() {
-        format!("redis://:{}@{}:{}", password, host, port)
-    } else {
-        format!("redis://{}:{}@{}:{}", username, password, host, port)
-    }
 }
 
 fn parse_cluster_master_addresses(cluster_nodes: &str) -> Vec<(String, String)> {
@@ -1176,28 +1210,19 @@ pub(crate) async fn fetch_cluster_keys_with_types(
             break;
         }
 
-        let connection_string =
-            build_redis_connection_string(&host, &port, &connection.username, &connection.password);
         debug!("[redis_cluster] scanning master node {}:{}", host, port);
-
-        let client = match Client::open(connection_string) {
-            Ok(client) => client,
-            Err(error) => {
-                warn!(
-                    "[redis_cluster] failed creating client for {}:{}: {}",
-                    host, port, error
-                );
-                continue;
-            }
-        };
-
-        let mut node_conn = match ConnectionManager::new(client).await {
+        let mut node_conn = match open_redis_manager(
+            &host,
+            &port,
+            &connection.username,
+            &connection.password,
+            None,
+        )
+        .await
+        {
             Ok(conn) => conn,
             Err(error) => {
-                warn!(
-                    "[redis_cluster] failed creating connection manager for {}:{}: {}",
-                    host, port, error
-                );
+                warn!("[redis_cluster] skipping node {}:{}: {}", host, port, error);
                 continue;
             }
         };
@@ -1252,27 +1277,18 @@ pub(crate) async fn fetch_cluster_key_names(
             break;
         }
 
-        let connection_string =
-            build_redis_connection_string(&host, &port, &connection.username, &connection.password);
-
-        let client = match Client::open(connection_string) {
-            Ok(client) => client,
-            Err(error) => {
-                warn!(
-                    "[redis_cluster] failed creating client for {}:{}: {}",
-                    host, port, error
-                );
-                continue;
-            }
-        };
-
-        let mut node_conn = match ConnectionManager::new(client).await {
+        let mut node_conn = match open_redis_manager(
+            &host,
+            &port,
+            &connection.username,
+            &connection.password,
+            None,
+        )
+        .await
+        {
             Ok(conn) => conn,
             Err(error) => {
-                warn!(
-                    "[redis_cluster] failed creating connection manager for {}:{}: {}",
-                    host, port, error
-                );
+                warn!("[redis_cluster] skipping node {}:{}: {}", host, port, error);
                 continue;
             }
         };
@@ -1337,30 +1353,18 @@ pub(crate) async fn search_redis_browser_keys_from_connection(
                 break;
             }
 
-            let connection_string = build_redis_connection_string(
+            let mut node_conn = match open_redis_manager(
                 &host,
                 &port,
                 &connection.username,
                 &connection.password,
-            );
-            let client = match Client::open(connection_string) {
-                Ok(client) => client,
-                Err(error) => {
-                    warn!(
-                        "[redis_search] failed creating client for {}:{}: {}",
-                        host, port, error
-                    );
-                    continue;
-                }
-            };
-
-            let mut node_conn = match ConnectionManager::new(client).await {
+                None,
+            )
+            .await
+            {
                 Ok(conn) => conn,
                 Err(error) => {
-                    warn!(
-                        "[redis_search] failed creating connection manager for {}:{}: {}",
-                        host, port, error
-                    );
+                    warn!("[redis_search] skipping node {}:{}: {}", host, port, error);
                     continue;
                 }
             };
@@ -1544,8 +1548,9 @@ pub(crate) fn fetch_tables_from_redis_connection(
     database_name: &str,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    // Create a new runtime for the database query
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi: pool (dan manager per-db) yang dibuat di sini di-cache
+    // dan harus tetap hidup setelah fungsi ini selesai.
+    let rt = tabular.get_runtime();
 
     rt.block_on(async {
         // Get or create connection pool
@@ -1610,38 +1615,17 @@ pub(crate) fn fetch_tables_from_redis_connection(
                             return Some(keys);
                         }
 
-                        if is_standard_db
-                            && let Ok(db_num) =
-                                database_name.trim_start_matches("db").parse::<i32>()
-                            && tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                redis::cmd("SELECT")
-                                    .arg(db_num)
-                                    .query_async::<String>(&mut conn),
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return None;
-                        }
-
-                        // Get a sample of keys (limit to first 100)
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            redis::cmd("SCAN")
-                                .arg(0)
-                                .arg("COUNT")
-                                .arg(100)
-                                .query_async::<Vec<String>>(&mut conn),
-                        )
-                        .await
-                        {
-                            Ok(Ok(keys)) => Some(keys),
-                            _ => {
-                                debug!("Error or timeout scanning Redis keys");
-                                Some(vec!["keys".to_string()])
-                            }
-                        }
+                        // Hanya penanda bahwa keyspace ini punya entri di
+                        // `table_cache`. Daftar key yang sebenarnya dimuat
+                        // browser Redis lewat jalur lain (baris bertipe
+                        // `redis_browser_key::*`, lihat
+                        // `tree_loader::load_redis_keys_for_database`), dan
+                        // tidak ada yang membaca baris bertipe `redis_keys`.
+                        // Dulu di sini ada `SCAN` yang hasilnya didekode
+                        // sebagai `Vec<String>`; balasan SCAN berbentuk
+                        // `(cursor, keys)` sehingga selalu gagal dan jatuh ke
+                        // penanda ini juga.
+                        Some(vec!["keys".to_string()])
                     }
                     _ => {
                         debug!("Unsupported Redis table type: {}", table_type);
@@ -1657,30 +1641,54 @@ pub(crate) fn fetch_tables_from_redis_connection(
     })
 }
 
-#[allow(dead_code)]
-pub(crate) fn check_redis_database_has_keys(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    database_name: &str,
-) -> bool {
-    if let Some(ref pool) = tabular.db_pool {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let pool_clone = pool.clone();
-        let database_name = database_name.to_string();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let result = rt.block_on(async move {
-              sqlx::query_scalar::<_, i64>(
-              "SELECT COUNT(*) FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = '_has_keys'"
-              )
-              .bind(connection_id)
-              .bind(database_name)
-              .fetch_one(pool_clone.as_ref())
-              .await
-              .unwrap_or(0)
-       });
+    #[test]
+    fn db_index_is_parsed_from_keyspace_names() {
+        assert_eq!(parse_redis_db_index("db0"), Some(0));
+        assert_eq!(parse_redis_db_index(" DB12 "), Some(12));
+        assert_eq!(parse_redis_db_index("7"), Some(7));
+        assert_eq!(parse_redis_db_index(REDIS_CLUSTER_KEYSPACE), None);
+        assert_eq!(parse_redis_db_index("db"), None);
+        assert_eq!(parse_redis_db_index("db-1"), None);
+        assert_eq!(parse_redis_db_index("dbx"), None);
+        assert_eq!(parse_redis_db_index(""), None);
+    }
 
-        result > 0
-    } else {
-        false
+    #[test]
+    fn client_carries_db_and_credentials_in_connection_info() {
+        // Password berisi karakter yang akan merusak URL bila disisipkan mentah.
+        let client = redis_client("127.0.0.1", "6379", "app", "p@ss:w/rd#1", Some(3))
+            .expect("client");
+        let settings = client.get_connection_info().redis_settings();
+        assert_eq!(settings.db(), 3);
+        assert_eq!(settings.username(), Some("app"));
+        assert_eq!(settings.password(), Some("p@ss:w/rd#1"));
+
+        let anonymous = redis_client("127.0.0.1", "6379", "ignored", "", None).expect("client");
+        let settings = anonymous.get_connection_info().redis_settings();
+        assert_eq!(settings.db(), 0);
+        assert_eq!(settings.username(), None);
+        assert_eq!(settings.password(), None);
+
+        assert!(redis_client("127.0.0.1", "not-a-port", "", "", None).is_err());
+    }
+
+    #[tokio::test]
+    async fn manager_creation_is_bounded_when_nothing_listens() {
+        // Port yang baru saja dilepas: tidak ada yang mendengarkan.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+
+        let started = std::time::Instant::now();
+        let result = open_redis_manager("127.0.0.1", &port.to_string(), "", "", Some(1)).await;
+        assert!(result.is_err());
+        assert!(
+            started.elapsed()
+                < crate::connection::pool::DRIVER_TIMEOUT + std::time::Duration::from_secs(5)
+        );
     }
 }

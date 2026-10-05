@@ -11,6 +11,13 @@ use crate::models::structs::{CellEditOperation, FilterCondition, FilterOperator,
 use crate::spreadsheet::SpreadsheetOperations;
 use crate::window_egui::Tabular;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Umur maksimum peta FK per grid sebelum cache SQLite dibaca ulang. Cache FK
+/// diisi task latar tanpa sinyal, jadi cukup dicek ulang sesekali, bukan
+/// setiap frame.
+const FK_CACHE_TTL: Duration = Duration::from_secs(2);
 
 const UNDO_LIMIT: usize = 200;
 const REWIND_LIMIT: usize = 50;
@@ -102,6 +109,9 @@ pub struct FindState {
     pub case_sensitive: bool,
     pub focus_request: bool,
     pub matches: Vec<(usize, usize)>,
+    /// Himpunan `matches` untuk lookup O(1) saat menggambar sel; dibangun
+    /// sekali ketika hasil dihitung, bukan setiap frame.
+    pub match_set: Arc<HashSet<(usize, usize)>>,
     pub current: usize,
     cache_key: Option<FindCacheKey>,
     /// Pencarian sedang diterapkan sebagai filter server-side.
@@ -119,6 +129,20 @@ pub struct JumpState {
 }
 
 type InvisibleCacheKey = (usize, usize, usize, usize);
+
+/// Peta indeks kolom → foreign key untuk grid aktif.
+pub(crate) type FkByCol = HashMap<usize, ForeignKey>;
+
+/// Kunci cache peta FK: (connection id, database, tabel, hash header + tabel
+/// asal tiap kolom).
+type FkCacheKey = (i64, String, String, u64);
+
+#[derive(Clone, Debug)]
+struct FkCacheEntry {
+    key: FkCacheKey,
+    checked_at: Instant,
+    map: Arc<FkByCol>,
+}
 
 #[derive(Clone, Debug)]
 pub enum MoveColumnStatus {
@@ -243,7 +267,7 @@ pub struct RowJsonViewer {
     pub db_type: Option<DatabaseType>,
     pub database: String,
     pub schema: Option<String>,
-    pub fks: Vec<ForeignKey>,
+    pub fks: Arc<Vec<ForeignKey>>,
     pub root: RowJsonNode,
     pub show_raw_json: bool,
     pub row_label: String,
@@ -301,7 +325,8 @@ pub struct GridExtState {
     pub show_rules_editor: bool,
     // B8
     pub hide_invisibles: bool,
-    invisible_cache: Option<(InvisibleCacheKey, HashMap<usize, usize>)>,
+    invisible_cache: Option<(InvisibleCacheKey, Arc<HashMap<usize, usize>>)>,
+    fk_cache: Option<FkCacheEntry>,
     // B9 / B13 (per QueryTab::id)
     pub hidden_columns: HashMap<usize, HashSet<String>>,
     pub column_order: HashMap<usize, Vec<String>>,
@@ -339,6 +364,7 @@ impl GridExtState {
         } else if self.find.open && !self.find.server_filter_active {
             self.find.open = false;
             self.find.matches.clear();
+            self.find.match_set = Arc::default();
             self.find.cache_key = None;
         } else {
             return false;
@@ -1077,7 +1103,10 @@ pub(crate) fn persist_highlight_rules(t: &mut Tabular) {
 
 pub(crate) fn refresh_find_matches(t: &mut Tabular) {
     if !t.grid_ext.find.open || t.grid_ext.find.query.is_empty() {
-        t.grid_ext.find.matches.clear();
+        if !t.grid_ext.find.matches.is_empty() {
+            t.grid_ext.find.matches.clear();
+            t.grid_ext.find.match_set = Arc::default();
+        }
         t.grid_ext.find.cache_key = None;
         return;
     }
@@ -1102,6 +1131,7 @@ pub(crate) fn refresh_find_matches(t: &mut Tabular) {
     );
     let find = &mut t.grid_ext.find;
     find.current = find.current.min(matches.len().saturating_sub(1));
+    find.match_set = Arc::new(matches.iter().copied().collect());
     find.matches = matches;
     find.cache_key = Some(key);
 }
@@ -1154,7 +1184,7 @@ pub(crate) fn clear_server_search(t: &mut Tabular) {
 
 // ─── Karakter tak terlihat (B8) ────────────────────────────────────────────
 
-pub(crate) fn invisible_columns(t: &mut Tabular) -> HashMap<usize, usize> {
+pub(crate) fn invisible_columns(t: &mut Tabular) -> Arc<HashMap<usize, usize>> {
     let key: InvisibleCacheKey = (
         t.current_table_data.as_ptr() as usize,
         t.current_table_data.len(),
@@ -1164,11 +1194,94 @@ pub(crate) fn invisible_columns(t: &mut Tabular) -> HashMap<usize, usize> {
     if let Some((cached_key, cols)) = &t.grid_ext.invisible_cache
         && *cached_key == key
     {
-        return cols.clone();
+        return Arc::clone(cols);
     }
-    let cols = gm::columns_with_suspicious_invisibles(&t.current_table_data);
-    t.grid_ext.invisible_cache = Some((key, cols.clone()));
+    let cols = Arc::new(gm::columns_with_suspicious_invisibles(
+        &t.current_table_data,
+    ));
+    t.grid_ext.invisible_cache = Some((key, Arc::clone(&cols)));
     cols
+}
+
+// ─── Peta foreign key per kolom ────────────────────────────────────────────
+
+/// Petakan tiap header ke FK-nya. `column_table(i)` mengembalikan tabel asal
+/// kolom ke-`i` bila metadata hasil query menyediakannya; kalau tidak,
+/// `fallback_table` dipakai (kosong = cocokkan nama kolom saja).
+pub(crate) fn map_foreign_keys_to_columns<'a>(
+    headers: &[String],
+    column_table: impl Fn(usize) -> Option<&'a str>,
+    fallback_table: &str,
+    fks: &[ForeignKey],
+) -> FkByCol {
+    let mut out = FkByCol::new();
+    if fks.is_empty() {
+        return out;
+    }
+    for (i, h) in headers.iter().enumerate() {
+        let table_hint = column_table(i)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(fallback_table);
+        if let Some(fk) = fks.iter().find(|fk| {
+            (fk.table_name.eq_ignore_ascii_case(table_hint) || table_hint.is_empty())
+                && fk.column_name.eq_ignore_ascii_case(h)
+        }) {
+            out.insert(i, fk.clone());
+        }
+    }
+    out
+}
+
+/// Peta FK per kolom untuk grid aktif. Hasilnya di-cache per (koneksi,
+/// database, tabel, header) sehingga cache SQLite tidak dibaca setiap frame;
+/// entri dicek ulang setelah [`FK_CACHE_TTL`] karena cache FK diisi task latar.
+pub(crate) fn fk_by_column(
+    t: &mut Tabular,
+    headers: &[String],
+    database: &str,
+    table: &str,
+) -> Arc<FkByCol> {
+    use std::hash::{Hash, Hasher};
+    let Some(cid) = t.current_connection_id else {
+        t.grid_ext.fk_cache = None;
+        return Arc::default();
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    headers.hash(&mut hasher);
+    if let Some(meta) = &t.current_column_metadata {
+        for m in meta {
+            m.table_name.hash(&mut hasher);
+        }
+    }
+    let key: FkCacheKey = (cid, database.to_string(), table.to_string(), hasher.finish());
+    if let Some(entry) = &t.grid_ext.fk_cache
+        && entry.key == key
+        && entry.checked_at.elapsed() < FK_CACHE_TTL
+    {
+        return Arc::clone(&entry.map);
+    }
+    let fks =
+        crate::cache_data::get_foreign_keys_from_cache_shared(t, cid, database).unwrap_or_default();
+    let meta = t.current_column_metadata.as_deref();
+    let map = Arc::new(map_foreign_keys_to_columns(
+        headers,
+        |i| meta.and_then(|m| m.get(i)).and_then(|c| c.table_name.as_deref()),
+        table,
+        &fks,
+    ));
+    t.grid_ext.fk_cache = Some(FkCacheEntry {
+        key,
+        checked_at: Instant::now(),
+        map: Arc::clone(&map),
+    });
+    map
+}
+
+/// Buang peta FK grid (mis. setelah refresh koneksi) agar dibaca ulang,
+/// beserta memo proses `cache_data` milik koneksi itu.
+pub(crate) fn invalidate_fk_cache(t: &mut Tabular, connection_id: i64) {
+    t.grid_ext.fk_cache = None;
+    crate::cache_data::invalidate_foreign_key_memo(connection_id);
 }
 
 // ─── Kolom: sembunyi, urutan, jump (B9, B13) ───────────────────────────────
@@ -1396,7 +1509,7 @@ pub(crate) fn open_row_json(t: &mut Tabular, row: usize) {
         .map(|meta| meta.iter().map(|m| m.table_name.clone()).collect())
         .unwrap_or_default();
     let fks = connection_id
-        .and_then(|cid| crate::cache_data::get_foreign_keys_from_cache(t, cid, &database))
+        .and_then(|cid| crate::cache_data::get_foreign_keys_from_cache_shared(t, cid, &database))
         .unwrap_or_default();
     let generation = t.grid_ext.next_generation();
     t.grid_ext.row_json = Some(RowJsonViewer {
@@ -1873,5 +1986,68 @@ mod tests {
         assert!(root.node_at(&[1]).is_some());
         assert!(root.node_at(&[0]).is_none());
         assert_eq!(json_scalar("007"), serde_json::Value::String("007".into()));
+    }
+
+    fn fk(table: &str, column: &str, ref_table: &str) -> ForeignKey {
+        ForeignKey {
+            constraint_name: format!("fk_{table}_{column}"),
+            table_name: table.to_string(),
+            column_name: column.to_string(),
+            referenced_table_name: ref_table.to_string(),
+            referenced_column_name: "id".to_string(),
+        }
+    }
+
+    #[test]
+    fn peta_fk_per_kolom_memakai_tabel_asal_atau_fallback() {
+        let headers: Vec<String> = vec!["id".into(), "User_ID".into(), "city_id".into()];
+        let fks = vec![
+            fk("orders", "user_id", "users"),
+            fk("addresses", "city_id", "cities"),
+        ];
+
+        // Tanpa metadata: tabel fallback menentukan FK mana yang cocok.
+        let map = map_foreign_keys_to_columns(&headers, |_| None, "orders", &fks);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&1].referenced_table_name, "users");
+
+        // Metadata kolom menimpa fallback (hasil JOIN); kosong = pakai fallback.
+        let tables = [Some(""), Some("orders"), Some("ADDRESSES")];
+        let map = map_foreign_keys_to_columns(&headers, |i| tables[i], "orders", &fks);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&2].referenced_table_name, "cities");
+
+        // Tabel tidak diketahui: cocokkan nama kolom saja.
+        let map = map_foreign_keys_to_columns(&headers, |_| None, "", &fks);
+        assert_eq!(map.len(), 2);
+
+        assert!(map_foreign_keys_to_columns(&headers, |_| None, "orders", &[]).is_empty());
+    }
+
+    #[test]
+    fn himpunan_hasil_find_mengikuti_daftar_matches() {
+        let mut t = tabular_with_rows();
+        t.grid_ext.find.open = true;
+        t.grid_ext.find.query = "b".into();
+        refresh_find_matches(&mut t);
+        assert_eq!(t.grid_ext.find.matches, vec![(1, 1)]);
+        assert!(t.grid_ext.find.match_set.contains(&(1, 1)));
+        assert_eq!(t.grid_ext.find.match_set.len(), 1);
+        // Cache masih berlaku: himpunan yang sama dipakai ulang, tidak dibangun lagi.
+        let before = Arc::clone(&t.grid_ext.find.match_set);
+        refresh_find_matches(&mut t);
+        assert!(Arc::ptr_eq(&before, &t.grid_ext.find.match_set));
+
+        t.grid_ext.find.query.clear();
+        refresh_find_matches(&mut t);
+        assert!(t.grid_ext.find.match_set.is_empty());
+    }
+
+    #[test]
+    fn tanpa_koneksi_peta_fk_kosong() {
+        let mut t = tabular_with_rows();
+        t.current_connection_id = None;
+        let headers = t.current_table_headers.clone();
+        assert!(fk_by_column(&mut t, &headers, "db", "users").is_empty());
     }
 }

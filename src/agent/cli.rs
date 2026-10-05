@@ -230,11 +230,18 @@ fn run_mcp(rest: &[String]) -> Result<(), String> {
         .build()
         .map_err(|e| format!("failed to start async runtime: {e}"))?;
 
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let cache_pool = open_cache_pool().await.map_err(|e| e.to_string())?;
         let session = Arc::new(HeadlessSession::new(cache_pool));
         super::mcp::serve_stdio(session).await
-    })
+    });
+    // Jalur Ok maupun Err: matikan proses `ssh` tunnel supaya tidak menjadi
+    // yatim dan terus menahan port lokal setelah server MCP berhenti.
+    let closed_tunnels = crate::ssh_tunnel::shutdown_all();
+    if closed_tunnels > 0 {
+        log::info!("[AGENT] closed {closed_tunnels} SSH tunnel(s) at exit");
+    }
+    result
 }
 
 /// Cetak konfigurasi siap tempel. Path binary diambil dari proses ini sendiri

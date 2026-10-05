@@ -279,32 +279,17 @@ mod backend_file {
         crate::config::get_data_dir().join("secrets.enc")
     }
 
-    fn restrict_permissions(path: &Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-        }
-    }
-
     fn master_key() -> Option<Key> {
         MASTER_KEY.get_or_init(resolve_master_key).map(Key::from)
     }
 
     fn read_key_file() -> Option<[u8; 32]> {
-        let content = std::fs::read_to_string(key_path()).ok()?;
-        let bytes = hex::decode(content.trim()).ok()?;
-        if bytes.len() != 32 {
+        let path = key_path();
+        let key = parse_key_file(&path);
+        if key.is_none() && path.exists() {
             warn!("secrets.key is malformed; ignoring it");
-            return None;
         }
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&bytes);
-        Some(key_bytes)
+        key
     }
 
     /// Resolution order: on-disk `secrets.key` (always wins — works
@@ -324,10 +309,16 @@ mod backend_file {
         {
             let mut key_bytes = [0u8; 32];
             key_bytes.copy_from_slice(&bytes);
-            if mode == super::KeyringMode::Rescue && write_key_file(&key_bytes) {
-                // Dev builds: key now lives on disk; drop the keychain copy
-                // so rebuilds never trigger another permission prompt.
-                super::backend_keyring::delete(MASTER_KEY_NAME);
+            if mode == super::KeyringMode::Rescue
+                && let Some(on_disk) = persist_key_file(&key_path(), &key_bytes)
+            {
+                if on_disk == key_bytes {
+                    // Dev builds: key now lives on disk; drop the keychain copy
+                    // so rebuilds never trigger another permission prompt.
+                    super::backend_keyring::delete(MASTER_KEY_NAME);
+                }
+                // On-disk key always wins (see resolution order above).
+                return Some(on_disk);
             }
             return Some(key_bytes);
         }
@@ -338,78 +329,256 @@ mod backend_file {
         {
             return Some(key_bytes);
         }
-        if write_key_file(&key_bytes) {
-            Some(key_bytes)
-        } else {
-            None
-        }
+        persist_key_file(&key_path(), &key_bytes)
     }
 
-    fn write_key_file(key_bytes: &[u8; 32]) -> bool {
-        let path = key_path();
+    fn parse_key_file(path: &Path) -> Option<[u8; 32]> {
+        let content = std::fs::read_to_string(path).ok()?;
+        let bytes = hex::decode(content.trim()).ok()?;
+        <[u8; 32]>::try_from(bytes.as_slice()).ok()
+    }
+
+    /// Simpan master key ke `path` dan kembalikan key yang akhirnya berlaku di
+    /// disk. File dibuat dengan `create_new` + mode 0600 sejak awal (tidak ada
+    /// jendela waktu terbaca user lain), dan bila proses lain (GUI vs
+    /// `tabular mcp`) lebih dulu membuatnya, key milik proses itu yang dipakai
+    /// supaya dua proses tidak mengenkripsi `secrets.enc` dengan key berbeda.
+    fn persist_key_file(path: &Path, key_bytes: &[u8; 32]) -> Option<[u8; 32]> {
+        use std::io::Write;
+
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::write(&path, hex::encode(key_bytes)) {
-            Ok(_) => {
-                restrict_permissions(&path);
-                true
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(path) {
+            Ok(mut file) => {
+                let written = file
+                    .write_all(hex::encode(key_bytes).as_bytes())
+                    .and_then(|_| file.sync_all());
+                match written {
+                    Ok(()) => Some(*key_bytes),
+                    Err(e) => {
+                        warn!("cannot write secrets.key: {}", e);
+                        // Jangan tinggalkan key setengah jadi di disk.
+                        let _ = std::fs::remove_file(path);
+                        None
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Proses lain mungkin sedang menulisnya: tunggu sebentar.
+                for _ in 0..10 {
+                    if let Some(existing) = parse_key_file(path) {
+                        return Some(existing);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                // Benar-benar rusak: sisihkan, lalu tulis key baru secara atomik.
+                warn!("secrets.key is malformed; replacing it");
+                let _ = crate::directory::quarantine_corrupt_file(path);
+                match crate::directory::write_file_atomically_with_mode(
+                    path,
+                    hex::encode(key_bytes).as_bytes(),
+                    Some(0o600),
+                ) {
+                    Ok(()) => Some(*key_bytes),
+                    Err(e) => {
+                        warn!("cannot create secrets.key: {}", e);
+                        None
+                    }
+                }
             }
             Err(e) => {
                 warn!("cannot create secrets.key: {}", e);
+                None
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) enum StoreError {
+        /// Isi `secrets.enc` tidak bisa dibaca sebagai peta JSON.
+        Corrupt(String),
+        Io(std::io::Error),
+    }
+
+    impl std::fmt::Display for StoreError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                StoreError::Corrupt(msg) => write!(f, "secret store is corrupt: {}", msg),
+                StoreError::Io(e) => write!(f, "secret store I/O error: {}", e),
+            }
+        }
+    }
+
+    /// Penanda versi file di disk (mtime + ukuran) untuk mendeteksi perubahan
+    /// oleh proses lain tanpa membaca ulang isinya.
+    type FileStamp = Option<(std::time::SystemTime, u64)>;
+
+    struct CachedEntries {
+        path: PathBuf,
+        stamp: FileStamp,
+        entries: HashMap<String, String>,
+    }
+
+    /// Dipegang selama baca-ubah-tulis supaya dua thread tidak saling menimpa.
+    static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    static ENTRIES_CACHE: std::sync::Mutex<Option<CachedEntries>> = std::sync::Mutex::new(None);
+
+    fn lock_cache() -> std::sync::MutexGuard<'static, Option<CachedEntries>> {
+        ENTRIES_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn file_stamp(path: &Path) -> FileStamp {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    /// Baca peta dari disk. File yang belum ada = peta kosong; file yang ada
+    /// tetapi tidak bisa di-parse = `Corrupt` (BUKAN peta kosong, supaya
+    /// penulisan berikutnya tidak menghapus semua rahasia).
+    fn read_store(path: &Path) -> Result<HashMap<String, String>, StoreError> {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| StoreError::Corrupt(e.to_string()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(StoreError::Io(e)),
+        }
+    }
+
+    fn write_store(path: &Path, entries: &HashMap<String, String>) -> Result<(), StoreError> {
+        let json = serde_json::to_vec_pretty(entries)
+            .map_err(|e| StoreError::Io(std::io::Error::other(e)))?;
+        // File sementara + fsync + rename, dibuat 0600 sejak awal.
+        crate::directory::write_file_atomically_with_mode(path, &json, Some(0o600))
+            .map_err(StoreError::Io)
+    }
+
+    /// Kunci antar-proses (GUI vs `tabular mcp`) lewat file kunci di samping
+    /// store. Usaha terbaik: filesystem yang tidak mendukung lock tetap jalan
+    /// hanya dengan kunci dalam-proses.
+    fn lock_store_file(path: &Path) -> Option<std::fs::File> {
+        let file_name = path.file_name()?.to_string_lossy().to_string();
+        let lock_path = path.with_file_name(format!(".{}.lock", file_name));
+        if let Some(parent) = lock_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .ok()?;
+        match file.lock() {
+            Ok(()) => Some(file),
+            Err(e) => {
+                log::debug!("secret store file lock unavailable: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Baca-ubah-tulis `path` di bawah satu kunci. Isi SELALU dibaca ulang dari
+    /// disk di dalam kunci (tidak dari cache) sehingga key yang ditulis proses
+    /// lain tidak hilang. `mutate` mengembalikan `true` bila ada perubahan.
+    /// File korup dipindah ke `secrets.enc.corrupt-<timestamp>` dan operasi
+    /// gagal; tidak ada penulisan diam-diam di atasnya.
+    pub(super) fn update_store_at(
+        path: &Path,
+        mutate: impl FnOnce(&mut HashMap<String, String>) -> bool,
+    ) -> Result<(HashMap<String, String>, FileStamp), StoreError> {
+        let _guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_lock = lock_store_file(path);
+
+        let mut entries = match read_store(path) {
+            Ok(entries) => entries,
+            Err(StoreError::Corrupt(first)) => {
+                // Versi lama menulis tanpa rename atomik: beri kesempatan
+                // penulis itu selesai sebelum memutuskan file benar-benar rusak.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                match read_store(path) {
+                    Ok(entries) => entries,
+                    Err(StoreError::Corrupt(_)) => {
+                        warn!(
+                            "secrets.enc is corrupt ({}); preserving it and refusing to overwrite",
+                            first
+                        );
+                        let _ = crate::directory::quarantine_corrupt_file(path);
+                        return Err(StoreError::Corrupt(first));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        if mutate(&mut entries) {
+            write_store(path, &entries)?;
+        }
+        Ok((entries, file_stamp(path)))
+    }
+
+    fn update_store(mutate: impl FnOnce(&mut HashMap<String, String>) -> bool) -> bool {
+        let path = store_path();
+        match update_store_at(&path, mutate) {
+            Ok((entries, stamp)) => {
+                *lock_cache() = Some(CachedEntries {
+                    path,
+                    stamp,
+                    entries,
+                });
+                true
+            }
+            Err(e) => {
+                warn!("{}", e);
+                // Cache tidak lagi bisa dipercaya.
+                *lock_cache() = None;
                 false
             }
         }
     }
 
-    static ENTRIES_CACHE: std::sync::RwLock<Option<HashMap<String, String>>> =
-        std::sync::RwLock::new(None);
-
-    fn load_entries() -> HashMap<String, String> {
-        if let Ok(guard) = ENTRIES_CACHE.read()
-            && let Some(ref entries) = *guard
-        {
-            return entries.clone();
-        }
-        let entries: HashMap<String, String> = std::fs::read_to_string(store_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if let Ok(mut guard) = ENTRIES_CACHE.write() {
-            *guard = Some(entries.clone());
-        }
-        entries
-    }
-
-    fn save_entries(entries: &HashMap<String, String>) -> bool {
-        if let Ok(mut guard) = ENTRIES_CACHE.write() {
-            *guard = Some(entries.clone());
-        }
+    /// Blob terenkripsi untuk `name`. Cache hanya dipakai selama file di disk
+    /// belum berubah (mtime + ukuran), jadi perubahan dari proses lain terbaca.
+    fn stored_blob(name: &str) -> Option<String> {
         let path = store_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match serde_json::to_string_pretty(entries) {
-            Ok(json) => {
-                let ok = std::fs::write(&path, json).is_ok();
-                if ok {
-                    restrict_permissions(&path);
-                }
-                ok
+        let stamp = file_stamp(&path);
+        {
+            let cache = lock_cache();
+            if let Some(cached) = cache.as_ref()
+                && cached.path == path
+                && cached.stamp == stamp
+            {
+                return cached.entries.get(name).cloned();
             }
-            Err(_) => false,
+        }
+        match read_store(&path) {
+            Ok(entries) => {
+                let blob = entries.get(name).cloned();
+                *lock_cache() = Some(CachedEntries {
+                    path,
+                    stamp,
+                    entries,
+                });
+                blob
+            }
+            Err(e) => {
+                // Jalur baca tidak memindahkan file; itu tugas jalur tulis.
+                warn!("{}", e);
+                None
+            }
         }
     }
 
     pub fn get(name: &str) -> Option<String> {
-        let blob = {
-            let cached = if let Ok(guard) = ENTRIES_CACHE.read() {
-                guard.as_ref().and_then(|m| m.get(name).cloned())
-            } else {
-                None
-            };
-            cached.or_else(|| load_entries().get(name).cloned())?
-        };
+        let blob = stored_blob(name)?;
         let raw = hex::decode(blob).ok()?;
         if raw.len() <= NONCE_LEN {
             return None;
@@ -434,15 +603,193 @@ mod backend_file {
         };
         let mut blob = nonce.to_vec();
         blob.extend_from_slice(&ciphertext);
-        let mut entries = load_entries();
-        entries.insert(name.to_string(), hex::encode(blob));
-        save_entries(&entries)
+        let blob = hex::encode(blob);
+        update_store(|entries| {
+            entries.insert(name.to_string(), blob);
+            true
+        })
     }
 
     pub fn delete(name: &str) {
-        let mut entries = load_entries();
-        if entries.remove(name).is_some() {
-            let _ = save_entries(&entries);
+        // Tidak ada file = tidak ada yang dihapus; jangan membuat file kosong.
+        if !store_path().exists() {
+            return;
+        }
+        let _ = update_store(|entries| entries.remove(name).is_some());
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn tmp_dir(tag: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "tabular-secrets-{}-{}-{}",
+                tag,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            dir
+        }
+
+        fn put(path: &Path, name: &str, blob: &str) -> Result<HashMap<String, String>, StoreError> {
+            update_store_at(path, |entries| {
+                entries.insert(name.to_string(), blob.to_string());
+                true
+            })
+            .map(|(entries, _)| entries)
+        }
+
+        #[test]
+        fn missing_file_is_an_empty_store() {
+            let dir = tmp_dir("missing");
+            let path = dir.join("secrets.enc");
+            assert!(read_store(&path).expect("missing is fine").is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn corrupt_file_is_preserved_and_not_overwritten() {
+            let dir = tmp_dir("corrupt");
+            let path = dir.join("secrets.enc");
+            std::fs::write(&path, "{\"conn:1:password\": \"abc").expect("write garbage");
+
+            assert!(matches!(read_store(&path), Err(StoreError::Corrupt(_))));
+            let result = put(&path, "conn:2:password", "ff");
+            assert!(matches!(result, Err(StoreError::Corrupt(_))));
+
+            // Tidak ada file baru yang ditulis di atasnya, dan isi lama utuh.
+            assert!(!path.exists());
+            let backups: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .expect("read dir")
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().starts_with("secrets.enc.corrupt-"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            assert_eq!(backups.len(), 1);
+            assert_eq!(
+                std::fs::read_to_string(&backups[0]).expect("backup"),
+                "{\"conn:1:password\": \"abc"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn atomic_write_roundtrip() {
+            let dir = tmp_dir("roundtrip");
+            let path = dir.join("secrets.enc");
+            put(&path, "a", "01").expect("first");
+            put(&path, "b", "02").expect("second");
+            let entries = read_store(&path).expect("read");
+            assert_eq!(entries.get("a").map(String::as_str), Some("01"));
+            assert_eq!(entries.get("b").map(String::as_str), Some("02"));
+            // Tidak ada file sementara yang tertinggal.
+            let leftovers = std::fs::read_dir(&dir)
+                .expect("read dir")
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+                .count();
+            assert_eq!(leftovers, 0);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// Dua penulis (GUI dan `tabular mcp`) masing-masing memegang salinan
+        /// lama isi file. Karena tiap penulisan membaca ulang disk di dalam
+        /// kunci, key milik penulis lain tidak ikut terhapus.
+        #[test]
+        fn sequential_writers_with_stale_caches_keep_all_keys() {
+            let dir = tmp_dir("stale");
+            let path = dir.join("secrets.enc");
+            put(&path, "shared", "00").expect("seed");
+
+            // Keduanya "memuat cache" pada titik ini.
+            let stale_a = read_store(&path).expect("a loads");
+            let stale_b = read_store(&path).expect("b loads");
+            assert_eq!(stale_a.len(), 1);
+            assert_eq!(stale_b.len(), 1);
+
+            put(&path, "from_a", "0a").expect("a writes");
+            put(&path, "from_b", "0b").expect("b writes");
+            // Penghapusan oleh A tidak boleh menghidupkan lagi/menghapus key B.
+            update_store_at(&path, |entries| entries.remove("shared").is_some())
+                .expect("a deletes");
+
+            let entries = read_store(&path).expect("final");
+            assert_eq!(entries.get("from_a").map(String::as_str), Some("0a"));
+            assert_eq!(entries.get("from_b").map(String::as_str), Some("0b"));
+            assert!(!entries.contains_key("shared"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn concurrent_writers_do_not_lose_keys() {
+            let dir = tmp_dir("threads");
+            let path = dir.join("secrets.enc");
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let path = path.clone();
+                    std::thread::spawn(move || {
+                        for j in 0..5 {
+                            put(&path, &format!("k{i}_{j}"), "00").expect("put");
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("writer thread");
+            }
+            assert_eq!(read_store(&path).expect("final").len(), 40);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn key_file_is_created_private_and_first_writer_wins() {
+            let dir = tmp_dir("key");
+            let path = dir.join("secrets.key");
+            let first = [7u8; 32];
+            let second = [9u8; 32];
+            assert_eq!(persist_key_file(&path, &first), Some(first));
+            // Proses kedua harus memakai key yang sudah ada, bukan menimpanya.
+            assert_eq!(persist_key_file(&path, &second), Some(first));
+            assert_eq!(parse_key_file(&path), Some(first));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn malformed_key_file_is_replaced_but_preserved() {
+            let dir = tmp_dir("badkey");
+            let path = dir.join("secrets.key");
+            std::fs::write(&path, "not-hex").expect("write");
+            let key = [3u8; 32];
+            assert_eq!(persist_key_file(&path, &key), Some(key));
+            assert_eq!(parse_key_file(&path), Some(key));
+            let preserved = std::fs::read_dir(&dir)
+                .expect("read dir")
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+                .count();
+            assert_eq!(preserved, 1);
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

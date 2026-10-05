@@ -1,6 +1,11 @@
 //! Transfer baris langsung antar koneksi (H8) dan lintas engine dengan
 //! aproksimasi tipe (H9). Sumber dibaca per halaman lalu ditulis ke tujuan
 //! sebagai `INSERT` multi-baris; tidak ada file perantara.
+//!
+//! Halaman dibaca lewat [`catalog::TablePager`]: keyset bila tabel sumber
+//! punya primary key, `OFFSET` (dengan peringatan) bila tidak. Tiap halaman
+//! ditulis dalam satu transaksi, jadi kegagalan tidak meninggalkan halaman
+//! yang setengah tertulis.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -86,6 +91,9 @@ pub struct TransferSummary {
     pub rows_copied: u64,
     /// `(tabel sumber, pesan)` untuk tabel yang gagal.
     pub failed: Vec<(String, String)>,
+    /// Peringatan yang tidak menggagalkan transfer, mis. tabel tanpa primary
+    /// key yang dibaca dengan `OFFSET`.
+    pub warnings: Vec<String>,
 }
 
 /// Pasangan kolom sumber -> tujuan yang akan disalin.
@@ -133,10 +141,13 @@ pub fn plan_columns(
     (plan, skipped)
 }
 
-fn normalize_bool(cell: &mut String) {
-    match cell.to_ascii_lowercase().as_str() {
-        "true" | "t" | "yes" | "y" => *cell = "1".to_string(),
-        "false" | "f" | "no" | "n" => *cell = "0".to_string(),
+fn normalize_bool(cell: &mut Option<String>) {
+    let Some(text) = cell else {
+        return;
+    };
+    match text.to_ascii_lowercase().as_str() {
+        "true" | "t" | "yes" | "y" => *text = "1".to_string(),
+        "false" | "f" | "no" | "n" => *text = "0".to_string(),
         _ => {}
     }
 }
@@ -165,7 +176,7 @@ async fn transfer_one(
     opts: &TransferOptions,
     progress: &ProgressHandle,
     cancel: &AtomicBool,
-) -> Result<u64, String> {
+) -> Result<(u64, Option<String>), String> {
     let source_columns = catalog::fetch_columns(src, &pair.source_table).await?;
     let target_sql = dst.table_sql(&pair.target_table);
     if opts.create_table {
@@ -197,16 +208,22 @@ async fn transfer_one(
             .map_err(|e| format!("clearing target failed: {e}"))?;
     }
 
-    let select_list: Vec<String> = plan
-        .iter()
-        .map(|p| catalog::select_expr(src.db_type(), &p.source))
-        .collect();
-    // Urut menurut primary key supaya halaman stabil; tanpa PK urutan engine.
-    let order_by: Vec<String> = plan
-        .iter()
-        .filter(|p| p.source.primary_key)
-        .map(|p| quote_ident(src.db_type(), &p.source.name))
-        .collect();
+    let data_columns: Vec<SourceColumn> = plan.iter().map(|p| p.source.clone()).collect();
+    let source_sql = src.table_sql(&pair.source_table);
+    // Kunci dan urutan diambil dari seluruh kolom sumber, bukan hanya yang
+    // disalin: primary key tetap dipakai walau kolomnya tidak ada di tujuan.
+    let mut pager = catalog::TablePager::new(
+        src.db_type(),
+        &source_sql,
+        &data_columns,
+        &source_columns,
+        opts.where_clause.as_deref(),
+    );
+    let warning = pager.warning().map(str::to_string);
+    if let Some(w) = &warning {
+        log::warn!("[TRANSFER] {w}");
+        log_line(progress, format!("WARNING: {w}"));
+    }
     let target_cols: Vec<String> = plan
         .iter()
         .map(|p| quote_ident(dst.db_type(), &p.target_name))
@@ -214,7 +231,6 @@ async fn transfer_one(
     let kinds: Vec<ValueKind> = plan.iter().map(|p| p.kind).collect();
     let source_cols: Vec<usize> = (0..plan.len()).collect();
     let identity = mssql_has_identity(dst, &target_sql).await;
-    let source_sql = src.table_sql(&pair.source_table);
     let page = opts.page_rows.max(1);
 
     let mut copied = 0u64;
@@ -227,24 +243,13 @@ async fn transfer_one(
             Some(max) => page.min(max - copied),
             None => page,
         };
-        let sql = catalog::select_page_sql(
-            src.db_type(),
-            &source_sql,
-            &select_list,
-            opts.where_clause.as_deref(),
-            &order_by,
-            limit,
-            copied,
-        );
-        let mut rows = src
-            .query(&sql)
+        let mut rows = pager
+            .next_page(src, limit)
             .await
-            .map_err(|e| format!("reading source failed: {e}"))?
-            .rows;
+            .map_err(|e| format!("reading source failed: {e}"))?;
         if rows.is_empty() {
             break;
         }
-        catalog::pad_rows(&mut rows, plan.len());
         for (i, p) in plan.iter().enumerate() {
             if p.bool_as_number {
                 for row in &mut rows {
@@ -266,7 +271,8 @@ async fn transfer_one(
             statements.insert(0, format!("SET IDENTITY_INSERT {target_sql} ON"));
             statements.push(format!("SET IDENTITY_INSERT {target_sql} OFF"));
         }
-        dst.execute(&statements)
+        // Satu halaman = satu transaksi: jumlah baris di pesan galat tepat.
+        dst.execute_atomic(&statements)
             .await
             .map_err(|e| format!("writing target failed after {copied} rows: {e}"))?;
         copied += fetched;
@@ -275,7 +281,7 @@ async fn transfer_one(
             break;
         }
     }
-    Ok(copied)
+    Ok((copied, warning))
 }
 
 /// Salin beberapa tabel dari `src` ke `dst`. Kedua endpoint disambungkan di
@@ -325,9 +331,10 @@ async fn run_transfer(
         }
         with_progress(progress, |p| p.current_table = pair.source_table.clone());
         match transfer_one(&src, &dst, pair, opts, progress, cancel).await {
-            Ok(rows) => {
+            Ok((rows, warning)) => {
                 summary.tables_copied += 1;
                 summary.rows_copied += rows;
+                summary.warnings.extend(warning);
                 log_line(
                     progress,
                     format!(
@@ -429,6 +436,170 @@ mod tests {
         let p = progress.lock().unwrap();
         assert!(p.finished && p.error.is_none());
         assert_eq!(p.rows_copied, 3);
+    }
+
+    /// Isi tabel dengan nullness terlihat (`v IS NULL`), urut deterministik.
+    async fn dump(ep: &Endpoint, table: &str, columns: &[&str]) -> Vec<Vec<String>> {
+        let list: Vec<String> = columns
+            .iter()
+            .map(|c| format!("{c}, {c} IS NULL"))
+            .collect();
+        let sql = format!(
+            "SELECT {} FROM {table} ORDER BY {}",
+            list.join(", "),
+            columns.join(", ")
+        );
+        ep.query(&sql).await.unwrap().rows
+    }
+
+    #[tokio::test]
+    async fn keyset_transfer_copies_every_row_exactly_once() {
+        let src = sqlite_endpoint("src").await;
+        let dst = sqlite_endpoint("dst").await;
+        // Kunci majemuk (teks + angka), string `NULL` asli, NULL, string kosong.
+        let mut sql = String::from(
+            "CREATE TABLE items (grp TEXT NOT NULL, n INTEGER NOT NULL, v TEXT, \
+             PRIMARY KEY (grp, n));",
+        );
+        for i in 0..53 {
+            let grp = ["a", "b", "it's", "NULL"][i % 4];
+            let v = match i % 5 {
+                0 => "NULL".to_string(),
+                1 => "'NULL'".to_string(),
+                2 => "''".to_string(),
+                _ => format!("'v{i}'"),
+            };
+            sql.push_str(&format!(
+                "INSERT INTO items VALUES ('{}', {i}, {v});",
+                grp.replace('\'', "''")
+            ));
+        }
+        src.query(&sql).await.unwrap();
+        let (progress, cancel) = handles();
+        let opts = TransferOptions {
+            page_rows: 7,
+            ..Default::default()
+        };
+        let summary = transfer_tables(
+            src.clone(),
+            dst.clone(),
+            vec![pair("items", "items")],
+            opts,
+            progress.clone(),
+            cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.rows_copied, 53);
+        assert!(summary.failed.is_empty() && summary.warnings.is_empty());
+        let columns = ["grp", "n", "v"];
+        let expected = dump(&src, "items", &columns).await;
+        assert_eq!(expected.len(), 53);
+        assert_eq!(dump(&dst, "items", &columns).await, expected);
+        // String `NULL` tetap string di tujuan; NULL tetap NULL.
+        let nulls = dst
+            .query("SELECT COUNT(*) FROM items WHERE v IS NULL")
+            .await
+            .unwrap();
+        assert_eq!(nulls.first_value(), Some("11"));
+        let texts = dst
+            .query("SELECT COUNT(*) FROM items WHERE v = 'NULL'")
+            .await
+            .unwrap();
+        assert_eq!(texts.first_value(), Some("11"));
+        let log = progress.lock().unwrap().log.join("\n");
+        assert!(!log.contains("WARNING"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn table_without_primary_key_is_copied_with_a_warning() {
+        let src = sqlite_endpoint("src").await;
+        let dst = sqlite_endpoint("dst").await;
+        let mut sql = String::from("CREATE TABLE log (at TEXT, msg TEXT, n INTEGER);");
+        for i in 0..41 {
+            // Baris kembar persis ikut disalin sebanyak aslinya.
+            let msg = if i % 3 == 0 {
+                "NULL".to_string()
+            } else {
+                format!("'m{}'", i % 7)
+            };
+            sql.push_str(&format!(
+                "INSERT INTO log VALUES ('2026-01-{:02}', {msg}, {});",
+                i % 9 + 1,
+                i % 4
+            ));
+        }
+        src.query(&sql).await.unwrap();
+        let (progress, cancel) = handles();
+        let opts = TransferOptions {
+            page_rows: 6,
+            ..Default::default()
+        };
+        let summary = transfer_tables(
+            src.clone(),
+            dst.clone(),
+            vec![pair("log", "log")],
+            opts,
+            progress.clone(),
+            cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.rows_copied, 41);
+        assert_eq!(summary.warnings.len(), 1);
+        assert!(summary.warnings[0].contains("no primary key"));
+        let columns = ["at", "msg", "n"];
+        assert_eq!(
+            dump(&dst, "log", &columns).await,
+            dump(&src, "log", &columns).await
+        );
+        let log = progress.lock().unwrap().log.join("\n");
+        assert!(log.contains("WARNING: \"log\" has no primary key"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn failed_page_leaves_no_partial_page_in_target() {
+        let src = sqlite_endpoint("src").await;
+        let dst = sqlite_endpoint("dst").await;
+        src.query(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); \
+             INSERT INTO t VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,NULL),(6,'f');",
+        )
+        .await
+        .unwrap();
+        dst.query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
+            .await
+            .unwrap();
+        let (progress, cancel) = handles();
+        let opts = TransferOptions {
+            create_table: false,
+            page_rows: 3,
+            // Satu baris per statement: tanpa transaksi, baris 4 akan
+            // tertinggal di tujuan saat baris 5 ditolak.
+            insert_limits: InsertLimits {
+                max_rows: 1,
+                max_bytes: 0,
+            },
+            ..Default::default()
+        };
+        let summary = transfer_tables(
+            src,
+            dst.clone(),
+            vec![pair("t", "t")],
+            opts,
+            progress,
+            cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.failed.len(), 1);
+        assert!(
+            summary.failed[0].1.contains("after 3 rows"),
+            "{:?}",
+            summary.failed
+        );
+        let ids = dst.query("SELECT id FROM t ORDER BY id").await.unwrap();
+        assert_eq!(ids.first_column(), vec!["1", "2", "3"]);
     }
 
     #[tokio::test]

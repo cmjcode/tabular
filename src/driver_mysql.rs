@@ -666,8 +666,9 @@ pub(crate) fn fetch_tables_from_mysql_connection(
     database_name: &str,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    // Build a temporary runtime (function is sync due to UI constraints)
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
         match pool {
@@ -685,7 +686,9 @@ pub(crate) fn fetch_tables_with_comments_from_mysql_connection(
     database_name: &str,
     table_type: &str,
 ) -> Option<Vec<(String, Option<String>)>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         let pool = connection::get_or_create_connection_pool(tabular, connection_id).await?;
         match pool {

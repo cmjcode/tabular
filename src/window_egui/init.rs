@@ -122,7 +122,11 @@ impl super::Tabular {
                 .worker_threads(4)
                 .thread_name("tabular-rt")
                 .build()
-                .expect("Failed to build global runtime");
+                .expect(
+                    "Tabular could not start its async runtime (the OS refused to create worker \
+                     threads). Close other applications or raise the process/thread limit \
+                     (ulimit -u) and start Tabular again",
+                );
             self.runtime = Some(Arc::new(rt));
             debug!("🌐 Global runtime initialized");
         }
@@ -285,6 +289,7 @@ impl super::Tabular {
             test_connection_in_progress: false,
             background_sender: Some(background_sender),
             background_receiver: Some(result_receiver),
+            egui_ctx: None,
             query_result_sender,
             query_result_receiver,
             dba_result_sender,
@@ -460,6 +465,8 @@ impl super::Tabular {
             pending_drop_column_name: None,
             pending_drop_column_stmt: None,
             pending_drop_collection: None,
+            pk_columns_memo: HashMap::new(),
+            drop_collection_channel: std::sync::mpsc::channel(),
             pending_drop_table: None,
             schema_ui: Default::default(),
             transfer_ui: Default::default(),
@@ -506,6 +513,7 @@ impl super::Tabular {
             config_store,
             last_saved_prefs: None,
             prefs_dirty: false,
+            prefs_save_due: None,
             prefs_save_feedback: None,
             prefs_last_saved_at: None,
             prefs_loaded: false,
@@ -562,7 +570,7 @@ impl super::Tabular {
             spreadsheet_state: crate::models::structs::SpreadsheetState::default(),
             extra_cursors: Vec::new(),
             last_editor_text: String::new(),
-            highlight_cache: std::collections::HashMap::new(),
+            highlight_cache: crate::syntax_ts::HighlightCache::default(),
             last_highlight_hash: None,
             suppress_editor_arrow_once: false,
             sql_semantic_snapshot: None,
@@ -1017,7 +1025,7 @@ impl super::Tabular {
         eprintln!(
             "[RESTORE-DB] Triggering synchronous crate::sidebar_database::initialize_database(self)..."
         );
-        crate::sidebar_database::initialize_database(self);
+        let init_failure = crate::sidebar_database::initialize_database(self);
         if let Some(ref pool) = self.db_pool {
             if !pool.is_closed() {
                 eprintln!("[RESTORE-DB] Synchronous initialize_database succeeded.");
@@ -1033,17 +1041,26 @@ impl super::Tabular {
             );
         }
 
-        // 5. Corrupt db reset recovery as last resort
-        eprintln!(
-            "[RESTORE-DB] Triggering crate::sidebar_database::reset_corrupted_sqlite_db(self)..."
-        );
-        if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
-            if let Some(ref pool) = self.db_pool {
-                if !pool.is_closed() {
-                    eprintln!("[RESTORE-DB] Corruption reset succeeded, new pool active.");
-                    return Ok(pool.clone());
+        // 5. Corrupt db reset recovery as last resort. Hanya untuk korupsi
+        // sungguhan: busy/locked, izin, atau disk penuh tidak boleh membuat
+        // connections.db disisihkan dan diganti file kosong.
+        if init_failure == Some(crate::sidebar_database::SqliteFailureKind::Corrupt) {
+            eprintln!(
+                "[RESTORE-DB] Triggering crate::sidebar_database::reset_corrupted_sqlite_db(self)..."
+            );
+            if crate::sidebar_database::reset_corrupted_sqlite_db(self) {
+                if let Some(ref pool) = self.db_pool {
+                    if !pool.is_closed() {
+                        eprintln!("[RESTORE-DB] Corruption reset succeeded, new pool active.");
+                        return Ok(pool.clone());
+                    }
                 }
             }
+        } else {
+            log::error!(
+                "[DB] connections.db could not be opened ({:?}); not a corruption, the file was left untouched",
+                init_failure
+            );
         }
 
         eprintln!(
@@ -1080,7 +1097,8 @@ impl super::Tabular {
             shared.read().ok().and_then(|guard| guard.clone())
         }
 
-        std::thread::spawn(move || {
+        let worker = std::thread::Builder::new().name("tabular-bg-worker".to_string());
+        let spawned = worker.spawn(move || {
             while let Ok(task) = task_receiver.recv() {
                 crate::window_egui::connection_mgr::autosync_log(&format!(
                     "[WORKER-LOOP] received background task: {:?}",
@@ -1096,7 +1114,11 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::ConnectionFailed {
+                            connection_id,
+                            error_message: TASK_PANIC_MESSAGE.to_string(),
+                        });
+                        spawn_named_task("fetch-databases", &result_sender, on_panic, move || {
                             debug!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
@@ -1148,7 +1170,11 @@ impl super::Tabular {
                         // behind it — the app looked frozen even though the UI
                         // thread itself was fine.
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::TestConnectionComplete {
+                            success: false,
+                            message: TASK_PANIC_MESSAGE.to_string(),
+                        });
+                        spawn_named_task("test-connection", &result_sender, on_panic, move || {
                             let (success, message) =
                                 crate::connection::test_database_connection(&connection);
                             let _ = result_sender_thread.send(
@@ -1169,7 +1195,12 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::RedisKeysFetched {
+                            connection_id,
+                            database_name: database_name.clone(),
+                            keys: Vec::new(),
+                        });
+                        spawn_named_task("fetch-redis-keys", &result_sender, on_panic, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
@@ -1177,7 +1208,9 @@ impl super::Tabular {
                                 let keys = rt.block_on(async {
                                     if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
                                         let redis_manager = {
-                                            let pools = shared_pools_thread.lock().ok()?;
+                                            let pools = shared_pools_thread
+                                                .lock()
+                                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                                             if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
                                                 Some(mgr.as_ref().clone())
                                             } else {
@@ -1251,14 +1284,23 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::RedisBrowserStateFetched {
+                            connection_id,
+                            state: models::structs::RedisBrowserState {
+                                last_error: Some(TASK_PANIC_MESSAGE.to_string()),
+                                ..Default::default()
+                            },
+                        });
+                        spawn_named_task("fetch-redis-browser", &result_sender, on_panic, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let Some(rt) = rt_opt {
                                 let state = rt.block_on(async {
                                     let redis_manager = {
-                                        let pools = shared_pools_thread.lock().ok()?;
+                                        let pools = shared_pools_thread
+                                                .lock()
+                                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         if let Some(models::enums::DatabasePool::Redis(mgr)) = pools.get(&connection_id) {
                                             Some(mgr.as_ref().clone())
                                         } else {
@@ -1333,14 +1375,22 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::RedisBrowserSearchFetched {
+                            connection_id,
+                            database_name: database_name.clone(),
+                            search_text: search_text.clone(),
+                            keys: Vec::new(),
+                        });
+                        spawn_named_task("search-redis-keys", &result_sender, on_panic, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     let redis_manager = {
-                                        let pools = shared_pools_thread.lock().ok()?;
+                                        let pools = shared_pools_thread
+                                                .lock()
+                                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                                         if let Some(models::enums::DatabasePool::Redis(mgr)) =
                                             pools.get(&connection_id)
                                         {
@@ -1385,7 +1435,12 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::RefreshComplete {
+                            connection_id,
+                            success: false,
+                            databases: Vec::new(),
+                        });
+                        spawn_named_task("refresh-connection", &result_sender, on_panic, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
@@ -1430,7 +1485,11 @@ impl super::Tabular {
                         let shared_pools_thread = shared_pools.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::ConnectionFailed {
+                            connection_id,
+                            error_message: TASK_PANIC_MESSAGE.to_string(),
+                        });
+                        spawn_named_task("ensure-pool", &result_sender, on_panic, move || {
                             debug!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
@@ -1449,10 +1508,25 @@ impl super::Tabular {
                                     res.is_ok()
                                 );
                                 match res {
+                                    // Cancel/disconnect bisa datang tepat setelah
+                                    // connect selesai: jangan hidupkan lagi koneksi
+                                    // yang baru saja diputus user.
+                                    Ok(new_pool)
+                                        if crate::connection::pool::connect_was_cancelled(
+                                            connection_id,
+                                        ) =>
+                                    {
+                                        debug!(
+                                            "[POOL] EnsureConnectionPool id={} cancelled; dropping the new pool",
+                                            connection_id
+                                        );
+                                        drop(new_pool);
+                                    }
                                     Ok(new_pool) => {
-                                        if let Ok(mut shared) = shared_pools_thread.lock() {
-                                            shared.insert(connection_id, new_pool);
-                                        }
+                                        shared_pools_thread
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .insert(connection_id, new_pool);
                                     }
                                     Err(err_msg) => {
                                         error!(
@@ -1485,7 +1559,16 @@ impl super::Tabular {
                         let shared_db_pool_thread = shared_db_pool.clone();
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::TableStructureFetched {
+                            connection_id,
+                            database_name: database_name.clone(),
+                            table_name: table_name.clone(),
+                            columns: None,
+                            columns_detail: None,
+                            indexes: None,
+                            partitions: None,
+                        });
+                        spawn_named_task("fetch-table-structure", &result_sender, on_panic, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
@@ -1568,6 +1651,18 @@ impl super::Tabular {
                                         "[WORKER] FetchTableStructure: failed to load connection id={}",
                                         connection_id
                                     );
+                                    // Tetap kabari UI agar indikator refresh struktur berhenti.
+                                    let _ = result_sender_thread.send(
+                                        models::enums::BackgroundResult::TableStructureFetched {
+                                            connection_id,
+                                            database_name,
+                                            table_name,
+                                            columns: None,
+                                            columns_detail: None,
+                                            indexes: None,
+                                            partitions: None,
+                                        },
+                                    );
                                 }
                             }
                         });
@@ -1578,7 +1673,10 @@ impl super::Tabular {
                         // queued connection task behind it.
                         let shared_runtime_thread = shared_runtime.clone();
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = Some(models::enums::BackgroundResult::UpdateCheckComplete {
+                            result: Err(TASK_PANIC_MESSAGE.to_string()),
+                        });
+                        spawn_named_task("check-updates", &result_sender, on_panic, move || {
                             let rt_opt = shared_runtime_thread
                                 .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
                             // Perform update check on shared runtime (if required by async API)
@@ -1614,7 +1712,8 @@ impl super::Tabular {
                         // the worker loop meant no connection could be opened for
                         // as long as the file dialog stayed on screen.
                         let result_sender_thread = result_sender.clone();
-                        std::thread::spawn(move || {
+                        let on_panic = None;
+                        spawn_named_task("pick-sqlite-path", &result_sender, on_panic, move || {
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_title("Select SQLite Database File")
                                 .add_filter(
@@ -1635,6 +1734,59 @@ impl super::Tabular {
                 }
             }
         });
+        if let Err(e) = spawned {
+            error!("[WORKER-LOOP] gagal membuat thread worker latar: {}", e);
+        }
+    }
+}
+
+/// Pesan untuk UI bila task latar berhenti karena panik.
+const TASK_PANIC_MESSAGE: &str = "Background task failed unexpectedly (internal error). Please try again.";
+
+/// Ambil teks dari payload panik.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Jalankan satu task latar di thread bernama `tabular-bg-<name>`. Bila task
+/// panik (atau thread gagal dibuat), `on_panic_result` dikirim ke UI supaya
+/// state "sedang memuat" (`fetching_databases`, `fetching_redis_keys`,
+/// `refreshing_connections`, …) dibersihkan dan UI tidak menunggu selamanya.
+fn spawn_named_task(
+    name: &str,
+    result_sender: &Sender<models::enums::BackgroundResult>,
+    on_panic_result: Option<models::enums::BackgroundResult>,
+    task: impl FnOnce() + Send + 'static,
+) {
+    let thread_name = format!("tabular-bg-{name}");
+    let sender = result_sender.clone();
+    let failure = on_panic_result.clone();
+    let name_in_thread = thread_name.clone();
+    let spawned = std::thread::Builder::new()
+        .name(thread_name.clone())
+        .spawn(move || {
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)) {
+                error!(
+                    "[WORKER] task latar '{}' panik: {}",
+                    name_in_thread,
+                    panic_payload_message(payload.as_ref())
+                );
+                if let Some(result) = failure {
+                    let _ = sender.send(result);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        error!("[WORKER] gagal membuat thread '{}': {}", thread_name, e);
+        if let Some(result) = on_panic_result {
+            let _ = result_sender.send(result);
+        }
     }
 }
 

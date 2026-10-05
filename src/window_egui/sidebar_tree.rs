@@ -415,11 +415,8 @@ impl super::Tabular {
             // otherwise queue it and let the per-frame pool-wait poller in
             // app_impl.rs run it as soon as the pool becomes ready.
             let pool_ready = self.connection_pools.contains_key(&conn_id)
-                || self
-                    .shared_connection_pools
-                    .lock()
-                    .map(|p| p.contains_key(&conn_id))
-                    .unwrap_or(false);
+                || crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                    .contains_key(&conn_id);
 
             if pool_ready {
                 let job_id = self.jobs.allocate_id();
@@ -1524,11 +1521,8 @@ impl super::Tabular {
                                     // running the query as soon as the pool becomes available.
                                     let pool_ready =
                                         self.connection_pools.contains_key(&connection_id)
-                                            || self
-                                                .shared_connection_pools
-                                                .lock()
-                                                .map(|p| p.contains_key(&connection_id))
-                                                .unwrap_or(false);
+                                            || crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                                                .contains_key(&connection_id);
 
                                     if !pool_ready {
                                         crate::connection::ensure_background_pool_creation(
@@ -1589,11 +1583,8 @@ impl super::Tabular {
                                     // running the query as soon as the pool becomes available.
                                     let pool_ready =
                                         self.connection_pools.contains_key(&connection_id)
-                                            || self
-                                                .shared_connection_pools
-                                                .lock()
-                                                .map(|p| p.contains_key(&connection_id))
-                                                .unwrap_or(false);
+                                            || crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                                                .contains_key(&connection_id);
 
                                     if !pool_ready {
                                         crate::connection::ensure_background_pool_creation(
@@ -2168,7 +2159,37 @@ impl super::Tabular {
             node.is_expanded = false;
         }
 
-        if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
+        // Virtualisasi murah untuk folder berisi ribuan tabel: baris Table/View
+        // yang tertutup dan berada di luar area terlihat hanya mengalokasikan
+        // tingginya (dipelajari dari baris sejenis yang terakhir digambar),
+        // tanpa membangun widget, menu konteks, dan label. Satu `allocate_space`
+        // memakai satu auto-id, sama seperti `ui.horizontal` baris aslinya,
+        // jadi id baris-baris berikutnya tidak bergeser.
+        let learned_row_height_id = match node.node_type {
+            models::enums::NodeType::Table => Some(egui::Id::new("sidebar_tree_row_h_table")),
+            models::enums::NodeType::View => Some(egui::Id::new("sidebar_tree_row_h_view")),
+            _ => None,
+        };
+        let skip_hidden_row = !node.is_expanded
+            && learned_row_height_id
+                .and_then(|id| ui.ctx().data(|d| d.get_temp::<f32>(id)))
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .is_some_and(|row_h| {
+                    let rect = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(ui.available_width().max(1.0), row_h),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        false
+                    } else {
+                        ui.allocate_space(egui::vec2(1.0, row_h));
+                        true
+                    }
+                });
+
+        if skip_hidden_row {
+            // Tidak ada yang digambar; semua request tetap `None`.
+        } else if has_children || node.node_type == models::enums::NodeType::Connection || node.node_type == models::enums::NodeType::Table ||
        node.node_type == models::enums::NodeType::View ||
         // Show expand toggles for container folders and schema folders only
        node.node_type == models::enums::NodeType::DatabasesFolder || node.node_type == models::enums::NodeType::TablesFolder ||
@@ -2195,7 +2216,7 @@ impl super::Tabular {
                 _ => format!("node_{}_{:?}", params.node_index, node.node_type),
             };
             let id = egui::Id::new(&unique_id);
-            ui.horizontal(|ui| {
+            let header_row = ui.horizontal(|ui| {
                 // Painter-drawn triangle toggle (no font dependency) for expandable nodes, or spacer for REST API
                 let triangle_clicked = if is_api_http {
                     ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
@@ -2336,10 +2357,9 @@ impl super::Tabular {
                 let (mut status_color, status_text) = if node.node_type == models::enums::NodeType::Connection {
                     if let Some(conn_id) = node.connection_id {
                         // Determine connected/connecting/disconnected
-                        let mut has_shared = false;
-                        if let Ok(shared) = params.shared_connection_pools.lock() {
-                            has_shared = shared.contains_key(&conn_id);
-                        }
+                        let has_shared =
+                            crate::connection::pool::lock_or_recover(params.shared_connection_pools)
+                                .contains_key(&conn_id);
                         if params.connection_pools.contains_key(&conn_id) || has_shared {
                             (super::style::theme_success(ui.ctx()), "Connected")
                         } else if params.pending_connection_pools.contains(&conn_id) {
@@ -3489,6 +3509,15 @@ impl super::Tabular {
                     });
                 }
             });
+            // Catat tinggi baris untuk virtualisasi di atas. Baris yang sedang
+            // di-hover dilewati karena bisa menampilkan kontrol tambahan.
+            if let Some(height_id) = learned_row_height_id {
+                let row_rect = header_row.response.rect;
+                if !ui.rect_contains_pointer(row_rect) {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(height_id, row_rect.height()));
+                }
+            }
 
             // (central panel logic handled inside update previously)
 

@@ -3,6 +3,28 @@ use crate::{
     cache_data, connection, driver_mysql, driver_postgres, driver_redis, driver_sqlite, models,
 };
 use log::debug;
+use std::time::Duration;
+
+/// Batas waktu query metadata live yang dijalankan (blocking) dari UI thread.
+const LIVE_METADATA_TIMEOUT: Duration = Duration::from_secs(8);
+/// Lama hasil primary key diingat per tabel.
+const PK_MEMO_TTL: Duration = Duration::from_secs(600);
+/// Tabel tanpa primary key dicek ulang lebih sering (bisa saja baru ditambah).
+const PK_MEMO_EMPTY_TTL: Duration = Duration::from_secs(60);
+/// Kegagalan/timeout diingat sebentar agar tidak menggantung berulang.
+const PK_MEMO_FAILURE_TTL: Duration = Duration::from_secs(15);
+
+/// Jalankan `fut` dengan batas [`LIVE_METADATA_TIMEOUT`].
+async fn with_metadata_timeout<T>(fut: impl std::future::Future<Output = T>) -> Result<T, String> {
+    tokio::time::timeout(LIVE_METADATA_TIMEOUT, fut)
+        .await
+        .map_err(|_| {
+            format!(
+                "the database did not respond within {}s",
+                LIVE_METADATA_TIMEOUT.as_secs()
+            )
+        })
+}
 
 impl super::Tabular {
     pub fn remove_database_from_connection_node(
@@ -2453,6 +2475,8 @@ impl super::Tabular {
         }
         Vec::new()
     }
+    /// Nama index sebuah tabel, langsung dari server. Query dibatasi
+    /// [`LIVE_METADATA_TIMEOUT`] agar UI tidak menggantung sampai timeout TCP.
     pub fn fetch_index_names_for_table(
         &mut self,
         connection_id: i64,
@@ -2460,10 +2484,93 @@ impl super::Tabular {
         database_name: &str,
         table_name: &str,
     ) -> Vec<String> {
+        match self.fetch_index_names_live(connection_id, connection, database_name, table_name) {
+            Ok(names) => names,
+            Err(e) => {
+                log::warn!(
+                    "[METADATA] gagal membaca index {}.{}: {}",
+                    database_name,
+                    table_name,
+                    e
+                );
+                self.toasts.error(format!(
+                    "Could not read indexes of '{}': {}",
+                    table_name, e
+                ));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Kolom primary key sebuah tabel, langsung dari server. Hasil diingat per
+    /// (koneksi, database, tabel) supaya simpan berulang pada tabel yang sama
+    /// tidak query ulang, dan query dibatasi [`LIVE_METADATA_TIMEOUT`].
+    pub fn fetch_primary_key_columns_for_table(
+        &mut self,
+        connection_id: i64,
+        connection: &models::structs::ConnectionConfig,
+        database_name: &str,
+        table_name: &str,
+    ) -> Vec<String> {
+        let key = (
+            connection_id,
+            database_name.to_string(),
+            table_name.to_string(),
+        );
+        if let Some((fetched_at, ttl, cols)) = self.pk_columns_memo.get(&key)
+            && fetched_at.elapsed() < *ttl
+        {
+            return cols.clone();
+        }
+        let (ttl, cols) = match self.fetch_primary_key_columns_live(
+            connection_id,
+            connection,
+            database_name,
+            table_name,
+        ) {
+            Ok(cols) if cols.is_empty() => {
+                // Hasil kosong karena pool belum tersambung bukan jawaban
+                // server: jangan diingat, coba lagi pada simpan berikutnya.
+                let answered = self.connection_pools.contains_key(&connection_id)
+                    || connection.connection_type == models::enums::DatabaseType::MsSQL;
+                if !answered {
+                    return cols;
+                }
+                (PK_MEMO_EMPTY_TTL, cols)
+            }
+            Ok(cols) => (PK_MEMO_TTL, cols),
+            Err(e) => {
+                log::warn!(
+                    "[METADATA] gagal membaca primary key {}.{}: {}",
+                    database_name,
+                    table_name,
+                    e
+                );
+                self.toasts.error(format!(
+                    "Could not read the primary key of '{}': {}",
+                    table_name, e
+                ));
+                // Ingat kegagalan sebentar agar simpan berikutnya tidak
+                // langsung menunggu timeout lagi.
+                (PK_MEMO_FAILURE_TTL, Vec::new())
+            }
+        };
+        self.pk_columns_memo
+            .insert(key, (std::time::Instant::now(), ttl, cols.clone()));
+        cols
+    }
+
+    fn fetch_index_names_live(
+        &mut self,
+        connection_id: i64,
+        connection: &models::structs::ConnectionConfig,
+        database_name: &str,
+        table_name: &str,
+    ) -> Result<Vec<String>, String> {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME";
                         match sqlx::query_as::<_, (String,)>(q)
@@ -2475,11 +2582,11 @@ impl super::Tabular {
                                 Err(_) => Vec::new(),
                             }
                     } else { Vec::new() }
-                })
+                }))
             }
             models::enums::DatabaseType::PostgreSQL => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1 ORDER BY indexname";
                         match sqlx::query_as::<_, (String,)>(q)
@@ -2490,11 +2597,11 @@ impl super::Tabular {
                                 Err(_) => Vec::new(),
                             }
                     } else { Vec::new() }
-                })
+                }))
             }
             models::enums::DatabaseType::SQLite => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
                         connection::pool_if_connected_or_start(self, connection_id).await
                     {
@@ -2519,7 +2626,7 @@ impl super::Tabular {
                     } else {
                         Vec::new()
                     }
-                })
+                }))
             }
             models::enums::DatabaseType::MsSQL => {
                 let host = connection.host.clone();
@@ -2528,7 +2635,7 @@ impl super::Tabular {
                 let pass = connection.password.clone();
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
-                let rt_res = self.get_runtime().block_on(async move {
+                let rt_res = self.get_runtime().block_on(with_metadata_timeout(async move {
                     let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
@@ -2548,13 +2655,13 @@ impl super::Tabular {
                     let mut list = Vec::new();
                     for r in stream.collect_all().await.map_err(|e| e.to_string())? { if let Some(nm) = r.get_string(0) { list.push(nm); } }
                     Ok::<_, String>(list)
-                });
-                rt_res.unwrap_or_default()
+                }));
+                rt_res.and_then(|r| r)
             }
-            models::enums::DatabaseType::Redis => Vec::new(),
+            models::enums::DatabaseType::Redis => Ok(Vec::new()),
             models::enums::DatabaseType::MongoDB => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::MongoDB(client)) =
                         connection::pool_if_connected_or_start(self, connection_id).await
                     {
@@ -2565,25 +2672,25 @@ impl super::Tabular {
                     } else {
                         Vec::new()
                     }
-                })
+                }))
             }
             models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
-                Vec::new()
+                Ok(Vec::new())
             }
         }
     }
 
-    pub fn fetch_primary_key_columns_for_table(
+    fn fetch_primary_key_columns_live(
         &mut self,
         connection_id: i64,
         connection: &models::structs::ConnectionConfig,
         database_name: &str,
         table_name: &str,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>, String> {
         match connection.connection_type {
             models::enums::DatabaseType::MySQL => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::MySQL(mysql_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let q = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION";
                         match sqlx::query_as::<_, (String,)>(q)
@@ -2595,11 +2702,11 @@ impl super::Tabular {
                                 Err(_) => Vec::new(),
                             }
                     } else { Vec::new() }
-                })
+                }))
             }
             models::enums::DatabaseType::PostgreSQL => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::PostgreSQL(pg_pool)) = connection::pool_if_connected_or_start(self, connection_id).await {
                         let (schema_opt, tbl_only) = if let Some((s, t)) = table_name.split_once('.') {
                             (Some(s.trim_matches('"')), t.trim_matches('"'))
@@ -2633,11 +2740,11 @@ impl super::Tabular {
                             Err(_) => Vec::new(),
                         }
                     } else { Vec::new() }
-                })
+                }))
             }
             models::enums::DatabaseType::SQLite => {
                 let rt = self.get_runtime();
-                rt.block_on(async {
+                rt.block_on(with_metadata_timeout(async {
                     if let Some(models::enums::DatabasePool::SQLite(sqlite_pool)) =
                         connection::pool_if_connected_or_start(self, connection_id).await
                     {
@@ -2665,7 +2772,7 @@ impl super::Tabular {
                     } else {
                         Vec::new()
                     }
-                })
+                }))
             }
             models::enums::DatabaseType::MsSQL => {
                 let host = connection.host.clone();
@@ -2674,7 +2781,7 @@ impl super::Tabular {
                 let pass = connection.password.clone();
                 let db = database_name.to_string();
                 let tbl = table_name.to_string();
-                let rt_res = self.get_runtime().block_on(async move {
+                let rt_res = self.get_runtime().block_on(with_metadata_timeout(async move {
                     let mut client = crate::driver_mssql::connect_mssql(&host, port, &user, &pass, Some(&db)).await?;
                     // Parse schema-qualified name
                     let parse = |name: &str| -> (Option<String>, String) {
@@ -2695,12 +2802,12 @@ impl super::Tabular {
                     let mut list = Vec::new();
                     for r in stream.collect_all().await.map_err(|e| e.to_string())? { if let Some(nm) = r.get_string(0) { list.push(nm); } }
                     Ok::<_, String>(list)
-                });
-                rt_res.unwrap_or_default()
+                }));
+                rt_res.and_then(|r| r)
             }
-            models::enums::DatabaseType::Redis => Vec::new(),
-            models::enums::DatabaseType::MongoDB => vec!["_id".to_string()],
-            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => vec![],
+            models::enums::DatabaseType::Redis => Ok(Vec::new()),
+            models::enums::DatabaseType::MongoDB => Ok(vec!["_id".to_string()]),
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => Ok(vec![]),
         }
     }
 

@@ -23,12 +23,19 @@ impl RedisExecutor {
     }
 
     /// Get Redis connection manager from global connection pools
+    ///
+    /// `db` adalah nomor database logis yang diminta. Manager bersama bersifat
+    /// multiplexed, jadi `SELECT` di atasnya memindahkan database untuk semua
+    /// tab. Saat fungsi ini disambungkan, ambil manager khusus database lewat
+    /// `crate::connection::pool::redis_manager_for_db(&config, db)` dan JANGAN
+    /// menjalankan `SELECT` pada clone manager bersama.
     fn get_connection_manager(
         connection_id: i64,
+        db: Option<i64>,
     ) -> Result<Arc<redis::aio::ConnectionManager>, QueryAstError> {
         // This will be accessed from global state in actual implementation
         Err(QueryAstError::Execution {
-            query: format!("connection_id: {}", connection_id),
+            query: format!("connection_id: {}, db: {:?}", connection_id, db),
             reason: "Pool lookup not yet wired to global state".to_string(),
         })
     }
@@ -99,23 +106,11 @@ impl DatabaseExecutor for RedisExecutor {
 
         warn!("Redis: SQL support is minimal. Use native Redis commands for full functionality.");
 
-        // Get connection manager from global registry
-        let manager = Self::get_connection_manager(connection_id)?;
+        // Redis database selection (0-15 by default). Manager yang dikembalikan
+        // sudah terikat ke database itu; tidak ada `SELECT` pada koneksi bersama.
+        let db_num = database_name.and_then(|db| db.parse::<i64>().ok());
+        let manager = Self::get_connection_manager(connection_id, db_num)?;
         let mut conn = (*manager).clone();
-
-        // Redis database selection (0-15 by default)
-        if let Some(db) = database_name
-            && let Ok(db_num) = db.parse::<i64>()
-        {
-            let _: () = redis::cmd("SELECT")
-                .arg(db_num)
-                .query_async(&mut conn)
-                .await
-                .map_err(|e| QueryAstError::Execution {
-                    query: format!("SELECT {}", db_num),
-                    reason: e.to_string(),
-                })?;
-        }
 
         // Parse the query
         let operation = Self::parse_query_type(sql)?;

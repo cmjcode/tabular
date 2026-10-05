@@ -2,7 +2,6 @@ use crate::{models, modules};
 use futures_util::TryStreamExt;
 use log::debug;
 use mongodb::{Client as MongoClient, bson::doc};
-use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions};
 
 pub(crate) fn fetch_columns_from_database(
     _connection_id: i64,
@@ -19,30 +18,13 @@ pub(crate) fn fetch_columns_from_database(
     rt.block_on(async {
         match connection_clone.connection_type {
             models::enums::DatabaseType::MySQL => {
-                let (target_host, target_port) =
-                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
-                        Ok(tuple) => tuple,
-                        Err(err) => {
-                            debug!("Failed to resolve MySQL target in fetch_columns: {}", err);
-                            return None;
-                        }
-                    };
-                let encoded_username = modules::url_encode(&connection_clone.username);
-                let encoded_password = modules::url_encode(&connection_clone.password);
-                let connection_string = format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    encoded_username,
-                    encoded_password,
-                    target_host,
-                    target_port,
-                    database_name
-                );
-
-                match MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(3))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH dan opsi SSL sama dengan pool utama.
+                match crate::connection::pool::connect_mysql_once(
+                    &connection_clone,
+                    &database_name,
+                    std::time::Duration::from_secs(3),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let query = "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
@@ -192,28 +174,14 @@ pub(crate) fn fetch_columns_from_database(
                 }
             }
             models::enums::DatabaseType::PostgreSQL => {
-                let (target_host, target_port) =
-                    match crate::connection::pool::resolve_connection_target(&connection_clone) {
-                        Ok(tuple) => tuple,
-                        Err(err) => {
-                            debug!("Failed to resolve Pg target in fetch_columns: {}", err);
-                            return None;
-                        }
-                    };
-                let connection_string = format!(
-                    "postgresql://{}:{}@{}:{}/{}",
-                    connection_clone.username,
-                    connection_clone.password,
-                    target_host,
-                    target_port,
-                    database_name
-                );
-
-                match PgPoolOptions::new()
-                    .max_connections(1)
-                    .acquire_timeout(std::time::Duration::from_secs(3))
-                    .connect(&connection_string)
-                    .await
+                // Helper bersama: tunnel SSH, opsi SSL, dan kredensial tanpa
+                // perlu URL-encode (lihat `connect_postgres_once`).
+                match crate::connection::pool::connect_postgres_once(
+                    &connection_clone,
+                    &database_name,
+                    std::time::Duration::from_secs(3),
+                )
+                .await
                 {
                     Ok(pool) => {
                         let (schema_name, raw_table) = if let Some((s, t)) = table_name.split_once('.') {
@@ -253,7 +221,7 @@ pub(crate) fn fetch_columns_from_database(
                         }
                     }
                     Err(e) => {
-                        debug!("Error connecting to PostgreSQL database: {}", e);
+                        log::warn!("[METADATA] Cannot fetch PostgreSQL columns: {}", e);
                         None
                     }
                 }

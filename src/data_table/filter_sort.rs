@@ -4,6 +4,63 @@ use log::debug;
 
 pub use crate::models::structs::SqlValue;
 
+/// Kunci urut satu sel untuk sort di sisi klien. Urutan total (ascending):
+/// angka (via `f64::total_cmp`, termasuk inf/NaN), lalu teks tanpa membedakan
+/// huruf besar/kecil, lalu NULL/kosong di akhir. Descending membalik semuanya,
+/// sehingga NULL berada di awal, sama seperti perilaku sebelumnya.
+#[derive(Debug, Clone)]
+pub(crate) enum SortKey {
+    Num(f64),
+    Str(String),
+    Null,
+}
+
+impl SortKey {
+    /// `None` = baris tidak memiliki kolom tersebut; diperlakukan seperti NULL.
+    pub(crate) fn from_cell(cell: Option<&String>) -> Self {
+        match cell.map(String::as_str) {
+            None | Some("NULL") | Some("") => SortKey::Null,
+            Some(value) => match value.parse::<f64>() {
+                Ok(num) => SortKey::Num(num),
+                Err(_) => SortKey::Str(value.to_lowercase()),
+            },
+        }
+    }
+
+    fn rank(&self) -> u8 {
+        match self {
+            SortKey::Num(_) => 0,
+            SortKey::Str(_) => 1,
+            SortKey::Null => 2,
+        }
+    }
+}
+
+// Kesetaraan mengikuti `Ord` (NaN == NaN) agar konsisten dengan urutan total.
+impl PartialEq for SortKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for SortKey {}
+
+impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (SortKey::Num(a), SortKey::Num(b)) => a.total_cmp(b),
+            (SortKey::Str(a), SortKey::Str(b)) => a.cmp(b),
+            _ => self.rank().cmp(&other.rank()),
+        }
+    }
+}
+
+impl PartialOrd for SortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Sorts the loaded table data in-memory by the specified column index
 pub(crate) fn sort_table_data(
     tabular: &mut window_egui::Tabular,
@@ -18,40 +75,19 @@ pub(crate) fn sort_table_data(
     tabular.sort_column = Some(column_index);
     tabular.sort_ascending = ascending;
 
-    // Sort ALL the data (not just current page)
-    tabular.all_table_data.sort_by(|a, b| {
-        if column_index >= a.len() || column_index >= b.len() {
-            return std::cmp::Ordering::Equal;
-        }
-
-        let cell_a = &a[column_index];
-        let cell_b = &b[column_index];
-
-        // Handle NULL or empty values (put them at the end)
-        let comparison = match (cell_a.as_str(), cell_b.as_str()) {
-            ("NULL", "NULL") | ("", "") => std::cmp::Ordering::Equal,
-            ("NULL", _) | ("", _) => std::cmp::Ordering::Greater,
-            (_, "NULL") | (_, "") => std::cmp::Ordering::Less,
-            (a_val, b_val) => {
-                // Try to parse as numbers first for better numeric sorting
-                match (a_val.parse::<f64>(), b_val.parse::<f64>()) {
-                    (Ok(num_a), Ok(num_b)) => num_a
-                        .partial_cmp(&num_b)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                    _ => {
-                        // Fall back to string comparison (case-insensitive)
-                        a_val.to_lowercase().cmp(&b_val.to_lowercase())
-                    }
-                }
-            }
-        };
-
-        if ascending {
-            comparison
-        } else {
-            comparison.reverse()
-        }
-    });
+    // Sort ALL the data (not just current page). Kunci dihitung sekali per
+    // baris (bukan parse + lowercase di setiap perbandingan) dan urutannya
+    // total, jadi `sort` tidak bisa panik karena komparator tidak konsisten.
+    // Pengurutan stabil: baris dengan kunci sama mempertahankan urutan semula.
+    if ascending {
+        tabular
+            .all_table_data
+            .sort_by_cached_key(|row| SortKey::from_cell(row.get(column_index)));
+    } else {
+        tabular.all_table_data.sort_by_cached_key(|row| {
+            std::cmp::Reverse(SortKey::from_cell(row.get(column_index)))
+        });
+    }
 
     // Update current page data after sorting
     update_current_page_data(tabular);
@@ -1168,5 +1204,149 @@ mod tests {
             clause,
             "\"deleted_at\" IS NULL AND \"status\" IN ('active', 'pending')"
         );
+    }
+
+    fn sort_key(value: &str) -> SortKey {
+        SortKey::from_cell(Some(&value.to_string()))
+    }
+
+    fn sorted_column(values: &[&str], ascending: bool) -> Vec<String> {
+        let mut t = crate::window_egui::Tabular::new();
+        t.current_table_headers = vec!["v".to_string(), "pos".to_string()];
+        t.all_table_data = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| vec![v.to_string(), i.to_string()])
+            .collect();
+        t.page_size = values.len().max(1);
+        t.current_page = 0;
+        sort_table_data(&mut t, 0, ascending);
+        t.all_table_data.iter().map(|r| r[0].clone()).collect()
+    }
+
+    #[test]
+    fn sort_numeric_column_is_numeric_not_lexical() {
+        assert_eq!(
+            sorted_column(&["10", "9", "-1.5", "100", "2"], true),
+            vec!["-1.5", "2", "9", "10", "100"]
+        );
+        assert_eq!(
+            sorted_column(&["10", "9", "-1.5", "100", "2"], false),
+            vec!["100", "10", "9", "2", "-1.5"]
+        );
+    }
+
+    #[test]
+    fn sort_places_nulls_last_ascending_and_first_descending() {
+        assert_eq!(
+            sorted_column(&["b", "NULL", "a", "", "C"], true),
+            vec!["a", "b", "C", "NULL", ""]
+        );
+        assert_eq!(
+            sorted_column(&["b", "NULL", "a", "", "C"], false),
+            vec!["NULL", "", "C", "b", "a"]
+        );
+    }
+
+    #[test]
+    fn sort_mixed_numeric_and_text_puts_numbers_before_text() {
+        assert_eq!(
+            sorted_column(&["abc", "10", "2", "Abd", "1e3", "x9"], true),
+            vec!["2", "10", "1e3", "abc", "Abd", "x9"]
+        );
+    }
+
+    #[test]
+    fn sort_handles_nan_and_infinity_strings() {
+        assert_eq!(
+            sorted_column(&["NaN", "inf", "1", "-inf", "NULL", "0"], true),
+            vec!["-inf", "0", "1", "inf", "NaN", "NULL"]
+        );
+        assert_eq!(sort_key("NaN"), sort_key("nan"));
+    }
+
+    #[test]
+    fn sort_is_stable_for_equal_keys() {
+        let mut t = crate::window_egui::Tabular::new();
+        t.current_table_headers = vec!["v".to_string(), "pos".to_string()];
+        t.all_table_data = ["b", "A", "a", "B", "a"]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| vec![v.to_string(), i.to_string()])
+            .collect();
+        t.page_size = 10;
+        sort_table_data(&mut t, 0, true);
+        let order: Vec<&str> = t.all_table_data.iter().map(|r| r[1].as_str()).collect();
+        assert_eq!(order, vec!["1", "2", "4", "0", "3"]);
+        sort_table_data(&mut t, 0, false);
+        let order: Vec<&str> = t.all_table_data.iter().map(|r| r[1].as_str()).collect();
+        assert_eq!(order, vec!["0", "3", "1", "2", "4"]);
+    }
+
+    #[test]
+    fn sort_rows_missing_the_column_are_treated_as_null() {
+        let mut t = crate::window_egui::Tabular::new();
+        t.current_table_headers = vec!["a".to_string(), "b".to_string()];
+        t.all_table_data = vec![
+            vec!["x".to_string()],
+            vec!["y".to_string(), "2".to_string()],
+            vec!["z".to_string(), "1".to_string()],
+        ];
+        t.page_size = 10;
+        sort_table_data(&mut t, 1, true);
+        let order: Vec<&str> = t.all_table_data.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(order, vec!["z", "y", "x"]);
+    }
+
+    #[test]
+    fn sort_key_order_is_total_and_transitive() {
+        // Nilai pseudo-acak deterministik (LCG) yang mencampur angka, teks,
+        // NULL, kosong, NaN, dan tak hingga.
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        let special = ["NULL", "", "NaN", "inf", "-inf", "-0", "0", "1e2", "abc", "ABC"];
+        let values: Vec<String> = (0..300)
+            .map(|_| {
+                let r = next();
+                match r % 5 {
+                    0 => special[(r / 5) as usize % special.len()].to_string(),
+                    1 => ((r / 5) as i64 % 2000 - 1000).to_string(),
+                    2 => format!("{:.2}", ((r / 5) % 10_000) as f64 / 37.0 - 100.0),
+                    3 => format!("item{}", (r / 5) % 50),
+                    _ => format!("{}x", (r / 5) % 50),
+                }
+            })
+            .collect();
+        let keys: Vec<SortKey> = values.iter().map(|v| SortKey::from_cell(Some(v))).collect();
+
+        use std::cmp::Ordering;
+        for a in &keys {
+            assert_eq!(a.cmp(a), Ordering::Equal);
+            for b in &keys {
+                // Antisimetri.
+                assert_eq!(a.cmp(b), b.cmp(a).reverse());
+            }
+        }
+        // Transitivitas pada sampel tripel (seluruh 300^3 terlalu banyak).
+        for i in (0..keys.len()).step_by(3) {
+            for j in (0..keys.len()).step_by(5) {
+                for k in (0..keys.len()).step_by(7) {
+                    let (a, b, c) = (&keys[i], &keys[j], &keys[k]);
+                    if a.cmp(b) != Ordering::Greater && b.cmp(c) != Ordering::Greater {
+                        assert_ne!(a.cmp(c), Ordering::Greater, "{a:?} {b:?} {c:?}");
+                    }
+                }
+            }
+        }
+
+        // Mengurutkan dengan kunci ini tidak panik dan hasilnya terurut.
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert!(sorted.windows(2).all(|w| w[0] <= w[1]));
     }
 }

@@ -88,8 +88,18 @@ fn file_path() -> std::path::PathBuf {
 
 /// Muat dari disk (dipanggil sekali saat startup, setelah data dir final).
 pub fn load_from_disk() {
-    let prefs = match std::fs::read_to_string(file_path()) {
-        Ok(raw) => PlatformPrefs::from_json(&raw),
+    let path = file_path();
+    let prefs = match std::fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<PlatformPrefs>(&raw) {
+            Ok(prefs) => prefs,
+            Err(e) => {
+                // Sisihkan file rusak supaya `persist()` berikutnya tidak
+                // menimpa preferensi lama dengan default.
+                log::warn!("[PREFS] invalid platform_prefs JSON, using defaults: {e}");
+                let _ = crate::directory::quarantine_corrupt_file(&path);
+                PlatformPrefs::default()
+            }
+        },
         Err(_) => PlatformPrefs::default(),
     };
     set(prefs);
@@ -99,7 +109,7 @@ pub fn load_from_disk() {
 /// Tulis preferensi saat ini ke disk.
 pub fn persist() {
     let path = file_path();
-    if let Err(e) = std::fs::write(&path, current().to_json()) {
+    if let Err(e) = crate::directory::write_file_atomically(&path, current().to_json().as_bytes()) {
         log::warn!("[PREFS] cannot write {}: {e}", path.display());
     }
 }

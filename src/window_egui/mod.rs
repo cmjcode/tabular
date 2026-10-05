@@ -98,6 +98,9 @@ pub struct QueryJobsState {
     pub callbacks: std::collections::HashMap<u64, QueryCallback>,
     /// Query ber-callback yang menunggu pool koneksi dibuat.
     pub deferred_callbacks: Vec<DeferredCallbackQuery>,
+    /// Tab asal (`QueryTab::id`) tiap job aktif; dipakai untuk membatalkan
+    /// query milik tab yang ditutup. Diisi oleh `Tabular::sync_job_tabs`.
+    pub tab_of: std::collections::HashMap<u64, usize>,
     last_id: u64,
 }
 
@@ -147,6 +150,15 @@ pub enum AutocompleteWarmResult {
         connection_id: i64,
         stats: crate::autocomplete::UsageStats,
     },
+}
+
+/// Hasil drop collection MongoDB yang dijalankan di runtime latar.
+#[derive(Debug)]
+pub struct DropCollectionOutcome {
+    pub connection_id: i64,
+    pub database: String,
+    pub collection: String,
+    pub result: Result<(), String>,
 }
 
 pub struct Tabular {
@@ -216,6 +228,9 @@ pub struct Tabular {
     // Background processing channels
     pub background_sender: Option<Sender<models::enums::BackgroundTask>>,
     pub background_receiver: Option<Receiver<models::enums::BackgroundResult>>,
+    /// Context egui, disimpan pada frame pertama, supaya task latar bisa
+    /// meminta repaint ketika hasilnya tiba (lihat `result_wake_hook`).
+    pub egui_ctx: Option<egui::Context>,
     pub query_result_sender: Sender<connection::QueryResultMessage>,
     pub query_result_receiver: Receiver<connection::QueryResultMessage>,
     pub dba_result_sender: Sender<(usize, Result<Vec<models::structs::ProcessInfo>, String>)>,
@@ -380,6 +395,9 @@ pub struct Tabular {
     pub config_store: Option<crate::config::ConfigStore>,
     pub last_saved_prefs: Option<crate::config::AppPreferences>,
     pub prefs_dirty: bool,
+    /// Simpan preferensi tertunda (debounce): diisi saat nilai berubah terus
+    /// menerus (mis. menyeret lebar panel AI) supaya tidak menulis tiap frame.
+    pub prefs_save_due: Option<std::time::Instant>,
     pub prefs_save_feedback: Option<String>,
     pub prefs_last_saved_at: Option<std::time::Instant>,
     pub prefs_loaded: bool,
@@ -466,7 +484,7 @@ pub struct Tabular {
     pub extra_cursors: Vec<usize>,
     pub last_editor_text: String, // For detecting text changes in multi-cursor mode (deprecated; will derive from editor.text)
     // Syntax highlighting cache (text_hash -> LayoutJob)
-    pub highlight_cache: std::collections::HashMap<u64, eframe::egui::text::LayoutJob>,
+    pub highlight_cache: crate::syntax_ts::HighlightCache,
     pub last_highlight_hash: Option<u64>,
     // New per-line highlight cache was used by the removed custom editor; no longer needed
     // Index dialog
@@ -496,6 +514,15 @@ pub struct Tabular {
     pub pending_drop_column_stmt: Option<String>,
     // Pending drop Mongo collection confirmation
     pub pending_drop_collection: Option<(i64, String, String)>, // (connection_id, db, collection)
+    /// Memo kolom primary key hasil query live, per (koneksi, database,
+    /// tabel): (waktu ambil, masa berlaku, kolom).
+    pub pk_columns_memo:
+        HashMap<(i64, String, String), (std::time::Instant, std::time::Duration, Vec<String>)>,
+    /// Hasil drop collection MongoDB yang dijalankan di runtime latar.
+    pub drop_collection_channel: (
+        Sender<DropCollectionOutcome>,
+        Receiver<DropCollectionOutcome>,
+    ),
     // Pending drop table confirmation
     pub pending_drop_table: Option<(i64, String, String, String)>, // (connection_id, database, table, stmt)
     /// Dialog dan fetch latar belakang untuk aksi objek skema (lihat `schema_actions`).

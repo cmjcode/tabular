@@ -2,7 +2,8 @@ use crate::models::enums::DatabaseType;
 use crate::models::structs::{ColumnMetadata, ColumnStructInfo};
 use crate::plugin_runtime::host_api::{PluginColumnSchema, PluginSelectionData, PluginTableSchema};
 use crate::plugin_runtime::manager::{
-    PluginCategory, PluginManager, PluginManifest, PluginModalState, PluginModalTab,
+    PendingPluginRun, PluginCategory, PluginManager, PluginManifest, PluginModalState,
+    PluginModalTab, PluginRunResult,
 };
 use crate::plugin_runtime::templates::{
     OrmTarget, WAT_ORM_STARTER, WAT_PARQUET_STARTER, generate_orm_code,
@@ -96,6 +97,52 @@ pub fn extract_plugin_table_schema(
             .unwrap_or_else(|| "GenericSQL".to_string()),
         columns,
         total_rows,
+    }
+}
+
+/// Mulai eksekusi plugin di thread kerja; hasilnya diambil
+/// [`poll_plugin_run`] di frame berikutnya.
+fn start_plugin_run(
+    ctx: &egui::Context,
+    state: &mut PluginModalState,
+    label: String,
+    success_message: String,
+    run: impl FnOnce() -> PluginRunResult + Send + 'static,
+) {
+    let repaint = ctx.clone();
+    match PendingPluginRun::spawn(label, success_message, run, move || {
+        repaint.request_repaint()
+    }) {
+        Ok(pending) => {
+            state.pending_run = Some(pending);
+            state.is_running = true;
+            state.error_message = None;
+            state.status_message = None;
+        }
+        Err(e) => state.error_message = Some(e),
+    }
+}
+
+/// Ambil hasil eksekusi plugin yang berjalan di latar, bila sudah selesai.
+fn poll_plugin_run(state: &mut PluginModalState) {
+    let Some(result) = state.pending_run.as_ref().and_then(|run| run.take_result()) else {
+        return;
+    };
+    let finished = state.pending_run.take();
+    state.is_running = false;
+    match result {
+        Ok(ctx_res) => {
+            state.execution_output = ctx_res.result_output;
+            state.execution_logs = ctx_res.captured_logs;
+            state.execution_exports = ctx_res.captured_exports;
+            state.error_message = None;
+            state.status_message = finished.map(|run| run.success_message);
+            state.active_tab = PluginModalTab::ExecutionOutput;
+        }
+        Err(e) => {
+            log::warn!("[PLUGIN] execution failed: {e}");
+            state.error_message = Some(e);
+        }
     }
 }
 
@@ -228,6 +275,25 @@ pub fn render_plugin_panel(
     ui.separator();
     ui.add_space(4.0);
 
+    // Eksekusi plugin berjalan di thread kerja; UI hanya menunggu hasilnya.
+    poll_plugin_run(state);
+    if let Some(run) = &state.pending_run {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(
+                egui::RichText::new(format!(
+                    "Running {}... ({}s)",
+                    run.label,
+                    run.started_at.elapsed().as_secs()
+                ))
+                .size(12.0),
+            );
+        });
+        ui.add_space(4.0);
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
     // Status or Error notifications
     let mut clear_error = false;
     if let Some(ref err) = state.error_message {
@@ -243,9 +309,13 @@ pub fn render_plugin_panel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("⚠ Error: {}", err))
-                            .color(egui::Color32::from_rgb(230, 80, 80))
-                            .size(12.0),
+                        egui::RichText::new(format!(
+                            "{} Error: {}",
+                            egui_icons::icons::ICON_WARNING.codepoint,
+                            err
+                        ))
+                        .color(egui::Color32::from_rgb(230, 80, 80))
+                        .size(12.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("Dismiss").clicked() {
@@ -277,9 +347,13 @@ pub fn render_plugin_panel(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("✓ {}", stat))
-                            .color(egui::Color32::from_rgb(50, 180, 100))
-                            .size(12.0),
+                        egui::RichText::new(format!(
+                            "{} {}",
+                            egui_icons::icons::ICON_CHECK_CIRCLE.codepoint,
+                            stat
+                        ))
+                        .color(egui::Color32::from_rgb(50, 180, 100))
+                        .size(12.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("Dismiss").clicked() {
@@ -893,7 +967,7 @@ fn render_catalog_tab(
                         .corner_radius(6.0)
                         .min_size(egui::vec2(ui.available_width(), 36.0));
 
-                        if ui.add(execute_btn).clicked() {
+                        if ui.add_enabled(!state.is_running, execute_btn).clicked() {
                             let schema = extract_plugin_table_schema(
                                 current_table_name,
                                 current_headers,
@@ -921,28 +995,29 @@ fn render_catalog_tab(
                                 None
                             };
 
-                            match manager.execute_plugin(
-                                &selected_plugin.id,
-                                &schema,
-                                selection_data.as_ref(),
-                                None,
-                                Some(&state.parquet_output_path),
-                            ) {
-                                Ok(ctx_res) => {
-                                    state.execution_output = ctx_res.result_output;
-                                    state.execution_logs = ctx_res.captured_logs;
-                                    state.execution_exports = ctx_res.captured_exports;
-                                    state.error_message = None;
-                                    state.status_message = Some(format!(
-                                        "Executed plugin '{}' successfully!",
-                                        selected_plugin.name
-                                    ));
-                                    state.active_tab = PluginModalTab::ExecutionOutput;
-                                }
-                                Err(e) => {
-                                    state.error_message = Some(e);
-                                }
-                            }
+                            // Serialisasi baris ke JSON dan eksekusi Wasm terjadi
+                            // di thread kerja, bukan di frame ini.
+                            let worker = manager.clone();
+                            let plugin_id = selected_plugin.id.clone();
+                            let output_path = state.parquet_output_path.clone();
+                            start_plugin_run(
+                                ui.ctx(),
+                                state,
+                                format!("plugin '{}'", selected_plugin.name),
+                                format!(
+                                    "Executed plugin '{}' successfully!",
+                                    selected_plugin.name
+                                ),
+                                move || {
+                                    worker.execute_plugin(
+                                        &plugin_id,
+                                        &schema,
+                                        selection_data.as_ref(),
+                                        None,
+                                        Some(&output_path),
+                                    )
+                                },
+                            );
                         }
             } else {
                 ui.vertical_centered(|ui| {
@@ -1202,7 +1277,7 @@ fn render_custom_wasm_tab(
     .corner_radius(6.0)
     .min_size(egui::vec2(ui.available_width(), 34.0));
 
-    if ui.add(run_btn).clicked() {
+    if ui.add_enabled(!state.is_running, run_btn).clicked() {
         let schema = extract_plugin_table_schema(
             current_table_name,
             current_headers,
@@ -1230,39 +1305,29 @@ fn render_custom_wasm_tab(
             None
         };
 
-        let res = if let Some(ref wasm_path) = state.custom_wasm_file {
-            match std::fs::read(wasm_path) {
-                Ok(bytes) => manager.execute_raw(
+        // File dibaca dan modul dijalankan di thread kerja.
+        let worker = manager.clone();
+        let wasm_path = state.custom_wasm_file.clone();
+        let wat_code = state.custom_wat_code.clone();
+        start_plugin_run(
+            ui.ctx(),
+            state,
+            "custom WebAssembly module".to_string(),
+            "Custom WebAssembly module executed successfully!".to_string(),
+            move || {
+                let bytes = match wasm_path {
+                    Some(path) => std::fs::read(&path)
+                        .map_err(|e| format!("Failed to read WASM file: {}", e))?,
+                    None => wat_code.into_bytes(),
+                };
+                worker.execute_raw(
                     &bytes,
                     "tabular_main",
                     Some(&schema),
                     selection_data.as_ref(),
-                ),
-                Err(e) => Err(format!("Failed to read WASM file: {}", e)),
-            }
-        } else {
-            manager.execute_raw(
-                state.custom_wat_code.as_bytes(),
-                "tabular_main",
-                Some(&schema),
-                selection_data.as_ref(),
-            )
-        };
-
-        match res {
-            Ok(ctx_res) => {
-                state.execution_output = ctx_res.result_output;
-                state.execution_logs = ctx_res.captured_logs;
-                state.execution_exports = ctx_res.captured_exports;
-                state.error_message = None;
-                state.status_message =
-                    Some("Custom WebAssembly module executed successfully!".to_string());
-                state.active_tab = PluginModalTab::ExecutionOutput;
-            }
-            Err(e) => {
-                state.error_message = Some(e);
-            }
-        }
+                )
+            },
+        );
     }
 }
 

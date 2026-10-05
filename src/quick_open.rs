@@ -220,6 +220,62 @@ pub struct QuickOpenState {
     pub filtered_items: Vec<(usize, i32)>, // (item_idx, score)
     pub request_focus: bool,
     pub scroll_to_selected: bool,
+    /// Pencarian semantik (indeks vektor) yang berjalan di latar.
+    pub semantic: SemanticSearchState,
+}
+
+/// Jeda setelah ketikan terakhir sebelum pencarian vektor dijalankan.
+const SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Hasil pencarian vektor untuk satu query (`seq` = nomor urut query).
+#[derive(Debug, Default)]
+pub struct SemanticHits {
+    seq: u64,
+    history: Vec<(String, f32)>,
+    tables: Vec<(i64, String, String, f32)>,
+}
+
+/// State pencarian semantik asinkron: hasil fuzzy tampil seketika, hit
+/// vektor menyusul lewat channel dan digabung bila `seq`-nya masih berlaku.
+#[derive(Default)]
+pub struct SemanticSearchState {
+    /// Nomor urut query terbaru; respons dengan nomor lain dibuang.
+    seq: u64,
+    /// Tenggat debounce pencarian yang belum dijalankan.
+    due: Option<std::time::Instant>,
+    channel: Option<(
+        std::sync::mpsc::Sender<SemanticHits>,
+        std::sync::mpsc::Receiver<SemanticHits>,
+    )>,
+}
+
+impl SemanticSearchState {
+    /// Batalkan pencarian tertunda dan jadikan respons yang sedang berjalan basi.
+    fn invalidate(&mut self) {
+        self.seq = self.seq.wrapping_add(1);
+        self.due = None;
+    }
+}
+
+// `QuickOpenState` harus `Clone`/`Debug`; channel tidak bisa disalin, jadi
+// salinan memulai state pencarian baru (hasil yang tertunda diabaikan).
+impl Clone for SemanticSearchState {
+    fn clone(&self) -> Self {
+        Self {
+            seq: self.seq,
+            due: None,
+            channel: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for SemanticSearchState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticSearchState")
+            .field("seq", &self.seq)
+            .field("due", &self.due)
+            .finish_non_exhaustive()
+    }
 }
 
 impl QuickOpenState {
@@ -236,6 +292,7 @@ impl QuickOpenState {
         self.selected_index = 0;
         self.filtered_items.clear();
         self.scroll_to_selected = false;
+        self.semantic.invalidate();
     }
 
     /// Navigate up or down in filtered results
@@ -286,6 +343,8 @@ impl QuickOpenState {
 
     /// Recalculate filtered items with smart fuzzy matching and scoring
     pub fn refilter(&mut self) {
+        // Daftar dihitung ulang: hit semantik untuk daftar lama tidak berlaku.
+        self.semantic.invalidate();
         let raw_query = self.query.trim();
 
         // Check for quick prefix overrides e.g. "t:", "@table", ">", "h:", "c:", "q:"
@@ -1440,11 +1499,11 @@ pub fn focus_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
 
 /// Helper function to open Quick Open modal (instant cached load)
 pub fn open_quick_open(tabular: &mut Tabular) {
-    if tabular.quick_open_state.items.is_empty() {
+    // Indeks tabel cukup diperbarui saat daftar item dimuat ulang.
+    let sync_schema = tabular.quick_open_state.items.is_empty();
+    if sync_schema {
         let items = load_all_quick_open_items(tabular);
         tabular.quick_open_state.items = items;
-        // Indeks tabel cukup diperbarui saat daftar item dimuat ulang.
-        sync_schema_index(tabular);
     } else {
         // Collection HTTP bisa berubah dari banyak jalur (simpan, rename,
         // import, sync); ambil ulang dari RAM agar selalu terbaru.
@@ -1461,42 +1520,103 @@ pub fn open_quick_open(tabular: &mut Tabular) {
     tabular.quick_open_state.scroll_to_selected = true;
     tabular.quick_open_state.refilter();
     tabular.show_command_palette = false;
-    sync_history_index(tabular);
+    spawn_index_sync(tabular, sync_schema);
 }
 
-/// Perbarui embedding tabel (nama + kolom) untuk semua database di cache.
-fn sync_schema_index(tabular: &mut Tabular) {
+/// Penanda sinkronisasi indeks vektor sedang berjalan (maksimal satu).
+static INDEX_SYNC_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Sinkronisasi skema diminta saat sinkronisasi lain masih berjalan.
+static SCHEMA_SYNC_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Perbarui embedding history (hanya baris yang berubah) dan, bila
+/// `sync_schema`, embedding tabel (nama + kolom) semua database di cache.
+/// Berjalan di runtime latar supaya palette terbuka seketika; pencarian
+/// pertama boleh memakai indeks lama.
+fn spawn_index_sync(tabular: &mut Tabular, sync_schema: bool) {
+    use std::sync::atomic::Ordering;
     let Some(pool) = tabular.db_pool.clone() else {
         return;
     };
-    let rt = tabular.get_runtime();
-    if let Err(e) = rt.block_on(crate::vector_index::sync_all_schema_embeddings(&pool)) {
-        log::debug!("Schema vector index sync failed: {e}");
+    if sync_schema {
+        SCHEMA_SYNC_PENDING.store(true, Ordering::SeqCst);
     }
-}
-
-/// Perbarui embedding history (hanya baris yang berubah) agar pencarian
-/// semantik memakai data terbaru.
-fn sync_history_index(tabular: &mut Tabular) {
-    let Some(pool) = tabular.db_pool.clone() else {
+    if INDEX_SYNC_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return;
-    };
+    }
+    /// Lepas penanda juga bila task panik atau dibatalkan.
+    struct InFlightGuard;
+    impl Drop for InFlightGuard {
+        fn drop(&mut self) {
+            INDEX_SYNC_IN_FLIGHT.store(false, Ordering::SeqCst);
+        }
+    }
     let rt = tabular.get_runtime();
-    if let Err(e) = rt.block_on(crate::vector_index::sync_history_embeddings(&pool)) {
-        log::debug!("History vector index sync failed: {e}");
+    rt.spawn(async move {
+        let _guard = InFlightGuard;
+        if SCHEMA_SYNC_PENDING.swap(false, Ordering::SeqCst) {
+            if let Err(e) = crate::vector_index::sync_all_schema_embeddings(&pool).await {
+                log::debug!("[QUICK-OPEN] Schema vector index sync failed: {e}");
+            }
+        }
+        if let Err(e) = crate::vector_index::sync_history_embeddings(&pool).await {
+            log::debug!("[QUICK-OPEN] History vector index sync failed: {e}");
+        }
+    });
+}
+
+/// Jadwalkan pencarian semantik untuk query saat ini (debounce). Dipanggil
+/// setelah `refilter()`, yang sudah membatalkan pencarian sebelumnya.
+fn schedule_semantic_search(tabular: &mut Tabular, ctx: &egui::Context) {
+    let state = &mut tabular.quick_open_state;
+    let (_, clean_query) = parse_query_prefix(state.query.trim());
+    if clean_query.chars().count() < 3 {
+        return;
+    }
+    state.semantic.due = Some(std::time::Instant::now() + SEMANTIC_DEBOUNCE);
+    ctx.request_repaint_after(SEMANTIC_DEBOUNCE);
+}
+
+/// Dipanggil tiap frame selama palette tampil: jalankan pencarian yang
+/// tenggat debounce-nya lewat dan gabungkan hit yang sudah tiba.
+fn poll_semantic_search(tabular: &mut Tabular, ctx: &egui::Context) {
+    if let Some(due) = tabular.quick_open_state.semantic.due {
+        let now = std::time::Instant::now();
+        if now >= due {
+            tabular.quick_open_state.semantic.due = None;
+            spawn_semantic_search(tabular, ctx);
+        } else {
+            ctx.request_repaint_after(due - now);
+        }
+    }
+
+    let state = &mut tabular.quick_open_state;
+    let mut latest: Option<SemanticHits> = None;
+    if let Some((_, rx)) = &state.semantic.channel {
+        while let Ok(hits) = rx.try_recv() {
+            if hits.seq == state.semantic.seq {
+                latest = Some(hits);
+            }
+        }
+    }
+    if let Some(hits) = latest
+        && state.is_open
+    {
+        merge_semantic_hits(state, hits);
     }
 }
 
-/// Tambahkan history yang isinya mirip dengan query (via indeks vektor) ke
-/// hasil filter, termasuk yang tidak cocok secara fuzzy. Skornya sengaja di
-/// bawah kecocokan teks literal agar hasil persis tetap di atas.
-fn apply_semantic_history(tabular: &mut Tabular) {
-    let raw_query = tabular.quick_open_state.query.clone();
-    let (filter_kind, clean_query) = parse_query_prefix(raw_query.trim());
+/// Cari history dan tabel yang isinya mirip dengan query (via indeks vektor)
+/// di runtime latar; hasil dikirim lewat channel lalu digabung oleh
+/// [`poll_semantic_search`].
+fn spawn_semantic_search(tabular: &mut Tabular, ctx: &egui::Context) {
+    let (filter_kind, clean_query) = parse_query_prefix(tabular.quick_open_state.query.trim());
     let category = filter_kind.or(tabular.quick_open_state.active_category);
     if clean_query.chars().count() < 3 {
         return;
     }
+    let query = clean_query.to_string();
     let Some(pool) = tabular.db_pool.clone() else {
         return;
     };
@@ -1505,13 +1625,24 @@ fn apply_semantic_history(tabular: &mut Tabular) {
         category,
         None | Some(QuickOpenKind::Table) | Some(QuickOpenKind::Diagram)
     );
+    if !want_history && !want_tables {
+        return;
+    }
 
+    let semantic = &mut tabular.quick_open_state.semantic;
+    let seq = semantic.seq;
+    let tx = semantic
+        .channel
+        .get_or_insert_with(std::sync::mpsc::channel)
+        .0
+        .clone();
+    let ctx = ctx.clone();
     let rt = tabular.get_runtime();
-    let (history_hits, table_hits) = rt.block_on(async {
+    rt.spawn(async move {
         let history = if want_history {
             crate::vector_index::search_history(
                 &pool,
-                clean_query,
+                &query,
                 10,
                 crate::vector_index::HISTORY_MAX_DISTANCE,
             )
@@ -1522,7 +1653,7 @@ fn apply_semantic_history(tabular: &mut Tabular) {
         let tables = if want_tables {
             crate::vector_index::search_tables(
                 &pool,
-                clean_query,
+                &query,
                 20,
                 crate::vector_index::TABLE_MAX_DISTANCE,
             )
@@ -1530,27 +1661,42 @@ fn apply_semantic_history(tabular: &mut Tabular) {
         } else {
             Ok(Vec::new())
         };
-        (history, tables)
+        let history = history.unwrap_or_else(|e| {
+            log::debug!("[QUICK-OPEN] Semantic history search failed: {e}");
+            Vec::new()
+        });
+        let tables = tables.unwrap_or_else(|e| {
+            log::debug!("[QUICK-OPEN] Semantic table search failed: {e}");
+            Vec::new()
+        });
+        if tx
+            .send(SemanticHits {
+                seq,
+                history,
+                tables,
+            })
+            .is_ok()
+        {
+            ctx.request_repaint();
+        }
     });
-    let history_hits = history_hits.unwrap_or_else(|e| {
-        log::debug!("Semantic history search failed: {e}");
-        Vec::new()
-    });
-    let table_hits = table_hits.unwrap_or_else(|e| {
-        log::debug!("Semantic table search failed: {e}");
-        Vec::new()
-    });
+}
 
-    let state = &mut tabular.quick_open_state;
+/// Tambahkan hit semantik ke hasil filter, termasuk yang tidak cocok secara
+/// fuzzy. Skornya sengaja di bawah kecocokan teks literal agar hasil persis
+/// tetap di atas. Bila pengguna belum menavigasi (pilihan masih di baris
+/// pertama) pilihan tetap di hasil teratas seperti sebelumnya; bila sudah,
+/// item yang dipilihnya tetap terpilih setelah daftar diurutkan ulang.
+fn merge_semantic_hits(state: &mut QuickOpenState, hits: SemanticHits) {
     let mut matched: Vec<(usize, i32)> = Vec::new();
-    for (sql, distance) in history_hits {
+    for (sql, distance) in hits.history {
         if let Some(idx) = state.items.iter().position(|it| {
             it.kind == QuickOpenKind::History && it.sql_content.as_deref() == Some(sql.as_str())
         }) {
             matched.push((idx, semantic_score(1.0 - distance)));
         }
     }
-    for (conn_id, db_name, table, distance) in table_hits {
+    for (conn_id, db_name, table, distance) in hits.tables {
         if let Some(idx) = state.items.iter().position(|it| {
             it.kind == QuickOpenKind::Table
                 && it.connection_id == Some(conn_id)
@@ -1561,6 +1707,10 @@ fn apply_semantic_history(tabular: &mut Tabular) {
         }
     }
 
+    let selected_item = (state.selected_index > 0)
+        .then(|| state.filtered_items.get(state.selected_index))
+        .flatten()
+        .map(|&(idx, _)| idx);
     let mut changed = false;
     for (idx, semantic_score) in matched {
         match state.filtered_items.iter_mut().find(|(i, _)| *i == idx) {
@@ -1582,6 +1732,12 @@ fn apply_semantic_history(tabular: &mut Tabular) {
             b.1.cmp(&a.1)
                 .then_with(|| items[a.0].title.len().cmp(&items[b.0].title.len()))
         });
+        // Hit datang belakangan: jangan pindahkan pilihan yang sudah dinavigasi.
+        if let Some(sel) = selected_item
+            && let Some(pos) = state.filtered_items.iter().position(|&(i, _)| i == sel)
+        {
+            state.selected_index = pos;
+        }
     }
 }
 
@@ -1644,6 +1800,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
     if progress <= 0.01 {
         return;
     }
+    poll_semantic_search(tabular, ctx);
 
     let screen_rect = ctx.content_rect();
     let modal_width = 680.0_f32.min(screen_rect.width() - 32.0);
@@ -1716,7 +1873,7 @@ pub fn render_quick_open(tabular: &mut Tabular, ctx: &egui::Context) {
 
                                     if resp.changed() {
                                         tabular.quick_open_state.refilter();
-                                        apply_semantic_history(tabular);
+                                        schedule_semantic_search(tabular, ctx);
                                         tabular.quick_open_state.selected_index = 0;
                                         tabular.quick_open_state.scroll_to_selected = true;
                                     }
@@ -2349,5 +2506,80 @@ mod tests {
         state.set_category(Some(QuickOpenKind::View));
         assert_eq!(state.filtered_items.len(), 1);
         assert_eq!(state.items[state.filtered_items[0].0].title, "user_view");
+    }
+
+    fn semantic_item(title: &str, kind: QuickOpenKind, sql: Option<&str>) -> QuickOpenItem {
+        QuickOpenItem::new(
+            title.to_string(),
+            title.to_string(),
+            String::new(),
+            kind,
+            Some(1),
+            None,
+            Some("db".to_string()),
+            (kind == QuickOpenKind::Table).then(|| title.to_string()),
+            None,
+            sql.map(str::to_string),
+            None,
+        )
+    }
+
+    #[test]
+    fn merge_semantic_hits_adds_hits_and_keeps_selection() {
+        let mut state = QuickOpenState::default();
+        state.items = vec![
+            semantic_item("orders", QuickOpenKind::Table, None),
+            semantic_item("customers", QuickOpenKind::Table, None),
+            semantic_item("h1", QuickOpenKind::History, Some("SELECT 1")),
+        ];
+        // Hasil fuzzy: hanya "orders" (skor rendah), dan sedang dipilih.
+        state.filtered_items = vec![(0, 50)];
+        state.selected_index = 0;
+
+        merge_semantic_hits(
+            &mut state,
+            SemanticHits {
+                seq: 0,
+                history: vec![("SELECT 1".to_string(), 0.5)],
+                tables: vec![
+                    (1, "db".to_string(), "customers".to_string(), 0.0),
+                    (1, "db".to_string(), "missing".to_string(), 0.0),
+                ],
+            },
+        );
+
+        let order: Vec<usize> = state.filtered_items.iter().map(|&(i, _)| i).collect();
+        assert_eq!(order, vec![1, 2, 0]);
+        // Belum dinavigasi: pilihan tetap di hasil teratas.
+        assert_eq!(state.selected_index, 0);
+
+        // Sudah dinavigasi ke item lain: item itu tetap terpilih setelah hit
+        // baru masuk dan daftar diurutkan ulang.
+        state.filtered_items = vec![(2, 60), (0, 50)];
+        state.selected_index = 1;
+        merge_semantic_hits(
+            &mut state,
+            SemanticHits {
+                seq: 0,
+                history: Vec::new(),
+                tables: vec![(1, "db".to_string(), "customers".to_string(), 0.0)],
+            },
+        );
+        let order: Vec<usize> = state.filtered_items.iter().map(|&(i, _)| i).collect();
+        assert_eq!(order, vec![1, 2, 0]);
+        assert_eq!(state.filtered_items[state.selected_index].0, 0);
+    }
+
+    #[test]
+    fn refilter_and_close_invalidate_pending_semantic_search() {
+        let mut state = QuickOpenState::default();
+        state.semantic.due = Some(std::time::Instant::now());
+        let seq = state.semantic.seq;
+        state.refilter();
+        assert_ne!(state.semantic.seq, seq);
+        assert!(state.semantic.due.is_none());
+        let seq = state.semantic.seq;
+        state.close();
+        assert_ne!(state.semantic.seq, seq);
     }
 }

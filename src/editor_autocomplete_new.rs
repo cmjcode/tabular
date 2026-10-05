@@ -460,6 +460,9 @@ fn collect_loaded_fks(app: &mut Tabular) -> Vec<crate::models::structs::ForeignK
                                     .await;
                                 }
                                 let _ = tx.commit().await;
+                                // Buang memo proses supaya pembaca berikutnya
+                                // melihat isi cache yang baru ditulis.
+                                crate::cache_data::invalidate_foreign_key_memo(cid);
                             }
                         }
                     }

@@ -144,6 +144,8 @@ pub fn decode(bytes: &[u8], hint: Option<TextEncoding>) -> (String, TextEncoding
     let encoding = hint.unwrap_or_else(|| detect(bytes));
     let body = bytes.strip_prefix(encoding.bom()).unwrap_or(bytes);
     let text = match encoding {
+        // Salinan di sini tidak terhindarkan (masukan dipinjam); untuk buffer
+        // milik sendiri pakai [`decode_owned`].
         TextEncoding::Utf8 => String::from_utf8_lossy(body).into_owned(),
         TextEncoding::Utf16Le => encoding_rs::UTF_16LE
             .decode_without_bom_handling(body)
@@ -161,9 +163,52 @@ pub fn decode(bytes: &[u8], hint: Option<TextEncoding>) -> (String, TextEncoding
     (text, encoding)
 }
 
+/// Seperti [`decode`], tetapi mengambil alih buffer: byte yang sudah UTF-8
+/// valid dipakai langsung sebagai `String` tanpa disalin. Buffer hanya
+/// disalin bila ada byte tidak valid (diganti U+FFFD) atau encoding lain.
+pub fn decode_owned(mut bytes: Vec<u8>, hint: Option<TextEncoding>) -> (String, TextEncoding) {
+    let encoding = hint.unwrap_or_else(|| detect(&bytes));
+    if encoding != TextEncoding::Utf8 {
+        return decode(&bytes, Some(encoding));
+    }
+    let bom = encoding.bom();
+    if !bom.is_empty() && bytes.starts_with(bom) {
+        bytes.drain(..bom.len());
+    }
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    };
+    (text, encoding)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_owned_reuses_valid_utf8_and_matches_decode() {
+        let valid = "id,name\n1,Żółć\n".as_bytes().to_vec();
+        let ptr = valid.as_ptr();
+        let (text, enc) = decode_owned(valid, None);
+        assert_eq!(enc, TextEncoding::Utf8);
+        assert_eq!(text, "id,name\n1,Żółć\n");
+        // Buffer yang sama: tidak ada salinan.
+        assert_eq!(text.as_ptr(), ptr);
+
+        let cases: Vec<(Vec<u8>, Option<TextEncoding>)> = vec![
+            (vec![0xEF, 0xBB, 0xBF, b'a'], None),
+            (vec![b'a', 0xFF, b'b'], Some(TextEncoding::Utf8)),
+            (encode("café", TextEncoding::Windows1252, false).bytes, None),
+            (
+                encode("a,b\n1,2\n", TextEncoding::Utf16Le, true).bytes,
+                None,
+            ),
+        ];
+        for (bytes, hint) in cases {
+            assert_eq!(decode_owned(bytes.clone(), hint), decode(&bytes, hint));
+        }
+    }
 
     #[test]
     fn utf16_roundtrip_with_and_without_bom() {

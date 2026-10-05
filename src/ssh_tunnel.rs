@@ -3,7 +3,7 @@ use log::debug;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::io::Read;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -73,6 +73,29 @@ impl TunnelProcess {
 static TUNNELS: Lazy<Mutex<HashMap<String, TunnelProcess>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Batas waktu sampai port lokal tunnel menerima koneksi. Sama dengan
+/// `ConnectTimeout` yang diberikan ke `ssh`.
+const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Batas satu percobaan `connect` ke port lokal saat menunggu tunnel siap.
+const TUNNEL_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Jeda antar percobaan saat port lokal belum dibuka oleh `ssh`.
+const TUNNEL_PROBE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Status proses tunnel sebuah koneksi di registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelState {
+    /// Proses `ssh` masih berjalan.
+    Alive,
+    /// Proses `ssh` sudah keluar; entry-nya sudah dibuang dari registry.
+    Dead,
+    /// Tidak ada tunnel terdaftar untuk koneksi ini.
+    Missing,
+    /// Registry sedang dipakai thread lain; status tidak diketahui.
+    Unknown,
+}
+
 /// One lock per tunnel key. Two attempts on the *same* connection still
 /// serialize, but attempts on different connections no longer queue behind each
 /// other — previously the registry lock was held across `spawn_tunnel`, so a
@@ -88,11 +111,12 @@ fn key_lock(key: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-fn lock_registry() -> Result<std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>>, String>
-{
+/// Kunci registry. Mutex yang ter-poison tetap dipakai: isinya hanya daftar
+/// proses anak, dan menganggapnya "kosong" justru membuat proses `ssh` bocor.
+fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<String, TunnelProcess>> {
     TUNNELS
         .lock()
-        .map_err(|_| "Failed to lock SSH tunnel registry".to_string())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `TunnelProcess::terminate` waits on the child, so it must never run on a
@@ -102,9 +126,67 @@ fn terminate_detached(process: TunnelProcess) {
 }
 
 fn allocate_local_port() -> Result<u16, String> {
-    TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| format!("Failed to allocate local port: {e}"))
-        .map(|listener| listener.local_addr().unwrap().port())
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("Failed to allocate local port: {e}"))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|e| format!("Failed to read allocated local port: {e}"))
+}
+
+/// Baca stderr proses yang SUDAH keluar dan format sebagai akhiran pesan error.
+fn stderr_detail(stderr: Option<&mut ChildStderr>) -> String {
+    let mut message = String::new();
+    if let Some(handle) = stderr {
+        let _ = handle.read_to_string(&mut message);
+    }
+    if message.trim().is_empty() {
+        String::new()
+    } else {
+        format!(": {}", message.trim())
+    }
+}
+
+/// Tunggu sampai port lokal tunnel menerima koneksi TCP.
+///
+/// `ssh -N -L` baru mendengarkan di port lokal setelah autentikasi selesai,
+/// jadi "proses masih hidup setelah 250 ms" bukan tanda tunnel siap: driver
+/// yang langsung konek akan mendapat "connection refused". Loop ini berhenti
+/// saat (a) port menerima koneksi, (b) proses `ssh` keluar — stderr-nya
+/// dikembalikan sebagai error, atau (c) `timeout` terlewati.
+fn wait_until_ready(
+    child: &mut Child,
+    stderr: &mut Option<ChildStderr>,
+    local_port: u16,
+    timeout: Duration,
+) -> Result<(), String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], local_port));
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "SSH tunnel exited with status {}{}",
+                    status,
+                    stderr_detail(stderr.as_mut())
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("Failed to poll ssh process: {e}")),
+        }
+
+        if TcpStream::connect_timeout(&addr, TUNNEL_PROBE_TIMEOUT).is_ok() {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "SSH tunnel did not become ready within {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(TUNNEL_PROBE_INTERVAL);
+    }
 }
 
 fn make_key(connection: &models::structs::ConnectionConfig) -> Result<String, String> {
@@ -250,7 +332,11 @@ fn spawn_tunnel(
     let mut command = Command::new(binary);
 
     if use_password {
-        command.arg("-p").arg(connection.ssh_password.trim());
+        // `sshpass -e` membaca password dari env `SSHPASS` milik proses anak.
+        // `-p <password>` menaruhnya di argv, yang terlihat oleh semua user
+        // lewat `ps`.
+        command.arg("-e");
+        command.env("SSHPASS", connection.ssh_password.trim());
         command.arg("ssh");
     }
 
@@ -283,31 +369,16 @@ fn spawn_tunnel(
             format!("Failed to start ssh process: {e}")
         }
     })?;
-    let stderr = child.stderr.take();
+    let mut stderr = child.stderr.take();
 
-    // Give ssh a brief moment to establish the tunnel and report errors.
-    std::thread::sleep(Duration::from_millis(250));
-    match child.try_wait() {
-        Ok(Some(status)) => {
-            let mut stderr_msg = String::new();
-            if let Some(mut stderr_handle) = stderr {
-                let _ = stderr_handle.read_to_string(&mut stderr_msg);
-            }
-            return Err(format!(
-                "SSH tunnel exited immediately with status {}{}",
-                status,
-                if stderr_msg.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(": {}", stderr_msg.trim())
-                }
-            ));
-        }
-        Ok(None) => {}
-        Err(e) => {
+    if let Err(err) = wait_until_ready(&mut child, &mut stderr, local_port, TUNNEL_READY_TIMEOUT) {
+        // Proses yang belum keluar (timeout / gagal polling) harus dimatikan
+        // dan di-reap supaya tidak menjadi zombie.
+        if !matches!(child.try_wait(), Ok(Some(_))) {
             let _ = child.kill();
-            return Err(format!("Failed to poll ssh process: {e}"));
+            let _ = child.wait();
         }
+        return Err(err);
     }
 
     Ok(TunnelProcess::new(child, stderr, local_port))
@@ -341,7 +412,7 @@ fn ensure_tunnel_internal(connection: &models::structs::ConnectionConfig) -> Res
     // Short critical section: reuse a live tunnel, or evict a dead one.
     let mut dead: Option<TunnelProcess> = None;
     {
-        let mut registry = lock_registry()?;
+        let mut registry = lock_registry();
         let mut evict = false;
         if let Some(process) = registry.get_mut(&key) {
             match process.check_alive() {
@@ -370,12 +441,11 @@ fn ensure_tunnel_internal(connection: &models::structs::ConnectionConfig) -> Res
 
     let local_port = allocate_local_port()?;
     let ssh_port = parse_ssh_port(&connection.ssh_port);
-    // `spawn_tunnel` sleeps ~250ms waiting for ssh to report an early failure, and
-    // ssh itself may take up to `ConnectTimeout`. The registry lock stays free
-    // throughout.
+    // `spawn_tunnel` menunggu sampai port lokal benar-benar menerima koneksi
+    // (paling lama `TUNNEL_READY_TIMEOUT`). Lock registry tetap bebas selama itu.
     let process = spawn_tunnel(connection, local_port, &ssh_port, &key)?;
     let port = process.local_port();
-    lock_registry()?.insert(key, process);
+    lock_registry().insert(key, process);
     Ok(port)
 }
 
@@ -410,11 +480,16 @@ fn shutdown_key(key: String) {
                 terminate_detached(process);
             }
         }
-        Err(_) => {
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            let removed = poisoned.into_inner().remove(&key);
+            if let Some(process) = removed {
+                debug!("Shutting down SSH tunnel for key {}", key);
+                terminate_detached(process);
+            }
+        }
+        Err(std::sync::TryLockError::WouldBlock) => {
             std::thread::spawn(move || {
-                let Ok(mut registry) = TUNNELS.lock() else {
-                    return;
-                };
+                let mut registry = lock_registry();
                 let removed = registry.remove(&key);
                 drop(registry);
                 if let Some(process) = removed {
@@ -428,33 +503,95 @@ fn shutdown_key(key: String) {
 
 pub fn active_local_port(connection: &models::structs::ConnectionConfig) -> Option<u16> {
     let key = make_key(connection).ok()?;
-    let mut registry = TUNNELS.lock().ok()?;
+    let mut registry = lock_registry();
     let process = registry.get_mut(&key)?;
     if process.check_alive().is_ok() {
         process.touch();
         Some(process.local_port())
     } else {
-        registry.remove(&key);
+        let dead = registry.remove(&key);
+        drop(registry);
+        if let Some(process) = dead {
+            terminate_detached(process);
+        }
         None
     }
 }
 
+/// Status tunnel untuk koneksi tersimpan `connection_id`.
+///
+/// Tidak pernah memblokir: aman dipanggil dari thread UI. Bila registry sedang
+/// dipakai thread lain hasilnya [`TunnelState::Unknown`]. Tunnel yang ternyata
+/// sudah mati langsung dibuang dari registry supaya `ensure_tunnel` berikutnya
+/// membuat yang baru.
+pub fn tunnel_state_by_id(connection_id: i64) -> TunnelState {
+    let key = format!("id:{connection_id}");
+    let mut registry = match TUNNELS.try_lock() {
+        Ok(registry) => registry,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return TunnelState::Unknown,
+    };
+    let Some(process) = registry.get_mut(&key) else {
+        return TunnelState::Missing;
+    };
+    match process.check_alive() {
+        Ok(()) => TunnelState::Alive,
+        Err(err) => {
+            debug!("SSH tunnel for key {} is dead: {}", key, err);
+            // Proses sudah keluar dan sudah di-reap oleh `try_wait`, jadi
+            // men-drop entry ini tidak memblokir.
+            registry.remove(&key);
+            TunnelState::Dead
+        }
+    }
+}
+
+/// True jika koneksi tersimpan `connection_id` punya tunnel yang prosesnya
+/// masih berjalan.
+pub fn is_tunnel_alive(connection_id: i64) -> bool {
+    tunnel_state_by_id(connection_id) == TunnelState::Alive
+}
+
+/// Matikan SEMUA tunnel dan tunggu sampai setiap proses `ssh` benar-benar
+/// keluar. Sinkron — dipanggil saat aplikasi (atau server MCP) berhenti, ketika
+/// thread detached tidak lagi dijamin sempat berjalan. Tanpa ini proses `ssh`
+/// menjadi yatim dan terus menahan port lokal setelah aplikasi ditutup.
+///
+/// Mengembalikan jumlah tunnel yang dimatikan.
+pub fn shutdown_all() -> usize {
+    let processes: Vec<(String, TunnelProcess)> = lock_registry().drain().collect();
+    terminate_all(processes)
+}
+
+/// Kill + wait setiap proses secara sinkron. Dipisah dari [`shutdown_all`]
+/// supaya bisa diuji tanpa menyentuh registry global.
+fn terminate_all(processes: Vec<(String, TunnelProcess)>) -> usize {
+    let count = processes.len();
+    for (key, process) in processes {
+        debug!("Shutting down SSH tunnel for key {} (shutdown_all)", key);
+        process.terminate();
+    }
+    count
+}
+
 pub fn cleanup_idle_tunnels(max_idle: Duration) {
-    if let Ok(mut registry) = TUNNELS.lock() {
+    let stale: Vec<(String, TunnelProcess)> = {
+        let mut registry = lock_registry();
         let now = Instant::now();
-        let mut stale_keys = Vec::new();
-        for (key, process) in registry.iter_mut() {
-            if process.last_used + max_idle < now {
-                stale_keys.push(key.clone());
-            }
-        }
-        for key in stale_keys {
-            if let Some(process) = registry.remove(&key) {
-                debug!("Auto-closing idle SSH tunnel for key {}", key);
-                // Terminate off-thread so reaping children doesn't hold the registry.
-                terminate_detached(process);
-            }
-        }
+        let stale_keys: Vec<String> = registry
+            .iter()
+            .filter(|(_, process)| process.last_used + max_idle < now)
+            .map(|(key, _)| key.clone())
+            .collect();
+        stale_keys
+            .into_iter()
+            .filter_map(|key| registry.remove(&key).map(|process| (key, process)))
+            .collect()
+    };
+    for (key, process) in stale {
+        debug!("Auto-closing idle SSH tunnel for key {}", key);
+        // Terminate off-thread so reaping children doesn't hold the registry.
+        terminate_detached(process);
     }
 }
 
@@ -485,6 +622,147 @@ mod tests {
         assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"/home/user/.ssh/id_ed25519".to_string()));
         assert!(args.contains(&"ubuntu@bastion.example.com".to_string()));
+    }
+
+    #[test]
+    fn allocated_port_is_usable() {
+        let port = allocate_local_port().expect("free local port");
+        assert_ne!(port, 0);
+    }
+
+    #[test]
+    fn password_is_never_placed_on_the_command_line() {
+        let mut conn = models::structs::ConnectionConfig::default();
+        conn.host = "db.internal".to_string();
+        conn.port = "5432".to_string();
+        conn.ssh_host = "bastion.example.com".to_string();
+        conn.ssh_username = "ubuntu".to_string();
+        conn.ssh_auth_method = SshAuthMethod::Password;
+        conn.ssh_password = "s3cr3t-pässword".to_string();
+
+        let args = build_ssh_args(&conn, 40000, "22").unwrap();
+        assert!(args.iter().all(|arg| !arg.contains("s3cr3t")));
+        assert!(args.contains(&"PreferredAuthentications=password".to_string()));
+    }
+
+    /// Proses anak berumur panjang sebagai pengganti `ssh` di test.
+    #[cfg(unix)]
+    fn sleeper() -> Child {
+        Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_wait_succeeds_once_the_port_accepts_connections() {
+        // Listener mewakili `ssh -L` yang sudah siap.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut child = sleeper();
+        let mut stderr = child.stderr.take();
+
+        let result = wait_until_ready(&mut child, &mut stderr, port, Duration::from_secs(5));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_wait_reports_stderr_when_the_process_exits() {
+        let port = allocate_local_port().unwrap();
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo 'Permission denied (publickey).' >&2; exit 255")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        let mut stderr = child.stderr.take();
+
+        let started = Instant::now();
+        let err = wait_until_ready(&mut child, &mut stderr, port, Duration::from_secs(10))
+            .expect_err("exited process must fail readiness");
+        assert!(err.contains("Permission denied"), "{err}");
+        assert!(err.contains("exited"), "{err}");
+        // Harus berhenti begitu proses keluar, bukan menunggu timeout penuh.
+        assert!(started.elapsed() < Duration::from_secs(8));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_wait_times_out_when_the_port_never_opens() {
+        let port = allocate_local_port().unwrap();
+        let mut child = sleeper();
+        let mut stderr = child.stderr.take();
+
+        let err = wait_until_ready(&mut child, &mut stderr, port, Duration::from_millis(400))
+            .expect_err("closed port must time out");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(err.contains("did not become ready"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_all_kills_and_reaps_every_child() {
+        let mut first = sleeper();
+        let mut second = sleeper();
+        let pids = [first.id(), second.id()];
+        let processes = vec![
+            ("a".to_string(), {
+                let stderr = first.stderr.take();
+                TunnelProcess::new(first, stderr, 1)
+            }),
+            ("b".to_string(), {
+                let stderr = second.stderr.take();
+                TunnelProcess::new(second, stderr, 2)
+            }),
+        ];
+
+        assert_eq!(terminate_all(processes), 2);
+        for pid in pids {
+            // `kill -0` gagal bila proses sudah tidak ada (sudah di-reap).
+            let alive = Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            assert!(!alive, "process {pid} should be gone");
+        }
+    }
+
+    // Id negatif per test: TUNNELS bersifat global dan test berbagi proses.
+    #[cfg(unix)]
+    #[test]
+    fn tunnel_state_tracks_the_child_process() {
+        let id = -7101;
+        let key = format!("id:{id}");
+        assert_eq!(tunnel_state_by_id(id), TunnelState::Missing);
+        assert!(!is_tunnel_alive(id));
+
+        let mut child = sleeper();
+        let stderr = child.stderr.take();
+        lock_registry().insert(key.clone(), TunnelProcess::new(child, stderr, 1));
+        assert_eq!(tunnel_state_by_id(id), TunnelState::Alive);
+        assert!(is_tunnel_alive(id));
+
+        // Matikan proses dari luar, seperti `ssh` yang putus sendiri.
+        if let Some(process) = lock_registry().get_mut(&key) {
+            let _ = process.child.kill();
+            let _ = process.child.wait();
+        }
+        assert_eq!(tunnel_state_by_id(id), TunnelState::Dead);
+        // Entry mati sudah dibuang, jadi berikutnya terbaca tidak ada.
+        assert_eq!(tunnel_state_by_id(id), TunnelState::Missing);
     }
 
     #[test]

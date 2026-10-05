@@ -170,6 +170,9 @@ MongoDB and HTTP connections are listed but cannot run queries yet.
   Unknown statements are treated as unsafe. String literals, quoted identifiers and comments
   are skipped so `SELECT 'DELETE'` is still a read. The classifier is a keyword scanner, not a
   full parser; a user-defined function that writes is still seen as a read.
+- **Engine-level read-only.** As a second layer, `run_query` runs inside a read-only
+  transaction on PostgreSQL and MySQL and with `PRAGMA query_only` on SQLite, so a write that
+  slips past the classifier is rejected by the database itself.
 - **Writes only where you allowed them.** `execute_statement` and `cancel_query` follow the
   connection's access level; see below.
 - **No credentials on the wire.** The agent receives only ids, names, hosts and database

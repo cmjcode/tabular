@@ -8,6 +8,15 @@ use mssql_client::{Client, Config, Credentials, Ready, SqlValue};
 // with pooling from mssql-driver-pool. The helpers below centralize config,
 // connection, and dynamic value-to-string conversion for the whole app.
 
+/// Batas waktu per perintah di tingkat driver. `mssql-client` 0.20 memakai
+/// 30 detik secara bawaan, yang memotong query panjang tanpa mempedulikan
+/// pengaturan query-timeout user (0 = tanpa batas). Batas yang sebenarnya
+/// ditegakkan aplikasi (`tokio::time::timeout` + ATTENTION di eksekutor);
+/// nilai ini hanya plafon longgar supaya perintah di luar eksekutor (metadata,
+/// tes koneksi) tidak menggantung selamanya. Pengaturan user tidak terjangkau
+/// dari sini karena config dibuat sekali per pool.
+const MSSQL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// Build a Config for a direct (non-pooled) MsSQL connection.
 /// Mirrors the app-wide defaults: SQL auth + trusted server certificate.
 pub(crate) fn mssql_config(
@@ -31,6 +40,9 @@ pub(crate) fn mssql_config(
     {
         config = config.database(db.to_string());
     }
+    // Dua-duanya diisi: driver membaca field lama, `timeouts` adalah API barunya.
+    config.command_timeout = MSSQL_COMMAND_TIMEOUT;
+    config.timeouts.command_timeout = MSSQL_COMMAND_TIMEOUT;
     config
 }
 
@@ -159,7 +171,9 @@ pub(crate) fn fetch_tables_from_mssql_connection(
     _database_name: &str,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Pakai runtime aplikasi yang berumur panjang: pool yang dibuat (dan
+    // di-cache) di dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         // Get or create pool
         let pool_enum =
@@ -237,7 +251,8 @@ pub(crate) fn fetch_objects_from_mssql_connection(
     _database_name: &str,
     object_type: &str,
 ) -> Option<Vec<String>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi, bukan runtime sekali pakai (lihat fungsi di atas).
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         // Get or create pool
         let pool_enum =
@@ -349,8 +364,26 @@ pub(crate) async fn run_query(
     client: &mut Client<Ready>,
     query: &str,
 ) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    run_query_limited(client, query, usize::MAX)
+        .await
+        .map(|(headers, rows, _truncated)| (headers, rows))
+}
+
+/// Seperti [`run_query`], tetapi berhenti mengonversi baris setelah `max_rows`
+/// dan melaporkan apakah hasil terpotong.
+///
+/// Catatan: `mssql-client` 0.20 membaca seluruh respons dari jaringan di dalam
+/// `query_multiple` (baris disimpan mentah, didekode malas). Batas ini mencegah
+/// konversi ke `Vec<Vec<String>>` — bagian yang paling boros memori — tetapi
+/// tidak bisa menghentikan transfernya; itu butuh API streaming di driver.
+pub(crate) async fn run_query_limited(
+    client: &mut Client<Ready>,
+    query: &str,
+    max_rows: usize,
+) -> Result<(Vec<String>, Vec<Vec<String>>, bool), String> {
     let mut headers: Vec<String> = Vec::new();
     let mut data: Vec<Vec<String>> = Vec::new();
+    let mut truncated = false;
 
     // query_multiple handles batches like "USE [db]; SELECT ..." — like the
     // previous tiberius stream, headers follow the latest result set with
@@ -360,21 +393,28 @@ pub(crate) async fn run_query(
         .await
         .map_err(|e| e.to_string())?;
 
-    loop {
+    'sets: loop {
         if let Some(cols) = stream.columns()
             && !cols.is_empty()
         {
             headers = cols.iter().map(|c| c.name.clone()).collect();
         }
         while let Some(row) = stream.next_row().await.map_err(|e| e.to_string())? {
+            if data.len() >= max_rows {
+                truncated = true;
+                break 'sets;
+            }
             data.push(row_values_to_strings(&row));
         }
         if !stream.next_result().await.map_err(|e| e.to_string())? {
             break;
         }
     }
-    Ok((headers, data))
+    Ok((headers, data, truncated))
 }
+
+/// Satu result set: header, baris, dan penanda terpotong.
+pub(crate) type MssqlResultSet = (Vec<String>, Vec<Vec<String>>, bool);
 
 /// Seperti [`run_query`], tetapi setiap result set yang punya kolom dikembalikan
 /// terpisah (bukan digabung di bawah header terakhir). Batch tanpa result set
@@ -383,7 +423,23 @@ pub(crate) async fn run_query_multi(
     client: &mut Client<Ready>,
     query: &str,
 ) -> Result<Vec<(Vec<String>, Vec<Vec<String>>)>, String> {
-    let mut sets: Vec<(Vec<String>, Vec<Vec<String>>)> = Vec::new();
+    run_query_multi_limited(client, query, usize::MAX)
+        .await
+        .map(|sets| {
+            sets.into_iter()
+                .map(|(headers, rows, _truncated)| (headers, rows))
+                .collect()
+        })
+}
+
+/// Seperti [`run_query_multi`], dengan batas `max_rows` per result set. Baris
+/// di luar batas dilewati tanpa dikonversi dan result set ditandai terpotong.
+pub(crate) async fn run_query_multi_limited(
+    client: &mut Client<Ready>,
+    query: &str,
+    max_rows: usize,
+) -> Result<Vec<MssqlResultSet>, String> {
+    let mut sets: Vec<MssqlResultSet> = Vec::new();
     let mut stream = client
         .query_multiple(query, &[])
         .await
@@ -395,17 +451,111 @@ pub(crate) async fn run_query_multi(
             .filter(|cols| !cols.is_empty())
             .map(|cols| cols.iter().map(|c| c.name.clone()).collect());
         let mut rows = Vec::new();
+        let mut truncated = false;
         while let Some(row) = stream.next_row().await.map_err(|e| e.to_string())? {
+            if rows.len() >= max_rows {
+                // Sisa baris result set ini dibuang; lanjut ke result set berikutnya.
+                truncated = true;
+                break;
+            }
             rows.push(row_values_to_strings(&row));
         }
         if let Some(headers) = headers {
-            sets.push((headers, rows));
+            sets.push((headers, rows, truncated));
         }
         if !stream.next_result().await.map_err(|e| e.to_string())? {
             break;
         }
     }
     Ok(sets)
+}
+
+/// Kegagalan eksekusi MsSQL yang dibatasi waktu.
+#[derive(Debug)]
+pub(crate) enum MssqlExecError {
+    /// Batas waktu tercapai; koneksi sudah dibuang (tidak kembali ke pool).
+    Timeout,
+    /// Gagal mengambil koneksi dari pool (jaringan/tunnel/pool tertutup).
+    Connection(String),
+    /// Error dari server atau driver saat menjalankan statement.
+    Query(String),
+}
+
+/// Batas waktu untuk mengirim paket ATTENTION saat membatalkan query.
+const MSSQL_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Jalankan batch pada satu koneksi pool dengan batas baris dan batas waktu
+/// opsional. `split` menentukan apakah result set dipisah
+/// ([`run_query_multi_limited`]) atau digabung ([`run_query_limited`]).
+///
+/// Saat timeout: paket ATTENTION dikirim supaya server berhenti mengerjakan
+/// batch, lalu koneksi di-detach dan ditutup. Koneksi yang masih punya respons
+/// tertunda tidak boleh kembali ke pool karena pemakai berikutnya akan membaca
+/// sisa respons query lama.
+async fn execute_bounded(
+    pool: &mssql_driver_pool::Pool,
+    query: &str,
+    max_rows: usize,
+    timeout: Option<std::time::Duration>,
+    split: bool,
+) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
+    let mut conn = pool
+        .get()
+        .await
+        .map_err(|e| MssqlExecError::Connection(e.to_string()))?;
+    let client = conn
+        .client_mut()
+        .ok_or_else(|| MssqlExecError::Connection("MsSQL pooled connection unavailable".into()))?;
+    let cancel = client.cancel_handle();
+
+    let run = async {
+        if split {
+            run_query_multi_limited(client, query, max_rows).await
+        } else {
+            run_query_limited(client, query, max_rows)
+                .await
+                .map(|set| vec![set])
+        }
+    };
+    let Some(limit) = timeout else {
+        return run.await.map_err(MssqlExecError::Query);
+    };
+    match tokio::time::timeout(limit, run).await {
+        Ok(result) => result.map_err(MssqlExecError::Query),
+        Err(_) => {
+            match tokio::time::timeout(MSSQL_CANCEL_TIMEOUT, cancel.cancel()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => log::warn!("[MSSQL] Failed to send query cancel: {}", e),
+                Err(_) => log::warn!("[MSSQL] Query cancel timed out"),
+            }
+            // Detach lalu drop: koneksi ditutup, bukan dikembalikan ke pool.
+            drop(conn.detach());
+            Err(MssqlExecError::Timeout)
+        }
+    }
+}
+
+/// Jalankan batch lewat pool dengan batas baris dan batas waktu; semua result
+/// set digabung seperti [`run_query`].
+pub(crate) async fn execute_query_bounded(
+    pool: std::sync::Arc<mssql_driver_pool::Pool>,
+    query: &str,
+    max_rows: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<MssqlResultSet, MssqlExecError> {
+    let mut sets = execute_bounded(pool.as_ref(), query, max_rows, timeout, false).await?;
+    Ok(sets.pop().unwrap_or_default())
+}
+
+/// Jalankan batch lewat pool dengan batas baris per result set dan batas waktu;
+/// setiap result set dikembalikan terpisah.
+pub(crate) async fn execute_query_multi_bounded(
+    pool: std::sync::Arc<mssql_driver_pool::Pool>,
+    query: &str,
+    max_rows: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
+    execute_bounded(pool.as_ref(), query, max_rows, timeout, true).await
 }
 
 /// Jalankan batch lewat pool dan kembalikan semua result set secara terpisah.
@@ -421,81 +571,80 @@ pub(crate) async fn execute_query_multi(
 }
 
 // Helper: Remove TOP clauses from MsSQL SELECT for pagination compatibility
+//
+// Semua offset dihitung pada byte teks asli dengan perbandingan ASCII
+// case-insensitive. Versi lama mencari posisi di salinan `to_lowercase()` lalu
+// memotong teks asli dengan offset itu; lowercase Unicode bisa mengubah panjang
+// byte sehingga slicing panic di tengah karakter (mis. `İ`, emoji).
 pub(crate) fn sanitize_mssql_select_for_pagination(select_part: &str) -> String {
-    let mut result = select_part.to_string();
+    let bytes = select_part.as_bytes();
+    let starts_with_ci = |pos: usize, word: &[u8]| {
+        bytes
+            .get(pos..pos + word.len())
+            .is_some_and(|slice| slice.eq_ignore_ascii_case(word))
+    };
+    let skip_whitespace = |mut pos: usize| {
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        pos
+    };
 
     // Pattern: SELECT [whitespace] TOP [whitespace] number/expression [whitespace]
-    // Use simple case-insensitive string manipulation to avoid regex dependency
-    let lower = result.to_lowercase();
+    let Some(select_pos) = crate::connection::sql::find_ascii_ci(select_part, "select", 0) else {
+        return select_part.to_string();
+    };
+    let select_end = select_pos + "select".len();
 
-    // Find "select" followed by optional whitespace and "top"
-    if let Some(select_pos) = lower.find("select") {
-        let after_select = select_pos + "select".len();
+    let top_pos = skip_whitespace(select_end);
+    if !starts_with_ci(top_pos, b"top") {
+        return select_part.to_string();
+    }
+    let top_end = top_pos + "top".len();
+    // `TOP` harus diikuti spasi atau `(`; kalau tidak, ini awal identifier
+    // seperti `topic` dan tidak boleh dipotong.
+    let after_top = skip_whitespace(top_end);
+    let opens_paren = bytes.get(after_top) == Some(&b'(');
+    if after_top == top_end && !opens_paren {
+        return select_part.to_string();
+    }
 
-        // Skip whitespace after SELECT
-        let mut scan_pos = after_select;
-        let bytes = result.as_bytes();
-        while scan_pos < bytes.len() && bytes[scan_pos].is_ascii_whitespace() {
-            scan_pos += 1;
+    let mut value_end = after_top;
+    if opens_paren {
+        // Ekspresi dalam kurung seperti TOP (100) atau TOP (@n)
+        value_end += 1;
+        while value_end < bytes.len() && bytes[value_end] != b')' {
+            value_end += 1;
         }
-
-        // Check if "TOP" follows
-        let remaining_lower = &lower[scan_pos..];
-        if remaining_lower.starts_with("top") {
-            let top_end = scan_pos + 3; // "top".len()
-
-            // Skip whitespace after TOP
-            let mut after_top = top_end;
-            while after_top < bytes.len() && bytes[after_top].is_ascii_whitespace() {
-                after_top += 1;
-            }
-
-            // Skip the number/expression after TOP
-            let mut value_end = after_top;
-
-            // Handle parenthesized expressions like TOP (100)
-            if after_top < bytes.len() && bytes[after_top] == b'(' {
-                value_end += 1;
-                while value_end < bytes.len() && bytes[value_end] != b')' {
-                    value_end += 1;
-                }
-                if value_end < bytes.len() {
-                    value_end += 1;
-                } // include closing )
-            } else {
-                // Handle simple numbers and PERCENT keyword
-                while value_end < bytes.len()
-                    && (bytes[value_end].is_ascii_digit() || bytes[value_end] == b'%')
-                {
-                    value_end += 1;
-                }
-
-                // Check for optional PERCENT keyword
-                let mut temp_pos = value_end;
-                while temp_pos < bytes.len() && bytes[temp_pos].is_ascii_whitespace() {
-                    temp_pos += 1;
-                }
-                if temp_pos < bytes.len() {
-                    let remaining = &lower[temp_pos..];
-                    if remaining.starts_with("percent") {
-                        value_end = temp_pos + "percent".len();
-                    }
-                }
-            }
-
-            // Skip trailing whitespace after the TOP value
-            while value_end < bytes.len() && bytes[value_end].is_ascii_whitespace() {
-                value_end += 1;
-            }
-
-            // Reconstruct: SELECT + everything after the TOP clause
-            let select_part = &result[..select_pos + "select".len()];
-            let remaining_part = &result[value_end..];
-            result = format!("{} {}", select_part, remaining_part.trim_start());
+        if value_end < bytes.len() {
+            value_end += 1; // sertakan `)` penutup
+        }
+    } else {
+        while value_end < bytes.len()
+            && (bytes[value_end].is_ascii_digit() || bytes[value_end] == b'%')
+        {
+            value_end += 1;
         }
     }
 
-    result
+    // Keyword PERCENT opsional setelah nilai TOP
+    let percent_pos = skip_whitespace(value_end);
+    if starts_with_ci(percent_pos, b"percent")
+        && bytes
+            .get(percent_pos + "percent".len())
+            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
+    {
+        value_end = percent_pos + "percent".len();
+    }
+    value_end = skip_whitespace(value_end);
+
+    // `select_end` dan `value_end` selalu jatuh tepat setelah byte ASCII (atau
+    // di akhir teks), jadi keduanya batas karakter yang sah. `get` dipakai
+    // supaya asumsi itu tidak pernah bisa menjadi panic.
+    match (select_part.get(..select_end), select_part.get(value_end..)) {
+        (Some(head), Some(tail)) => format!("{} {}", head, tail.trim_start()),
+        _ => select_part.to_string(),
+    }
 }
 
 // Helper: build MsSQL SELECT ensuring database context and proper quoting.
@@ -586,5 +735,77 @@ pub(crate) fn build_mssql_select_query(db_name: String, raw_name: String) -> Str
         format!("SELECT TOP 100 * FROM {};", fq)
     } else {
         format!("USE [{}];\nSELECT TOP 100 * FROM {};", database_part, fq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_removes_top_clause_variants() {
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP 100 * FROM t"),
+            "SELECT * FROM t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("select  top(50)  a, b from t"),
+            "select a, b from t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP 10 PERCENT a FROM t"),
+            "SELECT a FROM t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP (@n) a FROM t"),
+            "SELECT a FROM t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT a FROM t"),
+            "SELECT a FROM t"
+        );
+    }
+
+    #[test]
+    fn sanitize_leaves_identifiers_starting_with_top_alone() {
+        // Dulu `topic` terpotong menjadi `ic`.
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT topic, top_score FROM t"),
+            "SELECT topic, top_score FROM t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP 5 percentile FROM t"),
+            "SELECT percentile FROM t"
+        );
+    }
+
+    #[test]
+    fn sanitize_handles_non_ascii_without_panicking() {
+        // Regresi: offset dari teks lowercase dipakai untuk memotong teks asli.
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("İİİ SELECT TOP 10 'café' AS x FROM t"),
+            "İİİ SELECT 'café' AS x FROM t"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP 3 N'—😀' AS emoji FROM [tabél]"),
+            "SELECT N'—😀' AS emoji FROM [tabél]"
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP (😀"),
+            "SELECT "
+        );
+        assert_eq!(
+            sanitize_mssql_select_for_pagination("SELECT TOP İ"),
+            "SELECT İ"
+        );
+    }
+
+    #[test]
+    fn sanitize_and_builder_never_panic_on_odd_input() {
+        for input in crate::connection::sql::odd_sql_inputs() {
+            let _ = sanitize_mssql_select_for_pagination(&input);
+            let _ = build_mssql_select_query(input.clone(), input.clone());
+            let _ = build_mssql_select_query(String::new(), input);
+        }
     }
 }

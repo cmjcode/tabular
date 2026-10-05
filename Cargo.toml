@@ -238,6 +238,13 @@ collab = ["dep:yrs", "dep:tokio-tungstenite"]
 # removed lapce_core in egui-only mode
 
 
+# Tidak ada `openssl::` di src/: dependensi ini ada hanya untuk menyalakan
+# fitur `vendored`. Di Linux `sqlx` (tls-native-tls) -> native-tls -> openssl-sys,
+# dan lewat penyatuan fitur Cargo baris ini membuat OpenSSL dikompilasi dan
+# di-link statis, sehingga build tidak butuh libssl-dev dan binary tidak
+# bergantung pada versi libssl sistem. Periksa dengan
+# `cargo tree --target x86_64-unknown-linux-gnu -i openssl-sys -e features`
+# sebelum menghapusnya. (Di macOS native-tls memakai Security.framework.)
 [target.'cfg(unix)'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 
@@ -286,13 +293,16 @@ maintainer-scripts = "debian"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = true
+# Hanya debuginfo yang dibuang; nama simbol dipertahankan. Dengan
+# `strip = true` backtrace di laporan crash hanya berisi alamat tanpa nama
+# fungsi, sehingga tidak bisa dipakai untuk mencari penyebabnya.
+strip = "debuginfo"
 
 # Proc-macro dan build script dikompilasi sebagai dylib yang di-dlopen oleh rustc.
 # `strip = true` (strip simbol penuh) memakai `strip` dari Xcode 27 yang membuat
 # LINKEDIT string pool tidak sejajar, sehingga dyld macOS 27 menolak memuatnya
 # ("mis-aligned LINKEDIT string pool" -> E0463 can't find crate serde_derive dll).
-# Untuk artefak host ini cukup buang debuginfo saja; binary akhir tetap strip penuh.
+# Untuk artefak host ini juga cukup buang debuginfo saja.
 [profile.release.build-override]
 strip = "debuginfo"
 

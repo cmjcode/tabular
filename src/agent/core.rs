@@ -445,13 +445,21 @@ impl HeadlessSession {
                 kind_label(&conn.connection_type).to_string(),
             ));
         }
-        let mut pools = self.pools.lock().await;
-        if let Some(p) = pools.get(&id) {
+        if let Some(p) = self.pools.lock().await.get(&id) {
             return Ok((conn, p.clone()));
         }
+        // Connect TANPA memegang lock peta pool: satu host yang tidak bisa
+        // dijangkau (menunggu timeout) tidak boleh memblokir tool call ke
+        // koneksi lain.
         let pool = crate::connection::pool::create_connection_pool_for_config(&conn)
             .await
             .map_err(AgentError::Connect)?;
+        let mut pools = self.pools.lock().await;
+        if let Some(existing) = pools.get(&id) {
+            // Task lain lebih dulu selesai membuka pool yang sama: pakai
+            // miliknya, pool yang baru dibuat di sini dibuang.
+            return Ok((conn, existing.clone()));
+        }
         pools.insert(id, pool.clone());
         log::info!("[AGENT] opened pool for connection {id} ({})", conn.name);
         Ok((conn, pool))
@@ -867,7 +875,9 @@ impl HeadlessSession {
                 kinds.join(", ")
             )));
         }
-        self.execute_unchecked(id, sql, database, max_rows).await
+        // Pertahanan berlapis: classifier sudah meloloskan statement ini sebagai
+        // baca, tetapi engine tetap diminta menolak tulisan apa pun.
+        self.execute_job(id, sql, database, max_rows, true).await
     }
 
     /// Eksekusi tanpa gerbang read-only. Pemanggil **wajib** sudah memutuskan
@@ -878,6 +888,18 @@ impl HeadlessSession {
         sql: &str,
         database: Option<&str>,
         max_rows: Option<usize>,
+    ) -> Result<AgentQueryResult, AgentError> {
+        self.execute_job(id, sql, database, max_rows, false).await
+    }
+
+    /// `read_only` meneruskan `QueryExecutionOptions::read_only` ke eksekutor.
+    async fn execute_job(
+        &self,
+        id: i64,
+        sql: &str,
+        database: Option<&str>,
+        max_rows: Option<usize>,
+        read_only: bool,
     ) -> Result<AgentQueryResult, AgentError> {
         let (conn, pool) = self.pool_for(id).await?;
         let database = match conn.connection_type {
@@ -914,6 +936,7 @@ impl HeadlessSession {
             query_timeout: Some(self.limits.query_timeout),
             max_rows: max_rows + 1,
             backend_pids: Default::default(),
+            read_only,
         };
         let job = QueryJob {
             job_id,
@@ -921,6 +944,7 @@ impl HeadlessSession {
             options,
             connection_pool: pool,
             started_at: Instant::now(),
+            on_result: None,
         };
 
         let msg = crate::connection::execute::execute_query_job(job).await;

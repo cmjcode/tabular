@@ -1,4 +1,4 @@
-use crate::{models, modules, ssh_tunnel, window_egui};
+use crate::{models, modules, window_egui};
 use log::{debug, warn};
 use mongodb::Client as MongoClient;
 use redis::Client;
@@ -19,10 +19,16 @@ pub(crate) fn update_connection_in_database(
             let pool_clone = pool.clone();
             let connection = connection.clone();
             let with_options = connection.clone();
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            // Runtime aplikasi; tidak membuat runtime baru di setiap simpan.
+            let rt = tabular.get_runtime();
+            // Bandingkan dengan konfigurasi yang masih ada di memori (belum
+            // dimuat ulang): ganti nama/folder saja tidak perlu memutus pool.
+            let endpoint_changed = tabular
+                .connections
+                .iter()
+                .find(|c| c.id == Some(id))
+                .is_none_or(|previous| connection_endpoint_changed(previous, &with_options));
 
-            // Restart any existing SSH tunnel with updated settings
-            ssh_tunnel::shutdown_for_connection(&connection);
 
             // Externalize credentials to the secret store; columns get the
             // sentinel (or plaintext when no backend is available).
@@ -90,6 +96,14 @@ pub(crate) fn update_connection_in_database(
                 }
             }
 
+            if result.is_ok() && endpoint_changed {
+                // Pool lama dibangun dari host/kredensial/SSL sebelum diedit.
+                // Buang (cache lokal, cache bersama, tunnel) supaya pemakaian
+                // berikutnya konek dengan pengaturan baru. Tunnel SSH lama
+                // ikut dimatikan di sini.
+                super::pool::cleanup_connection_pool(tabular, id);
+            }
+
             result.is_ok()
         } else {
             debug!("Cannot update connection: no ID found");
@@ -101,10 +115,40 @@ pub(crate) fn update_connection_in_database(
     }
 }
 
+/// True jika perubahan konfigurasi membuat pool yang sudah ada tidak valid lagi
+/// (alamat, kredensial, database, SSH, SSL, atau opsi plugin).
+fn connection_endpoint_changed(
+    previous: &models::structs::ConnectionConfig,
+    updated: &models::structs::ConnectionConfig,
+) -> bool {
+    previous.connection_type != updated.connection_type
+        || previous.host != updated.host
+        || previous.port != updated.port
+        || previous.username != updated.username
+        || previous.password != updated.password
+        || previous.database != updated.database
+        || previous.ssh_enabled != updated.ssh_enabled
+        || previous.ssh_host != updated.ssh_host
+        || previous.ssh_port != updated.ssh_port
+        || previous.ssh_username != updated.ssh_username
+        || previous.ssh_auth_method.as_db_value() != updated.ssh_auth_method.as_db_value()
+        || previous.ssh_private_key != updated.ssh_private_key
+        || previous.ssh_password != updated.ssh_password
+        || previous.ssh_accept_unknown_host_keys != updated.ssh_accept_unknown_host_keys
+        || previous.ssh_jump_host != updated.ssh_jump_host
+        || previous.ssl_enabled != updated.ssl_enabled
+        || previous.ssl_ca_cert != updated.ssl_ca_cert
+        || previous.ssl_client_cert != updated.ssl_client_cert
+        || previous.ssl_client_key != updated.ssl_client_key
+        || previous.ssl_key_passphrase != updated.ssl_key_passphrase
+        || previous.ssl_verify_server != updated.ssl_verify_server
+        || previous.plugin_options != updated.plugin_options
+}
+
 pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tabular.get_runtime();
 
         let result: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> = rt.block_on(async {
             let mut tx = pool_clone.begin().await?;
@@ -158,9 +202,10 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
     }
 
     tabular.connections.retain(|c| c.id != Some(connection_id));
-    tabular.connection_pools.remove(&connection_id);
-    tabular.pending_connection_pools.remove(&connection_id);
-    ssh_tunnel::shutdown_by_id(connection_id);
+    // Membuang pool di cache lokal DAN cache bersama, membatalkan connect yang
+    // masih berjalan, dan mematikan tunnel. Versi lama meninggalkan pool di
+    // `shared_connection_pools`, sehingga koneksi yang sudah dihapus tetap hidup.
+    super::pool::cleanup_connection_pool(tabular, connection_id);
 
     crate::sidebar_database::remove_connection_from_tree(tabular, connection_id);
 
@@ -185,27 +230,29 @@ pub(crate) fn test_database_connection(
                         Ok(tuple) => tuple,
                         Err(err) => return (false, err),
                     };
-                    let encoded_username = modules::url_encode(&connection.username);
-                    let encoded_password = modules::url_encode(&connection.password);
-                    let connection_string = format!(
-                        "mysql://{}:{}@{}:{}/{}",
-                        encoded_username,
-                        encoded_password,
-                        target_host,
-                        target_port,
-                        connection.database
+                    // Opsi yang sama dengan pool utama, supaya tes ikut
+                    // menguji pengaturan SSL yang akan dipakai sungguhan.
+                    let connect_opts = super::pool::mysql_connect_options(
+                        connection,
+                        &target_host,
+                        &target_port,
+                        None,
                     );
 
                     match MySqlPoolOptions::new()
                         .max_connections(1)
                         .acquire_timeout(std::time::Duration::from_secs(5))
-                        .connect(&connection_string)
+                        .connect_with(connect_opts)
                         .await
                     {
-                        Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
-                            Ok(_) => (true, "MySQL connection successful!".to_string()),
-                            Err(e) => (false, format!("MySQL query failed: {}", e)),
-                        },
+                        Ok(pool) => {
+                            let outcome = match sqlx::query("SELECT 1").execute(&pool).await {
+                                Ok(_) => (true, "MySQL connection successful!".to_string()),
+                                Err(e) => (false, format!("MySQL query failed: {}", e)),
+                            };
+                            pool.close().await;
+                            outcome
+                        }
                         Err(e) => (false, format!("MySQL connection failed: {}", e)),
                     }
                 }
@@ -214,25 +261,29 @@ pub(crate) fn test_database_connection(
                         Ok(tuple) => tuple,
                         Err(err) => return (false, err),
                     };
-                    let connection_string = format!(
-                        "postgresql://{}:{}@{}:{}/{}",
-                        connection.username,
-                        connection.password,
-                        target_host,
-                        target_port,
-                        connection.database
+                    // Opsi yang sama dengan pool utama: SSL ikut diuji dan
+                    // kredensial tidak perlu di-URL-encode.
+                    let connect_opts = super::pool::pg_connect_options(
+                        connection,
+                        &target_host,
+                        &target_port,
+                        &connection.database,
                     );
 
                     match PgPoolOptions::new()
                         .max_connections(1)
                         .acquire_timeout(std::time::Duration::from_secs(5))
-                        .connect(&connection_string)
+                        .connect_with(connect_opts)
                         .await
                     {
-                        Ok(pool) => match sqlx::query("SELECT 1").execute(&pool).await {
-                            Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
-                            Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
-                        },
+                        Ok(pool) => {
+                            let outcome = match sqlx::query("SELECT 1").execute(&pool).await {
+                                Ok(_) => (true, "PostgreSQL connection successful!".to_string()),
+                                Err(e) => (false, format!("PostgreSQL query failed: {}", e)),
+                            };
+                            pool.close().await;
+                            outcome
+                        }
                         Err(e) => (false, format!("PostgreSQL connection failed: {}", e)),
                     }
                 }
@@ -399,14 +450,8 @@ pub(crate) fn test_database_connection(
 
 /// Returns true if the error is a SQLite database corruption error (SQLITE_CORRUPT, code 11).
 fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = e {
-        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
-            return true;
-        }
-        let msg = db_err.message().to_lowercase();
-        return msg.contains("malformed") || msg.contains("disk image is malformed");
-    }
-    false
+    // Satu penggolong untuk seluruh aplikasi (termasuk SQLITE_NOTADB dan kode extended).
+    crate::sidebar_database::is_sqlite_corrupt(e)
 }
 
 /// When the SQLite cache is corrupt, attempts recovery by recreating only the cache tables
@@ -679,11 +724,9 @@ pub(crate) async fn refresh_connection_background_async(
                         .await;
             }
 
-            let existing_pool = if let Ok(shared) = shared_pools.lock() {
-                shared.get(&connection_id).cloned()
-            } else {
-                None
-            };
+            let existing_pool = crate::connection::pool::lock_or_recover(shared_pools)
+                .get(&connection_id)
+                .cloned();
 
             let pool = match existing_pool {
                 Some(p) => p,
@@ -695,9 +738,8 @@ pub(crate) async fn refresh_connection_background_async(
                     .await
                     {
                         Ok(Some(new_pool)) => {
-                            if let Ok(mut shared) = shared_pools.lock() {
-                                shared.insert(connection_id, new_pool.clone());
-                            }
+                            crate::connection::pool::lock_or_recover(shared_pools)
+                                .insert(connection_id, new_pool.clone());
                             new_pool
                         }
                         Ok(None) => {
@@ -822,4 +864,43 @@ pub(crate) async fn clear_connection_cache_sqlite(connection_id: i64, cache_pool
         .bind(connection_id)
         .execute(cache_pool)
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_endpoint_changes_invalidate_the_pool() {
+        let base = models::structs::ConnectionConfig {
+            id: Some(1),
+            name: "prod".to_string(),
+            host: "db.example.com".to_string(),
+            port: "5432".to_string(),
+            password: "secret".to_string(),
+            ..Default::default()
+        };
+
+        // Ganti nama / folder: pool tetap sah.
+        let mut renamed = base.clone();
+        renamed.name = "production".to_string();
+        renamed.folder = Some("Work".to_string());
+        assert!(!connection_endpoint_changed(&base, &renamed));
+
+        let mut new_password = base.clone();
+        new_password.password = "rotated".to_string();
+        assert!(connection_endpoint_changed(&base, &new_password));
+
+        let mut new_host = base.clone();
+        new_host.host = "replica.example.com".to_string();
+        assert!(connection_endpoint_changed(&base, &new_host));
+
+        let mut via_ssh = base.clone();
+        via_ssh.ssh_enabled = true;
+        assert!(connection_endpoint_changed(&base, &via_ssh));
+
+        let mut with_tls = base.clone();
+        with_tls.ssl_enabled = true;
+        assert!(connection_endpoint_changed(&base, &with_tls));
+    }
 }

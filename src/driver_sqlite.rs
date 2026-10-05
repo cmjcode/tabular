@@ -331,8 +331,9 @@ pub(crate) fn fetch_tables_from_sqlite_connection(
     connection_id: i64,
     table_type: &str,
 ) -> Option<Vec<String>> {
-    // Create a new runtime for the database query
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
 
     rt.block_on(async {
         // Get or create connection pool

@@ -90,6 +90,12 @@ cargo build --target wasm32-unknown-unknown --release
 
 The resulting `.wasm` binary in `target/wasm32-unknown-unknown/release/` can be loaded directly into Tabular via the **Plugin Manager Modal**.
 
+### Execution limits
+
+Export plugins run on a worker thread, so a slow plugin does not freeze the UI. Each run gets
+a fuel (CPU instruction) budget and a 256 MiB memory limit. Exceeding either one stops the
+plugin and returns an error instead of output.
+
 ---
 
 ## 📦 Built-In Starter Plugins & Templates

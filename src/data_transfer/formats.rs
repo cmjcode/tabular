@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::encoding::{self, TextEncoding};
 use super::values::{InferredType, InsertLimits, build_insert_batches, infer_types};
-use super::{TableData, encrypt, is_null_cell};
+use super::{TableData, encrypt};
 use crate::models::enums::DatabaseType;
 use crate::schema_objects::sql::{quote_ident, quote_qualified};
 
@@ -112,10 +112,11 @@ pub fn table_name_from_caption(caption: &str) -> String {
     }
 }
 
-fn json_value(cell: &str) -> serde_json::Value {
-    if is_null_cell(cell) {
-        serde_json::Value::Null
-    } else if let Ok(n) = cell.parse::<i64>() {
+fn json_value(cell: Option<&str>) -> serde_json::Value {
+    let Some(cell) = cell else {
+        return serde_json::Value::Null;
+    };
+    if let Ok(n) = cell.parse::<i64>() {
         serde_json::Value::from(n)
     } else if let Some(f) = cell.parse::<f64>().ok().filter(|f| f.is_finite()) {
         serde_json::Value::from(f)
@@ -127,7 +128,7 @@ fn json_value(cell: &str) -> serde_json::Value {
 fn json_row(data: &TableData, row: usize) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     for (i, header) in data.headers.iter().enumerate() {
-        obj.insert(header.clone(), json_value(data.cell(row, i)));
+        obj.insert(header.clone(), json_value(data.value(row, i)));
     }
     serde_json::Value::Object(obj)
 }
@@ -193,16 +194,15 @@ pub fn build_xml(data: &TableData, table_name: &str, encoding: TextEncoding) -> 
     for r in 0..data.rows.len() {
         out.push_str("  <row>\n");
         for (c, header) in data.headers.iter().enumerate() {
-            let cell = data.cell(r, c);
             let name = xml_escape(header, true);
-            if is_null_cell(cell) {
+            let Some(cell) = data.value(r, c) else {
                 out.push_str(&format!("    <field name=\"{name}\" null=\"true\"/>\n"));
-            } else {
-                out.push_str(&format!(
-                    "    <field name=\"{name}\">{}</field>\n",
-                    xml_escape(cell, false)
-                ));
-            }
+                continue;
+            };
+            out.push_str(&format!(
+                "    <field name=\"{name}\">{}</field>\n",
+                xml_escape(cell, false)
+            ));
         }
         out.push_str("  </row>\n");
     }
@@ -231,14 +231,13 @@ pub fn build_html(data: &TableData, table_name: &str, encoding: TextEncoding) ->
     for r in 0..data.rows.len() {
         out.push_str("<tr>");
         for c in 0..data.headers.len() {
-            let cell = data.cell(r, c);
-            if is_null_cell(cell) {
-                out.push_str("<td class=\"null\">NULL</td>");
-            } else {
+            if let Some(cell) = data.value(r, c) {
                 out.push_str(&format!(
                     "<td>{}</td>",
                     xml_escape(cell, false).replace('\n', "<br>")
                 ));
+            } else {
+                out.push_str("<td class=\"null\">NULL</td>");
             }
         }
         out.push_str("</tr>\n");
@@ -266,7 +265,7 @@ pub fn build_sql_inserts(
         &db,
         &quote_qualified(&db, table_name),
         &columns,
-        &data.rows,
+        data,
         &source_cols,
         &kinds,
         limits,
@@ -293,11 +292,10 @@ pub fn build_xlsx(data: &TableData) -> Result<Vec<u8>, String> {
     }
     for r in 0..data.rows.len() {
         for c in 0..data.headers.len() {
-            let cell = data.cell(r, c);
             let (row, col) = ((r + 1) as u32, c as u16);
-            if is_null_cell(cell) {
+            let Some(cell) = data.value(r, c) else {
                 continue;
-            }
+            };
             match cell.parse::<f64>().ok().filter(|f| f.is_finite()) {
                 Some(number) => worksheet.write_number(row, col, number),
                 None => worksheet.write_string(row, col, cell),
@@ -358,15 +356,16 @@ pub fn build_parquet(data: &TableData) -> Result<Vec<u8>, String> {
         let mut group = writer.next_row_group().map_err(err)?;
         let mut col = 0usize;
         while let Some(mut column) = group.next_column().map_err(err)? {
-            let cells = (start..end).map(|r| data.cell(r, col).trim());
-            let present = |v: &str, typed: bool| !(is_null_cell(v) || (typed && v.is_empty()));
+            // Kolom bertipe: NULL dan sel kosong sama-sama tidak punya nilai.
+            let cells = (start..end).map(|r| data.value(r, col).map_or("", str::trim));
+            let present = |v: &str| !v.is_empty();
             match types[col] {
                 InferredType::Integer => {
                     let mut values = Vec::new();
                     let mut defs = Vec::with_capacity(end - start);
                     for v in cells {
                         match v.parse::<i64>() {
-                            Ok(n) if present(v, true) => {
+                            Ok(n) if present(v) => {
                                 values.push(n);
                                 defs.push(1i16);
                             }
@@ -383,7 +382,7 @@ pub fn build_parquet(data: &TableData) -> Result<Vec<u8>, String> {
                     let mut defs = Vec::with_capacity(end - start);
                     for v in cells {
                         match v.parse::<f64>() {
-                            Ok(n) if present(v, true) => {
+                            Ok(n) if present(v) => {
                                 values.push(n);
                                 defs.push(1i16);
                             }
@@ -399,7 +398,7 @@ pub fn build_parquet(data: &TableData) -> Result<Vec<u8>, String> {
                     let mut values = Vec::new();
                     let mut defs = Vec::with_capacity(end - start);
                     for v in cells {
-                        if present(v, true) {
+                        if present(v) {
                             values.push(v.eq_ignore_ascii_case("true"));
                             defs.push(1i16);
                         } else {
@@ -416,12 +415,12 @@ pub fn build_parquet(data: &TableData) -> Result<Vec<u8>, String> {
                     let mut defs = Vec::with_capacity(end - start);
                     // Teks tidak di-trim: spasi di tepi adalah bagian dari data.
                     for r in start..end {
-                        let v = data.cell(r, col);
-                        if present(v, false) {
-                            values.push(ByteArray::from(v));
-                            defs.push(1i16);
-                        } else {
-                            defs.push(0);
+                        match data.value(r, col) {
+                            Some(v) => {
+                                values.push(ByteArray::from(v));
+                                defs.push(1i16);
+                            }
+                            None => defs.push(0),
                         }
                     }
                     column

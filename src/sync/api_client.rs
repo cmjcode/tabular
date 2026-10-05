@@ -24,14 +24,23 @@ impl ApiClient {
             headers.insert("X-Tabular-Client-Version", v);
         }
 
+        // `build()` bisa gagal (mis. header/konfigurasi ditolak). Jangan
+        // panic: pakai klien bawaan; server akan menolak lewat version gate
+        // dengan pesan yang jelas. (`Client::default()` sendiri hanya panic
+        // bila backend TLS sama sekali tidak bisa diinisialisasi.)
+        let http = Client::builder()
+            .user_agent(concat!("tabular-client/", env!("CARGO_PKG_VERSION")))
+            .default_headers(headers)
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|e| {
+                log::error!("[SYNC] cannot build HTTP client, using defaults: {e}");
+                Client::default()
+            });
+
         ApiClient {
             server_url: server_url.trim_end_matches('/').to_string(),
-            http: Client::builder()
-                .user_agent(concat!("tabular-client/", env!("CARGO_PKG_VERSION")))
-                .default_headers(headers)
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .unwrap(),
+            http,
         }
     }
 

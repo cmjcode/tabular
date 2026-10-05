@@ -2228,7 +2228,11 @@ fn suite_detail(
                                     .desired_width(300.0),
                             )
                             .changed();
-                        if ui.small_button("✖").clicked() {
+                        if ui
+                            .small_button(egui_icons::icons::ICON_CLOSE.codepoint)
+                            .on_hover_text("Remove variable")
+                            .clicked()
+                        {
                             remove_var = Some(i);
                         }
                         ui.end_row();

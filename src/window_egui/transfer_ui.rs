@@ -110,6 +110,11 @@ pub struct TransferUiState {
     /// File data yang menunggu giliran dimuat (mis. beberapa file di-drop
     /// sekaligus); hanya satu yang dimuat pada satu waktu.
     data_file_queue: std::collections::VecDeque<PathBuf>,
+    /// `true` = teks `NULL` di file berpemisah dibiarkan sebagai string.
+    /// Bawaannya `false` (teks `NULL` dibaca sebagai SQL NULL) karena ekspor
+    /// CSV Tabular sendiri menulis `NULL` untuk null dan bolak-balik itu
+    /// harus tetap utuh.
+    data_file_keep_null_text: bool,
     decrypt: Option<DecryptDialog>,
     pub(super) transfer: Option<super::transfer_dialogs::TransferDialog>,
     pub(super) objects: Option<super::transfer_dialogs::ObjectExportDialog>,
@@ -209,6 +214,14 @@ pub(super) fn error_label(ui: &mut egui::Ui, message: &str) {
         egui::RichText::new(message)
             .small()
             .color(style::theme_danger(ui.ctx())),
+    );
+}
+
+pub(super) fn warning_label(ui: &mut egui::Ui, message: &str) {
+    ui.label(
+        egui::RichText::new(message)
+            .small()
+            .color(style::theme_warning(ui.ctx())),
     );
 }
 
@@ -651,10 +664,9 @@ impl Tabular {
             .find(|c| c.id == Some(conn_id))
             .cloned()?;
         let pool = self.connection_pools.get(&conn_id).cloned().or_else(|| {
-            self.shared_connection_pools
-                .lock()
-                .ok()
-                .and_then(|p| p.get(&conn_id).cloned())
+            crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+                .get(&conn_id)
+                .cloned()
         });
         let database = database.trim();
         Some(Endpoint::new(
@@ -997,6 +1009,7 @@ impl Tabular {
         let file = path.clone();
         let opts = ReadOptions {
             passphrase: (!passphrase.is_empty()).then(|| passphrase.clone()),
+            null_text: (!self.transfer_ui.data_file_keep_null_text).then(|| "NULL".to_string()),
             ..Default::default()
         };
         let slot = self.spawn_slot(ctx, async move {
@@ -1113,6 +1126,7 @@ impl Tabular {
             .unwrap_or_default();
         let mut unlock = false;
         let mut cancel = false;
+        let mut null_as_sql_null = !self.transfer_ui.data_file_keep_null_text;
         let loading = job.slot.is_some();
         let close = modal(
             ctx,
@@ -1147,6 +1161,8 @@ impl Tabular {
                 {
                     error_label(ui, error);
                 }
+                ui.add_space(6.0);
+                ui.checkbox(&mut null_as_sql_null, "Treat the text NULL as SQL NULL");
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -1167,6 +1183,7 @@ impl Tabular {
         if loading {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
+        self.transfer_ui.data_file_keep_null_text = !null_as_sql_null;
         if unlock && !job.passphrase.is_empty() {
             self.start_data_file(ctx, job.path, job.passphrase);
             return;

@@ -1,4 +1,4 @@
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 
 use crate::{models, sidebar_database, window_egui};
 
@@ -152,80 +152,87 @@ pub(crate) fn save_query_to_history(
     refresh_history_tree(tabular);
 
     // --- SQLite upsert: UPDATE if exists, else INSERT ---
+    // Daftar di RAM di atas adalah sumber kebenaran untuk UI; penulisan ke
+    // SQLite dijalankan di runtime latar supaya UI thread tidak menunggu
+    // disk pada setiap query yang selesai.
     if let Some(pool) = &tabular.db_pool {
         let pool = pool.clone();
         let query_text = trimmed.to_string();
-        let conn_name = connection_name.clone();
-        let now = now_str.clone();
+        let conn_name = connection_name;
+        let now = now_str;
 
         let rt = tabular.get_runtime();
-        let upsert_res = rt.block_on(async move {
-            // Try to update existing row first
-            let updated = sqlx::query(
-                "UPDATE query_history SET executed_at = ?, connection_name = ?
-                 WHERE query_text = ? AND connection_id = ?"
-            )
-            .bind(&now)
-            .bind(&conn_name)
-            .bind(&query_text)
-            .bind(connection_id)
-            .execute(pool.as_ref())
-            .await;
-
-            match updated {
-                Ok(r) if r.rows_affected() > 0 => {
-                    // Row existed — updated successfully, no INSERT needed
-                    Ok(("updated", r.rows_affected()))
+        rt.spawn(async move {
+            // Satu penulisan pada satu waktu: dua simpan beruntun untuk query
+            // yang sama tidak boleh sama-sama lolos UPDATE lalu INSERT ganda.
+            let _guard = HISTORY_WRITE_LOCK.lock().await;
+            match upsert_history_row(&pool, &query_text, connection_id, &conn_name, &now).await {
+                Ok((action, rows)) => {
+                    debug!("[HISTORY] {} {} row(s) in query_history", action, rows);
                 }
-                Ok(_) => {
-                    // No existing row → INSERT new entry
-                    let inserted = sqlx::query(
-                        "INSERT INTO query_history (query_text, connection_id, connection_name) VALUES (?, ?, ?)"
-                    )
-                    .bind(&query_text)
-                    .bind(connection_id)
-                    .bind(&conn_name)
-                    .execute(pool.as_ref())
-                    .await;
-
-                    match inserted {
-                        Ok(r) => {
-                            // Clean up old entries beyond the 150 limit
-                            let _ = sqlx::query(
-                                "DELETE FROM query_history WHERE id NOT IN (
-                                    SELECT id FROM query_history ORDER BY executed_at DESC LIMIT 150
-                                )"
-                            )
-                            .execute(pool.as_ref())
-                            .await;
-                            Ok(("inserted", r.rows_affected()))
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-                Err(e) => Err(e),
-            }
-        });
-
-        match upsert_res {
-            Ok((action, rows)) => {
-                info!(
-                    "✅ [save_query_to_history] {} {} row(s) for query: '{}'",
-                    action, rows, trimmed
-                );
-            }
-            Err(e) => {
-                if !sidebar_database::check_and_recover_sqlite_corruption(tabular, &e) {
-                    error!(
-                        "❌ [save_query_to_history] Failed to upsert query into SQLite: {}",
+                Err(e) if sidebar_database::is_sqlite_corrupt(&e) => {
+                    warn!(
+                        "[HISTORY] query_history not saved, SQLite corruption detected (recovered on next history load): {}",
                         e
                     );
                 }
+                Err(e) => {
+                    warn!("[HISTORY] failed to save query to history: {}", e);
+                }
             }
-        }
+        });
     } else {
         warn!("⚠️ [save_query_to_history] Cannot save query history: db_pool is None");
     }
+}
+
+/// Menjaga urutan penulisan history yang dijalankan di runtime latar.
+static HISTORY_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// UPDATE baris history yang sama (query + koneksi) atau INSERT baris baru,
+/// lalu pangkas ke 150 entri terbaru. Mengembalikan aksi dan jumlah baris.
+async fn upsert_history_row(
+    pool: &sqlx::SqlitePool,
+    query_text: &str,
+    connection_id: i64,
+    connection_name: &str,
+    executed_at: &str,
+) -> Result<(&'static str, u64), sqlx::Error> {
+    // Try to update existing row first
+    let updated = sqlx::query(
+        "UPDATE query_history SET executed_at = ?, connection_name = ?
+         WHERE query_text = ? AND connection_id = ?",
+    )
+    .bind(executed_at)
+    .bind(connection_name)
+    .bind(query_text)
+    .bind(connection_id)
+    .execute(pool)
+    .await?;
+    if updated.rows_affected() > 0 {
+        // Row existed — updated successfully, no INSERT needed
+        return Ok(("updated", updated.rows_affected()));
+    }
+
+    // No existing row → INSERT new entry
+    let inserted = sqlx::query(
+        "INSERT INTO query_history (query_text, connection_id, connection_name) VALUES (?, ?, ?)",
+    )
+    .bind(query_text)
+    .bind(connection_id)
+    .bind(connection_name)
+    .execute(pool)
+    .await?;
+
+    // Clean up old entries beyond the 150 limit
+    let _ = sqlx::query(
+        "DELETE FROM query_history WHERE id NOT IN (
+            SELECT id FROM query_history ORDER BY executed_at DESC LIMIT 150
+        )",
+    )
+    .execute(pool)
+    .await;
+    Ok(("inserted", inserted.rows_affected()))
 }
 
 pub(crate) fn refresh_history_tree(tabular: &mut window_egui::Tabular) {
@@ -427,5 +434,51 @@ mod tests {
             tabular.filtered_history_tree[0].children[0].name,
             "SELECT * FROM users;"
         );
+    }
+
+    #[tokio::test]
+    async fn upsert_history_row_updates_instead_of_duplicating() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            "CREATE TABLE query_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_text TEXT NOT NULL,
+                connection_id INTEGER NOT NULL,
+                connection_name TEXT NOT NULL,
+                executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create table");
+
+        let first = upsert_history_row(&pool, "SELECT 1", 7, "local", "2026-01-01 10:00:00")
+            .await
+            .expect("insert");
+        assert_eq!(first, ("inserted", 1));
+        let second = upsert_history_row(&pool, "SELECT 1", 7, "renamed", "2026-01-02 11:00:00")
+            .await
+            .expect("update");
+        assert_eq!(second, ("updated", 1));
+        // Koneksi lain = baris lain.
+        upsert_history_row(&pool, "SELECT 1", 8, "other", "2026-01-03 12:00:00")
+            .await
+            .expect("insert other connection");
+
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT query_text, connection_id, connection_name, executed_at
+             FROM query_history ORDER BY connection_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("select");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].2, "renamed");
+        assert_eq!(rows[0].3, "2026-01-02 11:00:00");
+        assert_eq!(rows[1].1, 8);
     }
 }

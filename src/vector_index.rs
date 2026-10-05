@@ -642,9 +642,24 @@ pub async fn sync_note_embeddings(
     .into_iter()
     .collect();
 
-    let mut tx = pool.begin().await.map_err(db)?;
+    // Baca file dan hitung embedding DULU, tanpa transaksi terbuka: write lock
+    // `connections.db` tidak boleh dipegang selama I/O file vault (bisa lambat,
+    // mis. vault di iCloud/NFS) karena GUI dan `tabular mcp` berbagi DB ini.
+    // Hasilnya diterapkan per batch dalam transaksi singkat supaya memori dan
+    // lama lock tetap terbatas untuk vault besar.
+    const NOTE_BATCH: usize = 50;
+
+    struct PendingNote<'a> {
+        rel_path: &'a str,
+        stamp: i64,
+        note: crate::obsidian::ParsedNote,
+        /// `(indeks chunk, blob embedding)`; chunk tanpa embedding dilewati.
+        embeddings: Vec<(usize, Vec<u8>)>,
+    }
+
     let mut updated = 0;
     let mut current: HashSet<&str> = HashSet::new();
+    let mut pending: Vec<PendingNote> = Vec::new();
 
     for file in &files {
         current.insert(file.rel_path.as_str());
@@ -660,44 +675,82 @@ pub async fn sync_note_embeddings(
             }
         };
         let note = crate::obsidian::parse_note(&file.rel_path, &raw);
-        sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
-            .bind(&vault)
-            .bind(&file.rel_path)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        for (idx, chunk) in note.chunks.iter().enumerate() {
-            let Some(embedding) = embed_text(&note_document(&note, chunk)) else {
-                continue;
-            };
-            sqlx::query(
-                "INSERT INTO note_embedding (vault_path, rel_path, chunk_idx, title, heading, text, stamp, embedding)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&vault)
-            .bind(&file.rel_path)
-            .bind(idx as i64)
-            .bind(&note.title)
-            .bind(&chunk.heading)
-            .bind(&chunk.text)
-            .bind(stamp)
-            .bind(to_blob(&embedding))
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+        let embeddings = note
+            .chunks
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, chunk)| {
+                embed_text(&note_document(&note, chunk)).map(|e| (idx, to_blob(&e)))
+            })
+            .collect();
+        pending.push(PendingNote {
+            rel_path: file.rel_path.as_str(),
+            stamp,
+            note,
+            embeddings,
+        });
+        if pending.len() >= NOTE_BATCH {
+            updated += apply_note_batch(pool, &vault, &pending).await.map_err(db)?;
+            pending.clear();
         }
-        updated += 1;
+    }
+    if !pending.is_empty() {
+        updated += apply_note_batch(pool, &vault, &pending).await.map_err(db)?;
+        pending.clear();
     }
 
-    for stale in existing.keys().filter(|p| !current.contains(p.as_str())) {
-        sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
-            .bind(&vault)
-            .bind(stale)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
+    async fn apply_note_batch(
+        pool: &SqlitePool,
+        vault: &str,
+        batch: &[PendingNote<'_>],
+    ) -> Result<usize, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        for item in batch {
+            sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
+                .bind(vault)
+                .bind(item.rel_path)
+                .execute(&mut *tx)
+                .await?;
+            for (idx, blob) in &item.embeddings {
+                let Some(chunk) = item.note.chunks.get(*idx) else {
+                    continue;
+                };
+                sqlx::query(
+                    "INSERT INTO note_embedding (vault_path, rel_path, chunk_idx, title, heading, text, stamp, embedding)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(vault)
+                .bind(item.rel_path)
+                .bind(*idx as i64)
+                .bind(&item.note.title)
+                .bind(&chunk.heading)
+                .bind(&chunk.text)
+                .bind(item.stamp)
+                .bind(blob.as_slice())
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(batch.len())
     }
-    tx.commit().await.map_err(db)?;
+
+    let stale: Vec<&String> = existing
+        .keys()
+        .filter(|p| !current.contains(p.as_str()))
+        .collect();
+    if !stale.is_empty() {
+        let mut tx = pool.begin().await.map_err(db)?;
+        for rel_path in stale {
+            sqlx::query("DELETE FROM note_embedding WHERE vault_path = ? AND rel_path = ?")
+                .bind(&vault)
+                .bind(rel_path)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        tx.commit().await.map_err(db)?;
+    }
 
     let (_, chunks) = count_notes(pool, root).await.map_err(db)?;
     Ok(NoteSyncStats {

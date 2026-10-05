@@ -11,6 +11,7 @@ use eframe::egui;
 
 use super::transfer_ui::{
     EndpointPick, Slot, card_row, error_label, fmt_count, modal, muted_label, passphrase_fields,
+    warning_label,
 };
 use super::{Tabular, style};
 use crate::data_transfer::formats;
@@ -192,8 +193,13 @@ impl Tabular {
                         fmt_count(summary.rows_copied),
                         summary.tables_copied
                     );
-                    if summary.failed.is_empty() {
+                    if summary.failed.is_empty() && summary.warnings.is_empty() {
                         self.toasts.success(message);
+                    } else if summary.failed.is_empty() {
+                        self.toasts.warning(format!(
+                            "{message}; {} warning(s)",
+                            summary.warnings.len()
+                        ));
                     } else {
                         self.toasts
                             .warning(format!("{message}; {} failed", summary.failed.len()));
@@ -369,6 +375,18 @@ impl Tabular {
                 if let Some(Ok(summary)) = &dialog.outcome {
                     for (table, error) in &summary.failed {
                         error_label(ui, &format!("{table}: {error}"));
+                    }
+                    // Peringatan (mis. tabel tanpa primary key) juga tampil di
+                    // ringkasan, bukan hanya di panel log.
+                    if !summary.warnings.is_empty() {
+                        egui::ScrollArea::vertical()
+                            .id_salt("transfer_warnings")
+                            .max_height(72.0)
+                            .show(ui, |ui| {
+                                for warning in &summary.warnings {
+                                    warning_label(ui, &format!("Warning: {warning}"));
+                                }
+                            });
                     }
                 }
                 if let Some(Err(e)) = &dialog.outcome {

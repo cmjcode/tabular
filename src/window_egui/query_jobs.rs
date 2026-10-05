@@ -20,6 +20,8 @@ impl super::Tabular {
             }
         }
 
+        self.jobs.tab_of.remove(&message.job_id);
+
         if self.jobs.cancelled.remove(&message.job_id).is_some() {
             self.jobs.paginated.remove(&message.job_id);
             if self.jobs.active.is_empty() {
@@ -62,6 +64,23 @@ impl super::Tabular {
             ));
         }
 
+        // Tab asal sudah ditutup selama query berjalan: buang hasilnya. Tanpa
+        // ini hasil jatuh ke tab yang sedang aktif dan menimpa datanya.
+        if let Some(origin_id) = message.tab_id
+            && !self.query_tabs.iter().any(|t| t.id == origin_id)
+        {
+            log::debug!(
+                "[QUERY] hasil job {} dibuang: tab {} sudah ditutup",
+                message.job_id,
+                origin_id
+            );
+            if self.jobs.active.is_empty() {
+                self.query_execution_in_progress = false;
+                self.extend_query_icon_hold();
+            }
+            return;
+        }
+
         // User bisa saja pindah tab selama query berjalan. Hasil tab aktif
         // disimpan di state tampilan global, sedangkan tab lain di field
         // miliknya sendiri. Jadi hasil untuk tab di latar belakang ditulis
@@ -71,7 +90,7 @@ impl super::Tabular {
             .and_then(|id| self.query_tabs.iter().position(|t| t.id == id))
             && origin_idx != self.active_tab_index
         {
-            self.apply_result_to_background_tab(origin_idx, &message, was_paginated);
+            self.apply_result_to_background_tab(origin_idx, message, was_paginated);
             if self.jobs.active.is_empty() {
                 self.query_execution_in_progress = false;
                 self.extend_query_icon_hold();
@@ -140,14 +159,17 @@ impl super::Tabular {
         }
 
         if was_paginated && message.success {
-            self.apply_paginated_query_result(&message);
+            let rows = std::mem::take(&mut message.rows);
+            self.apply_paginated_rows(message.headers.clone(), rows);
             return;
         }
 
-        // Simpan hasil ke daftar multi-result. Hanya `all_rows` yang disimpan;
-        // potongan halaman dibuat ulang saat result dipilih. Baris dari message
-        // dipindahkan (bukan di-clone) ke tampilan, sehingga satu result set
-        // cukup ada dua salinan: di daftar result dan di tampilan aktif.
+        // Simpan hasil ke daftar multi-result. Hanya `all_rows` yang diisi
+        // (`rows` dibiarkan kosong; potongan halaman dibuat ulang dari
+        // `all_rows` saat result dipilih). Result pertama juga ditampilkan,
+        // jadi barisnya disalin sekali: satu salinan di daftar result (untuk
+        // kembali ke "Result 1") dan satu dipindahkan ke tampilan. Result
+        // berikutnya dalam batch hanya dipindahkan ke daftar, tanpa salinan.
         let rows = std::mem::take(&mut message.rows);
         let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) else {
             editor::process_query_result(
@@ -162,10 +184,12 @@ impl super::Tabular {
             return;
         };
         let new_index = active_tab.results.len();
+        let row_count = rows.len();
+        let display_rows = (new_index == 0).then(|| rows.clone());
         active_tab.results.push(models::structs::QueryResult {
             headers: message.headers.clone(),
             rows: Vec::new(),
-            all_rows: rows.clone(),
+            all_rows: rows,
             table_name: if message.success {
                 format!("Result {}", new_index + 1)
             } else {
@@ -173,7 +197,7 @@ impl super::Tabular {
             },
             current_page: 0,
             page_size: self.page_size.max(1),
-            total_rows: rows.len(),
+            total_rows: row_count,
             query_message: self.query_message.clone(),
             query_message_is_error: self.query_message_is_error,
             execution_time_ms: message.duration.as_millis(),
@@ -185,13 +209,13 @@ impl super::Tabular {
             affected_rows: message.affected_rows,
         });
 
-        if new_index == 0 {
+        if let Some(display_rows) = display_rows {
             active_tab.active_result_index = 0;
             editor::process_query_result(
                 self,
                 &message.query,
                 message.connection_id,
-                Some((message.headers.clone(), rows)),
+                Some((message.headers.clone(), display_rows)),
                 message.column_metadata.clone(),
             );
         } else if message.success {
@@ -244,10 +268,15 @@ impl super::Tabular {
     fn apply_result_to_background_tab(
         &mut self,
         tab_index: usize,
-        message: &connection::QueryResultMessage,
+        mut message: connection::QueryResultMessage,
         was_paginated: bool,
     ) {
-        let query_message = describe_query_outcome(message);
+        let query_message = describe_query_outcome(&message);
+        // Baris dipindahkan dari message; disalin hanya bila dua pemilik
+        // benar-benar membutuhkannya (daftar result + state tampilan tab).
+        let rows = std::mem::take(&mut message.rows);
+        let row_count = rows.len();
+        let mut rows = Some(rows);
         let stmt_type = models::structs::StatementType::from_sql(&message.query);
         let tab_title;
         {
@@ -262,12 +291,21 @@ impl super::Tabular {
             tab.last_statement_type = stmt_type;
             tab.last_affected_rows = message.affected_rows;
 
-            if !(was_paginated && message.success) {
+            let pushes_result = !(was_paginated && message.success);
+            let is_primary = was_paginated || tab.results.len() + usize::from(pushes_result) <= 1;
+            if pushes_result {
                 let new_index = tab.results.len();
+                // `rows` (potongan halaman) tidak pernah dibaca dari daftar
+                // result; sama seperti jalur tab aktif, hanya `all_rows` yang diisi.
+                let all_rows = if is_primary {
+                    rows.clone().unwrap_or_default()
+                } else {
+                    rows.take().unwrap_or_default()
+                };
                 tab.results.push(models::structs::QueryResult {
                     headers: message.headers.clone(),
-                    rows: message.rows.clone(),
-                    all_rows: message.rows.clone(),
+                    rows: Vec::new(),
+                    all_rows,
                     table_name: if message.success {
                         format!("Result {}", new_index + 1)
                     } else {
@@ -275,7 +313,7 @@ impl super::Tabular {
                     },
                     current_page: 0,
                     page_size: tab.page_size.max(1),
-                    total_rows: message.rows.len(),
+                    total_rows: row_count,
                     query_message: query_message.clone(),
                     query_message_is_error: !message.success,
                     execution_time_ms: message.duration.as_millis(),
@@ -292,23 +330,33 @@ impl super::Tabular {
                 }
             }
 
-            let is_primary = was_paginated || tab.results.len() <= 1;
             if is_primary {
+                let rows = rows.take().unwrap_or_default();
                 tab.active_result_index = 0;
                 tab.result_headers = message.headers.clone();
-                tab.result_all_rows = message.rows.clone();
-                tab.result_rows = message.rows.clone();
+                // `result_rows` menjadi halaman yang tampil saat user kembali ke
+                // tab ini: untuk server pagination `rows` sudah satu halaman,
+                // selain itu cukup halaman pertama (konsisten dengan jalur tab
+                // aktif, dan tidak menyalin seluruh hasil). `result_all_rows`
+                // menerima vektor aslinya tanpa salinan.
+                tab.result_rows = if was_paginated {
+                    rows.clone()
+                } else {
+                    let page_len = tab.page_size.max(1).min(rows.len());
+                    rows[..page_len].to_vec()
+                };
+                tab.result_all_rows = rows;
                 tab.result_column_metadata = message.column_metadata.clone();
-                tab.total_rows = message.rows.len();
+                tab.total_rows = row_count;
                 if !was_paginated {
                     tab.current_page = 0;
                 }
                 tab.result_table_name = if !message.success {
                     "Error".to_string()
-                } else if message.rows.is_empty() {
+                } else if row_count == 0 {
                     "Query executed successfully (no results)".to_string()
                 } else {
-                    format!("Query Results ({} rows)", message.rows.len())
+                    format!("Query Results ({} rows)", row_count)
                 };
             }
         }
@@ -325,8 +373,14 @@ impl super::Tabular {
         }
     }
     pub fn apply_paginated_query_result(&mut self, message: &connection::QueryResultMessage) {
-        self.current_table_headers = message.headers.clone();
-        self.current_table_data = message.rows.clone();
+        self.apply_paginated_rows(message.headers.clone(), message.rows.clone());
+    }
+
+    /// Terapkan satu halaman hasil server pagination ke tampilan. `rows`
+    /// dipindahkan, jadi halaman hanya disalin sekali (untuk `all_table_data`).
+    fn apply_paginated_rows(&mut self, headers: Vec<String>, rows: Vec<Vec<String>>) {
+        self.current_table_headers = headers;
+        self.current_table_data = rows;
         self.all_table_data = self.current_table_data.clone();
         self.total_rows = self.current_table_data.len();
 
@@ -382,8 +436,8 @@ impl super::Tabular {
             || self
                 .shared_connection_pools
                 .lock()
-                .map(|pools| pools.contains_key(&connection_id))
-                .unwrap_or(false)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&connection_id)
     }
 
     /// Jalankan query di latar belakang dan tampilkan hasilnya di tab aktif,
@@ -540,29 +594,117 @@ impl super::Tabular {
     /// Kirim perintah cancel ke server (pg_cancel_backend / KILL QUERY) untuk
     /// job yang backend pid-nya sudah tercatat. `abort()` pada task saja hanya
     /// menghentikan penantian di klien, query tetap berjalan di server.
+    /// Hook yang membangunkan UI ketika hasil sebuah job tiba di channel.
+    /// `None` sebelum frame pertama (context egui belum tersedia).
+    pub(crate) fn result_wake_hook(&self) -> Option<connection::types::ResultWakeHook> {
+        let ctx = self.egui_ctx.clone()?;
+        Some(std::sync::Arc::new(move || ctx.request_repaint()))
+    }
+
     fn cancel_queries_on_server(&self, job_ids: &[u64]) {
         let Some(runtime) = self.runtime.clone() else {
             return;
         };
         for job_id in job_ids {
-            let pid = self
-                .jobs
-                .backend_pids
-                .lock()
-                .ok()
-                .and_then(|m| m.get(job_id).copied());
-            let pool = self
-                .jobs
-                .active
+            let pid = connection::pool::lock_or_recover(&self.jobs.backend_pids)
                 .get(job_id)
-                .and_then(|status| self.connection_pools.get(&status.connection_id).cloned());
+                .copied();
+            // Pool yang belum dipromosikan ke `connection_pools` masih berada di
+            // map bersama; job-nya tetap harus bisa dihentikan di server.
+            let pool = self.jobs.active.get(job_id).and_then(|status| {
+                self.connection_pools
+                    .get(&status.connection_id)
+                    .cloned()
+                    .or_else(|| {
+                        connection::pool::lock_or_recover(&self.shared_connection_pools)
+                            .get(&status.connection_id)
+                            .cloned()
+                    })
+            });
             if let (Some(pid), Some(pool)) = (pid, pool) {
                 runtime.spawn(connection::execute::cancel_backend_query(pool, pid));
             }
         }
     }
 
+    /// Catat tab asal untuk job aktif yang belum tercatat (tab aktif saat
+    /// ini, sama dengan yang dicap `prepare_query_job`) dan buang catatan job
+    /// yang sudah selesai. Dipanggil tiap frame serta sebelum tab aktif
+    /// berganti atau tab ditutup.
+    pub fn sync_job_tabs(&mut self) {
+        if self.jobs.active.is_empty() {
+            self.jobs.tab_of.clear();
+            return;
+        }
+        let active_tab_id = self.query_tabs.get(self.active_tab_index).map(|t| t.id);
+        let jobs = &mut self.jobs;
+        jobs.tab_of.retain(|id, _| jobs.active.contains_key(id));
+        if let Some(tab_id) = active_tab_id {
+            for id in jobs.active.keys() {
+                jobs.tab_of.entry(*id).or_insert(tab_id);
+            }
+        }
+    }
+
+    /// Batalkan query yang hasilnya ditujukan ke panel hasil tab `tab_id`.
+    /// Job ber-callback (simpan spreadsheet, structure editor, …) dibiarkan
+    /// selesai karena pemanggilnya menunggu callback itu.
+    pub fn cancel_jobs_of_tab(&mut self, tab_id: usize) -> usize {
+        let ids: Vec<u64> = self
+            .jobs
+            .tab_of
+            .iter()
+            .filter(|(id, tab)| **tab == tab_id && !self.jobs.callbacks.contains_key(*id))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut cancelled = 0;
+        for id in ids {
+            self.jobs.tab_of.remove(&id);
+            if self.cancel_query_job(id, false) {
+                cancelled += 1;
+            }
+        }
+        if cancelled > 0 {
+            log::debug!("[QUERY] {} job dibatalkan karena tab {} ditutup", cancelled, tab_id);
+        }
+        cancelled
+    }
+
+    /// Batalkan query milik tab yang sudah tidak ada lagi di `query_tabs`.
+    pub fn cancel_jobs_of_closed_tabs(&mut self) {
+        if self.jobs.tab_of.is_empty() {
+            return;
+        }
+        let mut orphaned: Vec<usize> = self
+            .jobs
+            .tab_of
+            .values()
+            .copied()
+            .filter(|tab_id| !self.query_tabs.iter().any(|t| t.id == *tab_id))
+            .collect();
+        orphaned.sort_unstable();
+        orphaned.dedup();
+        let mut cancelled = 0;
+        for tab_id in orphaned {
+            cancelled += self.cancel_jobs_of_tab(tab_id);
+        }
+        if cancelled > 0 {
+            self.toasts.info(if cancelled == 1 {
+                "Cancelled the running query of the closed tab.".to_string()
+            } else {
+                format!("Cancelled {} running queries of closed tabs.", cancelled)
+            });
+        }
+    }
+
     pub fn cancel_active_query_job(&mut self, job_id: u64) -> bool {
+        self.cancel_query_job(job_id, true)
+    }
+
+    /// Batalkan satu job. `announce` = tampilkan toast dan ubah caption hasil
+    /// tab aktif; dimatikan saat job dibatalkan karena tabnya ditutup (tab
+    /// aktif bisa saja tab lain).
+    fn cancel_query_job(&mut self, job_id: u64, announce: bool) -> bool {
         self.prune_cancelled_jobs();
 
         let mut server_side_ids = vec![job_id];
@@ -623,7 +765,7 @@ impl super::Tabular {
                 self.extend_query_icon_hold();
             }
 
-            if !was_paginated {
+            if !was_paginated && announce {
                 if let Some(preview) = preview_text.filter(|p| !p.is_empty()) {
                     let truncated: String = if preview.chars().count() > 80 {
                         preview.chars().take(80).collect::<String>() + "…"

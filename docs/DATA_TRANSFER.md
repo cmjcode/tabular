@@ -38,6 +38,20 @@ can join several files in one query.
 The file is copied into the workspace when you open it; later edits to the file are picked up
 only when you open it again. The whole file is read into memory while loading.
 
+Size and `NULL` rules that apply to every file reader (Data Files and the import wizard):
+
+- A file may hold at most 4 GiB of content after decompression. A `.gz`, `.zst` or `.zip` that
+  expands beyond that is rejected with an error instead of exhausting memory; decompress or
+  split it first.
+- Previews of plain (not compressed, not encrypted) CSV/TSV and NDJSON files read only the
+  beginning of the file, so opening the wizard on a multi-gigabyte file is immediate. Other
+  formats are still read completely for a preview.
+- In delimited files every cell is text. An empty cell is an empty string and a cell containing
+  the four letters `NULL` is the string `NULL`; neither is SQL `NULL` unless you ask for it (see
+  the import wizard below). A column missing from a short row, JSON `null`, an empty spreadsheet
+  cell and a Parquet null are SQL `NULL`. Data Files therefore loads a CSV column that contains
+  the text `NULL` as a text column.
+
 ## Exporting a result
 
 **Export with Options** exports the rows currently loaded in the grid.
@@ -69,8 +83,18 @@ The quick export items in the grid menu (CSV, XLSX, JSON, Markdown, SQL) are unc
 The import wizard accepts the same formats and wrappers as Data Files. It detects the format,
 the delimiter and the text encoding; you can override the encoding (UTF-8, UTF-16 LE/BE,
 Windows-1252), pick the sheet of a workbook, and enter the passphrase of an encrypted file.
-Column mapping and the `NULL` representation work as before. JSON `null`, empty spreadsheet
-cells and Parquet nulls are imported as `NULL`.
+JSON `null`, empty spreadsheet cells and Parquet nulls are imported as `NULL`.
+
+**NULL representation** decides which text becomes SQL `NULL`. Left empty (the default), empty
+cells are imported as `NULL` and the text `NULL` is imported as the string `NULL`. Type `NULL`
+(or `\N`, or any other marker your file uses) to import that text as SQL `NULL` instead; empty
+cells are then imported as empty strings.
+
+The file is read and the `INSERT` statements are built in the background; the dialog shows the
+progress and stays responsive. On MySQL, PostgreSQL, SQLite and SQL Server the whole import runs
+in one transaction: if any row is rejected, nothing is imported. MySQL tables on a
+non-transactional engine (MyISAM) cannot be rolled back. Plugin engines have no transaction
+path and still import statement by statement, so a failure can leave earlier rows in the table.
 
 ## Transfer Tables
 
@@ -105,12 +129,20 @@ Limits to know about:
 
 - Only columns and the primary key are created. Defaults, auto-increment, indexes, foreign keys
   and triggers are not copied; use **Export Objects as SQL** for a same-engine structure copy.
-- A transfer is not one transaction. If it stops halfway, the rows already written stay in the
-  target.
-- Rows are read in pages ordered by primary key. A table without a primary key that changes
-  during the transfer can yield duplicated or missing rows.
-- Values are copied as text literals. A text value that is exactly `NULL` is written as SQL
-  `NULL`.
+- A transfer is not one transaction, but each page is: if it stops halfway, the pages already
+  written stay in the target and the failing page is rolled back completely.
+- Rows are read in pages with keyset pagination (`WHERE key > last ORDER BY key`) when the
+  source table has a primary key of integer, decimal, text or UUID columns. The cost of a page
+  does not grow with its position, and existing rows are neither skipped nor read twice when
+  the table changes during the transfer.
+- A primary key of another type (float, timestamp, binary; on SQL Server also `varchar`) is read
+  with `OFFSET` pages ordered by that key.
+- A table without a primary key is read with `OFFSET` pages ordered by all sortable columns.
+  The transfer log shows a `WARNING` for it: rows can be duplicated or missing if the table
+  changes while it is being read. **Export Objects as SQL** reads table data the same way and
+  writes the warning as a comment into the script.
+- Values are copied as text literals. SQL `NULL` and a text value that is exactly `NULL` are
+  kept apart: nullable text columns are read together with a `NULL` indicator.
 
 ## Export Objects as SQL
 
@@ -145,7 +177,7 @@ Compares two tables row by row and builds a script that makes the target match t
 2. Rows are matched on the source primary key. Enter **Key columns** when the table has none or
    to match on something else.
 3. Optional: a `WHERE` filter for both sides, a row limit per side (100,000 by default), and
-   columns to ignore.
+   columns to ignore. Clearing the row limit reads both tables completely into memory.
 4. **Compare** lists the differences: rows only in the source, rows only in the target, and
    changed rows with the differing cells marked.
 
@@ -174,6 +206,8 @@ Warnings shown with the result:
 
 - **Row limit reached**: only part of the data was read, so rows may be reported as missing.
 - **Rows share a key**: the key columns do not identify rows uniquely; those rows were skipped.
+
+SQL `NULL` and the text `NULL` are different values in a comparison and in the sync script.
 
 **Saved comparisons** store both endpoints and the options under a name, in the local
 `connections.db`. They refer to connections by id and are not synced.
@@ -227,6 +261,21 @@ The header is authenticated, so a modified file fails to decrypt. There is no re
 the passphrase. Tabular opens `.enc` files directly in Data Files and in the import wizard, and
 **Decrypt Exported File** writes the original file back.
 
+## Export plugins (Wasm)
+
+Export and code-generation plugins run in the sandboxed Wasm runtime (`src/plugin_runtime/`,
+see `docs/PLUGIN_DEVELOPMENT.md`). Each run has a budget:
+
+- CPU: 10,000,000,000 instructions ("fuel"), refilled before the module is instantiated and
+  before its entry point is called. A module that loops forever stops with an "out of fuel"
+  error.
+- Memory: 256 MiB of linear memory. `memory.grow` beyond that returns `-1`; a module that
+  declares more initial memory is rejected.
+- One instance, one memory and at most four tables per run.
+
+Plugins run on a worker thread. The dialog shows a busy indicator and stays usable while a
+plugin runs; the result or the error appears when it finishes.
+
 ## For contributors
 
 Everything headless lives in `src/data_transfer/` and takes plain data (`ConnectionConfig`,
@@ -238,11 +287,19 @@ pools, `TableData`); the GUI is `src/window_egui/transfer_ui.rs`, `transfer_dial
 | `formats.rs`, `encoding.rs`, `encrypt.rs` | Export formats, text encodings, encrypted files |
 | `readers.rs` | File readers (delimited, JSON, spreadsheets, Parquet, compression) |
 | `values.rs`, `types.rs` | SQL literals, `INSERT` batching, type inference and cross-engine type mapping |
-| `catalog.rs` | `Endpoint` (connection + database) and catalog queries |
+| `catalog.rs` | `Endpoint` (connection + database), catalog queries, `TablePager` (keyset / `OFFSET` paging), `execute_atomic` |
 | `transfer.rs`, `object_export.rs` | Table transfer and SQL object export |
 | `compare.rs`, `saved.rs` | Data compare, sync script, saved comparisons |
 | `data_files.rs` | The Data Files workspace |
 
+Nullness: file readers and `TablePager` produce cells as `Option<String>`
+(`TableData::from_cells`, `TableData::value`). Rows that come straight from the query executor
+or the result grid are plain strings where SQL `NULL` and the text `NULL` look the same; that
+one conversion is `data_transfer::cell_from_executor`, and exporting a result grid still goes
+through it.
+
 ```bash
 cargo test --lib data_transfer::
+cargo test --lib plugin_runtime::
+cargo test --test sql_parser_robustness
 ```

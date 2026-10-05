@@ -58,6 +58,11 @@ pub struct ExportIncludes {
     pub queries: bool,
     pub http_api: bool,
     pub history: bool,
+    /// `true` bila arsip memuat password/kunci koneksi dalam bentuk plaintext.
+    /// Arsip lama (sebelum field ini ada) selalu memuatnya, tetapi dibaca
+    /// sebagai `false`; importer tidak bergantung pada nilai ini.
+    #[serde(default)]
+    pub secrets: bool,
 }
 
 // ─── Options & Strategies ───────────────────────────────────────────────────
@@ -100,6 +105,10 @@ pub struct ExportAllOptions {
     pub include_queries: bool,
     pub include_http_api: bool,
     pub include_history: bool,
+    /// Sertakan password, kunci SSH/TLS dan passphrase koneksi di arsip.
+    /// Arsip ZIP TIDAK terenkripsi, jadi defaultnya `false`: rahasia dikosongkan
+    /// dan user mengisinya lagi setelah import.
+    pub include_secrets: bool,
 }
 
 impl Default for ExportAllOptions {
@@ -109,6 +118,7 @@ impl Default for ExportAllOptions {
             include_queries: true,
             include_http_api: true,
             include_history: true,
+            include_secrets: false,
         }
     }
 }
@@ -228,6 +238,125 @@ fn clear_directory_contents(dir: &Path) -> std::io::Result<()> {
 
 // ─── Core Export / Import Implementation ─────────────────────────────────────
 
+/// Kunci `plugin_options` yang nilainya dianggap rahasia (token, API key, dst.).
+fn is_secret_option_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "api-key",
+        "private_key",
+        "privatekey",
+        "passphrase",
+        "credential",
+        "access_key",
+        "accesskey",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
+}
+
+/// Salinan koneksi tanpa rahasia, untuk ditulis ke arsip yang tidak
+/// terenkripsi: password, password/kunci SSH, kunci klien TLS beserta
+/// passphrase-nya, dan opsi plugin yang berupa token/API key dikosongkan.
+/// Field non-rahasia (host, user, sertifikat CA, dst.) tetap utuh.
+pub(crate) fn redact_connection_secrets(connection: &ConnectionConfig) -> ConnectionConfig {
+    let mut redacted = connection.clone();
+    redacted.password.clear();
+    redacted.ssh_password.clear();
+    redacted.ssh_private_key.clear();
+    redacted.ssl_client_key.clear();
+    redacted.ssl_key_passphrase.clear();
+    for (key, value) in redacted.plugin_options.iter_mut() {
+        if is_secret_option_key(key) {
+            value.clear();
+        }
+    }
+    redacted
+}
+
+/// Isi field rahasia yang kosong di `connection` (arsip tanpa rahasia) dengan
+/// nilai milik koneksi `existing` yang bernama sama, bila ada.
+fn fill_missing_secrets(
+    mut connection: ConnectionConfig,
+    existing: Option<&ConnectionConfig>,
+) -> ConnectionConfig {
+    let Some(existing) = existing else {
+        return connection;
+    };
+    for (target, source) in [
+        (&mut connection.password, &existing.password),
+        (&mut connection.ssh_password, &existing.ssh_password),
+        (&mut connection.ssh_private_key, &existing.ssh_private_key),
+        (&mut connection.ssl_client_key, &existing.ssl_client_key),
+        (
+            &mut connection.ssl_key_passphrase,
+            &existing.ssl_key_passphrase,
+        ),
+    ] {
+        if target.is_empty() {
+            target.clone_from(source);
+        }
+    }
+    connection
+}
+
+/// Simpan rahasia hasil import ke secret store, HANYA untuk field yang
+/// memang ada di arsip. Field kosong (arsip tanpa rahasia) dilewati supaya
+/// rahasia yang sudah tersimpan untuk koneksi itu tidak terhapus.
+fn externalize_imported_secrets(
+    rt: &tokio::runtime::Runtime,
+    pool: &std::sync::Arc<sqlx::SqlitePool>,
+    connection_id: i64,
+    connection: &ConnectionConfig,
+) {
+    for (field, sql, value) in [
+        (
+            "password",
+            "UPDATE connections SET password = ? WHERE id = ?",
+            &connection.password,
+        ),
+        (
+            "ssh_private_key",
+            "UPDATE connections SET ssh_private_key = ? WHERE id = ?",
+            &connection.ssh_private_key,
+        ),
+        (
+            "ssh_password",
+            "UPDATE connections SET ssh_password = ? WHERE id = ?",
+            &connection.ssh_password,
+        ),
+    ] {
+        if value.is_empty() {
+            continue;
+        }
+        let stored = crate::secrets::store_or_keep(
+            &crate::secrets::connection_secret_name(connection_id, field),
+            value,
+        );
+        if &stored == value {
+            continue;
+        }
+        let result = rt.block_on(async {
+            sqlx::query(sql)
+                .bind(stored)
+                .bind(connection_id)
+                .execute(pool.as_ref())
+                .await
+        });
+        if let Err(e) = result {
+            error!(
+                "[RESTORE] Failed to store {} for connection {}: {}",
+                field, connection_id, e
+            );
+        }
+    }
+}
+
 /// Core headless export function that does not block on tokio runtime or mutate Tabular.
 /// Fully thread-safe and safe to execute in a background thread.
 pub fn export_all_data_payload(
@@ -251,7 +380,13 @@ pub fn export_all_data_payload(
 
     // 1. Export Connections and Connection Folders
     if options.include_connections {
-        let conns_json = serde_json::to_string_pretty(connections)?;
+        let conns_json = if options.include_secrets {
+            serde_json::to_string_pretty(connections)?
+        } else {
+            let redacted: Vec<ConnectionConfig> =
+                connections.iter().map(redact_connection_secrets).collect();
+            serde_json::to_string_pretty(&redacted)?
+        };
         zip.start_file("connections/connections.json", file_opts)?;
         zip.write_all(conns_json.as_bytes())?;
         counts.connections = connections.len();
@@ -326,6 +461,7 @@ pub fn export_all_data_payload(
             queries: options.include_queries,
             http_api: options.include_http_api,
             history: options.include_history,
+            secrets: options.include_connections && options.include_secrets,
         },
     };
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
@@ -439,6 +575,7 @@ pub fn inspect_archive(archive_path: &Path) -> Result<ExportAllManifest, ExportI
             queries: counts.queries > 0,
             http_api: counts.http_workspaces > 0,
             history: counts.history_items > 0,
+            secrets: false,
         },
     })
 }
@@ -566,6 +703,7 @@ pub fn import_all_data(
         })?;
 
         eprintln!("[RESTORE] ── Step 1: Restoring Connections & Folders ──");
+        let mut preserved_secrets: HashMap<String, ConnectionConfig> = HashMap::new();
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
             eprintln!("[RESTORE] CleanRestore: Clearing existing connection and cache tables...");
             rt.block_on(async {
@@ -588,9 +726,17 @@ pub fn import_all_data(
                     }
                 }
             });
+            // Arsip tanpa rahasia: simpan rahasia koneksi yang ada (di memori
+            // sudah berupa nilai asli) supaya koneksi bernama sama tidak
+            // kehilangan password setelah tabelnya dikosongkan.
+            for existing in &tabular.connections {
+                preserved_secrets.insert(existing.name.clone(), existing.clone());
+            }
             tabular.connection_folders.clear();
             tabular.connections.clear();
             tabular.connection_pools.clear();
+            // Id koneksi berubah: memo FK lama tidak berlaku lagi.
+            crate::cache_data::invalidate_foreign_key_memo_all();
             eprintln!("[RESTORE] CleanRestore: Completed clearing tables and in-memory caches.");
         }
 
@@ -667,6 +813,8 @@ pub fn import_all_data(
                                 conns.len()
                             );
                             for conn in conns {
+                                let preserved = preserved_secrets.get(&conn.name);
+                                let conn = fill_missing_secrets(conn, preserved);
                                 let old_id = conn.id;
                                 let conn_name = conn.name.clone();
 
@@ -703,11 +851,13 @@ pub fn import_all_data(
                                         let conn_clone = conn.clone();
                                         let update_res = rt.block_on(async {
                                             sqlx::query(
-                                                "UPDATE connections SET host = ?, port = ?, username = ?, password = ?, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = ?, ssh_password = ?, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = ?, ssl_key_passphrase = ?, ssl_verify_server = ? WHERE id = ?"
+                                                // Rahasia yang kosong di arsip (export tanpa rahasia) tidak menimpa nilai yang sudah tersimpan.
+                                                "UPDATE connections SET host = ?, port = ?, username = ?, password = CASE WHEN ? = '' THEN password ELSE ? END, database_name = ?, connection_type = ?, folder = ?, ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?, ssh_auth_method = ?, ssh_private_key = CASE WHEN ? = '' THEN ssh_private_key ELSE ? END, ssh_password = CASE WHEN ? = '' THEN ssh_password ELSE ? END, ssh_accept_unknown_host_keys = ?, custom_views = ?, replication_master_id = ?, ssh_jump_host = ?, ssl_enabled = ?, ssl_ca_cert = ?, ssl_client_cert = ?, ssl_client_key = CASE WHEN ? = '' THEN ssl_client_key ELSE ? END, ssl_key_passphrase = CASE WHEN ? = '' THEN ssl_key_passphrase ELSE ? END, ssl_verify_server = ? WHERE id = ?"
                                             )
                                             .bind(conn_clone.host)
                                             .bind(conn_clone.port)
                                             .bind(conn_clone.username)
+                                            .bind(&conn_clone.password)
                                             .bind(&conn_clone.password)
                                             .bind(conn_clone.database)
                                             .bind(conn_clone.connection_type.as_db_str().into_owned())
@@ -718,6 +868,8 @@ pub fn import_all_data(
                                             .bind(conn_clone.ssh_username)
                                             .bind(conn_clone.ssh_auth_method.as_db_value())
                                             .bind(&conn_clone.ssh_private_key)
+                                            .bind(&conn_clone.ssh_private_key)
+                                            .bind(&conn_clone.ssh_password)
                                             .bind(&conn_clone.ssh_password)
                                             .bind(if conn_clone.ssh_accept_unknown_host_keys { 1 } else { 0 })
                                             .bind(serde_json::to_string(&conn_clone.custom_views).unwrap_or_else(|_| "[]".to_string()))
@@ -726,8 +878,10 @@ pub fn import_all_data(
                                             .bind(if conn_clone.ssl_enabled { 1 } else { 0 })
                                             .bind(conn_clone.ssl_ca_cert)
                                             .bind(conn_clone.ssl_client_cert)
-                                            .bind(conn_clone.ssl_client_key)
-                                            .bind(conn_clone.ssl_key_passphrase)
+                                            .bind(&conn_clone.ssl_client_key)
+                                            .bind(&conn_clone.ssl_client_key)
+                                            .bind(&conn_clone.ssl_key_passphrase)
+                                            .bind(&conn_clone.ssl_key_passphrase)
                                             .bind(if conn_clone.ssl_verify_server { 1 } else { 0 })
                                             .bind(eid)
                                             .execute(pool_clone.as_ref())
@@ -736,14 +890,7 @@ pub fn import_all_data(
 
                                         match update_res {
                                             Ok(_) => {
-                                                crate::sidebar_database::externalize_connection_secrets(
-                                                    &rt,
-                                                    pool,
-                                                    eid,
-                                                    &conn.password,
-                                                    &conn.ssh_private_key,
-                                                    &conn.ssh_password,
-                                                );
+                                                externalize_imported_secrets(&rt, pool, eid, &conn);
 
                                                 if let Some(oid) = old_id {
                                                     old_id_to_new_id.insert(oid, eid);
@@ -1228,6 +1375,173 @@ mod tests {
     use zip::ZipArchive;
     use zip::write::SimpleFileOptions;
 
+    fn secret_conn(name: &str) -> ConnectionConfig {
+        let mut plugin_options = std::collections::BTreeMap::new();
+        plugin_options.insert("api_token".to_string(), "tok-123".to_string());
+        plugin_options.insert("region".to_string(), "ap-southeast-3".to_string());
+        ConnectionConfig {
+            id: Some(7),
+            name: name.to_string(),
+            host: "db.internal".to_string(),
+            port: "5432".to_string(),
+            username: "app".to_string(),
+            password: "hunter2-db".to_string(),
+            database: "prod".to_string(),
+            connection_type: crate::models::enums::DatabaseType::PostgreSQL,
+            folder: None,
+            ssh_enabled: true,
+            ssh_host: "bastion".to_string(),
+            ssh_port: "22".to_string(),
+            ssh_username: "ops".to_string(),
+            ssh_auth_method: crate::models::enums::SshAuthMethod::Key,
+            ssh_private_key: "-----BEGIN OPENSSH PRIVATE KEY-----".to_string(),
+            ssh_password: "hunter2-ssh".to_string(),
+            ssh_accept_unknown_host_keys: false,
+            ssh_jump_host: String::new(),
+            ssl_enabled: true,
+            ssl_ca_cert: "/etc/ssl/ca.pem".to_string(),
+            ssl_client_cert: "/etc/ssl/client.pem".to_string(),
+            ssl_client_key: "-----BEGIN PRIVATE KEY-----".to_string(),
+            ssl_key_passphrase: "hunter2-tls".to_string(),
+            ssl_verify_server: true,
+            custom_views: Vec::new(),
+            replication_master_id: None,
+            plugin_options,
+        }
+    }
+
+    const SECRET_MARKERS: &[&str] = &[
+        "hunter2-db",
+        "hunter2-ssh",
+        "hunter2-tls",
+        "BEGIN OPENSSH PRIVATE KEY",
+        "BEGIN PRIVATE KEY",
+        "tok-123",
+    ];
+
+    fn read_archive_connections(path: &Path) -> String {
+        let mut archive = ZipArchive::new(File::open(path).unwrap()).unwrap();
+        let mut entry = archive.by_name("connections/connections.json").unwrap();
+        let mut content = String::new();
+        entry.read_to_string(&mut content).unwrap();
+        content
+    }
+
+    #[test]
+    fn redaction_clears_secrets_and_keeps_everything_else() {
+        let original = secret_conn("Prod");
+        let redacted = redact_connection_secrets(&original);
+        assert!(redacted.password.is_empty());
+        assert!(redacted.ssh_password.is_empty());
+        assert!(redacted.ssh_private_key.is_empty());
+        assert!(redacted.ssl_client_key.is_empty());
+        assert!(redacted.ssl_key_passphrase.is_empty());
+        assert_eq!(
+            redacted.plugin_options.get("api_token").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            redacted.plugin_options.get("region").map(String::as_str),
+            Some("ap-southeast-3")
+        );
+        // Bukan rahasia: tetap utuh supaya koneksi bisa dipakai lagi setelah
+        // user mengisi password.
+        assert_eq!(redacted.host, original.host);
+        assert_eq!(redacted.username, original.username);
+        assert_eq!(redacted.ssh_host, original.ssh_host);
+        assert_eq!(redacted.ssl_ca_cert, original.ssl_ca_cert);
+        assert_eq!(redacted.ssl_client_cert, original.ssl_client_cert);
+        // Aslinya tidak berubah.
+        assert_eq!(original.password, "hunter2-db");
+    }
+
+    #[test]
+    fn export_strips_secrets_by_default() {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular_export_secrets_default_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip_path = dir.join("export.zip");
+        let options = ExportAllOptions {
+            include_queries: false,
+            include_http_api: false,
+            include_history: false,
+            ..Default::default()
+        };
+        assert!(!options.include_secrets, "secrets must be opt-in");
+        export_all_data_payload(&zip_path, &options, &[secret_conn("Prod")], &[], &[], &[])
+            .unwrap();
+
+        let json = read_archive_connections(&zip_path);
+        for marker in SECRET_MARKERS {
+            assert!(!json.contains(marker), "archive leaks secret: {marker}");
+        }
+        assert!(json.contains("db.internal"));
+        assert!(!inspect_archive(&zip_path).unwrap().includes.secrets);
+
+        // Arsip tanpa rahasia tetap bisa di-parse oleh importer.
+        let parsed: Vec<ConnectionConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Prod");
+        assert!(parsed[0].password.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_includes_secrets_only_when_requested() {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular_export_secrets_optin_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip_path = dir.join("export.zip");
+        let options = ExportAllOptions {
+            include_queries: false,
+            include_http_api: false,
+            include_history: false,
+            include_secrets: true,
+            ..Default::default()
+        };
+        export_all_data_payload(&zip_path, &options, &[secret_conn("Prod")], &[], &[], &[])
+            .unwrap();
+        let json = read_archive_connections(&zip_path);
+        assert!(json.contains("hunter2-db"));
+        assert!(inspect_archive(&zip_path).unwrap().includes.secrets);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_tolerates_connections_without_secret_fields() {
+        // Arsip dari versi yang sama sekali tidak menulis field rahasia TLS.
+        let json = r#"[{"id":1,"name":"Old","host":"h","port":"1","username":"u","password":"","database":"d","connection_type":"PostgreSQL","folder":null,"ssh_enabled":false,"ssh_host":"","ssh_port":"22","ssh_username":"","ssh_auth_method":"Key","ssh_private_key":"","ssh_password":"","ssh_accept_unknown_host_keys":false}]"#;
+        let parsed: Vec<ConnectionConfig> = serde_json::from_str(json).unwrap();
+        assert!(parsed[0].ssl_client_key.is_empty());
+        assert!(parsed[0].ssl_key_passphrase.is_empty());
+    }
+
+    #[test]
+    fn missing_secrets_are_filled_from_the_existing_connection() {
+        let existing = secret_conn("Prod");
+        let imported = redact_connection_secrets(&existing);
+        let merged = fill_missing_secrets(imported.clone(), Some(&existing));
+        assert_eq!(merged.password, "hunter2-db");
+        assert_eq!(merged.ssh_password, "hunter2-ssh");
+        assert_eq!(merged.ssl_key_passphrase, "hunter2-tls");
+
+        // Rahasia yang ADA di arsip menang atas yang lama.
+        let mut with_secret = imported.clone();
+        with_secret.password = "from-archive".to_string();
+        assert_eq!(
+            fill_missing_secrets(with_secret, Some(&existing)).password,
+            "from-archive"
+        );
+        // Tanpa koneksi lama, tidak ada yang diisi.
+        assert!(fill_missing_secrets(imported, None).password.is_empty());
+    }
+
     #[test]
     fn test_zip_options() {
         let options =
@@ -1295,6 +1609,7 @@ mod tests {
                 queries: true,
                 http_api: true,
                 history: true,
+                secrets: false,
             },
         };
 
@@ -1343,6 +1658,7 @@ mod tests {
                     queries: true,
                     http_api: true,
                     history: true,
+                    secrets: false,
                 },
             };
             zip.start_file("manifest.json", opts).unwrap();

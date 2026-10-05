@@ -248,11 +248,14 @@ pub struct GitRepoStore {
 }
 
 impl GitRepoStore {
-    /// Muat dari `file`; file yang belum ada atau rusak dianggap kosong.
+    /// Muat dari `file`; file yang belum ada dianggap kosong. File yang rusak
+    /// dipindahkan ke `<nama>.corrupt-<timestamp>` dulu supaya `save()`
+    /// berikutnya tidak menimpa daftar repository milik user.
     pub fn load(file: PathBuf) -> Self {
         let body = match std::fs::read(&file) {
             Ok(bytes) => serde_json::from_slice::<FileBody>(&bytes).unwrap_or_else(|e| {
                 log::warn!("[GIT] ignoring unreadable {}: {e}", file.display());
+                let _ = crate::directory::quarantine_corrupt_file(&file);
                 FileBody::default()
             }),
             Err(_) => FileBody::default(),
@@ -281,7 +284,7 @@ impl GitRepoStore {
             repo_prefs: self.prefs.clone(),
         };
         let json = serde_json::to_vec_pretty(&body).map_err(std::io::Error::other)?;
-        std::fs::write(&self.file, json)
+        crate::directory::write_file_atomically(&self.file, &json)
     }
 
     /// Tambah folder; `false` bila sudah ada.
@@ -611,6 +614,36 @@ mod tests {
         assert_eq!(s2.active.as_deref(), Some("k"));
         std::fs::write(&file, "{broken").expect("write");
         assert!(GitRepoStore::load(file).repos.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_store_is_preserved_before_next_save() {
+        let dir = tmp("corrupt");
+        let file = dir.join(FILE_NAME);
+        std::fs::write(&file, "{broken").expect("write");
+        let mut s = GitRepoStore::load(file.clone());
+        assert!(s.repos.is_empty());
+        // File rusak sudah disisihkan, bukan dibiarkan untuk ditimpa.
+        assert!(!file.exists());
+        assert!(s.add(&dir.to_string_lossy()));
+        s.save().expect("save");
+        let backups: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().contains(".corrupt-"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).expect("read backup"),
+            "{broken"
+        );
+        assert_eq!(GitRepoStore::load(file).repos.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

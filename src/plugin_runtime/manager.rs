@@ -76,6 +76,65 @@ pub struct PluginModalState {
     pub installed_drivers: Option<Vec<crate::driver_api::manifest::InstalledDriver>>,
     /// Sidecar yang sedang menunggu konfirmasi persetujuan pengguna.
     pub pending_sidecar_approval: Option<String>,
+    /// Eksekusi plugin yang sedang berjalan di thread kerja.
+    pub pending_run: Option<PendingPluginRun>,
+}
+
+/// Hasil satu eksekusi plugin.
+pub type PluginRunResult = Result<PluginExecutionContext, String>;
+
+/// Eksekusi plugin di thread kerja. Kode Wasm pengguna tidak pernah jalan di
+/// thread UI: modul yang lambat atau berputar tanpa henti hanya menahan
+/// thread ini sampai anggaran fuel-nya habis, sementara jendela tetap hidup.
+#[derive(Debug, Clone)]
+pub struct PendingPluginRun {
+    /// Nama yang ditampilkan di indikator sibuk.
+    pub label: String,
+    /// Pesan status bila eksekusi berhasil.
+    pub success_message: String,
+    pub started_at: std::time::Instant,
+    slot: std::sync::Arc<std::sync::Mutex<Option<PluginRunResult>>>,
+}
+
+impl PendingPluginRun {
+    /// Jalankan `run` di thread kerja. `on_done` dipanggil setelah hasil
+    /// tersimpan (dipakai untuk meminta repaint).
+    pub fn spawn(
+        label: String,
+        success_message: String,
+        run: impl FnOnce() -> PluginRunResult + Send + 'static,
+        on_done: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, String> {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let worker_slot = slot.clone();
+        std::thread::Builder::new()
+            .name("tabular-plugin".to_string())
+            .spawn(move || {
+                // Panik di dalam plugin host tidak boleh membuat UI menunggu
+                // selamanya: laporkan sebagai galat.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+                    .unwrap_or_else(|_| Err("Plugin execution panicked".to_string()));
+                *worker_slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                on_done();
+            })
+            .map_err(|e| format!("Could not start the plugin thread: {e}"))?;
+        Ok(Self {
+            label,
+            success_message,
+            started_at: std::time::Instant::now(),
+            slot,
+        })
+    }
+
+    /// Ambil hasil bila sudah selesai.
+    pub fn take_result(&self) -> Option<PluginRunResult> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 impl Default for PluginModalState {
@@ -98,10 +157,14 @@ impl Default for PluginModalState {
             status_message: None,
             installed_drivers: None,
             pending_sidecar_approval: None,
+            pending_run: None,
         }
     }
 }
 
+/// Murah di-clone (engine berbagi state, manifest kecil), supaya salinannya
+/// bisa dibawa ke thread kerja; lihat [`PendingPluginRun`].
+#[derive(Clone)]
 pub struct PluginManager {
     engine: WasmPluginEngine,
     plugins: HashMap<String, PluginManifest>,
@@ -467,5 +530,89 @@ impl PluginManager {
     ) -> Result<PluginExecutionContext, String> {
         let ctx = PluginExecutionContext::new(schema.cloned(), selection.cloned());
         self.engine.execute(bytecode, entrypoint, ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_runtime::engine::PluginLimits;
+
+    fn wait(run: &PendingPluginRun) -> PluginRunResult {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(result) = run.take_result() {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "plugin thread did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn runaway_plugin_finishes_on_the_worker_thread_with_an_error() {
+        let engine = WasmPluginEngine::with_limits(PluginLimits {
+            fuel: 500_000,
+            ..Default::default()
+        });
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let caller = std::thread::current().id();
+        let run = PendingPluginRun::spawn(
+            "loop".to_string(),
+            "ok".to_string(),
+            move || {
+                assert_ne!(std::thread::current().id(), caller);
+                engine.execute(
+                    b"(module (func (export \"tabular_main\") (loop $l (br $l))))",
+                    "tabular_main",
+                    PluginExecutionContext::default(),
+                )
+            },
+            move || {
+                let _ = done_tx.send(());
+            },
+        )
+        .unwrap();
+        // Pemanggil tidak ikut menunggu: hasil datang lewat slot.
+        let err = wait(&run).unwrap_err();
+        assert!(err.contains("out of fuel"), "{err}");
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok()
+        );
+        assert!(run.take_result().is_none());
+    }
+
+    #[test]
+    fn panicking_run_is_reported_instead_of_hanging() {
+        let run =
+            PendingPluginRun::spawn("boom".to_string(), String::new(), || panic!("boom"), || {})
+                .unwrap();
+        assert_eq!(wait(&run).unwrap_err(), "Plugin execution panicked");
+    }
+
+    #[test]
+    fn manager_clone_runs_builtin_plugins() {
+        let manager = PluginManager::new();
+        let schema = PluginTableSchema {
+            table_name: "t".to_string(),
+            schema_name: None,
+            database_type: "SQLite".to_string(),
+            columns: Vec::new(),
+            total_rows: 0,
+        };
+        let worker = manager.clone();
+        let run = PendingPluginRun::spawn(
+            "duckdb".to_string(),
+            String::new(),
+            move || worker.execute_plugin("builtin_parquet_duckdb", &schema, None, None, None),
+            || {},
+        )
+        .unwrap();
+        assert!(wait(&run).unwrap().result_output.is_some());
     }
 }

@@ -300,6 +300,24 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             tabular.history_items.len()
                         ),
                     );
+
+                    ui.add_space(4.0);
+                    ui.separator();
+                    // Rahasia bersifat opt-in: arsip ZIP tidak terenkripsi.
+                    ui.add_enabled(
+                        state.options.include_connections,
+                        egui::Checkbox::new(
+                            &mut state.options.include_secrets,
+                            "Include passwords and keys (stored unencrypted)",
+                        ),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Passwords and keys are not exported by default and must be re-entered after import.",
+                        )
+                        .small()
+                        .color(egui::Color32::from_gray(160)),
+                    );
                 });
             });
 

@@ -48,3 +48,29 @@ jobs:
         run: cargo clippy --all-targets --features collab -- -D warnings
       - name: Tests
         run: cargo test
+
+  # Advisory keamanan (RustSec) diperiksa di setiap PR, bukan hanya oleh cron
+  # bulanan di dependency-audit.yml.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Check for known security advisories
+        run: cargo audit
+
+  # Advisory, crate terlarang/ganda, dan sumber dependensi menurut deny.toml.
+  # Belum memblokir merge: daftar crate ganda (bson, base64, rustls provider)
+  # masih perlu ditriase. Hapus continue-on-error setelah itu.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources

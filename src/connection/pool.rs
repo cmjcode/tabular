@@ -2,7 +2,7 @@ use crate::{models, modules, ssh_tunnel, window_egui::Tabular};
 use log::debug;
 use mongodb::Client as MongoClient;
 use once_cell::sync::Lazy;
-use redis::{Client, aio::ConnectionManager};
+use redis::aio::ConnectionManager;
 use sqlx::{mysql::MySqlPoolOptions, postgres::PgPoolOptions, sqlite::SqlitePoolOptions};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +20,22 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DNS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Ceiling for a single driver handshake, matching the pre-existing MongoDB value.
-const DRIVER_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DRIVER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Batas waktu reset sesi (`after_release`) saat koneksi kembali ke pool.
+/// Koneksi yang tidak bisa di-reset dalam waktu ini ditutup paksa supaya slot
+/// pool tidak tertahan oleh query lama yang masih berjalan di server.
+const SESSION_RESET_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Kunci mutex dan tetap pakai isinya walau ter-poison. Semua registry di
+/// modul ini hanya berisi map sederhana yang tetap konsisten setelah panic di
+/// thread lain; membacanya sebagai "kosong" justru menyembunyikan pool yang
+/// masih hidup (koneksi tampak terputus, tunnel dan pool bocor).
+pub(crate) fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// A pending pool creation older than this is treated as dead and released.
 /// Deliberately a little past [`CONNECT_TIMEOUT`] so an attempt that is about to
@@ -39,31 +54,53 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// background worker thread and `runtime.spawn` — and only one of them can hand
 /// a task handle back to the UI. Looking the flag up by `connection.id` reaches
 /// both without changing the signature of every connect function.
-static CANCEL_FLAGS: Lazy<Mutex<HashMap<i64, Arc<AtomicBool>>>> =
+static CANCEL_FLAGS: Lazy<Mutex<HashMap<i64, CancelEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+struct CancelEntry {
+    flag: Arc<AtomicBool>,
+    /// Kapan flag dinaikkan. Flag yang sudah dibatalkan dibiarkan di registry
+    /// supaya attempt yang masih antre ikut melihatnya, tetapi hanya selama
+    /// [`PENDING_POOL_MAX_AGE`]: setelah itu tidak mungkin ada attempt lama yang
+    /// masih berjalan, dan flag basi tidak boleh membatalkan connect baru dari
+    /// pemanggil yang tidak lewat `begin_connect_attempt` (agent, transfer data).
+    cancelled_at: Option<std::time::Instant>,
+}
 
 /// Register a fresh, un-cancelled flag for a new attempt, replacing any flag
 /// left over from a previous one.
 pub(crate) fn begin_connect_attempt(connection_id: i64) -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
-    if let Ok(mut flags) = CANCEL_FLAGS.lock() {
-        flags.insert(connection_id, flag.clone());
-    }
+    lock_or_recover(&CANCEL_FLAGS).insert(
+        connection_id,
+        CancelEntry {
+            flag: flag.clone(),
+            cancelled_at: None,
+        },
+    );
     flag
 }
 
 /// Ask the in-flight attempt for this connection to unwind. No-op if nothing is
 /// running.
 pub(crate) fn signal_connect_cancel(connection_id: i64) {
-    if let Ok(flags) = CANCEL_FLAGS.lock()
-        && let Some(flag) = flags.get(&connection_id)
-    {
-        flag.store(true, Ordering::SeqCst);
+    if let Some(entry) = lock_or_recover(&CANCEL_FLAGS).get_mut(&connection_id) {
+        entry.flag.store(true, Ordering::SeqCst);
+        entry.cancelled_at.get_or_insert_with(std::time::Instant::now);
     }
 }
 
 fn current_cancel_flag(connection_id: i64) -> Option<Arc<AtomicBool>> {
-    CANCEL_FLAGS.lock().ok()?.get(&connection_id).cloned()
+    let mut flags = lock_or_recover(&CANCEL_FLAGS);
+    let expired = flags
+        .get(&connection_id)?
+        .cancelled_at
+        .is_some_and(|at| at.elapsed() > PENDING_POOL_MAX_AGE);
+    if expired {
+        flags.remove(&connection_id);
+        return None;
+    }
+    flags.get(&connection_id).map(|entry| entry.flag.clone())
 }
 
 /// True if this connection's current attempt has been cancelled.
@@ -73,9 +110,7 @@ pub(crate) fn connect_was_cancelled(connection_id: i64) -> bool {
 
 /// Forget a connection's flag once no attempt is outstanding.
 fn end_connect_attempt(connection_id: i64) {
-    if let Ok(mut flags) = CANCEL_FLAGS.lock() {
-        flags.remove(&connection_id);
-    }
+    lock_or_recover(&CANCEL_FLAGS).remove(&connection_id);
 }
 
 /// Resolves once the flag is raised. Raced against the connect attempt so that
@@ -300,11 +335,10 @@ pub(crate) async fn resolve_connection_target_async(
 // Helper function to clean up completed background pools
 pub(crate) fn cleanup_completed_background_pools(tabular: &mut Tabular) {
     let settled: Vec<i64> = {
-        let succeeded = tabular
-            .shared_connection_pools
-            .lock()
-            .map(|pools| pools.keys().copied().collect::<Vec<_>>())
-            .unwrap_or_default();
+        let succeeded = lock_or_recover(&tabular.shared_connection_pools)
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         let failed = tabular.connection_errors.keys().copied();
         succeeded.into_iter().chain(failed).collect()
     };
@@ -341,10 +375,7 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
 
     for connection_id in stuck_connections {
         let has_pool = tabular.connection_pools.contains_key(&connection_id)
-            || tabular
-                .shared_connection_pools
-                .lock()
-                .is_ok_and(|pools| pools.contains_key(&connection_id));
+            || lock_or_recover(&tabular.shared_connection_pools).contains_key(&connection_id);
 
         if has_pool {
             debug!(
@@ -451,36 +482,9 @@ async fn create_connection_pool_for_config_inner(
                     return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
-            let port_num = target_port.parse::<u16>().unwrap_or(3306);
-            let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
-                .host(&target_host)
-                .port(port_num)
-                .username(&connection.username)
-                .password(&connection.password)
-                .database(&connection.database);
-
-            if connection.ssl_enabled {
-                let ssl_mode = if !connection.ssl_verify_server {
-                    sqlx::mysql::MySqlSslMode::Required
-                } else if !connection.ssl_ca_cert.trim().is_empty() {
-                    sqlx::mysql::MySqlSslMode::VerifyCa
-                } else {
-                    sqlx::mysql::MySqlSslMode::Required
-                };
-                connect_opts = connect_opts.ssl_mode(ssl_mode);
-
-                if !connection.ssl_ca_cert.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_ca(connection.ssl_ca_cert.trim());
-                }
-                if !connection.ssl_client_cert.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
-                }
-                if !connection.ssl_client_key.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
-                }
-            } else {
-                connect_opts = connect_opts.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
-            }
+            let connect_opts =
+                mysql_connect_options(connection, &target_host, &target_port, None);
+            let default_database = connection.database.trim().to_string();
 
             let mut last_err: Option<sqlx::Error> = None;
 
@@ -491,6 +495,7 @@ async fn create_connection_pool_for_config_inner(
                     _ => (1u32, true, 15u64),
                 };
 
+                let release_database = default_database.clone();
                 let pool_result = MySqlPoolOptions::new()
                     .max_connections(10)
                     .min_connections(min_conns)
@@ -500,22 +505,33 @@ async fn create_connection_pool_for_config_inner(
                     .test_before_acquire(test_before)
                     .after_connect(|conn, _| {
                         Box::pin(async move {
-                            let _ = sqlx::query("SET SESSION wait_timeout = 600")
-                                .execute(&mut *conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION interactive_timeout = 600")
-                                .execute(&mut *conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION net_read_timeout = 120")
-                                .execute(&mut *conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION net_write_timeout = 120")
-                                .execute(&mut *conn)
-                                .await;
-                            let _ = sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
-                                .execute(&mut *conn)
-                                .await;
+                            // `sql_mode` sengaja TIDAK dipaksa: memaksa
+                            // 'TRADITIONAL' mengganti mode server (mis.
+                            // ONLY_FULL_GROUP_BY, ANSI_QUOTES) sehingga query
+                            // berperilaku beda dari klien lain.
+                            for statement in MYSQL_SESSION_SETUP {
+                                if let Err(e) = sqlx::query(statement).execute(&mut *conn).await {
+                                    log::warn!(
+                                        "[POOL] MySQL session setup `{}` failed: {}",
+                                        statement,
+                                        e
+                                    );
+                                }
+                            }
                             Ok(())
+                        })
+                    })
+                    .after_release(move |conn, _| {
+                        let default_database = release_database.clone();
+                        Box::pin(async move {
+                            finish_session_reset(
+                                "MySQL",
+                                tokio::time::timeout(
+                                    SESSION_RESET_TIMEOUT,
+                                    reset_mysql_session(conn, &default_database),
+                                )
+                                .await,
+                            )
                         })
                     })
                     .connect_with(connect_opts.clone())
@@ -568,36 +584,8 @@ async fn create_connection_pool_for_config_inner(
                     return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
-            let port_num = target_port.parse::<u16>().unwrap_or(5432);
-            let mut connect_opts = sqlx::postgres::PgConnectOptions::new()
-                .host(&target_host)
-                .port(port_num)
-                .username(&connection.username)
-                .password(&connection.password)
-                .database(&connection.database);
-
-            if connection.ssl_enabled {
-                let ssl_mode = if !connection.ssl_verify_server {
-                    sqlx::postgres::PgSslMode::Require
-                } else if !connection.ssl_ca_cert.trim().is_empty() {
-                    sqlx::postgres::PgSslMode::VerifyCa
-                } else {
-                    sqlx::postgres::PgSslMode::Require
-                };
-                connect_opts = connect_opts.ssl_mode(ssl_mode);
-
-                if !connection.ssl_ca_cert.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_root_cert(connection.ssl_ca_cert.trim());
-                }
-                if !connection.ssl_client_cert.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
-                }
-                if !connection.ssl_client_key.trim().is_empty() {
-                    connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
-                }
-            } else {
-                connect_opts = connect_opts.ssl_mode(sqlx::postgres::PgSslMode::Prefer);
-            }
+            let connect_opts =
+                pg_connect_options(connection, &target_host, &target_port, &connection.database);
 
             let pool_result = PgPoolOptions::new()
                 .max_connections(15)
@@ -606,6 +594,18 @@ async fn create_connection_pool_for_config_inner(
                 .idle_timeout(std::time::Duration::from_secs(600))
                 .max_lifetime(std::time::Duration::from_secs(1800))
                 .test_before_acquire(false)
+                .after_release(|conn, _| {
+                    Box::pin(async move {
+                        finish_session_reset(
+                            "PostgreSQL",
+                            tokio::time::timeout(
+                                SESSION_RESET_TIMEOUT,
+                                reset_postgres_session(conn),
+                            )
+                            .await,
+                        )
+                    })
+                })
                 .connect_with(connect_opts)
                 .await;
 
@@ -634,13 +634,7 @@ async fn create_connection_pool_for_config_inner(
                 format!("sqlite:{}", sqlite_path)
             };
 
-            let pool_result = SqlitePoolOptions::new()
-                .max_connections(5)
-                .min_connections(1)
-                .acquire_timeout(std::time::Duration::from_secs(10))
-                .idle_timeout(std::time::Duration::from_secs(300))
-                .max_lifetime(std::time::Duration::from_secs(1800))
-                .test_before_acquire(false)
+            let pool_result = sqlite_pool_options()
                 .connect(&connection_string)
                 .await;
 
@@ -667,46 +661,25 @@ async fn create_connection_pool_for_config_inner(
                     return Err(format!("Cannot resolve target host: {}", err));
                 }
             };
-            let connection_string = if connection.password.is_empty() {
-                format!("redis://{}:{}", target_host, target_port)
-            } else {
-                format!(
-                    "redis://{}:{}@{}:{}",
-                    connection.username, connection.password, target_host, target_port
-                )
-            };
-
             debug!(
                 "Creating new Redis connection manager for: {}",
                 connection.name
             );
-            match Client::open(connection_string) {
-                // ConnectionManager retries internally and has no timeout of its own.
-                Ok(client) => {
-                    match tokio::time::timeout(DRIVER_TIMEOUT, ConnectionManager::new(client)).await
-                    {
-                        Ok(Ok(manager)) => {
-                            let database_pool =
-                                models::enums::DatabasePool::Redis(Arc::new(manager));
-                            Ok(database_pool)
-                        }
-                        Ok(Err(e)) => {
-                            debug!("Failed to create Redis connection manager: {}", e);
-                            Err(format!("Redis connection failed: {}", e))
-                        }
-                        Err(_) => {
-                            let msg = format!(
-                                "Redis connection manager timed out after {}s",
-                                DRIVER_TIMEOUT.as_secs()
-                            );
-                            debug!("{}", msg);
-                            Err(msg)
-                        }
-                    }
-                }
+            // Manager bersama selalu berada di db default (0). Job yang butuh
+            // db lain memakai manager terpisah, lihat `redis_manager_for_db`.
+            match crate::driver_redis::open_redis_manager(
+                &target_host,
+                &target_port,
+                &connection.username,
+                &connection.password,
+                None,
+            )
+            .await
+            {
+                Ok(manager) => Ok(models::enums::DatabasePool::Redis(Arc::new(manager))),
                 Err(e) => {
-                    debug!("Failed to create Redis client: {}", e);
-                    Err(format!("Redis client initialization failed: {}", e))
+                    debug!("Failed to create Redis connection manager: {}", e);
+                    Err(format!("Redis connection failed: {}", e))
                 }
             }
         }
@@ -811,6 +784,444 @@ async fn create_connection_pool_for_config_inner(
             crate::driver_api::connect::create_plugin_pool(connection, engine_id).await
         }
     }
+}
+
+/// SET sesi yang dijalankan pada setiap koneksi MySQL baru.
+const MYSQL_SESSION_SETUP: [&str; 4] = [
+    "SET SESSION wait_timeout = 600",
+    "SET SESSION interactive_timeout = 600",
+    "SET SESSION net_read_timeout = 120",
+    "SET SESSION net_write_timeout = 120",
+];
+
+/// Opsi koneksi MySQL yang dipakai pool utama maupun koneksi sekali pakai,
+/// supaya pengaturan SSL selalu sama. `host`/`port` adalah target yang sudah
+/// di-resolve (ujung lokal tunnel SSH bila aktif). `database` `None` berarti
+/// database default koneksi; string kosong berarti tanpa database.
+pub(crate) fn mysql_connect_options(
+    connection: &models::structs::ConnectionConfig,
+    host: &str,
+    port: &str,
+    database: Option<&str>,
+) -> sqlx::mysql::MySqlConnectOptions {
+    let mut connect_opts = sqlx::mysql::MySqlConnectOptions::new()
+        .host(host)
+        .port(port.trim().parse::<u16>().unwrap_or(3306))
+        .username(&connection.username)
+        .password(&connection.password);
+
+    let database = database.unwrap_or(&connection.database).trim();
+    if !database.is_empty() {
+        connect_opts = connect_opts.database(database);
+    }
+
+    if connection.ssl_enabled {
+        let ssl_mode = if !connection.ssl_verify_server {
+            sqlx::mysql::MySqlSslMode::Required
+        } else if !connection.ssl_ca_cert.trim().is_empty() {
+            sqlx::mysql::MySqlSslMode::VerifyCa
+        } else {
+            sqlx::mysql::MySqlSslMode::Required
+        };
+        connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+        if !connection.ssl_ca_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_ca(connection.ssl_ca_cert.trim());
+        }
+        if !connection.ssl_client_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+        }
+        if !connection.ssl_client_key.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+        }
+    } else {
+        connect_opts = connect_opts.ssl_mode(sqlx::mysql::MySqlSslMode::Disabled);
+    }
+    connect_opts
+}
+
+/// Opsi koneksi PostgreSQL untuk target yang sudah di-resolve. Kredensial dan
+/// nama database diisi lewat builder (bukan URL), jadi karakter seperti `@`,
+/// `/`, `:` atau `%` di password tidak perlu di-encode.
+pub(crate) fn pg_connect_options(
+    connection: &models::structs::ConnectionConfig,
+    host: &str,
+    port: &str,
+    database: &str,
+) -> sqlx::postgres::PgConnectOptions {
+    let mut connect_opts = sqlx::postgres::PgConnectOptions::new()
+        .host(host)
+        .port(port.trim().parse::<u16>().unwrap_or(5432))
+        .username(&connection.username)
+        .password(&connection.password);
+
+    if !database.trim().is_empty() {
+        connect_opts = connect_opts.database(database.trim());
+    }
+
+    if connection.ssl_enabled {
+        let ssl_mode = if !connection.ssl_verify_server {
+            sqlx::postgres::PgSslMode::Require
+        } else if !connection.ssl_ca_cert.trim().is_empty() {
+            sqlx::postgres::PgSslMode::VerifyCa
+        } else {
+            sqlx::postgres::PgSslMode::Require
+        };
+        connect_opts = connect_opts.ssl_mode(ssl_mode);
+
+        if !connection.ssl_ca_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_root_cert(connection.ssl_ca_cert.trim());
+        }
+        if !connection.ssl_client_cert.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_cert(connection.ssl_client_cert.trim());
+        }
+        if !connection.ssl_client_key.trim().is_empty() {
+            connect_opts = connect_opts.ssl_client_key(connection.ssl_client_key.trim());
+        }
+    } else {
+        connect_opts = connect_opts.ssl_mode(sqlx::postgres::PgSslMode::Prefer);
+    }
+    connect_opts
+}
+
+/// Buka pool PostgreSQL sekali pakai (1 koneksi) ke `database` tertentu.
+///
+/// Dipakai jalur metadata yang butuh database selain database default pool
+/// utama. Target di-resolve lewat [`resolve_connection_target_async`], jadi
+/// tunnel SSH ikut dipakai, dan opsi SSL sama dengan pool utama. Pemanggil
+/// wajib menutup pool (`pool.close().await`) setelah selesai.
+pub(crate) async fn connect_postgres_once(
+    connection: &models::structs::ConnectionConfig,
+    database: &str,
+    acquire_timeout: Duration,
+) -> Result<sqlx::PgPool, String> {
+    let (host, port) = resolve_connection_target_async(connection)
+        .await
+        .map_err(|e| format!("Cannot resolve target host: {e}"))?;
+    let database = if database.trim().is_empty() {
+        connection.database.as_str()
+    } else {
+        database
+    };
+    PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(acquire_timeout)
+        .connect_with(pg_connect_options(connection, &host, &port, database))
+        .await
+        .map_err(|e| format!("PostgreSQL connection to database '{database}' failed: {e}"))
+}
+
+/// Buka pool MySQL sekali pakai (1 koneksi) ke `database` tertentu. Sama
+/// seperti [`connect_postgres_once`]: lewat tunnel SSH bila aktif dan dengan
+/// opsi SSL pool utama. Pemanggil sebaiknya menutup pool setelah selesai.
+pub(crate) async fn connect_mysql_once(
+    connection: &models::structs::ConnectionConfig,
+    database: &str,
+    acquire_timeout: Duration,
+) -> Result<sqlx::MySqlPool, String> {
+    let (host, port) = resolve_connection_target_async(connection)
+        .await
+        .map_err(|e| format!("Cannot resolve target host: {e}"))?;
+    let database = if database.trim().is_empty() {
+        None
+    } else {
+        Some(database)
+    };
+    MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(acquire_timeout)
+        .connect_with(mysql_connect_options(connection, &host, &port, database))
+        .await
+        .map_err(|e| format!("MySQL connection failed: {e}"))
+}
+
+/// Opsi pool SQLite standar aplikasi, termasuk hook yang me-rollback transaksi
+/// yang tertinggal saat koneksi dikembalikan ke pool.
+pub(crate) fn sqlite_pool_options() -> SqlitePoolOptions {
+    SqlitePoolOptions::new()
+        .max_connections(5)
+        .min_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_lifetime(std::time::Duration::from_secs(1800))
+        .test_before_acquire(false)
+        .after_release(|conn, _| {
+            Box::pin(async move {
+                finish_session_reset(
+                    "SQLite",
+                    tokio::time::timeout(SESSION_RESET_TIMEOUT, reset_sqlite_session(conn)).await,
+                )
+            })
+        })
+}
+
+/// Ubah hasil reset sesi menjadi keputusan `after_release`.
+///
+/// `Ok(true)`: koneksi bersih, boleh kembali ke pool. `Ok(false)`: server
+/// menolak reset — koneksi ditutup baik-baik. `Err`: koneksi rusak atau reset
+/// melewati batas waktu — sqlx menutupnya paksa tanpa handshake penutup.
+fn finish_session_reset(
+    engine: &str,
+    outcome: Result<Result<bool, sqlx::Error>, tokio::time::error::Elapsed>,
+) -> Result<bool, sqlx::Error> {
+    match outcome {
+        Ok(Ok(true)) => Ok(true),
+        Ok(Ok(false)) => {
+            log::warn!(
+                "[POOL] {} session could not be reset; closing the connection",
+                engine
+            );
+            Ok(false)
+        }
+        Ok(Err(e @ sqlx::Error::Database(_))) => {
+            log::warn!(
+                "[POOL] {} session reset failed, closing the connection: {}",
+                engine,
+                e
+            );
+            Ok(false)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{engine} session reset timed out"),
+        ))),
+    }
+}
+
+/// Reset sesi PostgreSQL sebelum koneksi kembali ke pool.
+///
+/// Tanpa ini, `BEGIN` tanpa `COMMIT` (atau transaksi yang gagal) ikut ke
+/// pemakai koneksi berikutnya: statement mereka masuk ke transaksi orang lain,
+/// lock tertahan tanpa batas, dan `SET search_path` / `statement_timeout` dari
+/// job lama tetap berlaku.
+///
+/// `DISCARD ALL` sengaja tidak dipakai karena ikut menghapus prepared statement
+/// yang masih dirujuk cache statement sqlx. Sesi manual-commit
+/// (`connection/session.rs`) tidak terpengaruh: hook ini baru berjalan saat
+/// `PoolConnection`-nya di-drop, yaitu setelah sesi itu selesai.
+async fn reset_postgres_session(conn: &mut sqlx::PgConnection) -> Result<bool, sqlx::Error> {
+    use sqlx::Row;
+
+    // Satu round-trip untuk kasus umum (tidak ada transaksi terbuka). Di luar
+    // transaksi eksplisit, waktu mulai transaksi (`now()`) sama persis dengan
+    // waktu mulai statement; di dalam transaksi eksplisit `now()` menunjuk ke
+    // `BEGIN` yang lebih lama. `ROLLBACK` tanpa syarat tidak dipakai karena
+    // menulis WARNING ke log server pada setiap pelepasan koneksi.
+    let probe = sqlx::raw_sql(
+        "SELECT now() IS DISTINCT FROM statement_timestamp() AS in_transaction; RESET ALL",
+    )
+    .fetch_all(&mut *conn)
+    .await;
+
+    let needs_rollback = match probe {
+        Ok(rows) => rows
+            .first()
+            .and_then(|row| row.try_get::<bool, _>(0).ok())
+            .unwrap_or(true),
+        // Transaksi berstatus gagal menolak semua statement (25P02), dan
+        // engine kompatibel-PG mungkin tidak punya fungsi di atas: keduanya
+        // ditangani dengan rollback eksplisit.
+        Err(sqlx::Error::Database(_)) => true,
+        Err(e) => return Err(e),
+    };
+
+    if needs_rollback {
+        // `RESET ALL` di dalam transaksi ikut ter-rollback, jadi diulang.
+        sqlx::raw_sql("ROLLBACK; RESET ALL")
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(true)
+}
+
+/// Reset sesi MySQL sebelum koneksi kembali ke pool: rollback transaksi yang
+/// tertinggal dan kembalikan database default (job bisa menjalankan `USE`).
+/// `ROLLBACK` di luar transaksi adalah no-op tanpa warning di MySQL.
+async fn reset_mysql_session(
+    conn: &mut sqlx::MySqlConnection,
+    default_database: &str,
+) -> Result<bool, sqlx::Error> {
+    use sqlx::Row;
+
+    // Protokol teks (`raw_sql`): ROLLBACK dan USE tidak didukung protokol
+    // prepared statement di semua versi server.
+    sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await?;
+
+    if default_database.is_empty() {
+        // Pool tanpa database default: database yang terlanjur dipilih tidak
+        // bisa "dilepas", jadi koneksi seperti itu ditutup.
+        let row = sqlx::raw_sql("SELECT DATABASE()")
+            .fetch_one(&mut *conn)
+            .await?;
+        let has_database = match row.try_get::<Option<String>, _>(0) {
+            Ok(name) => name.is_some(),
+            Err(_) => row
+                .try_get::<Option<Vec<u8>>, _>(0)
+                .map(|name| name.is_some())
+                .unwrap_or(true),
+        };
+        return Ok(!has_database);
+    }
+
+    let use_statement = format!("USE `{}`", default_database.replace('`', "``"));
+    sqlx::raw_sql(sqlx::AssertSqlSafe(use_statement))
+        .execute(&mut *conn)
+        .await?;
+    Ok(true)
+}
+
+/// Reset sesi SQLite: rollback transaksi yang tertinggal. Koneksi yang kembali
+/// ke pool dengan transaksi tulis terbuka menahan lock RESERVED/EXCLUSIVE dan
+/// membuat koneksi lain gagal dengan "database is locked".
+///
+/// `query_only` ikut dimatikan: job read-only (jalur baca agent) menyalakannya,
+/// dan job yang di-drop di tengah jalan tidak sempat mematikannya sendiri.
+async fn reset_sqlite_session(conn: &mut sqlx::SqliteConnection) -> Result<bool, sqlx::Error> {
+    match sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await {
+        Ok(_) => {}
+        // Mode autocommit: tidak ada yang perlu di-rollback.
+        Err(sqlx::Error::Database(e)) if e.message().contains("no transaction is active") => {}
+        Err(e) => return Err(e),
+    }
+    sqlx::raw_sql("PRAGMA query_only=OFF")
+        .execute(&mut *conn)
+        .await?;
+    Ok(true)
+}
+
+/// Manager Redis khusus per (koneksi, indeks db).
+///
+/// `ConnectionManager` adalah satu soket yang di-multiplex: semua clone-nya
+/// berbagi koneksi yang sama. `SELECT n` pada manager bersama mengganti db
+/// untuk semua tab dan worker sidebar sekaligus, dan reconnect otomatis
+/// mengembalikannya ke db 0. Karena itu pemakaian db tertentu memakai manager
+/// sendiri yang indeks db-nya ada di info koneksi (ikut dipakai saat reconnect).
+static REDIS_DB_MANAGERS: Lazy<Mutex<HashMap<(i64, i64), ConnectionManager>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Ambil (atau buat) manager Redis yang terikat ke `db` untuk koneksi ini.
+/// Koneksi tanpa id (ad-hoc) tidak di-cache.
+///
+/// Harus dipanggil dari runtime berumur panjang: task latar manager hidup di
+/// runtime tempat manager dibuat.
+pub(crate) async fn redis_manager_for_db(
+    connection: &models::structs::ConnectionConfig,
+    db: i64,
+) -> Result<ConnectionManager, String> {
+    if let Some(id) = connection.id
+        && let Some(manager) = lock_or_recover(&REDIS_DB_MANAGERS).get(&(id, db))
+    {
+        return Ok(manager.clone());
+    }
+
+    let (host, port) = resolve_connection_target_async(connection).await?;
+    let manager = crate::driver_redis::open_redis_manager(
+        &host,
+        &port,
+        &connection.username,
+        &connection.password,
+        Some(db),
+    )
+    .await?;
+
+    if let Some(id) = connection.id {
+        lock_or_recover(&REDIS_DB_MANAGERS).insert((id, db), manager.clone());
+    }
+    Ok(manager)
+}
+
+/// Buang semua manager Redis per-db milik sebuah koneksi.
+fn evict_redis_db_managers(connection_id: i64) {
+    lock_or_recover(&REDIS_DB_MANAGERS).retain(|(id, _), _| *id != connection_id);
+}
+
+/// True jika pool sudah ditutup dan tidak bisa membuka koneksi baru.
+fn pool_is_closed(pool: &models::enums::DatabasePool) -> bool {
+    match pool {
+        models::enums::DatabasePool::MySQL(p) => p.is_closed(),
+        models::enums::DatabasePool::PostgreSQL(p) => p.is_closed(),
+        models::enums::DatabasePool::SQLite(p) => p.is_closed(),
+        models::enums::DatabasePool::MsSQL(p) => p.is_closed(),
+        _ => false,
+    }
+}
+
+/// Buang pool yang sudah tidak bisa dipakai supaya pemakaian berikutnya
+/// membangun ulang tunnel + pool, alih-alih terus gagal sampai aplikasi
+/// di-restart. Pool dianggap tidak bisa dipakai bila:
+///
+/// - pool-nya sudah ditutup, atau
+/// - koneksinya lewat tunnel SSH dan proses `ssh`-nya sudah mati/hilang: pool
+///   masih menunjuk ke port lokal lama yang tidak lagi didengarkan siapa pun.
+///
+/// Mengembalikan `true` bila ada pool yang dibuang. Tidak pernah memblokir,
+/// jadi aman dipanggil dari thread UI.
+pub(crate) fn evict_unusable_pool(tabular: &mut Tabular, connection_id: i64) -> bool {
+    // Selama connect masih berjalan belum ada pool untuk dinilai, dan tunnel
+    // barunya tidak boleh ikut dimatikan.
+    if tabular.pending_connection_pools.contains(&connection_id) {
+        return false;
+    }
+    let pool = tabular
+        .connection_pools
+        .get(&connection_id)
+        .cloned()
+        .or_else(|| {
+            lock_or_recover(&tabular.shared_connection_pools)
+                .get(&connection_id)
+                .cloned()
+        });
+    let Some(pool) = pool else {
+        return false;
+    };
+
+    let reason = if pool_is_closed(&pool) {
+        Some("the pool is closed")
+    } else if pool_uses_ssh_tunnel(tabular, connection_id)
+        && matches!(
+            ssh_tunnel::tunnel_state_by_id(connection_id),
+            ssh_tunnel::TunnelState::Dead | ssh_tunnel::TunnelState::Missing
+        )
+    {
+        Some("its SSH tunnel is no longer running")
+    } else {
+        None
+    };
+    let Some(reason) = reason else {
+        return false;
+    };
+
+    log::warn!(
+        "[POOL] Dropping the pool of connection {} because {}; it will be rebuilt on next use",
+        connection_id,
+        reason
+    );
+    tabular.connection_pools.remove(&connection_id);
+    lock_or_recover(&tabular.shared_connection_pools).remove(&connection_id);
+    evict_redis_db_managers(connection_id);
+    ssh_tunnel::shutdown_by_id(connection_id);
+    true
+}
+
+/// True jika pool koneksi ini dibangun di atas tunnel SSH milik aplikasi
+/// (engine builtin yang lewat `resolve_connection_target*`).
+fn pool_uses_ssh_tunnel(tabular: &Tabular, connection_id: i64) -> bool {
+    tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(connection_id))
+        .is_some_and(|c| {
+            c.ssh_enabled
+                && matches!(
+                    c.connection_type,
+                    models::enums::DatabaseType::MySQL
+                        | models::enums::DatabaseType::PostgreSQL
+                        | models::enums::DatabaseType::Redis
+                        | models::enums::DatabaseType::MongoDB
+                        | models::enums::DatabaseType::MsSQL
+                )
+        })
 }
 
 /// Create a database pool (legacy / refresh path). Delegates to create_connection_pool_for_config.
@@ -1133,9 +1544,24 @@ pub(crate) async fn create_connection_pool_by_id(
     }
 
     match create_connection_pool_for_config(&connection).await {
+        // Disconnect/cancel bisa datang tepat setelah connect selesai. Pool
+        // yang dikembalikan di sini akan dimasukkan pemanggil ke
+        // `shared_connection_pools`, sehingga koneksi yang baru saja diputus
+        // user "hidup lagi". Buang pool-nya dan laporkan sebagai batal.
+        Ok(pool) if connect_was_cancelled(connection_id) => {
+            debug!(
+                "🚫 Discarding pool for connection {}: the attempt was cancelled",
+                connection_id
+            );
+            drop(pool);
+            end_connect_attempt(connection_id);
+            ssh_tunnel::shutdown_by_id(connection_id);
+            Err("Connection attempt cancelled.".to_string())
+        }
         Ok(pool) => Ok(pool),
         Err(err) => {
             if connect_was_cancelled(connection_id) {
+                end_connect_attempt(connection_id);
                 Err("Connection attempt cancelled.".to_string())
             } else {
                 Err(err)
@@ -1152,7 +1578,7 @@ pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_i
         .insert(connection_id, std::time::Instant::now());
     // Arm cancellation before dispatch, so a cancel arriving while the task is
     // still queued is still seen by it.
-    begin_connect_attempt(connection_id);
+    let cancel_flag = begin_connect_attempt(connection_id);
 
     if let Some(sender) = &tabular.background_sender {
         let _ = sender.send(models::enums::BackgroundTask::EnsureConnectionPool { connection_id });
@@ -1187,13 +1613,23 @@ pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_i
 
             match create_connection_pool_for_config(&connection).await {
                 Ok(pool) => {
+                    // Flag milik attempt INI (bukan flag terbaru di registry):
+                    // disconnect saat connect berjalan tidak boleh berakhir
+                    // dengan pool yang dimasukkan kembali.
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        debug!(
+                            "🚫 Background: discarding pool for connection {} (attempt cancelled)",
+                            connection_id
+                        );
+                        drop(pool);
+                        ssh_tunnel::shutdown_by_id(connection_id);
+                        return;
+                    }
                     debug!(
                         "✅ Background: Successfully created pool for connection {}",
                         connection_id
                     );
-                    if let Ok(mut shared_pools) = shared_pools.lock() {
-                        shared_pools.insert(connection_id, pool);
-                    }
+                    lock_or_recover(&shared_pools).insert(connection_id, pool);
                 }
                 Err(err) => {
                     debug!(
@@ -1209,11 +1645,7 @@ pub(crate) fn start_background_pool_creation(tabular: &mut Tabular, connection_i
 /// Ensure a background pool creation is in progress. No-op if pool already exists or pending.
 pub(crate) fn ensure_background_pool_creation(tabular: &mut Tabular, connection_id: i64) {
     let has_pool = tabular.connection_pools.contains_key(&connection_id)
-        || tabular
-            .shared_connection_pools
-            .lock()
-            .map(|p| p.contains_key(&connection_id))
-            .unwrap_or(false);
+        || lock_or_recover(&tabular.shared_connection_pools).contains_key(&connection_id);
     if has_pool {
         return;
     }
@@ -1231,6 +1663,7 @@ pub(crate) async fn get_or_create_connection_pool(
 ) -> Option<models::enums::DatabasePool> {
     cleanup_completed_background_pools(tabular);
     cleanup_stuck_pending_connections(tabular);
+    evict_unusable_pool(tabular, connection_id);
 
     if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
         debug!(
@@ -1240,14 +1673,14 @@ pub(crate) async fn get_or_create_connection_pool(
         return Some(cached_pool.clone());
     }
 
-    if let Ok(shared_pools) = tabular.shared_connection_pools.lock()
-        && let Some(shared_pool) = shared_pools.get(&connection_id)
-    {
+    let shared_pool = lock_or_recover(&tabular.shared_connection_pools)
+        .get(&connection_id)
+        .cloned();
+    if let Some(pool) = shared_pool {
         debug!(
             "✅ Using background-created connection pool for connection {}",
             connection_id
         );
-        let pool = shared_pool.clone();
         tabular.connection_pools.insert(connection_id, pool.clone());
         tabular.pending_connection_pools.remove(&connection_id);
         return Some(pool);
@@ -1325,16 +1758,15 @@ pub(crate) async fn pool_if_connected_or_start(
 ) -> Option<models::enums::DatabasePool> {
     cleanup_completed_background_pools(tabular);
     cleanup_stuck_pending_connections(tabular);
+    evict_unusable_pool(tabular, connection_id);
 
     if let Some(pool) = tabular.connection_pools.get(&connection_id) {
         return Some(pool.clone());
     }
 
-    let shared = tabular
-        .shared_connection_pools
-        .lock()
-        .ok()
-        .and_then(|pools| pools.get(&connection_id).cloned());
+    let shared = lock_or_recover(&tabular.shared_connection_pools)
+        .get(&connection_id)
+        .cloned();
 
     if let Some(pool) = shared {
         debug!(
@@ -1403,13 +1835,24 @@ pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64)
         "🧹 Cleaning up connection pool for connection {}",
         connection_id
     );
+    // Batalkan dulu connect yang masih berjalan. Tanpa sinyal ini attempt
+    // tersebut tetap selesai dan memasukkan pool-nya ke
+    // `shared_connection_pools`, sehingga koneksi yang baru diputus hidup lagi.
+    let attempt_outstanding = tabular.pending_connection_pools.contains(&connection_id);
+    signal_connect_cancel(connection_id);
+
     tabular.connection_pools.remove(&connection_id);
     clear_pending_state(tabular, connection_id);
-    end_connect_attempt(connection_id);
-
-    if let Ok(mut shared_pools) = tabular.shared_connection_pools.lock() {
-        shared_pools.remove(&connection_id);
+    if !attempt_outstanding {
+        // Tidak ada attempt yang perlu melihat flag batal. Bila ADA, flag
+        // dibiarkan: attempt yang masih antre di worker harus tetap bisa
+        // membacanya (lihat `create_connection_pool_by_id`), dan flag itu
+        // kedaluwarsa sendiri (lihat `CancelEntry`).
+        end_connect_attempt(connection_id);
     }
+
+    lock_or_recover(&tabular.shared_connection_pools).remove(&connection_id);
+    evict_redis_db_managers(connection_id);
 
     ssh_tunnel::shutdown_by_id(connection_id);
 }
@@ -1627,6 +2070,159 @@ mod tests {
             .expect("cancel watcher should resolve after the flag is raised");
 
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn cancelled_flag_survives_until_the_attempt_reads_it() {
+        // Disconnect saat connect masih antre: flag harus tetap terbaca oleh
+        // attempt yang baru mulai belakangan, tetapi tidak selamanya.
+        let id = -9006;
+        begin_connect_attempt(id);
+        signal_connect_cancel(id);
+        assert!(connect_was_cancelled(id));
+
+        // Pura-pura flag dibatalkan jauh di masa lalu.
+        if let Some(entry) = lock_or_recover(&CANCEL_FLAGS).get_mut(&id) {
+            entry.cancelled_at = std::time::Instant::now()
+                .checked_sub(PENDING_POOL_MAX_AGE + Duration::from_secs(1));
+            assert!(entry.cancelled_at.is_some(), "clock too close to boot");
+        }
+        // Flag basi dibuang, jadi connect baru (agent, transfer data) yang
+        // tidak lewat `begin_connect_attempt` tidak langsung batal.
+        assert!(!connect_was_cancelled(id));
+        assert!(current_cancel_flag(id).is_none());
+    }
+
+    #[test]
+    fn poisoned_registry_lock_still_yields_its_contents() {
+        let registry = Arc::new(Mutex::new(HashMap::from([(1_i64, "pool")])));
+        let poisoner = registry.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("first lock");
+            panic!("poison the registry");
+        })
+        .join();
+        assert!(registry.is_poisoned());
+        // Tidak boleh terbaca "kosong" hanya karena thread lain panic.
+        assert_eq!(lock_or_recover(&registry).get(&1), Some(&"pool"));
+    }
+
+    fn secured(connection_type: DatabaseType) -> ConnectionConfig {
+        let mut c = conn(connection_type);
+        c.username = "app".to_string();
+        // Karakter yang merusak URL bila disisipkan tanpa encode.
+        c.password = "p@ss/w:rd?#%".to_string();
+        c.database = "main".to_string();
+        c
+    }
+
+    #[test]
+    fn postgres_options_take_target_database_and_ssl_from_config() {
+        let mut c = secured(DatabaseType::PostgreSQL);
+        let opts = pg_connect_options(&c, "127.0.0.1", "6543", "other");
+        assert_eq!(opts.get_host(), "127.0.0.1");
+        assert_eq!(opts.get_port(), 6543);
+        assert_eq!(opts.get_username(), "app");
+        assert_eq!(opts.get_database(), Some("other"));
+        assert!(matches!(
+            opts.get_ssl_mode(),
+            sqlx::postgres::PgSslMode::Prefer
+        ));
+
+        c.ssl_enabled = true;
+        c.ssl_verify_server = false;
+        let opts = pg_connect_options(&c, "db.internal", "not-a-port", "");
+        assert_eq!(opts.get_port(), 5432);
+        assert!(matches!(
+            opts.get_ssl_mode(),
+            sqlx::postgres::PgSslMode::Require
+        ));
+    }
+
+    #[test]
+    fn mysql_options_take_target_database_and_ssl_from_config() {
+        let mut c = secured(DatabaseType::MySQL);
+        let opts = mysql_connect_options(&c, "127.0.0.1", "3307", None);
+        assert_eq!(opts.get_host(), "127.0.0.1");
+        assert_eq!(opts.get_port(), 3307);
+        assert_eq!(opts.get_database(), Some("main"));
+        assert!(matches!(
+            opts.get_ssl_mode(),
+            sqlx::mysql::MySqlSslMode::Disabled
+        ));
+
+        assert_eq!(
+            mysql_connect_options(&c, "h", "3306", Some("other")).get_database(),
+            Some("other")
+        );
+        assert_eq!(
+            mysql_connect_options(&c, "h", "3306", Some("  ")).get_database(),
+            None
+        );
+
+        c.ssl_enabled = true;
+        let opts = mysql_connect_options(&c, "h", "3306", None);
+        assert!(matches!(
+            opts.get_ssl_mode(),
+            sqlx::mysql::MySqlSslMode::Required
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_reset_outcome_decides_the_fate_of_the_connection() {
+        assert!(matches!(
+            finish_session_reset("SQLite", Ok(Ok(true))),
+            Ok(true)
+        ));
+        // Reset ditolak: tutup baik-baik.
+        assert!(matches!(
+            finish_session_reset("SQLite", Ok(Ok(false))),
+            Ok(false)
+        ));
+        // Koneksi rusak: tutup paksa.
+        let broken = sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        ));
+        assert!(finish_session_reset("MySQL", Ok(Err(broken))).is_err());
+
+        let elapsed = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+            .await
+            .expect_err("pending future must time out");
+        let err = finish_session_reset("PostgreSQL", Err(elapsed)).expect_err("timeout");
+        assert!(err.to_string().contains("session reset timed out"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn sqlite_reset_rolls_back_a_leftover_transaction() {
+        use sqlx::Connection;
+        let mut conn = sqlx::SqliteConnection::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query("CREATE TABLE t (id INTEGER)")
+            .execute(&mut conn)
+            .await
+            .expect("create");
+
+        // Tanpa transaksi terbuka: tidak ada yang dilakukan, koneksi tetap sah.
+        assert!(matches!(reset_sqlite_session(&mut conn).await, Ok(true)));
+
+        sqlx::raw_sql("BEGIN; INSERT INTO t VALUES (1)")
+            .execute(&mut conn)
+            .await
+            .expect("open transaction");
+        assert!(matches!(reset_sqlite_session(&mut conn).await, Ok(true)));
+
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM t")
+            .fetch_one(&mut conn)
+            .await
+            .expect("count");
+        assert_eq!(count, 0);
+        // Transaksi baru bisa dimulai lagi di koneksi yang sama.
+        sqlx::raw_sql("BEGIN; COMMIT")
+            .execute(&mut conn)
+            .await
+            .expect("fresh transaction");
     }
 
     #[test]

@@ -388,6 +388,8 @@ impl super::Tabular {
         // Clear in-memory database cache so next load gets fresh data
         self.database_cache.remove(&connection_id);
         self.database_cache_time.remove(&connection_id);
+        self.pk_columns_memo.retain(|k, _| k.0 != connection_id);
+        crate::data_table::grid_state::invalidate_fk_cache(self, connection_id);
 
         // Mark as refreshing (shows syncing badge in UI)
         self.refreshing_connections.insert(connection_id);
@@ -685,8 +687,9 @@ impl super::Tabular {
         }
 
         // 2. Remove from shared connection pools
-        if let Ok(mut shared_pools) = self.shared_connection_pools.lock()
-            && shared_pools.remove(&connection_id).is_some()
+        if crate::connection::pool::lock_or_recover(&self.shared_connection_pools)
+            .remove(&connection_id)
+            .is_some()
         {
             debug!("✅ Removed connection pool from shared cache");
         }
@@ -743,7 +746,10 @@ impl super::Tabular {
         debug!("✅ Connection {} disconnected successfully", connection_id);
     }
 
-    pub fn clear_connection_cache(&self, connection_id: i64) {
+    pub fn clear_connection_cache(&mut self, connection_id: i64) {
+        // Memo in-memory yang diturunkan dari cache ini ikut dibuang.
+        self.pk_columns_memo.retain(|k, _| k.0 != connection_id);
+        crate::data_table::grid_state::invalidate_fk_cache(self, connection_id);
         if let Some(ref pool) = self.db_pool {
             let pool_clone = pool.clone();
             // Reuse the shared runtime rather than standing up a whole new
@@ -766,48 +772,43 @@ impl super::Tabular {
                     connection_id
                 );
 
-                // Run a quick integrity check first; if the cache db is corrupted, skip
-                // clearing (the corrupted file will be replaced on next startup) and
-                // just proceed — the live fetch path will still work.
-                let is_ok = sqlx::query_as::<_, (String,)>("PRAGMA integrity_check")
-                    .fetch_one(pool_clone.as_ref())
-                    .await
-                    .is_ok_and(|(s,)| s == "ok");
-
-                if !is_ok {
-                    log::warn!(
-                        "[clear_connection_cache] cache db integrity check failed for connection {} — skipping cache clear (will be recovered on restart)",
-                        connection_id
-                    );
-                    return;
+                // Semua DELETE dalam satu transaksi: satu fsync, bukan lima.
+                // (Tanpa `PRAGMA integrity_check`: itu memindai seluruh file
+                // cache di UI thread pada setiap refresh.)
+                let mut tx = match pool_clone.begin().await {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        log::warn!(
+                            "[clear_connection_cache] gagal memulai transaksi untuk koneksi {}: {}",
+                            connection_id,
+                            e
+                        );
+                        return;
+                    }
+                };
+                // Termasuk row dan index cache agar tidak ada data basi setelah refresh.
+                for sql in [
+                    "DELETE FROM database_cache WHERE connection_id = ?",
+                    "DELETE FROM table_cache WHERE connection_id = ?",
+                    "DELETE FROM column_cache WHERE connection_id = ?",
+                    "DELETE FROM row_cache WHERE connection_id = ?",
+                    "DELETE FROM index_cache WHERE connection_id = ?",
+                ] {
+                    if let Err(e) = sqlx::query(sql)
+                        .bind(connection_id)
+                        .execute(&mut *tx)
+                        .await
+                    {
+                        log::warn!("[clear_connection_cache] `{}` gagal: {}", sql, e);
+                    }
                 }
-
-                // Clear all cache tables for this connection
-                let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(pool_clone.as_ref())
-                    .await;
-
-                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(pool_clone.as_ref())
-                    .await;
-
-                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(pool_clone.as_ref())
-                    .await;
-
-                // Also clear row and index caches to avoid stale data after refresh
-                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(pool_clone.as_ref())
-                    .await;
-
-                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
-                    .bind(connection_id)
-                    .execute(pool_clone.as_ref())
-                    .await;
+                if let Err(e) = tx.commit().await {
+                    log::warn!(
+                        "[clear_connection_cache] commit gagal untuk koneksi {}: {}",
+                        connection_id,
+                        e
+                    );
+                }
 
                 log::debug!(
                     "[clear_connection_cache] finished clearing sqlite cache for connection {}",

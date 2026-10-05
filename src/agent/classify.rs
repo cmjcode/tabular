@@ -307,6 +307,46 @@ const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     "OPENROWSET",
     "OPENQUERY",
     "LOAD_EXTENSION",
+    // Varian advisory lock lain: tetap memegang lock di sesi pool.
+    "PG_ADVISORY_LOCK_SHARED",
+    "PG_ADVISORY_XACT_LOCK_SHARED",
+    "PG_TRY_ADVISORY_LOCK_SHARED",
+    "PG_TRY_ADVISORY_XACT_LOCK",
+    "PG_TRY_ADVISORY_XACT_LOCK_SHARED",
+    "PG_ADVISORY_UNLOCK",
+    "PG_ADVISORY_UNLOCK_SHARED",
+    "PG_ADVISORY_UNLOCK_ALL",
+    // Menjalankan string SQL sembarang (termasuk DML) dari dalam SELECT.
+    "QUERY_TO_XML",
+    "QUERY_TO_XML_AND_XMLSCHEMA",
+    "QUERY_TO_XMLSCHEMA",
+    "CURSOR_TO_XML",
+    "DBLINK_CONNECT",
+    "DBLINK_CONNECT_U",
+    "DBLINK_SEND_QUERY",
+    "DBLINK_OPEN",
+    "OPENDATASOURCE",
+    // Mengirim notifikasi / mengubah state replikasi, statistik, sequence.
+    "PG_NOTIFY",
+    "PG_LOGICAL_EMIT_MESSAGE",
+    "PG_REPLICATION_SLOT_ADVANCE",
+    "PG_STAT_RESET",
+    "PG_STAT_RESET_SHARED",
+    "PG_STAT_STATEMENTS_RESET",
+    "PG_SWITCH_XLOG",
+    "PG_WAL_REPLAY_PAUSE",
+    "PG_WAL_REPLAY_RESUME",
+    // Large object dan file di server.
+    "LO_PUT",
+    "LO_FROM_BYTEA",
+    "LO_TRUNCATE",
+    "LOWRITE",
+    "LO_CREAT",
+    "PG_READ_FILE",
+    "PG_READ_BINARY_FILE",
+    "LOAD_FILE",
+    "WRITEFILE",
+    "READFILE",
 ];
 
 fn classify_from(keywords: &[Keyword], start_idx: usize) -> StatementKind {
@@ -642,6 +682,33 @@ mod tests {
         assert!(is_read_only(&DatabaseType::Redis, "GET a\nHGETALL b"));
         assert!(!is_read_only(&DatabaseType::Redis, "GET a\nDEL b"));
         assert!(!is_read_only(&DatabaseType::MongoDB, "db.users.find({})"));
+    }
+
+    #[test]
+    fn sql_executing_and_file_functions_are_not_reads() {
+        for sql in [
+            "SELECT query_to_xml('DELETE FROM users RETURNING *', true, false, '')",
+            "SELECT pg_notify('chan', 'payload')",
+            "SELECT pg_advisory_unlock_all()",
+            "SELECT pg_try_advisory_xact_lock(1)",
+            "SELECT * FROM dblink_connect('host=evil')",
+            "SELECT pg_read_file('/etc/passwd')",
+            "SELECT LOAD_FILE('/etc/passwd')",
+            "SELECT writefile('/tmp/x', 'data')",
+            "SELECT lo_from_bytea(0, 'abc')",
+            "WITH x AS (SELECT pg_stat_reset()) SELECT * FROM x",
+            "EXPLAIN ANALYZE SELECT pg_notify('c', 'p')",
+        ] {
+            assert!(
+                !classify_sql_statement(sql).is_read_only(),
+                "must not be read-only: {sql}"
+            );
+        }
+        // Nama yang mirip di dalam literal atau sebagai kolom biasa tetap read.
+        assert_eq!(
+            classify_sql_statement("SELECT 'query_to_xml' AS fn, load_file_name FROM t"),
+            StatementKind::Read
+        );
     }
 
     #[test]

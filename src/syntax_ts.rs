@@ -1472,20 +1472,72 @@ fn is_sql_keyword(token: &str) -> bool {
 
 // ---------------- Legacy heuristic highlighter (ported from syntax.rs) ----------------
 
-/// Cached highlighting with hash-based lookup.
-/// Keeps only the most recent 2 entries to bound memory while still serving
-/// cache hits during idle/re-render without re-computing the same text twice.
+/// Jumlah maksimum entri [`HighlightCache`].
+const HIGHLIGHT_CACHE_CAPACITY: usize = 32;
+
+fn highlight_cache_key(text: &str, lang: LanguageKind, dark: bool) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    lang.hash(&mut hasher);
+    dark.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Cache hasil highlight editor dengan pengusiran LRU: saat penuh, separuh
+/// entri yang paling lama tidak dipakai dibuang. Sebelumnya seluruh cache
+/// dikosongkan, termasuk entri teks yang sedang tampil, sehingga teks itu
+/// di-highlight ulang dari nol setiap 32 perubahan.
+#[derive(Default)]
+pub struct HighlightCache {
+    entries: std::collections::HashMap<u64, (u64, LayoutJob)>,
+    tick: u64,
+}
+
+impl HighlightCache {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Ambil `LayoutJob` untuk `text` dari cache, atau hitung lalu simpan.
+    /// Mengembalikan salinan karena `Fonts::layout_job` (egui 0.36) meminta
+    /// `LayoutJob` milik sendiri.
+    pub fn get_or_highlight(&mut self, text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
+        let key = highlight_cache_key(text, lang, dark);
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if let Some((last_used, job)) = self.entries.get_mut(&key) {
+            *last_used = tick;
+            return job.clone();
+        }
+        if self.entries.len() >= HIGHLIGHT_CACHE_CAPACITY {
+            let mut ticks: Vec<u64> = self.entries.values().map(|(t, _)| *t).collect();
+            ticks.sort_unstable();
+            let cutoff = ticks[ticks.len() / 2];
+            self.entries.retain(|_, (t, _)| *t >= cutoff);
+        }
+        let job = highlight_text(text, lang, dark);
+        self.entries.insert(key, (tick, job.clone()));
+        job
+    }
+}
+
+/// Cached highlighting with hash-based lookup (cache milik pemanggil; saat
+/// penuh seluruhnya dikosongkan). Editor utama memakai [`HighlightCache`].
 pub fn highlight_text_cached(
     text: &str,
     lang: LanguageKind,
     dark: bool,
     cache: &mut std::collections::HashMap<u64, LayoutJob>,
 ) -> LayoutJob {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    lang.hash(&mut hasher);
-    dark.hash(&mut hasher);
-    let hash = hasher.finish();
+    let hash = highlight_cache_key(text, lang, dark);
     if let Some(cached_job) = cache.get(&hash) {
         return cached_job.clone();
     }
@@ -1498,18 +1550,12 @@ pub fn highlight_text_cached(
     job
 }
 
-/// Whole text highlighter (tree-sitter path is kept for side effects only).
+/// Whole text highlighter (heuristik per baris). Dulu fungsi ini juga
+/// menjalankan parse tree-sitter penuh (`ensure_semantics`) pada setiap
+/// perubahan teks "demi efek samping", padahal snapshot-nya tidak dibaca
+/// oleh siapa pun di jalur gambar; pemanggil yang butuh snapshot memanggil
+/// `ensure_semantics` / `ensure_sql_semantics` secara eksplisit.
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
-    if matches!(
-        lang,
-        LanguageKind::Sql | LanguageKind::Redis | LanguageKind::Mongo
-    ) {
-        #[cfg(feature = "tree_sitter_sequel")]
-        {
-            // Keep semantic snapshot in sync; fall back to legacy rendering for stability.
-            let _ = ensure_semantics(lang, text);
-        }
-    }
     let mut job = LayoutJob::default();
 
     // Pre-scan for --AI ... -- blocks so we can highlight them with AI prompt color.
@@ -1881,3 +1927,46 @@ fn ai_block_color(dark: bool) -> Color32 {
 
 // Static keyword tables removed: now using tree-sitter classification and
 // lightweight heuristics (uppercase words) for the legacy fallback.
+
+#[cfg(test)]
+mod highlight_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_returns_same_job_as_direct_highlight() {
+        let mut cache = HighlightCache::default();
+        let sql = "SELECT id, name FROM users WHERE id = 1; -- note";
+        let direct = highlight_text(sql, LanguageKind::Sql, true);
+        let first = cache.get_or_highlight(sql, LanguageKind::Sql, true);
+        let second = cache.get_or_highlight(sql, LanguageKind::Sql, true);
+        assert_eq!(first, direct);
+        assert_eq!(second, direct);
+        assert_eq!(cache.len(), 1);
+        // Tema berbeda = entri berbeda.
+        let _ = cache.get_or_highlight(sql, LanguageKind::Sql, false);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn eviction_keeps_recently_used_entries() {
+        let mut cache = HighlightCache::default();
+        let hot = "SELECT 'hot'";
+        let _ = cache.get_or_highlight(hot, LanguageKind::Sql, true);
+        // Simulasikan mengetik: banyak teks berbeda, sambil teks `hot` tetap
+        // dipakai (mis. tab lain yang sedang tampil).
+        for i in 0..(HIGHLIGHT_CACHE_CAPACITY * 4) {
+            let _ = cache.get_or_highlight(&format!("SELECT {i}"), LanguageKind::Sql, true);
+            let _ = cache.get_or_highlight(hot, LanguageKind::Sql, true);
+            assert!(cache.len() <= HIGHLIGHT_CACHE_CAPACITY);
+        }
+        let key = highlight_cache_key(hot, LanguageKind::Sql, true);
+        assert!(cache.entries.contains_key(&key), "entri panas ikut terbuang");
+        // Entri paling baru juga masih ada.
+        let last = format!("SELECT {}", HIGHLIGHT_CACHE_CAPACITY * 4 - 1);
+        let key = highlight_cache_key(&last, LanguageKind::Sql, true);
+        assert!(cache.entries.contains_key(&key));
+        assert!(!cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+}

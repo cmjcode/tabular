@@ -1604,18 +1604,53 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         }
     };
 
-    let pool = rt
-        .block_on(async {
-            sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(5)
-                .connect_with(connect_opts)
-                .await
-        })
-        .ok();
+    // Busy/locked (mis. `tabular mcp` memegang write lock) bersifat sementara:
+    // coba lagi dengan jeda, jangan diam-diam pindah ke DB lain yang kosong.
+    let mut pool = Err(SqliteFailureKind::Other);
+    for attempt in 0..DB_INIT_MAX_ATTEMPTS {
+        let opts = connect_opts.clone();
+        pool = rt
+            .block_on(async {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(5)
+                    .connect_with(opts)
+                    .await
+            })
+            .map_err(|e| {
+                let kind = sqlite_failure_kind(&e);
+                warn!(
+                    "[DB] background open of connections.db failed ({:?}): {}",
+                    kind, e
+                );
+                kind
+            });
+        if !matches!(pool, Err(SqliteFailureKind::Busy)) {
+            break;
+        }
+        if attempt + 1 < DB_INIT_MAX_ATTEMPTS {
+            let delay = std::time::Duration::from_millis(250 * (1u64 << attempt));
+            warn!(
+                "[DB] connections.db is busy/locked (background attempt {}/{}); retrying in {:?}",
+                attempt + 1,
+                DB_INIT_MAX_ATTEMPTS,
+                delay
+            );
+            std::thread::sleep(delay);
+        }
+    }
 
     let pool = match pool {
-        Some(p) => p,
-        None => {
+        Ok(p) => p,
+        // Terkunci atau korup: serahkan ke jalur sinkron (`initialize_database`)
+        // yang tahu cara menangani keduanya tanpa mengganti DB.
+        Err(kind) if kind != SqliteFailureKind::Other => {
+            error!(
+                "[DB] background init gave up on connections.db ({:?}); the file was left untouched",
+                kind
+            );
+            return None;
+        }
+        Err(_) => {
             let local_default_dir = crate::config::get_local_data_dir().join("data");
             if data_dir != local_default_dir {
                 warn!(
@@ -1951,19 +1986,36 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
     })
 }
 
-pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
+/// Mengembalikan `None` bila pool berhasil dibuka, atau jenis kegagalan
+/// terakhir supaya pemanggil bisa memutuskan tindakan pemulihan.
+pub(crate) fn initialize_database(
+    tabular: &mut window_egui::Tabular,
+) -> Option<SqliteFailureKind> {
+    initialize_database_impl(tabular, true)
+}
+
+/// `allow_corrupt_reset = false` dipakai untuk percobaan kedua setelah file
+/// rusak disisihkan, supaya tidak ada rekursi tanpa akhir.
+fn initialize_database_impl(
+    tabular: &mut window_egui::Tabular,
+    allow_corrupt_reset: bool,
+) -> Option<SqliteFailureKind> {
     crate::log_startup_step("initialize_database started");
     // Ensure app directories exist
     if let Err(e) = directory::ensure_app_directories() {
         error!("Failed to create app directories: {}", e);
-        return;
+        return Some(SqliteFailureKind::Other);
     }
     crate::log_startup_step("ensure_app_directories completed");
 
     // Initialize SQLite database
     let rt = tabular.get_runtime();
     crate::log_startup_step("connecting to connections.db SQLitePool");
-    let pool_result = rt.block_on(async {
+    // Jenis kegagalan percobaan terakhir: menentukan apakah boleh mencoba lagi
+    // (busy/locked) atau membuat ulang file (hanya bila benar-benar korup).
+    let init_failure = std::cell::Cell::new(SqliteFailureKind::Other);
+    let run_attempt = || {
+        rt.block_on(async {
             // Get the data directory path
             let data_dir = directory::get_data_dir();
             let db_path = data_dir.join("connections.db");
@@ -1991,7 +2043,12 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                 Ok(p) => Ok(p),
                 Err(e) => {
                     let local_default_dir = crate::config::get_local_data_dir().join("data");
-                    if data_dir != local_default_dir {
+                    // Fallback ke folder lokal hanya untuk folder yang tidak bisa
+                    // dipakai; DB yang terkunci atau korup jangan diam-diam
+                    // diganti dengan DB lain yang kosong.
+                    if data_dir != local_default_dir
+                        && sqlite_failure_kind(&e) == SqliteFailureKind::Other
+                    {
                         warn!(
                             "⚠️ Failed to connect to SQLite at {:?}: {}. Retrying with local container fallback {:?}",
                             data_dir, e, local_default_dir
@@ -2348,6 +2405,7 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
 
                     // Log exactly which table(s) failed instead of a vague message.
                     let mut startup_corruption_detected = false;
+                    let mut startup_busy_detected = false;
                     for (name, res) in [
                         ("connections", &create_connections_result),
                         ("database_cache", &create_db_cache_result),
@@ -2362,8 +2420,10 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     ] {
                         if let Err(e) = res {
                             warn!("Failed to create/verify table '{}': {}", name, e);
-                            if is_sqlite_corrupt(e) {
-                                startup_corruption_detected = true;
+                            match sqlite_failure_kind(e) {
+                                SqliteFailureKind::Corrupt => startup_corruption_detected = true,
+                                SqliteFailureKind::Busy => startup_busy_detected = true,
+                                SqliteFailureKind::Other => {}
                             }
                         }
                     }
@@ -2375,17 +2435,51 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
                     // The pool is usable as long as the essential `connections` table exists.
                     if create_connections_result.is_ok() && !startup_corruption_detected {
                         Some(pool)
+                    } else if startup_corruption_detected {
+                        error!("[DB] connections.db image is corrupted on disk");
+                        init_failure.set(SqliteFailureKind::Corrupt);
+                        pool.close().await;
+                        None
                     } else {
-                        error!("Essential tables or SQLite database image corrupted on disk — pool recreated");
+                        error!("[DB] essential table 'connections' could not be created or verified; connections.db is left untouched");
+                        init_failure.set(if startup_busy_detected {
+                            SqliteFailureKind::Busy
+                        } else {
+                            SqliteFailureKind::Other
+                        });
+                        pool.close().await;
                         None
                     }
                 },
                 Err(e) => {
                     error!("Database connection failed: {}", e);
+                    init_failure.set(sqlite_failure_kind(&e));
                     None
                 }
             }
-        });
+        })
+    };
+
+    // Busy/locked (mis. `tabular mcp` sedang memegang write lock) bersifat
+    // sementara: coba lagi dengan jeda, jangan pernah menyentuh filenya.
+    let mut pool_result = None;
+    for attempt in 0..DB_INIT_MAX_ATTEMPTS {
+        init_failure.set(SqliteFailureKind::Other);
+        pool_result = run_attempt();
+        if pool_result.is_some() || init_failure.get() != SqliteFailureKind::Busy {
+            break;
+        }
+        if attempt + 1 < DB_INIT_MAX_ATTEMPTS {
+            let delay = std::time::Duration::from_millis(250 * (1u64 << attempt));
+            warn!(
+                "[DB] connections.db is busy/locked (attempt {}/{}); retrying in {:?}",
+                attempt + 1,
+                DB_INIT_MAX_ATTEMPTS,
+                delay
+            );
+            std::thread::sleep(delay);
+        }
+    }
 
     if let Some(pool) = pool_result {
         tabular.set_db_pool(Some(Arc::new(pool)));
@@ -2464,45 +2558,71 @@ pub(crate) fn initialize_database(tabular: &mut window_egui::Tabular) {
             }
         }
         crate::log_startup_step("initialize_database completed successfully");
+        None
     } else {
-        // Backup corrupt file and re-create fresh database if startup failed due to corruption
         let data_dir = directory::get_data_dir();
         let db_path = data_dir.join("connections.db");
-        if db_path.exists() {
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-            let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
-            warn!(
-                "⚠️ Recreating fresh connections.db after corruption (backing up to {:?})",
-                backup_path
-            );
-            let _ = std::fs::rename(&db_path, &backup_path);
-
-            // Second attempt connect to fresh empty file
-            let db_path_str = db_path.to_string_lossy();
-            let connection_string = format!("sqlite://{}?mode=rwc", db_path_str);
-            let pool_res = rt.block_on(async {
-                if let Ok(opts) =
-                    <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(
-                        &connection_string,
-                    )
-                {
-                    let opts = opts
-                        .create_if_missing(true)
-                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-                        .busy_timeout(std::time::Duration::from_secs(5));
-                    sqlx::sqlite::SqlitePoolOptions::new()
-                        .max_connections(5)
-                        .connect_with(opts)
-                        .await
-                } else {
-                    SqlitePool::connect(&connection_string).await
+        let failure = init_failure.get();
+        match failure {
+            // Hanya korupsi sungguhan yang boleh memicu pembuatan ulang file.
+            SqliteFailureKind::Corrupt if allow_corrupt_reset && db_path.exists() => {
+                match backup_sqlite_files(&db_path) {
+                    Ok(backup_path) => {
+                        warn!(
+                            "[DB] connections.db is corrupted; backed up to {:?} and recreating a fresh database",
+                            backup_path
+                        );
+                        tabular.toasts.warning(format!(
+                            "The local database was corrupted and has been recreated. The damaged file was kept at {}.",
+                            backup_path.display()
+                        ));
+                        let _ = initialize_database_impl(tabular, false);
+                        if tabular.db_pool.is_some() {
+                            info!("[DB] created fresh connections.db after corruption recovery");
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "[DB] connections.db is corrupted but could not be backed up ({}); leaving it in place",
+                            e
+                        );
+                        tabular.toasts.error(format!(
+                            "The local database is corrupted and could not be backed up: {}",
+                            e
+                        ));
+                    }
                 }
-            });
-            if let Ok(new_pool) = pool_res {
-                tabular.set_db_pool(Some(Arc::new(new_pool)));
-                info!("✅ Successfully created fresh connections.db after corruption recovery");
             }
+            SqliteFailureKind::Corrupt => {
+                error!("[DB] connections.db is still unusable after corruption recovery");
+                tabular
+                    .toasts
+                    .error("The local database could not be recreated after corruption.");
+            }
+            SqliteFailureKind::Busy => {
+                error!(
+                    "[DB] connections.db stayed locked after {} attempts; the file was left untouched",
+                    DB_INIT_MAX_ATTEMPTS
+                );
+                tabular.toasts.error(
+                    "The local database is locked by another Tabular process. Close it (for example a running `tabular mcp`) and restart.",
+                );
+            }
+            SqliteFailureKind::Other => {
+                error!(
+                    "[DB] connections.db could not be opened at {:?}; the file was left untouched",
+                    db_path
+                );
+                tabular.toasts.error(
+                    "The local database could not be opened (check disk space and file permissions). Your saved connections were not modified.",
+                );
+            }
+        }
+        // Pemulihan korupsi di atas bisa saja berhasil membuat pool baru.
+        if tabular.db_pool.is_some() {
+            None
+        } else {
+            Some(failure)
         }
     }
 }
@@ -3227,17 +3347,108 @@ pub(crate) fn render_rename_connection_folder_dialog(
     }
 }
 
-pub(crate) fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = e {
-        if db_err.code().is_some_and(|c| c.as_ref() == "11") {
-            return true;
-        }
-        let msg = db_err.message().to_lowercase();
-        return msg.contains("malformed")
-            || msg.contains("disk image is malformed")
-            || msg.contains("corrupt");
+/// Jumlah percobaan membuka `connections.db` saat file sedang busy/locked.
+const DB_INIT_MAX_ATTEMPTS: u32 = 3;
+
+/// Penggolongan kegagalan SQLite untuk memutuskan tindakan pemulihan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SqliteFailureKind {
+    /// Isi file benar-benar rusak (SQLITE_CORRUPT / SQLITE_NOTADB): satu-satunya
+    /// kasus yang boleh memicu pembuatan ulang file.
+    Corrupt,
+    /// File sedang dikunci proses lain (SQLITE_BUSY / SQLITE_LOCKED): coba lagi.
+    Busy,
+    /// Lainnya (izin, disk penuh, I/O): file tidak boleh disentuh.
+    Other,
+}
+
+/// Golongkan kegagalan dari kode hasil SQLite (boleh extended) dan pesannya.
+pub(crate) fn classify_sqlite_failure(code: Option<&str>, message: &str) -> SqliteFailureKind {
+    // Kode extended menyimpan kode utama di 8 bit terbawah.
+    match code
+        .and_then(|c| c.trim().parse::<u32>().ok())
+        .map(|c| c & 0xff)
+    {
+        Some(11) | Some(26) => return SqliteFailureKind::Corrupt,
+        Some(5) | Some(6) => return SqliteFailureKind::Busy,
+        _ => {}
     }
-    false
+    let msg = message.to_lowercase();
+    if msg.contains("malformed")
+        || msg.contains("not a database")
+        || msg.contains("database corrupt")
+        || msg.contains("database is corrupt")
+    {
+        SqliteFailureKind::Corrupt
+    } else if msg.contains("database is locked")
+        || msg.contains("database table is locked")
+        || msg.contains("database is busy")
+    {
+        SqliteFailureKind::Busy
+    } else {
+        SqliteFailureKind::Other
+    }
+}
+
+pub(crate) fn sqlite_failure_kind(e: &sqlx::Error) -> SqliteFailureKind {
+    match e {
+        sqlx::Error::Database(db_err) => {
+            classify_sqlite_failure(db_err.code().as_deref(), db_err.message())
+        }
+        // Semua koneksi pool sedang dipakai/terkunci: sementara, bukan korup.
+        sqlx::Error::PoolTimedOut => SqliteFailureKind::Busy,
+        _ => SqliteFailureKind::Other,
+    }
+}
+
+pub(crate) fn is_sqlite_corrupt(e: &sqlx::Error) -> bool {
+    sqlite_failure_kind(e) == SqliteFailureKind::Corrupt
+}
+
+/// Pindahkan satu file; bila rename gagal (mis. beda volume) salin lalu hapus.
+fn move_file_aside(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)
+}
+
+/// Sisihkan `connections.db` beserta `-wal` dan `-shm` sebagai satu kesatuan:
+/// WAL bisa berisi transaksi yang belum di-checkpoint, jadi cadangan tanpa WAL
+/// tidak lengkap, dan WAL lama di samping DB baru bisa merusak DB baru itu.
+/// File utama tidak pernah dihapus bila cadangannya gagal dibuat.
+pub(crate) fn backup_sqlite_files(
+    db_path: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    let file_name = db_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "connections.db".to_string());
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S%3f").to_string();
+    let backup_path = db_path.with_file_name(format!("{}.corrupt_{}.bak", file_name, timestamp));
+
+    move_file_aside(db_path, &backup_path)?;
+
+    for suffix in ["-wal", "-shm"] {
+        let side = db_path.with_file_name(format!("{}{}", file_name, suffix));
+        if !side.exists() {
+            continue;
+        }
+        // Nama `<backup>-wal` membuat cadangan tetap bisa dibuka SQLite.
+        let side_backup = backup_path.with_file_name(format!(
+            "{}{}",
+            backup_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            suffix
+        ));
+        if let Err(e) = move_file_aside(&side, &side_backup) {
+            warn!("[DB] could not move {:?} next to the backup: {}", side, e);
+        }
+    }
+    Ok(backup_path)
 }
 
 pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> bool {
@@ -3255,23 +3466,30 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
     // Clear active pool so file handle is released
     tabular.set_db_pool(None);
 
-    // Backup & delete corrupted SQLite file
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let backup_path = data_dir.join(format!("connections.db.corrupt_{}.bak", timestamp));
+    // Sisihkan file korup (beserta -wal/-shm). Bila cadangan gagal dibuat,
+    // file TIDAK dihapus: lebih baik gagal daripada menghilangkan data user.
     if db_path.exists() {
-        if let Err(e) = std::fs::rename(&db_path, &backup_path) {
-            warn!(
-                "Failed to rename corrupt connections.db (attempting remove): {}",
-                e
-            );
-            let _ = std::fs::remove_file(&db_path);
-        } else {
-            info!("📦 Corrupted connections.db backed up to {:?}", backup_path);
+        match backup_sqlite_files(&db_path) {
+            Ok(backup_path) => {
+                info!(
+                    "[DB] corrupted connections.db backed up to {:?}",
+                    backup_path
+                );
+            }
+            Err(e) => {
+                error!(
+                    "[DB] could not back up corrupt connections.db ({}); leaving it in place",
+                    e
+                );
+                // Buka lagi pool lama supaya aplikasi tidak tertinggal tanpa DB.
+                initialize_database_impl(tabular, false);
+                return false;
+            }
         }
     }
 
     // Re-initialize a fresh connections.db with clean tables
-    initialize_database(tabular);
+    let _ = initialize_database(tabular);
 
     // If new pool was initialized, restore preserved data back into fresh SQLite DB
     if let Some(pool) = tabular.db_pool.clone() {
@@ -3504,5 +3722,143 @@ mod table_group_tests {
             .await
             .expect("save config");
         assert_eq!(get_table_group_config_async(&pool, 1, "db").await, Some(cfg));
+    }
+}
+
+#[cfg(test)]
+mod sqlite_failure_tests {
+    use super::*;
+
+    #[test]
+    fn corruption_codes_and_messages_are_corrupt() {
+        for code in ["11", "26", "267", "523"] {
+            assert_eq!(
+                classify_sqlite_failure(Some(code), ""),
+                SqliteFailureKind::Corrupt,
+                "code {code}"
+            );
+        }
+        for msg in [
+            "database disk image is malformed",
+            "file is not a database",
+            "File Is Not A Database",
+        ] {
+            assert_eq!(
+                classify_sqlite_failure(None, msg),
+                SqliteFailureKind::Corrupt,
+                "{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn busy_and_locked_are_never_corrupt() {
+        // 5 = BUSY, 6 = LOCKED, 261 = BUSY_RECOVERY, 517 = BUSY_SNAPSHOT.
+        for code in ["5", "6", "261", "517"] {
+            assert_eq!(
+                classify_sqlite_failure(Some(code), "database is locked"),
+                SqliteFailureKind::Busy,
+                "code {code}"
+            );
+        }
+        assert_eq!(
+            classify_sqlite_failure(None, "database is locked"),
+            SqliteFailureKind::Busy
+        );
+        assert_eq!(
+            classify_sqlite_failure(None, "database table is locked: connections"),
+            SqliteFailureKind::Busy
+        );
+    }
+
+    #[test]
+    fn other_failures_do_not_trigger_reset() {
+        // 14 = CANTOPEN, 13 = FULL, 8 = READONLY, 10 = IOERR, 1 = ERROR.
+        for (code, msg) in [
+            ("14", "unable to open database file"),
+            ("13", "database or disk is full"),
+            ("8", "attempt to write a readonly database"),
+            ("10", "disk I/O error"),
+            ("1", "table connections already exists"),
+        ] {
+            assert_eq!(
+                classify_sqlite_failure(Some(code), msg),
+                SqliteFailureKind::Other,
+                "{msg}"
+            );
+        }
+        assert_eq!(
+            sqlite_failure_kind(&sqlx::Error::PoolTimedOut),
+            SqliteFailureKind::Busy
+        );
+        assert!(!is_sqlite_corrupt(&sqlx::Error::PoolTimedOut));
+        assert!(!is_sqlite_corrupt(&sqlx::Error::RowNotFound));
+    }
+
+    /// File yang bukan database harus terdeteksi sebagai korup lewat error
+    /// sqlx yang sebenarnya, bukan hanya lewat string buatan.
+    #[tokio::test]
+    async fn real_not_a_database_error_is_corrupt() {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular-sqlite-failure-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("connections.db");
+        std::fs::write(&db, vec![b'x'; 4096]).expect("garbage file");
+        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&db);
+        let result = async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS t (id INTEGER)")
+                .execute(&pool)
+                .await?;
+            Ok::<(), sqlx::Error>(())
+        }
+        .await;
+        let err = result.expect_err("garbage file must not open as a database");
+        assert_eq!(
+            sqlite_failure_kind(&err),
+            SqliteFailureKind::Corrupt,
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_moves_db_wal_and_shm_together() {
+        let dir = std::env::temp_dir().join(format!(
+            "tabular-sqlite-backup-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("connections.db");
+        std::fs::write(&db, "db").expect("db");
+        std::fs::write(dir.join("connections.db-wal"), "wal").expect("wal");
+        std::fs::write(dir.join("connections.db-shm"), "shm").expect("shm");
+
+        let backup = backup_sqlite_files(&db).expect("backup");
+        assert!(!db.exists());
+        assert!(!dir.join("connections.db-wal").exists());
+        assert!(!dir.join("connections.db-shm").exists());
+        assert_eq!(std::fs::read_to_string(&backup).expect("db backup"), "db");
+        let name = backup
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("{name}-wal"))).expect("wal backup"),
+            "wal"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("{name}-shm"))).expect("shm backup"),
+            "shm"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

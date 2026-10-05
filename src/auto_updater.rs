@@ -269,13 +269,10 @@ impl AutoUpdater {
 
         debug!("Mounting DMG {:?} to {:?}", dmg_path, mount_point);
         let mount_output = std::process::Command::new("hdiutil")
-            .args([
-                "attach",
-                "-nobrowse",
-                "-mountpoint",
-                mount_point.to_str().unwrap(),
-                dmg_path.to_str().unwrap(),
-            ])
+            // Path diteruskan sebagai `OsStr`: tidak panic bila bukan UTF-8.
+            .args(["attach", "-nobrowse", "-mountpoint"])
+            .arg(&mount_point)
+            .arg(&dmg_path)
             .output();
 
         let mounted = matches!(mount_output, Ok(ref o) if o.status.success());
@@ -295,15 +292,14 @@ impl AutoUpdater {
 
                 // Use system cp -R for reliable deep-copy of .app bundle
                 let cp_status = std::process::Command::new("cp")
-                    .args([
-                        "-R",
-                        mounted_app.to_str().unwrap(),
-                        staged_app.to_str().unwrap(),
-                    ])
+                    .arg("-R")
+                    .arg(&mounted_app)
+                    .arg(&staged_app)
                     .status();
 
                 let _ = std::process::Command::new("hdiutil")
-                    .args(["detach", mount_point.to_str().unwrap()])
+                    .arg("detach")
+                    .arg(&mount_point)
                     .output();
                 let _ = fs::remove_file(&dmg_path);
 
@@ -358,7 +354,8 @@ impl AutoUpdater {
                 }
             } else {
                 let _ = std::process::Command::new("hdiutil")
-                    .args(["detach", mount_point.to_str().unwrap()])
+                    .arg("detach")
+                    .arg(&mount_point)
                     .output();
                 let _ = fs::remove_file(&dmg_path);
                 warn!("Tabular.app not found inside mounted DMG; falling back to Downloads");

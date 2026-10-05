@@ -555,15 +555,12 @@ async fn table_data_sql(
     let db = ep.db_type();
     let columns = catalog::fetch_columns(ep, table).await?;
     let table_sql = quote_qualified(db, table);
-    let select: Vec<String> = columns
-        .iter()
-        .map(|c| catalog::select_expr(db, c))
-        .collect();
-    let order: Vec<String> = columns
-        .iter()
-        .filter(|c| c.primary_key)
-        .map(|c| quote_ident(db, &c.name))
-        .collect();
+    let mut pager = catalog::TablePager::new(db, &table_sql, &columns, &columns, None);
+    if let Some(w) = pager.warning() {
+        log::warn!("[TRANSFER] {w}");
+        with_progress(progress, |p| p.log.push(format!("WARNING: {w}")));
+        out.push_str(&format!("-- WARNING: {}\n", w.replace('\n', " ")));
+    }
     let column_sql: Vec<String> = columns.iter().map(|c| quote_ident(db, &c.name)).collect();
     let kinds: Vec<ValueKind> = columns
         .iter()
@@ -581,12 +578,10 @@ async fn table_data_sql(
             Some(max) => page.min(max - written),
             None => page,
         };
-        let sql = catalog::select_page_sql(db, &table_sql, &select, None, &order, limit, written);
-        let mut rows = ep.query(&sql).await?.rows;
+        let rows = pager.next_page(ep, limit).await?;
         if rows.is_empty() {
             break;
         }
-        catalog::pad_rows(&mut rows, columns.len());
         let fetched = rows.len() as u64;
         for statement in build_insert_batches(
             db,

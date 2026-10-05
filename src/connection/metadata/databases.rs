@@ -14,7 +14,9 @@ pub(crate) fn fetch_databases_from_connection_blocking(
         .find(|c| c.id == Some(connection_id))?
         .clone();
 
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
 
     rt.block_on(async {
         let pool = get_or_create_connection_pool(tabular, connection_id).await?;
@@ -608,12 +610,9 @@ pub async fn fetch_databases_background_task(
 
     // 2. Get or create pool (check shared first)
     let pool = {
-        let mut pool_opt = None;
-        if let Ok(shared) = shared_pools.lock()
-            && let Some(p) = shared.get(&connection_id)
-        {
-            pool_opt = Some(p.clone());
-        }
+        let pool_opt = crate::connection::pool::lock_or_recover(shared_pools)
+            .get(&connection_id)
+            .cloned();
 
         if let Some(p) = pool_opt {
             p
@@ -625,9 +624,8 @@ pub async fn fetch_databases_background_task(
             .await
             {
                 Ok(Some(p)) => {
-                    if let Ok(mut shared) = shared_pools.lock() {
-                        shared.insert(connection_id, p.clone());
-                    }
+                    crate::connection::pool::lock_or_recover(shared_pools)
+                        .insert(connection_id, p.clone());
                     p
                 }
                 _ => return None,

@@ -16,9 +16,9 @@ pub struct BackendPidGuard {
 
 impl BackendPidGuard {
     pub fn register(registry: &BackendPidRegistry, job_id: u64, pid: i64) -> Self {
-        if let Ok(mut map) = registry.lock() {
-            map.insert(job_id, pid);
-        }
+        // Registry ter-poison tetap dipakai: kalau dilewati, tombol cancel
+        // tidak lagi bisa menghentikan query di server.
+        super::pool::lock_or_recover(registry).insert(job_id, pid);
         Self {
             registry: registry.clone(),
             job_id,
@@ -28,9 +28,7 @@ impl BackendPidGuard {
 
 impl Drop for BackendPidGuard {
     fn drop(&mut self) {
-        if let Ok(mut map) = self.registry.lock() {
-            map.remove(&self.job_id);
-        }
+        super::pool::lock_or_recover(&self.registry).remove(&self.job_id);
     }
 }
 
@@ -59,7 +57,17 @@ pub struct QueryExecutionOptions {
     /// Berhenti membaca result set setelah jumlah baris ini.
     pub max_rows: usize,
     pub backend_pids: BackendPidRegistry,
+    /// Pertahanan berlapis untuk jalur baca agent: statement dijalankan dalam
+    /// transaksi read-only (PostgreSQL/MySQL) atau dengan `query_only`
+    /// (SQLite), sehingga tulisan yang lolos dari classifier tetap ditolak
+    /// server. Engine lain mengabaikan flag ini.
+    pub read_only: bool,
 }
+
+/// Dipanggil dari task eksekusi setelah sebuah hasil masuk ke channel, supaya
+/// UI (egui) bangun dan memprosesnya tanpa polling. Pemanggil headless
+/// (agent, tes) memakai `None`.
+pub type ResultWakeHook = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
 pub struct QueryJob {
@@ -69,6 +77,8 @@ pub struct QueryJob {
     pub options: QueryExecutionOptions,
     pub connection_pool: models::enums::DatabasePool,
     pub started_at: Instant,
+    /// Lihat [`ResultWakeHook`].
+    pub on_result: Option<ResultWakeHook>,
 }
 
 #[derive(Clone, Debug)]
@@ -137,9 +147,86 @@ pub enum QueryPreparationError {
     UnsupportedDatabase,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum QueryExecutionError {
+    #[error("{0}")]
     Message(String),
     /// Error yang posisinya di dalam statement diketahui.
+    #[error("{0}")]
     Located(String, ErrorLocation),
+    /// Koneksi ke server gagal atau putus (jaringan, TLS, pool habis/tertutup).
+    /// Pool koneksi ini sebaiknya dibuang dan dibuat ulang.
+    #[error("{0}")]
+    Connection(String),
+    /// Statement melewati batas waktu query.
+    #[error("Query timed out")]
+    Timeout,
+    /// Job dibatalkan sebelum selesai.
+    #[error("Query cancelled")]
+    Cancelled,
+}
+
+impl QueryExecutionError {
+    /// Petakan error sqlx: kegagalan kelas koneksi menjadi [`Self::Connection`],
+    /// sisanya (error SQL dari server, decode, dll.) menjadi [`Self::Message`].
+    pub fn from_sqlx(e: sqlx::Error) -> Self {
+        Self::from_sqlx_with_context("", e)
+    }
+
+    /// Seperti [`Self::from_sqlx`], dengan awalan pesan (mis. `"PostgreSQL error: "`).
+    pub fn from_sqlx_with_context(prefix: &str, e: sqlx::Error) -> Self {
+        let message = format!("{prefix}{e}");
+        if is_connection_class(&e) {
+            Self::Connection(message)
+        } else {
+            Self::Message(message)
+        }
+    }
+
+    /// True jika error ini menandakan pool/koneksi tidak bisa dipakai lagi.
+    pub fn is_connection(&self) -> bool {
+        matches!(self, Self::Connection(_))
+    }
+}
+
+/// True untuk error sqlx yang berarti koneksinya sendiri bermasalah, bukan
+/// statement-nya.
+pub(crate) fn is_connection_class(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Io(_)
+            | sqlx::Error::Tls(_)
+            | sqlx::Error::PoolTimedOut
+            | sqlx::Error::PoolClosed
+            | sqlx::Error::WorkerCrashed
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_class_sqlx_errors_map_to_connection() {
+        let io = sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset by peer",
+        ));
+        let mapped = QueryExecutionError::from_sqlx_with_context("PostgreSQL error: ", io);
+        assert!(mapped.is_connection());
+        assert!(mapped.to_string().starts_with("PostgreSQL error: "));
+        assert!(mapped.to_string().contains("reset by peer"));
+
+        for e in [sqlx::Error::PoolTimedOut, sqlx::Error::PoolClosed] {
+            assert!(QueryExecutionError::from_sqlx(e).is_connection());
+        }
+    }
+
+    #[test]
+    fn statement_errors_stay_plain_messages() {
+        let mapped = QueryExecutionError::from_sqlx(sqlx::Error::RowNotFound);
+        assert!(!mapped.is_connection());
+        assert!(matches!(mapped, QueryExecutionError::Message(_)));
+        assert_eq!(QueryExecutionError::Timeout.to_string(), "Query timed out");
+    }
 }

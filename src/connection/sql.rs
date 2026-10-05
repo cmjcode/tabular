@@ -375,25 +375,86 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
     enable
 }
 
+/// Cari `needle` (harus ASCII dan tidak kosong) di dalam `haystack` mulai dari
+/// offset byte `from`, tanpa membedakan huruf besar/kecil ASCII.
+///
+/// Pencarian dilakukan langsung pada byte teks asli. Jangan mencari di salinan
+/// `to_lowercase()` lalu memakai offset-nya pada teks asli: lowercase Unicode
+/// bisa mengubah panjang byte (`İ` → `i̇`), sehingga offset bergeser dan slicing
+/// panic di tengah karakter. Karena `needle` ASCII, offset awal maupun akhir
+/// kecocokan selalu berada di batas karakter.
+pub(crate) fn find_ascii_ci(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    let hay = haystack.as_bytes();
+    let pat = needle.as_bytes();
+    if pat.is_empty() || !needle.is_ascii() || from > hay.len() || pat.len() > hay.len() - from {
+        return None;
+    }
+    (from..=hay.len() - pat.len()).find(|&i| hay[i..i + pat.len()].eq_ignore_ascii_case(pat))
+}
+
+/// Seperti [`find_ascii_ci`], tetapi mengembalikan kecocokan terakhir.
+pub(crate) fn rfind_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let hay = haystack.as_bytes();
+    let pat = needle.as_bytes();
+    if pat.is_empty() || !needle.is_ascii() || pat.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - pat.len())
+        .rev()
+        .find(|&i| hay[i..i + pat.len()].eq_ignore_ascii_case(pat))
+}
+
+/// True jika `haystack` diawali `prefix` (ASCII) tanpa membedakan huruf
+/// besar/kecil ASCII. Aman untuk teks non-ASCII karena membandingkan byte.
+pub(crate) fn starts_with_ascii_ci(haystack: &str, prefix: &str) -> bool {
+    haystack
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    // Byte non-ASCII adalah bagian dari karakter multibyte, yang di sini
+    // dianggap bagian identifier (mis. kolom `fromagé`).
+    byte.is_ascii_alphanumeric() || byte == b'_' || !byte.is_ascii()
+}
+
 /// Infer column headers from a SELECT statement when no rows are returned.
 /// This is a best-effort parser handling simple SELECT lists (supports aliases, functions, qualified names).
 pub(crate) fn infer_select_headers(statement: &str) -> Vec<String> {
-    let lower = statement.to_lowercase();
-    let select_pos = match lower.find("select") {
+    let bytes = statement.as_bytes();
+    let select_pos = match find_ascii_ci(statement, "select", 0) {
         Some(p) => p,
         None => return Vec::new(),
     };
-    // Find the matching FROM outside parentheses
+    let list_start = select_pos + "select".len();
+    // Cari FROM di luar tanda kurung dan di luar literal ber-quote. Semua offset
+    // berasal dari `char_indices()` teks asli, jadi selalu di batas karakter.
     let mut depth = 0usize;
+    let mut quote: Option<char> = None;
     let mut from_pos: Option<usize> = None;
-    for (i, ch) in statement.chars().enumerate().skip(select_pos + 6) {
-        // after 'select'
+    for (rel, ch) in statement[list_start..].char_indices() {
+        let i = list_start + rel;
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
         match ch {
+            '\'' | '"' | '`' => {
+                quote = Some(ch);
+                continue;
+            }
             '(' => depth += 1,
             ')' => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 0 && i + 4 <= statement.len() && lower[i..].starts_with("from") {
+        if depth == 0
+            && starts_with_ascii_ci(&statement[i..], "from")
+            && !is_identifier_byte(bytes[i - 1])
+            && bytes.get(i + 4).is_none_or(|b| !is_identifier_byte(*b))
+        {
             from_pos = Some(i);
             break;
         }
@@ -402,13 +463,25 @@ pub(crate) fn infer_select_headers(statement: &str) -> Vec<String> {
         Some(p) => p,
         None => return Vec::new(),
     };
-    let select_list = &statement[select_pos + 6..from_pos];
-    // Split by commas at top level (ignore commas inside parentheses)
+    let select_list = &statement[list_start..from_pos];
+    // Split by commas at top level (ignore commas inside parentheses and quotes)
     let mut headers = Vec::new();
     let mut current = String::new();
     depth = 0;
+    quote = None;
     for ch in select_list.chars() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            current.push(ch);
+            continue;
+        }
         match ch {
+            '\'' | '"' | '`' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
             '(' => {
                 depth += 1;
                 current.push(ch);
@@ -441,20 +514,22 @@ fn extract_alias_or_name(fragment: &str) -> String {
     if frag.is_empty() {
         return String::new();
     }
-    let lower = frag.to_lowercase();
-    if let Some(as_pos) = lower.rfind(" as ") {
+    // Offset dicari di teks asli (bukan salinan lowercase) supaya slicing aman
+    // untuk teks non-ASCII.
+    if let Some(as_pos) = rfind_ascii_ci(frag, " as ") {
         // alias with AS
         let alias = frag[as_pos + 4..].trim();
         return clean_identifier(alias);
     }
     // Alias without AS: take last token after space if it is not a function call
     let tokens: Vec<&str> = frag.split_whitespace().collect();
-    if tokens.len() > 1 {
-        let last = tokens.last().unwrap();
+    if tokens.len() > 1
+        && let Some(last) = tokens.last()
         // Avoid returning keywords or expressions
-        if !last.contains('(') && !["distinct"].contains(&last.to_lowercase().as_str()) {
-            return clean_identifier(last);
-        }
+        && !last.contains('(')
+        && !last.eq_ignore_ascii_case("distinct")
+    {
+        return clean_identifier(last);
     }
     // Otherwise, strip qualification
     if let Some(idx) = frag.rfind('.') {
@@ -825,9 +900,108 @@ pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) 
     Some(start + relative)
 }
 
+/// Kumpulan teks "aneh" deterministik untuk uji tahan-panic: potongan SQL
+/// dicampur karakter multibyte, quote tak berpasangan, dan kurung liar.
+#[cfg(test)]
+pub(crate) fn odd_sql_inputs() -> Vec<String> {
+    let pieces = [
+        "SELECT", "select", "FROM", "from", " as ", " AS ", "TOP", "top", "PERCENT", "(", ")",
+        ",", "'", "\"", "`", ".", "*", " ", "\n", "\t", "café", "—", "İ", "ı", "ſ", "\u{212A}", "😀",
+        "ß", "ǅ", "日本語", "\u{0301}", "\u{200d}", "10", "%", "[", "]", ";", "USE ", "t",
+    ];
+    // LCG sederhana: urutan selalu sama di setiap run.
+    let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as usize
+    };
+    let mut inputs = Vec::new();
+    for _ in 0..4000 {
+        let len = 1 + next() % 12;
+        let mut text = String::new();
+        for _ in 0..len {
+            text.push_str(pieces[next() % pieces.len()]);
+        }
+        inputs.push(text);
+    }
+    // Setiap potongan juga diuji sebagai awalan/akhiran SELECT sederhana.
+    for piece in pieces {
+        inputs.push(format!("SELECT {piece} FROM t"));
+        inputs.push(format!("{piece}SELECT TOP 5 {piece} AS {piece} FROM {piece}"));
+        inputs.push(format!("SELECT{piece}"));
+    }
+    inputs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infer_headers_survives_non_ascii_text() {
+        // Regresi: offset karakter dulu dipakai sebagai offset byte dan panic
+        // ("byte index is not a char boundary") untuk literal non-ASCII.
+        assert_eq!(
+            infer_select_headers("SELECT 'café' AS x FROM t WHERE 1=0"),
+            vec!["x"]
+        );
+        assert_eq!(
+            infer_select_headers("select id, nama — AS \"judul\" from t"),
+            vec!["id", "judul"]
+        );
+        // `İ` berubah panjang byte saat di-lowercase.
+        assert_eq!(
+            infer_select_headers("SELECT 'İİİİ' AS a, b AS İsim FROM t"),
+            vec!["a", "İsim"]
+        );
+        assert_eq!(
+            infer_select_headers("SELECT '😀😀' AS emoji, count(*) AS n FROM t"),
+            vec!["emoji", "n"]
+        );
+        // FROM di dalam literal, kurung, atau nama kolom bukan pemisah.
+        assert_eq!(
+            infer_select_headers("SELECT 'a from b' AS s, from_date, (SELECT 1 FROM x) AS y FROM t"),
+            vec!["s", "from_date", "y"]
+        );
+        assert!(infer_select_headers("SELECT 'café'").is_empty());
+        assert!(infer_select_headers("İİİİ").is_empty());
+    }
+
+    #[test]
+    fn ascii_case_insensitive_search_helpers() {
+        assert_eq!(find_ascii_ci("İİ SeLeCt x", "select", 0), Some(5));
+        assert_eq!(find_ascii_ci("select", "select", 1), None);
+        assert_eq!(find_ascii_ci("", "select", 0), None);
+        assert_eq!(find_ascii_ci("abc", "abc", 9), None);
+        assert_eq!(rfind_ascii_ci("a AS b As c", " as "), Some(6));
+        assert_eq!(rfind_ascii_ci("é", " as "), None);
+        assert!(starts_with_ascii_ci("FrOm t", "from"));
+        assert!(!starts_with_ascii_ci("fr", "from"));
+        assert!(!starts_with_ascii_ci("éfrom", "from"));
+    }
+
+    #[test]
+    fn sql_helpers_never_panic_on_odd_input() {
+        for input in odd_sql_inputs() {
+            let _ = infer_select_headers(&input);
+            let _ = query_contains_pagination(&input);
+            let _ = should_enable_auto_pagination(&input);
+            let _ = is_simple_select_statement(&input);
+            let _ = statement_returns_rows(&input);
+            let _ = strip_leading_sql_comments(&input);
+            let _ = split_sql_statements(&input, true);
+            let _ = split_sql_statements(&input, false);
+            let _ = split_mssql_go_batches(&input);
+            for db in [
+                models::enums::DatabaseType::MsSQL,
+                models::enums::DatabaseType::MySQL,
+            ] {
+                let _ = add_auto_limit_if_needed(&input, &db);
+            }
+        }
+    }
 
     #[test]
     fn go_batches_split_on_separator_lines_only() {

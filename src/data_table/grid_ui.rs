@@ -21,9 +21,9 @@ pub(crate) struct GridMarks {
     pub deleted: HashSet<usize>,
     pub inserted: HashSet<usize>,
     pub updated: HashMap<(usize, usize), String>,
-    pub find_hits: HashSet<(usize, usize)>,
+    pub find_hits: std::sync::Arc<HashSet<(usize, usize)>>,
     pub find_current: Option<(usize, usize)>,
-    pub invisible_cols: HashMap<usize, usize>,
+    pub invisible_cols: std::sync::Arc<HashMap<usize, usize>>,
     pub show_invisibles: bool,
     pub rules: Vec<HighlightRule>,
 }
@@ -38,7 +38,7 @@ impl GridMarks {
             deleted: gm::pending_deleted_rows(ops),
             inserted: gm::pending_inserted_rows(ops),
             updated: gm::pending_updated_cells(ops),
-            find_hits: find.matches.iter().copied().collect(),
+            find_hits: std::sync::Arc::clone(&find.match_set),
             find_current: find.matches.get(find.current).copied(),
             invisible_cols,
             show_invisibles: !t.grid_ext.hide_invisibles,
@@ -146,17 +146,22 @@ pub(crate) fn paint_cell_text(
         }
     } else {
         // Tanpa penanda, newline/tab tetap diratakan agar sel satu baris.
-        let flat: String = text
-            .chars()
-            .map(|c| {
-                if c == '\n' || c == '\r' || c == '\t' {
-                    ' '
-                } else {
-                    c
-                }
-            })
-            .collect();
-        job.append(&flat, 0.0, format(color));
+        // Kebanyakan sel tidak punya newline/tab: jangan salin teksnya dulu.
+        if text.contains(['\n', '\r', '\t']) {
+            let flat: String = text
+                .chars()
+                .map(|c| {
+                    if c == '\n' || c == '\r' || c == '\t' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            job.append(&flat, 0.0, format(color));
+        } else {
+            job.append(text, 0.0, format(color));
+        }
     }
     job.wrap.max_rows = 1;
     job.wrap.max_width = (rect.width() - 8.0).max(8.0);

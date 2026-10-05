@@ -186,7 +186,7 @@ pub async fn load_table(
         &db,
         &table_sql,
         &columns,
-        &data.rows,
+        data,
         &source_cols,
         &kinds,
         InsertLimits::default(),

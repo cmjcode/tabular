@@ -216,34 +216,13 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             let curr_table = infer_current_table_name(tabular);
             let clean_table = curr_table.trim_matches(|c| c == '`' || c == '"' || c == '\'');
 
-            let mut fk_by_col_idx: std::collections::HashMap<
-                usize,
-                crate::models::structs::ForeignKey,
-            > = std::collections::HashMap::new();
-            if let Some(cid) = conn_id {
-                if let Some(fks) =
-                    crate::cache_data::get_foreign_keys_from_cache(tabular, cid, &db_name)
-                {
-                    for (i, h) in headers.iter().enumerate() {
-                        let table_hint = if let Some(meta) = &tabular.current_column_metadata
-                            && let Some(col_meta) = meta.get(i)
-                            && let Some(t_name) = &col_meta.table_name
-                            && !t_name.is_empty()
-                        {
-                            t_name.as_str()
-                        } else {
-                            clean_table
-                        };
-                        if let Some(fk) = fks.iter().find(|fk| {
-                            (fk.table_name.eq_ignore_ascii_case(table_hint)
-                                || table_hint.is_empty())
-                                && fk.column_name.eq_ignore_ascii_case(h)
-                        }) {
-                            fk_by_col_idx.insert(i, fk.clone());
-                        }
-                    }
-                }
-            }
+            // Peta FK per kolom di-cache di state grid (bukan query SQLite
+            // tiap frame); lihat `grid_state::fk_by_column`.
+            let fk_by_col_idx = if conn_id.is_some() {
+                super::grid_state::fk_by_column(tabular, &headers, &db_name, clean_table)
+            } else {
+                std::sync::Arc::default()
+            };
 
             // Urutan tampil kolom: pinned dulu, kolom tersembunyi dibuang,
             // urutan kustom (drag header) dihormati.
@@ -955,7 +934,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     },
                                 );
                                 for (vis_idx, &col_index) in display_col_indices.iter().enumerate() {
-                                    let cell = row.get(col_index).cloned().unwrap_or_default();
+                                    let cell: &str = row.get(col_index).map(String::as_str).unwrap_or("");
                                     let is_pinned = tab.pinned_columns.contains(&headers[col_index]);
                                     let is_last_pinned = is_pinned && (vis_idx + 1 == pinned_count);
                                     let is_selected_cell =
@@ -963,7 +942,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     let is_selected_col =
                                         tab.selected_columns.contains(&col_index);
                                     let fk_info = fk_by_col_idx.get(&col_index);
-                                    let is_raw_value = super::grid_model::as_raw_sql(&cell).is_some();
+                                    let is_raw_value = super::grid_model::as_raw_sql(cell).is_some();
                                     let is_fk_link = fk_info.is_some()
                                         && !cell.is_empty()
                                         && cell != "NULL"
@@ -978,8 +957,25 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     } else {
                                         get_column_width(tab, col_index).max(50.0)
                                     };
+                                    // Culling horizontal: sel di luar area terlihat hanya
+                                    // mengalokasikan ruangnya (tata letak dan lebar scroll
+                                    // tetap sama) tanpa membangun widget/teks. Sel yang sedang
+                                    // diedit selalu dirender agar editornya tidak kehilangan fokus.
+                                    let cell_size = egui::vec2(column_width, row_height);
+                                    if tab.spreadsheet_state.editing_cell != Some((row_index, col_index))
+                                        && !ui.is_rect_visible(egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            cell_size,
+                                        ))
+                                    {
+                                        ui.allocate_space(cell_size);
+                                        if table_dragging && !ui.input(|i| i.pointer.primary_down()) {
+                                            table_dragging = false;
+                                        }
+                                        continue;
+                                    }
                                     ui.allocate_ui_with_layout(
-                                        [column_width, row_height].into(),
+                                        cell_size,
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             let rect = ui.available_rect_before_wrap();
@@ -1096,19 +1092,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             }
                                             let max_chars =
                                                 ((column_width / 8.0).floor() as usize).max(10);
-                                            let shown =
-                                                super::grid_model::display_value(&cell).into_owned();
-                                            let display_text = if shown.chars().count() > max_chars {
-                                                format!(
-                                                    "{}...",
-                                                    shown
-                                                        .chars()
-                                                        .take(max_chars.saturating_sub(3))
-                                                        .collect::<String>()
-                                                )
-                                            } else {
-                                                shown.clone()
-                                            };
+                                            // Dipinjam dari data baris; string baru hanya dibuat
+                                            // bila teks memang dipotong. Panjang dicek tanpa
+                                            // menghitung seluruh karakter sel.
+                                            let shown = super::grid_model::display_value(cell);
+                                            let (display_text, is_truncated) =
+                                                super::grid_model::truncate_for_cell(&shown, max_chars);
                                             let cell_response = ui.allocate_response(
                                                 rect.size(),
                                                 egui::Sense::click_and_drag(),
@@ -1130,7 +1119,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                             db_name.clone(),
                                                             fk.referenced_table_name.clone(),
                                                             fk.referenced_column_name.clone(),
-                                                            cell.clone(),
+                                                            cell.to_string(),
                                                         ));
                                                     }
                                                 } else {
@@ -1154,25 +1143,30 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             // Attach hover text and cursor
                                             let mut cell_resp = cell_response;
                                             if is_fk_link && let Some(fk) = fk_info {
-                                                cell_resp = cell_resp.on_hover_text(format!(
-                                                    "{} Foreign Key -> {}.{}\nValue: {}\n(Cmd/Ctrl+Click or right-click to jump to record)",
-                                                    egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell
-                                                ));
+                                                // Teks tooltip dibuat hanya saat sel di-hover.
+                                                cell_resp = cell_resp.on_hover_ui(|ui| {
+                                                    ui.label(format!(
+                                                        "{} Foreign Key -> {}.{}\nValue: {}\n(Cmd/Ctrl+Click or right-click to jump to record)",
+                                                        egui_icons::icons::ICON_LINK.codepoint, fk.referenced_table_name, fk.referenced_column_name, cell
+                                                    ));
+                                                });
                                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                             } else if let Some(original) =
                                                 grid_marks.updated.get(&(row_index, col_index))
                                             {
-                                                cell_resp = cell_resp.on_hover_text(format!(
-                                                    "{}\n\nOriginal value: {}",
-                                                    shown,
-                                                    super::grid_model::display_value(original)
-                                                ));
+                                                cell_resp = cell_resp.on_hover_ui(|ui| {
+                                                    ui.label(format!(
+                                                        "{}\n\nOriginal value: {}",
+                                                        shown,
+                                                        super::grid_model::display_value(original)
+                                                    ));
+                                                });
                                             } else if is_pending_delete {
                                                 cell_resp = cell_resp.on_hover_text(
                                                     "Row marked for deletion — Review & Save to commit, or Restore Row",
                                                 );
-                                            } else if shown.chars().count() > max_chars || !shown.is_empty() {
-                                                cell_resp = cell_resp.on_hover_text(&shown);
+                                            } else if is_truncated || !shown.is_empty() {
+                                                cell_resp = cell_resp.on_hover_text(&*shown);
                                             }
 
                                             // Drag-to-select lifecycle
@@ -1355,7 +1349,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                 let text_pos = rect.left_top() + egui::vec2(5.0, rect.height() * 0.5);
                                                 let font_id = egui::FontId::default();
                                                 let text_galley = ui.painter().layout_no_wrap(
-                                                    display_text.clone(),
+                                                    display_text.to_string(),
                                                     font_id.clone(),
                                                     fk_color,
                                                 );
@@ -1394,7 +1388,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
 
                                                 let (type_color, is_null) =
                                                     crate::window_egui::style::table_cell_style(
-                                                        &cell,
+                                                        cell,
                                                         col_type_hint,
                                                         ui.visuals().dark_mode,
                                                     );
@@ -1458,7 +1452,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                             row: row_index,
                                                             col: col_index,
                                                             column: &column_name,
-                                                            value: &cell,
+                                                            value: cell,
                                                             browse: tab.is_table_browse_mode,
                                                             fk: fk_info,
                                                             pending_delete: is_pending_delete,
@@ -1475,7 +1469,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                 db_name.clone(),
                                                                 fk.referenced_table_name.clone(),
                                                                 fk.referenced_column_name.clone(),
-                                                                cell.clone(),
+                                                                cell.to_string(),
                                                             ));
                                                             ui.close();
                                                         }
@@ -1508,11 +1502,11 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     ui.separator();
                                                     if ui.button("🔍 Inspect Value (JSON / Hex / Image)...").clicked() {
                                                         let col_title = tab.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
-                                                        inspect_value_request = Some((cell.clone(), col_title, row_index, col_index));
+                                                        inspect_value_request = Some((cell.to_string(), col_title, row_index, col_index));
                                                         ui.close();
                                                     }
                                                     if ui.button("📋 Copy Cell Value").clicked() {
-                                                        ui.ctx().copy_text(shown.clone());
+                                                        ui.ctx().copy_text(shown.to_string());
                                                         ui.close();
                                                     }
                                                     if table_sel_anchor.is_some()
@@ -1539,7 +1533,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                 .find(|c| c.id == Some(cid))
                                                         })
                                                         .map(|c| c.connection_type.clone());
-                                                    if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
+                                                    if ui.button(format!("{} Copy Selection as SQL INSERTs", egui_icons::icons::ICON_DATABASE.codepoint)).clicked() {
                                                         if let Some(sql) = copy_selected_as_sql_inserts(tab, db_type.as_ref()) {
                                                             ui.ctx().copy_text(sql);
                                                         }
@@ -1551,7 +1545,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         }
                                                         ui.close();
                                                     }
-                                                    if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
+                                                    if ui.button(format!("{} Export Selection as SQL INSERTs...", egui_icons::icons::ICON_DATABASE.codepoint)).clicked() {
                                                         export_selected_to_sql_inserts(tab, db_type.as_ref());
                                                         ui.close();
                                                     }
@@ -1608,7 +1602,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         );
                                                         ui.close();
                                                     }
-                                                    if ui.button("🧾 Export to JSON").clicked() {
+                                                    if ui.button(format!("{} Export to JSON", egui_icons::icons::ICON_DATA_OBJECT.codepoint)).clicked() {
                                                         export::export_to_json(
                                                             &tab.all_table_data,
                                                             &tab.current_table_headers,
@@ -1626,7 +1620,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     if ui
-                                                        .button("🛢 Export as SQL INSERTs")
+                                                        .button(format!("{} Export as SQL INSERTs", egui_icons::icons::ICON_DATABASE.codepoint))
                                                         .clicked()
                                                     {
                                                         let db_type = tab
@@ -1724,7 +1718,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     tab.connections.iter().find(|c| c.id == Some(cid))
                                 })
                                 .map(|c| c.connection_type.clone());
-                            if ui.button("🛢 Copy Selection as SQL INSERTs").clicked() {
+                            if ui.button(format!("{} Copy Selection as SQL INSERTs", egui_icons::icons::ICON_DATABASE.codepoint)).clicked() {
                                 if let Some(sql) = copy_selected_as_sql_inserts(tab, db_type_bg.as_ref()) {
                                     ui.ctx().copy_text(sql);
                                 }
@@ -1736,7 +1730,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 }
                                 ui.close();
                             }
-                            if ui.button("🛢 Export Selection as SQL INSERTs...").clicked() {
+                            if ui.button(format!("{} Export Selection as SQL INSERTs...", egui_icons::icons::ICON_DATABASE.codepoint)).clicked() {
                                 export_selected_to_sql_inserts(tab, db_type_bg.as_ref());
                                 ui.close();
                             }
@@ -1760,7 +1754,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 );
                                 ui.close();
                             }
-                            if ui.button("🧾 Export to JSON").clicked() {
+                            if ui.button(format!("{} Export to JSON", egui_icons::icons::ICON_DATA_OBJECT.codepoint)).clicked() {
                                 export::export_to_json(
                                     &tab.all_table_data,
                                     &tab.current_table_headers,
@@ -1776,7 +1770,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 );
                                 ui.close();
                             }
-                            if ui.button("🛢 Export as SQL INSERTs").clicked() {
+                            if ui.button(format!("{} Export as SQL INSERTs", egui_icons::icons::ICON_DATABASE.codepoint)).clicked() {
                                 let db_type = tab
                                     .current_connection_id
                                     .and_then(|cid| {

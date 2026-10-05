@@ -94,6 +94,8 @@ pub(crate) fn create_new_tab(
 
     // Filter tab sebelumnya dititipkan ke tab itu sendiri; tab baru mulai tanpa filter.
     stash_active_tab_filter(tabular);
+    // Job yang baru dimulai dicatat ke tab asalnya sebelum tab aktif berganti.
+    tabular.sync_job_tabs();
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
@@ -249,7 +251,14 @@ pub(crate) fn open_user_manager_tab(
 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
+    // Catat tab asal job yang baru dimulai sebelum daftar tab berubah.
+    tabular.sync_job_tabs();
     if tabular.query_tabs.len() <= 1 {
+        // Tab terakhir hanya dikosongkan; query yang masih berjalan dibatalkan
+        // supaya hasilnya tidak muncul lagi di tab yang sudah dibersihkan.
+        if let Some(tab_id) = tabular.query_tabs.first().map(|t| t.id) {
+            tabular.cancel_jobs_of_tab(tab_id);
+        }
         // Don't close the last tab, just clear it
         if let Some(tab) = tabular.query_tabs.get_mut(0) {
             tab.content.clear();
@@ -323,6 +332,9 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
             tabular.sql_semantic_snapshot = None;
         }
         tabular.current_object_ddl = None;
+        // Query milik tab yang ditutup tidak boleh terus berjalan dan
+        // hasilnya jatuh ke tab lain.
+        tabular.cancel_jobs_of_closed_tabs();
     }
 }
 
@@ -544,6 +556,7 @@ pub(crate) fn toggle_pin_tab(tabular: &mut window_egui::Tabular, tab_index: usiz
 /// Close all tabs except `keep_index` and any pinned tabs.
 pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: usize) {
     tabular.dragged_tab_index = None;
+    tabular.sync_job_tabs();
     if keep_index >= tabular.query_tabs.len() {
         return;
     }
@@ -567,11 +580,13 @@ pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: u
     if tabular.active_tab_index >= tabular.query_tabs.len() {
         tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
     }
+    tabular.cancel_jobs_of_closed_tabs();
 }
 
 /// Close all unpinned tabs to the right of `tab_index`.
 pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_index: usize) {
     tabular.dragged_tab_index = None;
+    tabular.sync_job_tabs();
     if tab_index >= tabular.query_tabs.len() {
         return;
     }
@@ -597,6 +612,7 @@ pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_in
     if tabular.active_tab_index >= tabular.query_tabs.len() {
         tabular.active_tab_index = tabular.query_tabs.len().saturating_sub(1);
     }
+    tabular.cancel_jobs_of_closed_tabs();
 }
 
 /// Find an already-open tab representing the same title/connection/database,
@@ -675,6 +691,8 @@ pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<u
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {
+        // Job yang baru dimulai dicatat ke tab asalnya sebelum tab aktif berganti.
+        tabular.sync_job_tabs();
         stash_active_tab_filter(tabular);
         // Save current tab content
         if let Some(current_tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
@@ -763,11 +781,8 @@ pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize
             // Auto-connect restoration: jika tab memiliki connection_id dan pool belum siap, trigger creation
             if let Some(conn_id) = new_tab.connection_id {
                 let has_pool = tabular.connection_pools.contains_key(&conn_id)
-                    || tabular
-                        .shared_connection_pools
-                        .lock()
-                        .map(|p| p.contains_key(&conn_id))
-                        .unwrap_or(false);
+                    || crate::connection::pool::lock_or_recover(&tabular.shared_connection_pools)
+                        .contains_key(&conn_id);
                 if !has_pool {
                     need_connect = Some(conn_id);
                 }
@@ -3228,7 +3243,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Capture a mutable handle to the highlight cache for this frame to avoid recomputing
     let cache = &mut tabular.highlight_cache;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-        let mut job = crate::syntax_ts::highlight_text_cached(text.as_str(), lang, dark, cache);
+        let mut job = cache.get_or_highlight(text.as_str(), lang, dark);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts_mut(|f| f.layout_job(job))
     };
@@ -3318,14 +3333,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     let cursor_range_after = cursor_range;
 
-    #[cfg(feature = "tree_sitter_sequel")]
-    {
-        if matches!(lang, crate::syntax_ts::LanguageKind::Sql) {
-            tabular.sql_semantic_snapshot = crate::syntax_ts::get_last_sql_snapshot();
-        } else {
-            tabular.sql_semantic_snapshot = None;
-        }
-    }
+    // `sql_semantic_snapshot` dulu disalin dari parser tree-sitter di setiap
+    // frame, tetapi tidak ada yang membacanya; parse per ketikan itu sudah
+    // dihapus dari jalur highlight (lihat `syntax_ts::highlight_text`).
     let did_double_click = response.double_clicked();
 
     // CRITICAL: Ensure focus and cursor visibility on interaction
@@ -10182,32 +10192,16 @@ pub(crate) fn process_query_result(
             debug!("Skip saving to history karena hasil error");
         }
         // Detect EXPLAIN output JSON/XML/text and set active view to Explain
-        let first_cell = tabular
-            .current_table_data
-            .first()
-            .and_then(|r| r.first())
-            .cloned()
-            .unwrap_or_default();
-        let all_text = if tabular.current_table_data.len() > 1 {
-            tabular
-                .current_table_data
-                .iter()
-                .map(|r| r.first().map(|s| s.as_str()).unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n")
+        let is_explain =
+            looks_like_explain_output(query, &tabular.current_table_headers, &tabular.current_table_data);
+        // Teks plan (kolom pertama semua baris) hanya dirangkai bila memang
+        // hasil EXPLAIN; untuk hasil biasa ini dulu menyalin kolom pertama
+        // seluruh result set pada setiap query.
+        let all_text = if is_explain {
+            explain_output_text(&tabular.current_table_data)
         } else {
-            first_cell.clone()
+            String::new()
         };
-        let is_explain = query.trim_start().to_uppercase().starts_with("EXPLAIN")
-            || query.to_uppercase().contains("STATISTICS XML")
-            || query.to_uppercase().contains("SHOWPLAN_XML")
-            || tabular.current_table_headers.iter().any(|h| {
-                h.to_uppercase().contains("EXPLAIN") || h.to_uppercase().contains("QUERY PLAN")
-            })
-            || first_cell.trim().starts_with('[')
-            || first_cell.trim().starts_with('{')
-            || first_cell.trim().contains("<ShowPlanXML")
-            || all_text.trim().contains("<ShowPlanXML");
 
         if is_explain && !all_text.trim().is_empty() {
             tabular.table_bottom_view = models::structs::TableBottomView::Explain;
@@ -10225,6 +10219,10 @@ pub(crate) fn process_query_result(
                 tab.explain_plan_json = Some(all_text.clone());
             }
             tab.result_headers = tabular.current_table_headers.clone();
+            // Salinan ini BUKAN redundan: beberapa jalur mengganti tab aktif
+            // tanpa menukar state tampilan ke tab lama (`create_new_tab`,
+            // buka file query, tab HTTP), lalu `switch_to_tab` memulihkan
+            // data dari field ini. Menghapusnya membuat hasil tab hilang.
             tab.result_rows = tabular.current_table_data.clone();
             tab.result_all_rows = tabular.all_table_data.clone();
             tab.result_table_name = tabular.current_table_name.clone();
@@ -10257,6 +10255,51 @@ pub(crate) fn process_query_result(
 
     tabular.query_execution_in_progress = false;
     tabular.extend_query_icon_hold();
+}
+
+/// True bila hasil query terlihat seperti keluaran EXPLAIN / showplan: dari
+/// teks query, nama header, atau isi kolom pertama. Tidak mengalokasikan per
+/// baris; huruf besar query dihitung sekali.
+fn looks_like_explain_output(query: &str, headers: &[String], rows: &[Vec<String>]) -> bool {
+    let query_upper = query.to_uppercase();
+    if query_upper.trim_start().starts_with("EXPLAIN")
+        || query_upper.contains("STATISTICS XML")
+        || query_upper.contains("SHOWPLAN_XML")
+    {
+        return true;
+    }
+    if headers.iter().any(|h| {
+        let h = h.to_uppercase();
+        h.contains("EXPLAIN") || h.contains("QUERY PLAN")
+    }) {
+        return true;
+    }
+    let first_cell = rows
+        .first()
+        .and_then(|r| r.first())
+        .map(|s| s.trim())
+        .unwrap_or("");
+    if first_cell.starts_with('[') || first_cell.starts_with('{') {
+        return true;
+    }
+    // Showplan XML bisa berada di baris mana pun pada kolom pertama.
+    rows.iter()
+        .any(|r| r.first().is_some_and(|c| c.contains("<ShowPlanXML")))
+}
+
+/// Teks plan: kolom pertama semua baris, satu baris per baris hasil.
+fn explain_output_text(rows: &[Vec<String>]) -> String {
+    if rows.len() > 1 {
+        rows.iter()
+            .map(|r| r.first().map(|s| s.as_str()).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        rows.first()
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 pub(crate) fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> String {
@@ -11155,5 +11198,159 @@ mod tests {
         toggle_pin_tab(&mut tabular, 0);
         assert!(!tabular.query_tabs[0].is_pinned);
         assert!(!tabular.query_tabs[1].is_pinned);
+    }
+
+    fn running_job(tabular: &mut window_egui::Tabular) -> u64 {
+        let job_id = tabular.jobs.allocate_id();
+        tabular.jobs.active.insert(
+            job_id,
+            connection::QueryJobStatus {
+                job_id,
+                connection_id: 1,
+                query_preview: "SELECT pg_sleep(60)".to_string(),
+                started_at: Instant::now(),
+                completed: false,
+            },
+        );
+        tabular.query_execution_in_progress = true;
+        job_id
+    }
+
+    fn result_message(job_id: u64, tab_id: Option<usize>, rows: usize) -> connection::QueryResultMessage {
+        let mut message = crate::window_egui::query_jobs::failed_query_message(
+            job_id,
+            1,
+            "SELECT v FROM t",
+            String::new(),
+        );
+        message.tab_id = tab_id;
+        message.success = true;
+        message.error = None;
+        message.headers = vec!["v".to_string()];
+        message.rows = (0..rows).map(|i| vec![i.to_string()]).collect();
+        message
+    }
+
+    #[test]
+    fn close_tab_cancels_running_query_of_that_tab() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "".to_string());
+        let tab_a = tabular.query_tabs[0].id;
+        let tab_b = tabular.query_tabs[1].id;
+
+        // Job dimulai dari tab B (aktif), lalu user pindah ke tab A.
+        let job_b = running_job(&mut tabular);
+        switch_to_tab(&mut tabular, 0);
+        assert_eq!(tabular.jobs.tab_of.get(&job_b), Some(&tab_b));
+        // Job lain berjalan di tab A dan harus tetap hidup.
+        let job_a = running_job(&mut tabular);
+        tabular.sync_job_tabs();
+        assert_eq!(tabular.jobs.tab_of.get(&job_a), Some(&tab_a));
+
+        close_tab(&mut tabular, 1);
+        assert!(!tabular.jobs.active.contains_key(&job_b));
+        assert!(tabular.jobs.cancelled.contains_key(&job_b));
+        assert!(tabular.jobs.active.contains_key(&job_a));
+        assert!(tabular.query_execution_in_progress);
+
+        // Hasil yang terlambat dari job yang dibatalkan diabaikan.
+        tabular.current_table_data = vec![vec!["keep".to_string()]];
+        tabular.handle_query_result_message(result_message(job_b, Some(tab_b), 3));
+        assert_eq!(tabular.current_table_data, vec![vec!["keep".to_string()]]);
+        assert!(tabular.query_tabs[0].results.is_empty());
+    }
+
+    #[test]
+    fn result_for_closed_tab_is_dropped_not_shown_in_active_tab() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        tabular.current_table_data = vec![vec!["keep".to_string()]];
+        let missing_tab = tabular.query_tabs[0].id + 1000;
+
+        tabular.query_execution_in_progress = true;
+        tabular.handle_query_result_message(result_message(42, Some(missing_tab), 5));
+
+        assert_eq!(tabular.current_table_data, vec![vec!["keep".to_string()]]);
+        assert!(tabular.query_tabs[0].results.is_empty());
+        assert!(!tabular.query_execution_in_progress);
+    }
+
+    #[test]
+    fn result_for_background_tab_is_stored_without_extra_copies() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        create_new_tab(&mut tabular, "B".to_string(), "".to_string());
+        let tab_a = tabular.query_tabs[0].id;
+        tabular.query_tabs[0].page_size = 10;
+        tabular.current_table_data = vec![vec!["active".to_string()]];
+
+        tabular.handle_query_result_message(result_message(7, Some(tab_a), 25));
+
+        // Tab aktif (B) tidak tersentuh.
+        assert_eq!(tabular.current_table_data, vec![vec!["active".to_string()]]);
+        let tab = &tabular.query_tabs[0];
+        assert_eq!(tab.results.len(), 1);
+        assert!(tab.results[0].rows.is_empty());
+        assert_eq!(tab.results[0].all_rows.len(), 25);
+        assert_eq!(tab.results[0].total_rows, 25);
+        assert_eq!(tab.result_all_rows.len(), 25);
+        assert_eq!(tab.result_rows.len(), 10);
+        assert_eq!(tab.result_rows[9], vec!["9".to_string()]);
+        assert_eq!(tab.total_rows, 25);
+
+        // Statement kedua dari batch yang sama hanya menambah daftar result.
+        tabular.handle_query_result_message(result_message(8, Some(tab_a), 4));
+        let tab = &tabular.query_tabs[0];
+        assert_eq!(tab.results.len(), 2);
+        assert_eq!(tab.results[1].all_rows.len(), 4);
+        assert_eq!(tab.result_all_rows.len(), 25);
+    }
+
+    #[test]
+    fn active_tab_results_keep_rows_for_every_result() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "".to_string());
+        let tab_a = tabular.query_tabs[0].id;
+
+        tabular.handle_query_result_message(result_message(1, Some(tab_a), 3));
+        tabular.handle_query_result_message(result_message(2, Some(tab_a), 2));
+
+        let tab = &tabular.query_tabs[0];
+        assert_eq!(tab.results.len(), 2);
+        assert_eq!(tab.results[0].all_rows.len(), 3);
+        assert_eq!(tab.results[1].all_rows.len(), 2);
+        // Result pertama yang ditampilkan.
+        assert_eq!(tabular.all_table_data.len(), 3);
+        assert_eq!(tabular.current_table_data.len(), 3);
+    }
+
+    #[test]
+    fn explain_detection_matches_previous_rules() {
+        let rows = |cells: &[&str]| -> Vec<Vec<String>> {
+            cells.iter().map(|c| vec![c.to_string(), "x".to_string()]).collect()
+        };
+        let headers = vec!["id".to_string(), "name".to_string()];
+        assert!(!looks_like_explain_output("SELECT * FROM t", &headers, &rows(&["1", "2"])));
+        assert!(looks_like_explain_output("  explain select 1", &headers, &rows(&["1"])));
+        assert!(looks_like_explain_output("SET STATISTICS XML ON", &headers, &[]));
+        assert!(looks_like_explain_output(
+            "SELECT 1",
+            &["QUERY PLAN".to_string()],
+            &rows(&["Seq Scan"])
+        ));
+        assert!(looks_like_explain_output("SELECT doc FROM t", &headers, &rows(&[" {\"a\":1}"])));
+        assert!(looks_like_explain_output(
+            "SELECT 1",
+            &headers,
+            &rows(&["a", "b", "<ShowPlanXML xmlns=...>"])
+        ));
+        assert_eq!(explain_output_text(&rows(&["a", "b"])), "a\nb");
+        assert_eq!(explain_output_text(&rows(&["only"])), "only");
+        assert_eq!(explain_output_text(&[]), "");
     }
 }

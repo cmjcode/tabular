@@ -106,7 +106,9 @@ pub fn fetch_collections_from_mongodb_connection(
     connection_id: i64,
     database_name: &str,
 ) -> Option<Vec<String>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         if let Some(models::enums::DatabasePool::MongoDB(client)) =
             connection::get_or_create_connection_pool(tabular, connection_id).await
@@ -144,7 +146,9 @@ pub fn sample_collection_documents(
     collection_name: &str,
     limit: i64,
 ) -> Option<(Vec<String>, Vec<Vec<String>>)> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime aplikasi yang berumur panjang: pool yang dibuat lalu di-cache di
+    // dalam runtime sekali pakai rusak begitu runtime itu di-drop.
+    let rt = tabular.get_runtime();
     rt.block_on(async {
         if let Some(models::enums::DatabasePool::MongoDB(client)) =
             connection::get_or_create_connection_pool(tabular, connection_id).await
