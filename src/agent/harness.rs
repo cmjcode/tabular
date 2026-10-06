@@ -1666,6 +1666,40 @@ fn tail(s: &str, max: usize) -> String {
     }
 }
 
+/// Ringkas stderr CLI yang gagal untuk ditampilkan ke user.
+///
+/// CLI berbasis flag (agy, gemini) mencetak alasan penolakan di baris pertama
+/// lalu seluruh teks bantuan. Mengambil ekor stderr membuang alasannya dan
+/// hanya menyisakan daftar subcommand, jadi teks bantuan dipotong dan bagian
+/// sebelum itu yang dipakai. Mengembalikan `(detail, argumen_ditolak)`.
+fn failure_detail(stderr: &str, max: usize) -> (String, bool) {
+    let trimmed = stderr.trim();
+    // `split('\n')` (bukan `lines()`) supaya offset byte tetap tepat untuk CRLF.
+    let usage_at = trimmed
+        .split('\n')
+        .scan(0usize, |pos, line| {
+            let start = *pos;
+            *pos += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(_, line)| {
+            let l = line.trim_start().to_ascii_lowercase();
+            l.starts_with("usage of ") || l.starts_with("usage:")
+        })
+        .map(|(start, _)| start);
+    match usage_at {
+        Some(at) => {
+            let reason = trimmed[..at].trim();
+            if reason.is_empty() {
+                (tail(trimmed, max), true)
+            } else {
+                (ellipsize(reason, max), true)
+            }
+        }
+        None => (tail(trimmed, max), false),
+    }
+}
+
 /// Jalankan CLI dan alirkan event-nya. Proses hidup di thread terpisah; UI
 /// mem-poll receiver dengan `try_recv()`.
 pub fn spawn_stream(
@@ -1791,9 +1825,13 @@ pub fn spawn_stream(
                 .and_then(|s| s.code())
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "signal".to_string());
-            let detail = tail(&stderr_text, 800);
+            let (detail, args_rejected) = failure_detail(&stderr_text, 800);
             if detail.is_empty() {
                 format!("CLI exited with code {code} without a result.")
+            } else if args_rejected {
+                format!(
+                    "CLI rejected its arguments (exit code {code}): {detail}\nThe installed version may not support an option Tabular passes. Update the CLI, then check Model, Effort and Extra arguments in Settings → AI Assistant."
+                )
             } else {
                 format!("CLI exited with code {code}: {detail}")
             }
@@ -2408,6 +2446,24 @@ mod tests {
             detail.as_deref(),
             Some("SELECT id, name FROM users LIMIT 10")
         );
+    }
+
+    #[test]
+    fn failure_detail_keeps_reason_and_drops_usage_dump() {
+        let stderr = "flags provided but not defined: -effort\nUsage of agy:\n  --add-dir   Add a directory\n\nAvailable subcommands:\n  update  Update CLI\n";
+        let (detail, rejected) = failure_detail(stderr, 800);
+        assert!(rejected);
+        assert_eq!(detail, "flags provided but not defined: -effort");
+
+        // Tanpa teks bantuan: ekor stderr seperti biasa.
+        let (detail, rejected) = failure_detail("boom\n", 800);
+        assert!(!rejected);
+        assert_eq!(detail, "boom");
+
+        // Hanya teks bantuan: tetap tampilkan sesuatu.
+        let (detail, rejected) = failure_detail("Usage of agy:\n  --x  y\n", 800);
+        assert!(rejected);
+        assert!(detail.contains("Usage of agy"));
     }
 
     #[test]
