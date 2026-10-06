@@ -702,7 +702,7 @@ impl AutoUpdater {
         info!("📋 Copy binary baru {:?} → {:?}", new_binary, current_exe);
         if let Err(e) = fs::copy(new_binary, current_exe) {
             // Rollback: kembalikan exe lama
-            warn!("Copy gagal ({}), rolling back...", e);
+            log::warn!("Copy gagal ({}), rolling back...", e);
             let _ = fs::rename(&old_exe, current_exe);
             return Err(format!("Failed to copy the new binary: {}", e).into());
         }

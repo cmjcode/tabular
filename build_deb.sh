@@ -107,8 +107,12 @@ if [[ -n "$TARGET_TRIPLE" ]]; then
     BIN_PATH="$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/tabular"
 fi
 
-if [[ ! -f "$BIN_PATH" ]]; then
-    echo "Error: binary not found at $BIN_PATH." >&2
+if [[ ! -f "${BIN_PATH:-}" && -f "$CARGO_TARGET_DIR/release/tabular" ]]; then
+    BIN_PATH="$CARGO_TARGET_DIR/release/tabular"
+fi
+
+if [[ -z "${BIN_PATH:-}" || ! -f "$BIN_PATH" ]]; then
+    echo "Error: binary not found at ${BIN_PATH:-$CARGO_TARGET_DIR/release/tabular}." >&2
     exit 1
 fi
 
@@ -137,7 +141,15 @@ if [[ -z "$DEB_ARCH" ]]; then
     exit 1
 fi
 
-PKG_ROOT="$BUILD_DIR/${PACKAGE}_${VERSION}_${DEB_ARCH}"
+# Gunakan direktori staging sementara di /tmp agar izin direktori (misal 755)
+# tidak terpengaruh oleh filesystem DrvFs/NTFS (WSL) atau umask host yang menghasilkan 777.
+STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tabular-deb.XXXXXX")
+cleanup() {
+    rm -rf "$STAGE_DIR"
+}
+trap cleanup EXIT INT TERM
+
+PKG_ROOT="$STAGE_DIR/${PACKAGE}_${VERSION}_${DEB_ARCH}"
 rm -rf "$PKG_ROOT"
 mkdir -p "$PKG_ROOT/DEBIAN"
 mkdir -p "$PKG_ROOT/usr/bin"
@@ -192,10 +204,19 @@ fi
 exit 0
 EOF
 
+# Normalisasi izin berkas dan direktori untuk standar dpkg-deb
+find "$PKG_ROOT" -type d -exec chmod 755 {} +
+chmod 755 "$PKG_ROOT/DEBIAN"
+chmod 644 "$PKG_ROOT/DEBIAN/control"
 chmod 755 "$PKG_ROOT/DEBIAN/postinst" "$PKG_ROOT/DEBIAN/postrm"
+
+DPKG_DEB_OPTS=()
+if dpkg-deb --help 2>&1 | grep -q -- '--root-owner-group'; then
+    DPKG_DEB_OPTS+=("--root-owner-group")
+fi
 
 mkdir -p "$BUILD_DIR"
 DEB_FILE="$BUILD_DIR/${PACKAGE}_${VERSION}_${DEB_ARCH}.deb"
-dpkg-deb --build "$PKG_ROOT" "$DEB_FILE"
+dpkg-deb "${DPKG_DEB_OPTS[@]}" --build "$PKG_ROOT" "$DEB_FILE"
 
 echo "Debian package created at $DEB_FILE"
