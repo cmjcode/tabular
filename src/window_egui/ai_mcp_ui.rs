@@ -43,7 +43,7 @@ pub struct AiMcpUiState {
     messages: std::collections::HashMap<i64, (bool, String)>,
     confirm_delete: Option<i64>,
     /// Giliran chat bertool yang sedang berjalan.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     turn: Option<crate::ai_tool_chat::ToolChatHandle>,
 }
 
@@ -200,7 +200,7 @@ impl Tabular {
         }
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     fn ai_mcp_start_list(&mut self, id: i64) {
         let Some(server) = self.ai_mcp.servers.iter().find(|s| s.id == id).cloned() else {
             return;
@@ -262,7 +262,7 @@ impl Tabular {
                 "Let the AI Assistant call tools from other MCP servers when it uses an HTTP API provider. \
                  Servers run locally as child processes (stdio). Only tools you allow are offered to the model.",
             );
-            if cfg!(target_os = "ios") {
+            if cfg!(any(target_os = "ios", target_os = "android")) {
                 status(ui, Tone::Muted, "Not available on iOS.");
                 return;
             }
@@ -416,11 +416,11 @@ impl Tabular {
             if let Some(n) = to_update {
                 self.ai_mcp_update(n);
             }
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if let Some(id) = to_list {
                 self.ai_mcp_start_list(id);
             }
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             let _ = to_list;
             if let Some(id) = to_delete {
                 self.ai_mcp.confirm_delete = None;
@@ -559,7 +559,10 @@ pub(crate) fn start_chat_turn(
     ),
     String,
 > {
-    #[cfg(not(target_os = "ios"))]
+    // Di mobile tidak ada klien MCP eksternal, jadi `tabular` tidak dipakai.
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    let _ = &tabular;
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         tabular.ai_mcp.turn = None;
         if cfg.backend == crate::config::AiBackend::Api {
@@ -594,7 +597,7 @@ pub(crate) fn start_chat_turn(
 
 /// Ambil pembaruan kartu tool dari giliran yang berjalan.
 pub(crate) fn poll_tool_updates(tabular: &mut Tabular) {
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let Some(turn) = tabular.ai_mcp.turn.as_ref() else {
             return;
@@ -612,13 +615,13 @@ pub(crate) fn poll_tool_updates(tabular: &mut Tabular) {
             }
         }
     }
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     let _ = tabular;
 }
 
 /// Akhiri giliran bertool (selesai atau dihentikan user).
 pub(crate) fn end_tool_turn(tabular: &mut Tabular) {
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(turn) = tabular.ai_mcp.turn.take() {
         turn.cancel
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -635,13 +638,13 @@ pub(crate) fn end_tool_turn(tabular: &mut Tabular) {
             }
         }
     }
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     let _ = tabular;
 }
 
 /// Kirim keputusan Approve / Deny untuk satu pemanggilan tool.
 pub(crate) fn send_tool_decision(tabular: &mut Tabular, call_id: &str, approve: bool) {
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let Some(turn) = tabular.ai_mcp.turn.as_ref() else {
             return;
@@ -661,7 +664,7 @@ pub(crate) fn send_tool_decision(tabular: &mut Tabular, call_id: &str, approve: 
             };
         }
     }
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     let _ = (tabular, call_id, approve);
 }
 

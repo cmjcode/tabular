@@ -235,21 +235,15 @@ async fn create_redis_manager_for_target(
     // Indeks db masuk ke info koneksi, bukan lewat `SELECT` setelah konek:
     // reconnect otomatis manager tetap berada di db yang benar.
     let db = if database_name.starts_with("db") {
-        Some(parse_redis_db_index(database_name).ok_or_else(|| {
-            format!("Invalid Redis database '{}'", database_name)
-        })?)
+        Some(
+            parse_redis_db_index(database_name)
+                .ok_or_else(|| format!("Invalid Redis database '{}'", database_name))?,
+        )
     } else {
         None
     };
 
-    open_redis_manager(
-        &host,
-        &port,
-        &connection.username,
-        &connection.password,
-        db,
-    )
-    .await
+    open_redis_manager(&host, &port, &connection.username, &connection.password, db).await
 }
 
 async fn retry_on_moved_string_command(
@@ -1660,8 +1654,8 @@ mod tests {
     #[test]
     fn client_carries_db_and_credentials_in_connection_info() {
         // Password berisi karakter yang akan merusak URL bila disisipkan mentah.
-        let client = redis_client("127.0.0.1", "6379", "app", "p@ss:w/rd#1", Some(3))
-            .expect("client");
+        let client =
+            redis_client("127.0.0.1", "6379", "app", "p@ss:w/rd#1", Some(3)).expect("client");
         let settings = client.get_connection_info().redis_settings();
         assert_eq!(settings.db(), 3);
         assert_eq!(settings.username(), Some("app"));

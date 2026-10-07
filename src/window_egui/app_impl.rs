@@ -2724,7 +2724,7 @@ impl Tabular {
                                                 self.show_settings_menu = false;
                                             }
 
-                                            #[cfg(not(target_os = "ios"))]
+                                            #[cfg(not(any(target_os = "ios", target_os = "android")))]
                                             if draw_menu_item(ui, egui_icons::icons::ICON_FOLDER.codepoint, "Open Logs Folder", None) {
                                                 let dir = crate::app_logging::logs_dir();
                                                 let _ = std::fs::create_dir_all(&dir);
@@ -2739,7 +2739,7 @@ impl Tabular {
                                                 self.show_settings_menu = false;
                                             }
 
-                                            #[cfg(not(target_os = "ios"))]
+                                            #[cfg(not(any(target_os = "ios", target_os = "android")))]
                                             if draw_menu_item(ui, egui_icons::icons::ICON_SECURITY.codepoint, "Agent Access (MCP)", None) {
                                                 self.open_agent_access();
                                                 self.show_settings_menu = false;
@@ -4201,8 +4201,10 @@ impl Tabular {
         let sender = self.drop_collection_channel.0.clone();
         let ctx = ctx.clone();
         let rt = self.get_runtime();
-        self.toasts
-            .info(format!("Dropping collection '{}.{}'...", database, collection));
+        self.toasts.info(format!(
+            "Dropping collection '{}.{}'...",
+            database, collection
+        ));
         rt.spawn(async move {
             let result = match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
                 Ok(models::enums::DatabasePool::MongoDB(client)) => {
@@ -5700,7 +5702,7 @@ impl App for Tabular {
         crate::window_egui::git_jobs::poll(self, ctx);
 
         self.render_query_insights(ctx);
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         self.render_agent_access(ctx);
         super::ai_fix::render_ai_fix_window(self, ctx);
 

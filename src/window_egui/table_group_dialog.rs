@@ -1,8 +1,8 @@
 //! Modal dialog untuk konfigurasi pola format komentar tabel (Group & Sub Group).
 
-use eframe::egui;
 use crate::table_group::{self, TableGroupConfig};
-use crate::window_egui::{style, Tabular};
+use crate::window_egui::{Tabular, style};
+use eframe::egui;
 
 /// State modal dialog konfigurasi table grouping.
 #[derive(Clone, Debug)]
@@ -28,15 +28,17 @@ impl Default for TableGroupDialogState {
     }
 }
 
-
-
 /// Render modal dialog konfigurasi pola komentar tabel.
 pub fn render_table_group_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     if !tabular.table_group_dialog.show {
         return;
     }
 
-    style::render_modal_backdrop(ctx, "table_group_config_modal", tabular.table_group_dialog.show);
+    style::render_modal_backdrop(
+        ctx,
+        "table_group_config_modal",
+        tabular.table_group_dialog.show,
+    );
 
     let mut close = false;
     let mut save_and_apply = false;
@@ -230,7 +232,9 @@ pub fn render_table_group_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 }
             }
             _ => {
-                log::warn!("[TABLE_GROUP] Save skipped: connection, cache pool or runtime unavailable");
+                log::warn!(
+                    "[TABLE_GROUP] Save skipped: connection, cache pool or runtime unavailable"
+                );
                 tabular
                     .toasts
                     .error("Cannot save table grouping: no connection selected");

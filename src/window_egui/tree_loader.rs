@@ -1311,7 +1311,12 @@ impl super::Tabular {
                 {
                     node.is_loaded = false;
                     node.children.clear();
-                    tabular.load_folder_content(conn_id, node, models::enums::NodeType::TablesFolder, false);
+                    tabular.load_folder_content(
+                        conn_id,
+                        node,
+                        models::enums::NodeType::TablesFolder,
+                        false,
+                    );
                     return true;
                 }
                 if find_and_reload(tabular, &mut node.children, conn_id, database_name) {
@@ -1413,8 +1418,12 @@ impl super::Tabular {
         // Khusus folder tabel: muat beserta komentar database untuk mendukung pengelompokan
         if folder_type == models::enums::NodeType::TablesFolder {
             if !force_live_fetch
-                && let Some(cached_items) =
-                    cache_data::get_tables_with_comments_from_cache(self, connection_id, database_name, table_type)
+                && let Some(cached_items) = cache_data::get_tables_with_comments_from_cache(
+                    self,
+                    connection_id,
+                    database_name,
+                    table_type,
+                )
                 && !cached_items.is_empty()
             {
                 debug!(
@@ -1423,7 +1432,8 @@ impl super::Tabular {
                     database_name,
                     cached_items.len()
                 );
-                node.children = self.build_tables_folder_children(connection_id, database_name, &cached_items);
+                node.children =
+                    self.build_tables_folder_children(connection_id, database_name, &cached_items);
                 return;
             }
 
@@ -1443,8 +1453,14 @@ impl super::Tabular {
                     .iter()
                     .map(|(name, comment)| (name.clone(), table_type.to_string(), comment.clone()))
                     .collect();
-                cache_data::save_tables_with_comments_to_cache(self, connection_id, database_name, &table_data);
-                node.children = self.build_tables_folder_children(connection_id, database_name, &real_items);
+                cache_data::save_tables_with_comments_to_cache(
+                    self,
+                    connection_id,
+                    database_name,
+                    &table_data,
+                );
+                node.children =
+                    self.build_tables_folder_children(connection_id, database_name, &real_items);
                 return;
             }
         }
@@ -1626,8 +1642,12 @@ impl super::Tabular {
         // Khusus folder tabel: muat beserta komentar database untuk mendukung pengelompokan
         if folder_type == models::enums::NodeType::TablesFolder {
             if !force_live_fetch
-                && let Some(cached_items) =
-                    cache_data::get_tables_with_comments_from_cache(self, connection_id, database_name, table_type)
+                && let Some(cached_items) = cache_data::get_tables_with_comments_from_cache(
+                    self,
+                    connection_id,
+                    database_name,
+                    table_type,
+                )
                 && !cached_items.is_empty()
             {
                 debug!(
@@ -1636,16 +1656,19 @@ impl super::Tabular {
                     database_name,
                     cached_items.len()
                 );
-                node.children = self.build_tables_folder_children(connection_id, database_name, &cached_items);
+                node.children =
+                    self.build_tables_folder_children(connection_id, database_name, &cached_items);
                 return;
             }
 
-            if let Some(real_items) = crate::driver_postgres::fetch_tables_with_comments_from_postgres_connection(
-                self,
-                connection_id,
-                database_name,
-                table_type,
-            ) {
+            if let Some(real_items) =
+                crate::driver_postgres::fetch_tables_with_comments_from_postgres_connection(
+                    self,
+                    connection_id,
+                    database_name,
+                    table_type,
+                )
+            {
                 debug!(
                     "[TREE-LOADER] PG load_folder: LIVE FETCH (with comments) conn={} db={:?} count={}",
                     connection_id,
@@ -1656,8 +1679,14 @@ impl super::Tabular {
                     .iter()
                     .map(|(name, comment)| (name.clone(), table_type.to_string(), comment.clone()))
                     .collect();
-                cache_data::save_tables_with_comments_to_cache(self, connection_id, database_name, &table_data);
-                node.children = self.build_tables_folder_children(connection_id, database_name, &real_items);
+                cache_data::save_tables_with_comments_to_cache(
+                    self,
+                    connection_id,
+                    database_name,
+                    &table_data,
+                );
+                node.children =
+                    self.build_tables_folder_children(connection_id, database_name, &real_items);
                 return;
             }
         }
@@ -1768,11 +1797,16 @@ impl super::Tabular {
         // Khusus folder tabel: muat dari cache dengan build_tables_folder_children
         if folder_type == models::enums::NodeType::TablesFolder {
             if !force_live_fetch
-                && let Some(cached_items) =
-                    cache_data::get_tables_with_comments_from_cache(self, connection_id, "main", table_type)
+                && let Some(cached_items) = cache_data::get_tables_with_comments_from_cache(
+                    self,
+                    connection_id,
+                    "main",
+                    table_type,
+                )
                 && !cached_items.is_empty()
             {
-                node.children = self.build_tables_folder_children(connection_id, "main", &cached_items);
+                node.children =
+                    self.build_tables_folder_children(connection_id, "main", &cached_items);
                 return;
             }
         }
@@ -2493,10 +2527,8 @@ impl super::Tabular {
                     table_name,
                     e
                 );
-                self.toasts.error(format!(
-                    "Could not read indexes of '{}': {}",
-                    table_name, e
-                ));
+                self.toasts
+                    .error(format!("Could not read indexes of '{}': {}", table_name, e));
                 Vec::new()
             }
         }
@@ -2807,7 +2839,9 @@ impl super::Tabular {
             }
             models::enums::DatabaseType::Redis => Ok(Vec::new()),
             models::enums::DatabaseType::MongoDB => Ok(vec!["_id".to_string()]),
-            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => Ok(vec![]),
+            models::enums::DatabaseType::ApiHttp | models::enums::DatabaseType::Plugin(_) => {
+                Ok(vec![])
+            }
         }
     }
 

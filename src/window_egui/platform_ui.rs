@@ -436,7 +436,7 @@ impl Tabular {
     // ── Keluar aplikasi ─────────────────────────────────────────────────────
 
     pub(crate) fn platform_on_exit(&mut self) {
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         crate::single_instance::shutdown_global();
         #[cfg(target_os = "macos")]
         crate::platform_macos::set_handoff_activity(None);

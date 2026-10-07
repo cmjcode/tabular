@@ -427,6 +427,7 @@ features = [
     "NSOperation",
     "NSString",
     "NSProcessInfo",
+    "NSRange",
     "NSThread",
     "NSSet",
 ]
@@ -434,6 +435,7 @@ features = [
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
 version = "0.2.2"
 features = [
+    "NSText",
     "UIApplication",
     "UIDevice",
     "UIEvent",

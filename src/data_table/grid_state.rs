@@ -1253,7 +1253,12 @@ pub(crate) fn fk_by_column(
             m.table_name.hash(&mut hasher);
         }
     }
-    let key: FkCacheKey = (cid, database.to_string(), table.to_string(), hasher.finish());
+    let key: FkCacheKey = (
+        cid,
+        database.to_string(),
+        table.to_string(),
+        hasher.finish(),
+    );
     if let Some(entry) = &t.grid_ext.fk_cache
         && entry.key == key
         && entry.checked_at.elapsed() < FK_CACHE_TTL
@@ -1265,7 +1270,10 @@ pub(crate) fn fk_by_column(
     let meta = t.current_column_metadata.as_deref();
     let map = Arc::new(map_foreign_keys_to_columns(
         headers,
-        |i| meta.and_then(|m| m.get(i)).and_then(|c| c.table_name.as_deref()),
+        |i| {
+            meta.and_then(|m| m.get(i))
+                .and_then(|c| c.table_name.as_deref())
+        },
         table,
         &fks,
     ));

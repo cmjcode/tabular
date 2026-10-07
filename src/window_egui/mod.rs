@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use crate::{connection, models, query_tools};
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod agent_access_ui;
 mod ai_cli_settings;
 pub mod ai_fix;
@@ -616,7 +616,7 @@ pub struct Tabular {
     /// Jendela Query Insights dan popup riwayat load tabel (I1, I2).
     pub query_stats_view: query_stats_ui::InsightsState,
     /// Akses agent MCP per koneksi, klien, log aktivitas, dan dialog persetujuan (K1, K2, K4).
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     pub agent_access: agent_access_ui::AgentAccessState,
     /// Buka kembali tab dari sesi sebelumnya saat startup.
     pub restore_session: bool,

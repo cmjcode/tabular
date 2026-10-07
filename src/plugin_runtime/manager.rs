@@ -302,7 +302,7 @@ impl PluginManager {
     /// Store Review Guideline 2.5.2 prohibits. Built-in plugins are compiled
     /// into the binary and keep working.
     pub fn load_plugins_from_disk(&mut self) {
-        if cfg!(target_os = "ios") {
+        if cfg!(any(target_os = "ios", target_os = "android")) {
             return;
         }
 

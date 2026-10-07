@@ -307,7 +307,7 @@ pub fn folder_menu_items(ui: &mut egui::Ui, folder: &HttpFolder) {
         );
         ui.close();
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(path) = folder
         .local_repo_path()
         .map(|p| crate::repo_scan::expand_home(&p))
@@ -1866,7 +1866,7 @@ fn endpoints_results(
         win.key.is_some(),
         egui::Checkbox::new(&mut win.link_diagrams, label),
     );
-    if !cfg!(target_os = "ios") {
+    if !cfg!(any(target_os = "ios", target_os = "android")) {
         ui.indent("http_repo_also_flows", |ui| {
             ui.add_enabled(
                 win.key.is_some() && win.link_diagrams,

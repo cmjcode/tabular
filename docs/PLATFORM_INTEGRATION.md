@@ -170,3 +170,13 @@ Right-click a connection and choose **Environment** to set Production, Staging, 
 When the window is narrower than 700 pt (Slide Over, or Split View at 1/3 or 1/2), Tabular hides the sidebar and the AI panel. They come back when the window is wide enough again.
 
 The sidebar and the Preferences dialog are limited to the window width. You can still open the sidebar by hand while the window is narrow.
+
+## iPad files and keyboard
+
+- **Open / Import** uses the system document picker (Files, iCloud Drive, external drives). Picked files are copied into the app sandbox, so the original is never modified. Folder pickers (for example a Git repository or a data directory) keep access to the chosen folder for the rest of the session.
+- **Save / Export** does not show a picker. The file is written to **Files › On My iPad › Tabular** under the name shown in the dialog; an existing name gets a ` (2)`, ` (3)` suffix. From there you can share, move or AirDrop it with the Files app.
+- The on-screen keyboard supports autocorrect, predictive text, dictation and CJK composition in the SQL editor. The keyboard avoids the caret, so the line you are typing stays visible.
+
+## Accessibility
+
+Tabular renders its own UI (egui). On macOS, Windows and Linux the UI tree is exposed to screen readers through AccessKit. **iPadOS and Android are not covered yet**: VoiceOver and TalkBack do not see individual controls, only the window. AccessKit has no UIKit/Android backend at the time of writing; this will be enabled as soon as it exists upstream. Dynamic Type is approximated by the **Touch / tablet** UI mode in Preferences, which enlarges fonts and hit targets.

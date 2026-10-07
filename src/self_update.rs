@@ -443,7 +443,7 @@ fn get_platform_info() -> PlatformInfo {
 /// the App Store is the only update channel, so every updater surface — the
 /// "Check for Updates" menu item, the Update preferences tab, the startup
 /// auto-check and the update dialog — is hidden behind this flag.
-pub const SELF_UPDATE_SUPPORTED: bool = !cfg!(target_os = "ios");
+pub const SELF_UPDATE_SUPPORTED: bool = !cfg!(any(target_os = "ios", target_os = "android"));
 
 pub fn open_url(url: &str) {
     // Platform matrix lives in `crate::url_opener` so iOS cannot be forgotten

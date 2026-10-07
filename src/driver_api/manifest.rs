@@ -205,7 +205,7 @@ fn build_driver(
             ))
         }
         DriverKind::Sidecar => {
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             {
                 let driver = super::sidecar::SidecarDriver::new(
                     entry_path.to_path_buf(),
@@ -219,7 +219,7 @@ fn build_driver(
                     },
                 ))
             }
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             {
                 Err(DriverError::Unsupported(
                     "sidecar drivers are not available on iOS".into(),
@@ -288,7 +288,7 @@ pub fn load_from(dir: &Path) -> Vec<InstalledDriver> {
 
 /// Muat semua driver terpasang dari folder standar.
 pub fn load_installed() -> Vec<InstalledDriver> {
-    if cfg!(target_os = "ios") {
+    if cfg!(any(target_os = "ios", target_os = "android")) {
         return Vec::new();
     }
     let found = load_from(&drivers_dir());

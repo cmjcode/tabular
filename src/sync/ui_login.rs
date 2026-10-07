@@ -1430,7 +1430,7 @@ fn render_account_login_view(tabular: &mut Tabular, ui: &mut egui::Ui) {
             // polling, so this escape hatch is never needed there — and asking
             // an App Store reviewer to paste raw token JSON reads as an
             // unfinished developer screen.
-            if !cfg!(target_os = "ios") {
+            if !cfg!(any(target_os = "ios", target_os = "android")) {
                 ui.collapsing("Enter token manually (fallback)", |ui| {
                     ui.label("If browser redirect does not complete automatically, paste the token JSON:");
                     ui.add_space(4.0);

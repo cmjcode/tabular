@@ -47,7 +47,7 @@ pub fn render_drivers_tab(ui: &mut egui::Ui, state: &mut PluginModalState) {
                 refresh(state);
                 state.status_message = Some("Driver list reloaded.".into());
             }
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if ui
                 .button("Install from Folder…")
                 .on_hover_text("Select a folder that contains manifest.json")

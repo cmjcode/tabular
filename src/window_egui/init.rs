@@ -548,7 +548,7 @@ impl super::Tabular {
             window_focused: true,
             query_timings_by_tab: std::collections::HashMap::new(),
             query_stats_view: Default::default(),
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             agent_access: Default::default(),
             restore_session: true,
             show_system_objects: false,
@@ -1741,7 +1741,8 @@ impl super::Tabular {
 }
 
 /// Pesan untuk UI bila task latar berhenti karena panik.
-const TASK_PANIC_MESSAGE: &str = "Background task failed unexpectedly (internal error). Please try again.";
+const TASK_PANIC_MESSAGE: &str =
+    "Background task failed unexpectedly (internal error). Please try again.";
 
 /// Ambil teks dari payload panik.
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {

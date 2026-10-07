@@ -115,7 +115,8 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
     let tables_and_comments = timed(async {
         match &pool {
             DatabasePool::MySQL(p) => {
-                let list = crate::driver_mysql::list_mysql_tables_with_comments(p, db, "table").await?;
+                let list =
+                    crate::driver_mysql::list_mysql_tables_with_comments(p, db, "table").await?;
                 let mut names = Vec::new();
                 let mut comments = HashMap::new();
                 for (t, c) in list {
@@ -127,7 +128,9 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
                 Some((names, comments))
             }
             DatabasePool::PostgreSQL(_) => {
-                let list = crate::driver_postgres::list_postgres_tables_with_comments(conn, db, "table").await?;
+                let list =
+                    crate::driver_postgres::list_postgres_tables_with_comments(conn, db, "table")
+                        .await?;
                 let mut names = Vec::new();
                 let mut comments = HashMap::new();
                 for (t, c) in list {
@@ -163,7 +166,8 @@ pub async fn fetch_schema_snapshot(req: SchemaFetchRequest) -> Result<SchemaSnap
         }
     };
 
-    let (foreign_keys, columns, tables_res, shared) = tokio::join!(fks, columns, tables_and_comments, shared);
+    let (foreign_keys, columns, tables_res, shared) =
+        tokio::join!(fks, columns, tables_and_comments, shared);
     let (tables, table_comments) = match tables_res {
         Some((t, c)) => (Some(t), Some(c)),
         None => (None, None),
@@ -281,9 +285,16 @@ pub fn merge_schema(
             let raw_c = comments.get(table).map(|s| s.as_str());
             let parsed = crate::table_group::parse_table_comment(pattern, raw_c);
             if parsed.group != "Ungrouped" {
-                let main_slug: String = parsed.group
+                let main_slug: String = parsed
+                    .group
                     .chars()
-                    .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                    .map(|c| {
+                        if c.is_alphanumeric() {
+                            c.to_ascii_lowercase()
+                        } else {
+                            '_'
+                        }
+                    })
                     .collect();
                 let main_group_id = format!("group_{main_slug}");
                 let main_title = parsed.group.clone();
@@ -292,7 +303,13 @@ pub fn merge_schema(
                     let sub_combined = format!("{}_{}", parsed.group, sub);
                     let sub_slug: String = sub_combined
                         .chars()
-                        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                        .map(|c| {
+                            if c.is_alphanumeric() {
+                                c.to_ascii_lowercase()
+                            } else {
+                                '_'
+                            }
+                        })
                         .collect();
                     let sub_group_id = format!("group_{sub_slug}");
                     let sub_title = format!("{} - {}", parsed.group, sub);
@@ -306,10 +323,8 @@ pub fn merge_schema(
                     );
                 } else {
                     comment_group_entries.push((main_group_id.clone(), main_title));
-                    table_to_group.insert(
-                        table.clone(),
-                        (main_group_id.clone(), vec![main_group_id]),
-                    );
+                    table_to_group
+                        .insert(table.clone(), (main_group_id.clone(), vec![main_group_id]));
                 }
             }
         }
@@ -405,13 +420,14 @@ pub fn merge_schema(
         let hash: u64 = table.bytes().fold(5381, |acc, c| {
             acc.wrapping_shl(5).wrapping_add(acc).wrapping_add(c as u64)
         });
-        let (target_group, all_groups, has_group) = if let Some((primary, all)) = table_to_group.get(table) {
-            (primary.clone(), all.clone(), !all.is_empty())
-        } else {
-            let tg = format!("group_{}", table_prefix(table));
-            let hg = existing_group_ids.contains(&tg);
-            (tg.clone(), vec![tg], hg)
-        };
+        let (target_group, all_groups, has_group) =
+            if let Some((primary, all)) = table_to_group.get(table) {
+                (primary.clone(), all.clone(), !all.is_empty())
+            } else {
+                let tg = format!("group_{}", table_prefix(table));
+                let hg = existing_group_ids.contains(&tg);
+                (tg.clone(), vec![tg], hg)
+            };
         state.nodes.push(DiagramNode {
             id: table.clone(),
             title: table.clone(),
@@ -420,11 +436,7 @@ pub fn merge_schema(
                 ((hash / 800) % 600) as f32 + 100.0,
             ),
             size: eframe::egui::vec2(150.0, 100.0), // Default, will be auto-sized
-            group_ids: if has_group {
-                all_groups
-            } else {
-                Vec::new()
-            },
+            group_ids: if has_group { all_groups } else { Vec::new() },
             group_id: has_group.then_some(target_group),
             database_name: Some(db_name.to_string()),
             connection_id: Some(conn_id),
@@ -555,14 +567,25 @@ mod tests {
     fn merge_with_comment_groups_creates_groups() {
         let mut state = DiagramState::default();
         let mut comments = HashMap::new();
-        comments.insert("users".to_string(), "[AUTH]-[USER]-[Tabel akun]".to_string());
-        comments.insert("roles".to_string(), "[AUTH]-[ROLE]-[Tabel peran]".to_string());
+        comments.insert(
+            "users".to_string(),
+            "[AUTH]-[USER]-[Tabel akun]".to_string(),
+        );
+        comments.insert(
+            "roles".to_string(),
+            "[AUTH]-[ROLE]-[Tabel peran]".to_string(),
+        );
         comments.insert("payroll".to_string(), "[HR]-[PAYROLL]-[Gaji]".to_string());
 
         let snap = SchemaSnapshot {
             foreign_keys: Some(vec![]),
             columns: None,
-            tables: Some(vec!["users".into(), "roles".into(), "payroll".into(), "misc".into()]),
+            tables: Some(vec![
+                "users".into(),
+                "roles".into(),
+                "payroll".into(),
+                "misc".into(),
+            ]),
             table_comments: Some(comments),
             group_config: Some(crate::table_group::TableGroupConfig {
                 pattern: "[GROUP]-[SUB GROUP]-[Comment Table]".to_string(),
@@ -590,8 +613,14 @@ mod tests {
     #[test]
     fn merge_skips_deleted_groups() {
         let mut comments = HashMap::new();
-        comments.insert("users".to_string(), "[AUTH]-[USER]-[Tabel akun]".to_string());
-        comments.insert("roles".to_string(), "[AUTH]-[ROLE]-[Tabel peran]".to_string());
+        comments.insert(
+            "users".to_string(),
+            "[AUTH]-[USER]-[Tabel akun]".to_string(),
+        );
+        comments.insert(
+            "roles".to_string(),
+            "[AUTH]-[ROLE]-[Tabel peran]".to_string(),
+        );
         comments.insert("payroll".to_string(), "[HR]-[PAYROLL]-[Gaji]".to_string());
         let snap = SchemaSnapshot {
             foreign_keys: Some(vec![]),

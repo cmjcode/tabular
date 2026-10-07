@@ -122,6 +122,11 @@ fn open_url_impl(url: &str) -> Result<(), String> {
     target_os = "windows",
     target_os = "ios"
 )))]
-fn open_url_impl(_url: &str) -> Result<(), String> {
+fn open_url_impl(url: &str) -> Result<(), String> {
+    // Android: belum ada jembatan ke Intent.ACTION_VIEW; catat saja agar tidak panic.
+    #[cfg(target_os = "android")]
+    log::warn!("[ANDROID] open_url not supported yet; url: {url}");
+    #[cfg(not(target_os = "android"))]
+    let _ = url;
     Err("Cannot open browser on this platform".to_string())
 }

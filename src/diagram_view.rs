@@ -556,7 +556,9 @@ fn densest_view_center(nodes: &[DiagramNode], visible: egui::Vec2) -> Option<egu
         let (count, sum) = centers
             .iter()
             .filter(|c| window.contains(**c))
-            .fold((0usize, egui::Vec2::ZERO), |(n, sum), c| (n + 1, sum + c.to_vec2()));
+            .fold((0usize, egui::Vec2::ZERO), |(n, sum), c| {
+                (n + 1, sum + c.to_vec2())
+            });
         if best.is_none_or(|(n, _)| count > n) {
             // Pusatkan ke rata-rata tabel di jendela, bukan ke tabel kandidat.
             best = Some((count, (sum / count.max(1) as f32).to_pos2()));
@@ -634,7 +636,12 @@ pub fn find_table_id(state: &DiagramState, name: &str) -> Option<String> {
 /// Id tabel anggota group `group_id`.
 /// ID group ini beserta sub group-nya (group berjudul `"<judul> - <sub>"`).
 pub fn group_with_sub_ids(state: &DiagramState, group_id: &str) -> Vec<String> {
-    let Some(title) = state.groups.iter().find(|g| g.id == group_id).map(|g| &g.title) else {
+    let Some(title) = state
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .map(|g| &g.title)
+    else {
         return Vec::new();
     };
     let sub_prefix = format!("{title} - ");
@@ -1781,7 +1788,7 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
                         ui.close();
                         group_repo_request = Some(group_id.clone());
                     }
-                    if !cfg!(target_os = "ios") && folder.is_some() {
+                    if !cfg!(any(target_os = "ios", target_os = "android")) && folder.is_some() {
                         let exists = folder.as_ref().is_some_and(|p| p.is_dir());
                         let open = ui
                             .add_enabled(
@@ -2621,7 +2628,11 @@ pub fn render_diagram(ui: &mut egui::Ui, state: &mut DiagramState) -> Option<Dia
             }
         }
 
-        let comment_str = state.table_comments.get(&node.id).map(|s| s.as_str()).unwrap_or("");
+        let comment_str = state
+            .table_comments
+            .get(&node.id)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let comment_line = if !comment_str.is_empty() {
             format!("\nComment: {comment_str}")
         } else {
@@ -6370,13 +6381,18 @@ fn render_relation_suggestions(
 
     // Cache saran awal (sebelum user mengetik kolom pencarian baru). Disimpan dalam
     // Arc: `get_temp` meng-clone nilainya setiap frame, dan daftar ini bisa sangat besar.
-    type BaseSuggestions = std::sync::Arc<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>;
+    type BaseSuggestions =
+        std::sync::Arc<Vec<(crate::diagram_relations::RelationSuggestion, bool)>>;
     let base_id = egui::Id::new("rel_suggest_base");
     let showing_base = state.relation_column_search_query.is_empty() && !state.relation_pair_mode;
 
     // Hasil pencarian background: selalu jadi cache awal, dan langsung ditampilkan
     // kecuali user sudah beralih ke pencarian lain selagi menunggu.
-    if let Some(found) = state.relation_suggest_job.as_ref().and_then(|job| job.poll()) {
+    if let Some(found) = state
+        .relation_suggest_job
+        .as_ref()
+        .and_then(|job| job.poll())
+    {
         state.relation_suggest_job = None;
         let found: Vec<_> = found.into_iter().map(|s| (s, true)).collect();
         if showing_base {

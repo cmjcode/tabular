@@ -72,7 +72,7 @@ fn source_items(ui: &mut egui::Ui, node: &TreeNode, kind: RoutineKind) {
             },
         );
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if ui.button("💾 Export Source to File…").clicked() {
         push(
             ui,

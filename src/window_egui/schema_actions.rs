@@ -904,7 +904,7 @@ impl Tabular {
         }
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     fn export_source_to_file(&mut self, name: &str, source: &str) {
         let file_name: String = name
             .chars()
@@ -932,7 +932,7 @@ impl Tabular {
         }
     }
 
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     fn export_source_to_file(&mut self, _name: &str, _source: &str) {
         self.toasts
             .warning("Saving files is not available on this device".to_string());

@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "tabular"
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 # Cargo.toml
 [package.metadata.bundle]
@@ -21,7 +21,18 @@ resources = ["apple/macos/Tabular.sdef"]
 osx_info_plist_exts = ["apple/macos/Info-bundle-extra.plist"]
 
 [dependencies]
-eframe = "0.36"
+# Fitur default eframe ditulis eksplisit tanpa `accesskit`: di Android dengan
+# `android-native-activity` accesskit menolak kompilasi (hanya untuk GameActivity),
+# dan fitur Cargo disatukan lintas target. `accesskit` dinyalakan kembali untuk
+# semua target non-Android di blok target di bawah.
+eframe = { version = "0.36", default-features = false, features = [
+       "default_fonts",
+       "links",
+       "wayland",
+       "web_screen_reader",
+       "wgpu",
+       "x11",
+] }
 egui_icons = "0.0.1"
 image = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -179,7 +190,7 @@ objc2-foundation = { version = "0.3", features = [
        "NSUserActivity",
 ] }
 
-[target.'cfg(not(target_os = "ios"))'.dependencies]
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 rfd = "0.17"
 # Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
 # Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
@@ -201,14 +212,51 @@ keyring = "4"
 # Pinned to the versions winit already pulls in (see patches/winit/Cargo.toml) so
 # the iOS build does not end up compiling two objc2 trees.
 objc2 = "0.5.2"
+# Fitur tambahan (NSRunLoop/NSDate/NSThread/dispatch, UIDocumentPicker, UIAlert,
+# UTType) dipakai src/platform_ios_dialogs.rs: pengganti `rfd` di iPadOS.
 objc2-foundation = { version = "0.2.2", features = [
        "NSString",
        "NSURL",
        "NSDictionary",
+       "NSArray",
+       "NSEnumerator",
+       "NSDate",
+       "NSRunLoop",
+       "NSThread",
+       "NSObject",
+       "dispatch",
 ] }
 # `block2` gates -[UIApplication openURL:options:completionHandler:]; without it
 # only the deprecated openURL: is generated.
-objc2-ui-kit = { version = "0.2.2", features = ["UIApplication", "block2"] }
+objc2-ui-kit = { version = "0.2.2", features = [
+       "UIApplication",
+       "block2",
+       "UIResponder",
+       "UIView",
+       "UIViewController",
+       "UIWindow",
+       "UIDocumentPickerViewController",
+       "UIAlertController",
+       "objc2-uniform-type-identifiers",
+] }
+objc2-uniform-type-identifiers = { version = "0.2.2", features = ["UTType", "UTCoreTypes"] }
+
+# Android: eframe memakai winit backend NativeActivity (`android_main` di src/lib.rs),
+# log ke logcat lewat android_logger. Tidak ada `rfd`, `keyring`, `single_instance`
+# maupun CLI stdio di sini — lihat gate `not(any(ios, android))` di src/lib.rs.
+# Rahasia memakai fallback file terenkripsi (src/secrets.rs). Lihat android/README.md.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["accesskit"] }
+# Fitur default eframe juga menyalakan `winit/default` (rwh_06, x11, wayland,
+# wayland-dlopen, wayland-csd-adwaita); dinyatakan langsung agar desktop tidak berubah.
+winit = { version = "0.30", features = ["default"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["android-native-activity"] }
+# Dibutuhkan untuk tipe `AndroidApp` di tanda tangan `android_main`; eframe
+# tidak mengekspor ulang winit. Tanpa fitur default agar x11/wayland tidak ikut.
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+android_logger = "0.15"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = "4"

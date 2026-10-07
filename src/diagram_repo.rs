@@ -202,7 +202,11 @@ pub(crate) fn render_repo_fields(
             );
         });
         ui.horizontal(|ui| {
-            let browse_w = if cfg!(target_os = "ios") { 0.0 } else { 86.0 };
+            let browse_w = if cfg!(any(target_os = "ios", target_os = "android")) {
+                0.0
+            } else {
+                86.0
+            };
             let edit = style::render_text_field(
                 ui,
                 egui::TextEdit::singleline(&mut draft.path).hint_text("/path/to/project"),
@@ -212,7 +216,7 @@ pub(crate) fn render_repo_fields(
             if edit.changed() {
                 autofill_url(draft);
             }
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if ui
                 .add(egui::Button::new("Browse…").min_size(egui::vec2(0.0, 28.0)))
                 .clicked()
@@ -267,7 +271,7 @@ pub(crate) fn render_repo_fields(
             }
 
             let can_clone = !folder_exists
-                && !cfg!(target_os = "ios")
+                && !cfg!(any(target_os = "ios", target_os = "android"))
                 && matches!(url_parsed, Ok(crate::repo_scan::RepoSource::Remote(_)));
             if clone.cloning {
                 ui.horizontal(|ui| {

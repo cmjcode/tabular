@@ -50,7 +50,7 @@ pub fn generate_menu_item(
     regenerate: bool,
     disabled_tip: &str,
 ) -> Option<GenMenuPick> {
-    if cfg!(target_os = "ios") {
+    if cfg!(any(target_os = "ios", target_os = "android")) {
         return None;
     }
     if running {

@@ -8,8 +8,7 @@ Placeholders written as `<FILL IN>` must be filled before submitting.
 
 - **App name:** Tabular
 - **Bundle ID:** `id.tabular.database` (from `Tabular.xcodeproj`, scheme
-  `Tabular-iOS` — the project `apple/scripts/publish_xcode.sh` archives. The
-  separate `ios/Xcode/TabulariOS/` project is not what ships.)
+  `Tabular-iOS` — the project `apple/scripts/publish_xcode.sh` archives.)
 - **Category:** Developer Tools
 - **In-App Purchases:** none — the app has no StoreKit code and no paid tier
 - **Ads / tracking / analytics SDKs:** none
@@ -260,3 +259,17 @@ with no UI, or the sign-in screen.
       number even when the marketing version is unchanged
       (`MARKETING_VERSION` is already 0.16.3, matching the crate)
 - [ ] Demo credentials in App Store Connect are current
+- [ ] Import (Files picker) and Export (lands in Files › On My iPad › Tabular)
+      verified on a physical iPad
+- [ ] On-screen keyboard: autocorrect bar shows in the SQL editor and the caret
+      stays above the keyboard (winit `UITextInput` patch, see
+      `patches/winit/TABULAR_PATCHES.md`)
+
+## Accessibility (Guideline 1.1 / 2.5.1 information requests)
+
+If App Review asks why VoiceOver does not read individual controls: the app
+draws its own UI with the egui toolkit. Screen-reader support comes from
+AccessKit, which currently has backends for macOS, Windows and Linux but not
+yet for UIKit. Large text and hit targets are provided by the **Touch /
+tablet** UI mode (on by default on iPad). Full VoiceOver support will ship
+when the AccessKit UIKit backend lands upstream; do not promise a date.

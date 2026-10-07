@@ -69,7 +69,7 @@ pub fn windows_script(title: &str, body: &str) -> String {
 }
 
 /// Tampilkan notifikasi OS secara asinkron (tidak memblokir UI).
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn send(title: &str, body: &str) {
     let title = title.to_string();
     let body = body.to_string();
@@ -85,7 +85,7 @@ pub fn send(title: &str, body: &str) {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 pub fn send(_title: &str, _body: &str) {}
 
 #[cfg(target_os = "macos")]
@@ -97,7 +97,10 @@ fn send_blocking(title: &str, body: &str) -> std::io::Result<()> {
     exit_ok(status)
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
 fn send_blocking(title: &str, body: &str) -> std::io::Result<()> {
     let status = std::process::Command::new("notify-send")
         .arg("--app-name=Tabular")
@@ -119,7 +122,7 @@ fn send_blocking(title: &str, body: &str) -> std::io::Result<()> {
     exit_ok(status)
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 fn exit_ok(status: std::process::ExitStatus) -> std::io::Result<()> {
     if status.success() {
         Ok(())

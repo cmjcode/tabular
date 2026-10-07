@@ -1229,7 +1229,7 @@ mod tests {
         assert!(writable.contains("save_note(title, content)"));
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     #[test]
     fn system_prompt_describes_current_mcp_tools_and_access() {
         let off = system_prompt_for(&backend(false, false, false), "");

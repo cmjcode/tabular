@@ -14,7 +14,7 @@ pub mod ai_assistant;
 pub mod ai_chat_history;
 pub mod ai_query_fix;
 pub mod ai_tool_calling;
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod ai_tool_chat;
 pub mod app_logging;
 pub mod auto_updater;
@@ -95,7 +95,7 @@ pub mod modules;
 pub mod obsidian;
 pub mod os_notify;
 pub mod outside_mcp;
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod outside_mcp_client;
 #[cfg(target_os = "ios")]
 pub mod platform_ios;
@@ -128,7 +128,7 @@ pub mod sidebar_collection;
 pub mod sidebar_database;
 pub mod sidebar_history;
 pub mod sidebar_query;
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod single_instance;
 pub mod spreadsheet;
 pub mod ssh_tunnel;
@@ -143,10 +143,21 @@ pub mod query_ast;
 pub mod syntax_ts;
 pub mod window_egui; // re-enabled syntax highlighting helpers
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use ::rfd;
 
 #[cfg(target_os = "ios")]
+pub mod platform_ios_dialogs;
+
+/// Di iOS `rfd` tidak tersedia; API yang sama disediakan oleh
+/// `UIDocumentPickerViewController` (lihat `platform_ios_dialogs`).
+#[cfg(target_os = "ios")]
+pub mod rfd {
+    pub use crate::platform_ios_dialogs::{FileDialog, MessageDialog};
+}
+
+/// Android belum punya picker native (SAF); semua dialog mengembalikan `None`.
+#[cfg(target_os = "android")]
 pub mod rfd {
     use std::path::PathBuf;
 
@@ -234,7 +245,7 @@ pub fn log_startup_step(step: &str) {
 pub fn run() -> Result<(), eframe::Error> {
     // Mode CLI (`tabular mcp`, `--help`, `--version`) tidak membuka jendela.
     // Argumen lain (mis. `-psn_*` dari Finder) tetap jatuh ke GUI.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     if let Some(result) = agent::cli::try_run_from_args() {
         return match result {
             Ok(()) => Ok(()),
@@ -268,9 +279,17 @@ pub fn run() -> Result<(), eframe::Error> {
     // menerima URL dari proses `tabular open` / klik link berikutnya.
     #[cfg(target_os = "macos")]
     platform_macos::install_apple_event_handlers();
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     single_instance::start_global();
 
+    let options = build_native_options();
+    log_startup_step("starting eframe::run_native");
+    eframe::run_native("Tabular", options, app_creator())
+}
+
+/// Opsi jendela eframe bersama desktop/iOS/Android. Android menimpa
+/// `android_app` setelahnya (lihat `android_main`).
+fn build_native_options() -> eframe::NativeOptions {
     let mut options = eframe::NativeOptions::default();
     options.viewport.inner_size = Some(egui::vec2(1600.0, 1000.0));
     options.viewport.min_inner_size = Some(egui::vec2(800.0, 600.0));
@@ -281,8 +300,11 @@ pub fn run() -> Result<(), eframe::Error> {
     if let Some(icon) = modules::load_icon() {
         options.viewport.icon = Some(std::sync::Arc::new(icon));
     }
-    log_startup_step("starting eframe::run_native");
+    options
+}
 
+/// Closure pembuat `Tabular` yang dipakai `run()` (desktop/iOS) dan `android_main`.
+fn app_creator() -> eframe::AppCreator<'static> {
     let fast_prefs = config::load_fast_preferences();
     let initial_sys_theme = match fast_prefs.theme {
         config::AppTheme::Dark => egui::SystemTheme::Dark,
@@ -305,25 +327,21 @@ pub fn run() -> Result<(), eframe::Error> {
         }
     }
 
-    eframe::run_native(
-        "Tabular",
-        options,
-        Box::new(move |cc| {
-            log_startup_step("eframe creation closure entered");
-            initialize_icon_fonts(&cc.egui_ctx);
-            // Delegate winit sudah ada di sini; di iOS closure ini berjalan di
-            // dalam didFinishLaunching sehingga URL cold-start tidak hilang.
-            #[cfg(target_os = "ios")]
-            platform_ios::install_url_receivers();
-            #[cfg(target_os = "macos")]
-            platform_macos::install_handoff_receiver();
-            cc.egui_ctx
-                .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
-            let app = window_egui::Tabular::new();
-            log_startup_step("Tabular::new() returned");
-            Ok(Box::new(app))
-        }),
-    )
+    Box::new(move |cc| {
+        log_startup_step("eframe creation closure entered");
+        initialize_icon_fonts(&cc.egui_ctx);
+        // Delegate winit sudah ada di sini; di iOS closure ini berjalan di
+        // dalam didFinishLaunching sehingga URL cold-start tidak hilang.
+        #[cfg(target_os = "ios")]
+        platform_ios::install_url_receivers();
+        #[cfg(target_os = "macos")]
+        platform_macos::install_handoff_receiver();
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::SetTheme(initial_sys_theme));
+        let app = window_egui::Tabular::new();
+        log_startup_step("Tabular::new() returned");
+        Ok(Box::new(app))
+    })
 }
 
 // ----------------- FFI (iOS) -----------------
@@ -351,5 +369,29 @@ pub extern "C" fn tabular_run() -> i32 {
             log::error!("tabular_run encountered an unhandled panic");
             -1
         }
+    }
+}
+
+// ----------------- Entrypoint Android -----------------
+/// Dipanggil oleh NativeActivity (android-activity) saat proses dimulai. Tidak ada
+/// CLI, single-instance, maupun dialog file di sini; log masuk ke logcat.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("tabular"),
+    );
+    log_startup_step("android_main entered");
+    vector_index::register_sqlite_vec();
+    config::init_data_dir();
+    platform_prefs::load_from_disk();
+    app_logging::install_panic_hook();
+
+    let mut options = build_native_options();
+    options.android_app = Some(app);
+    if let Err(err) = eframe::run_native("Tabular", options, app_creator()) {
+        log::error!("[ANDROID] eframe::run_native failed: {err}");
     }
 }

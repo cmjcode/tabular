@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{class, declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::{ClassType, DeclaredClass, class, declare_class, msg_send, msg_send_id, mutability};
 use objc2_foundation::{
     CGFloat, CGPoint, CGRect, CGSize, MainThreadBound, MainThreadMarker, NSObjectProtocol,
 };
@@ -24,7 +24,7 @@ use crate::event::{Event, WindowEvent};
 use crate::icon::Icon;
 use crate::platform::ios::{ScreenEdge, StatusBarStyle, ValidOrientations};
 use crate::platform_impl::platform::{
-    app_state, monitor, ActiveEventLoop, Fullscreen, MonitorHandle,
+    ActiveEventLoop, Fullscreen, MonitorHandle, app_state, monitor,
 };
 use crate::window::{
     CursorGrabMode, ImePurpose, ResizeDirection, Theme, UserAttentionType, WindowAttributes,
@@ -90,11 +90,11 @@ impl WinitUIWindow {
                 let screen = monitor.ui_screen(mtm);
                 screen.setCurrentMode(Some(video_mode.screen_mode(mtm)));
                 this.setScreen(screen);
-            },
+            }
             Some(Fullscreen::Borderless(Some(ref monitor))) => {
                 let screen = monitor.ui_screen(mtm);
                 this.setScreen(screen);
-            },
+            }
             _ => (),
         }
 
@@ -157,16 +157,20 @@ impl Inner {
 
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
         let safe_area = self.safe_area_screen_space();
-        let position =
-            LogicalPosition { x: safe_area.origin.x as f64, y: safe_area.origin.y as f64 };
+        let position = LogicalPosition {
+            x: safe_area.origin.x as f64,
+            y: safe_area.origin.y as f64,
+        };
         let scale_factor = self.scale_factor();
         Ok(position.to_physical(scale_factor))
     }
 
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
         let screen_frame = self.screen_frame();
-        let position =
-            LogicalPosition { x: screen_frame.origin.x as f64, y: screen_frame.origin.y as f64 };
+        let position = LogicalPosition {
+            x: screen_frame.origin.x as f64,
+            y: screen_frame.origin.y as f64,
+        };
         let scale_factor = self.scale_factor();
         Ok(position.to_physical(scale_factor))
     }
@@ -176,7 +180,10 @@ impl Inner {
         let position = physical_position.to_logical::<f64>(scale_factor);
         let screen_frame = self.screen_frame();
         let new_screen_frame = CGRect {
-            origin: CGPoint { x: position.x as _, y: position.y as _ },
+            origin: CGPoint {
+                x: position.x as _,
+                y: position.y as _,
+            },
             size: screen_frame.size,
         };
         let bounds = self.rect_from_screen_space(new_screen_frame);
@@ -304,15 +311,15 @@ impl Inner {
                 let uiscreen = video_mode.monitor.ui_screen(mtm);
                 uiscreen.setCurrentMode(Some(video_mode.screen_mode(mtm)));
                 uiscreen.clone()
-            },
+            }
             Some(Fullscreen::Borderless(Some(monitor))) => monitor.ui_screen(mtm).clone(),
             Some(Fullscreen::Borderless(None)) => {
                 self.current_monitor_inner().ui_screen(mtm).clone()
-            },
+            }
             None => {
                 warn!("`Window::set_fullscreen(None)` ignored on iOS");
                 return;
-            },
+            }
         };
 
         // this is pretty slow on iOS, so avoid doing it if we can
@@ -363,8 +370,17 @@ impl Inner {
         warn!("`Window::set_window_icon` is ignored on iOS")
     }
 
-    pub fn set_ime_cursor_area(&self, _position: Position, _size: Size) {
-        warn!("`Window::set_ime_cursor_area` is ignored on iOS")
+    /// Forwards the caret rect to the [WinitView] so UIKit's `UITextInput` proxy can report
+    /// it from `caretRectForPosition:` / `firstRectForRange:` (keyboard avoidance, text
+    /// interaction menus). TABULAR local patch, see `TABULAR_PATCHES.md`.
+    pub fn set_ime_cursor_area(&self, position: Position, size: Size) {
+        let scale_factor = self.scale_factor();
+        let position: LogicalPosition<f64> = position.to_logical(scale_factor);
+        let size: LogicalSize<f64> = size.to_logical(scale_factor);
+        self.view.set_ime_cursor_rect(CGRect::new(
+            CGPoint::new(position.x, position.y),
+            CGSize::new(size.width.max(1.0), size.height.max(1.0)),
+        ));
     }
 
     /// Show / hide the keyboard. To show the keyboard, we call `becomeFirstResponder`,
@@ -410,7 +426,9 @@ impl Inner {
 
     pub fn primary_monitor(&self) -> Option<MonitorHandle> {
         #[allow(deprecated)]
-        Some(MonitorHandle::new(UIScreen::mainScreen(MainThreadMarker::new().unwrap())))
+        Some(MonitorHandle::new(UIScreen::mainScreen(
+            MainThreadMarker::new().unwrap(),
+        )))
     }
 
     pub fn id(&self) -> WindowId {
@@ -514,9 +532,12 @@ impl Window {
                 let size = dim.to_logical::<f64>(scale_factor as f64);
                 CGRect {
                     origin: screen_bounds.origin,
-                    size: CGSize { width: size.width as _, height: size.height as _ },
+                    size: CGSize {
+                        width: size.width as _,
+                        height: size.height as _,
+                    },
                 }
-            },
+            }
             None => screen_bounds,
         };
 
@@ -546,11 +567,13 @@ impl Window {
             let window_id = RootWindowId(window.id());
             app_state::handle_nonuser_events(
                 mtm,
-                std::iter::once(EventWrapper::ScaleFactorChanged(app_state::ScaleFactorChanged {
-                    window: window.clone(),
-                    scale_factor,
-                    suggested_size: size.to_physical(scale_factor),
-                }))
+                std::iter::once(EventWrapper::ScaleFactorChanged(
+                    app_state::ScaleFactorChanged {
+                        window: window.clone(),
+                        scale_factor,
+                        suggested_size: size.to_physical(scale_factor),
+                    },
+                ))
                 .chain(std::iter::once(EventWrapper::StaticEvent(
                     Event::WindowEvent {
                         window_id,
@@ -560,8 +583,15 @@ impl Window {
             );
         }
 
-        let inner = Inner { window, view_controller, view, gl_or_metal_backed };
-        Ok(Window { inner: MainThreadBound::new(inner, mtm) })
+        let inner = Inner {
+            window,
+            view_controller,
+            view,
+            gl_or_metal_backed,
+        };
+        Ok(Window {
+            inner: MainThreadBound::new(inner, mtm),
+        })
     }
 
     pub(crate) fn maybe_queue_on_main(&self, f: impl FnOnce(&Inner) + Send + 'static) {
@@ -590,7 +620,9 @@ impl Window {
     pub(crate) fn raw_display_handle_rwh_06(
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
-        Ok(rwh_06::RawDisplayHandle::UiKit(rwh_06::UiKitDisplayHandle::new()))
+        Ok(rwh_06::RawDisplayHandle::UiKit(
+            rwh_06::UiKitDisplayHandle::new(),
+        ))
     }
 }
 
@@ -613,11 +645,13 @@ impl Inner {
     }
 
     pub fn set_prefers_home_indicator_hidden(&self, hidden: bool) {
-        self.view_controller.set_prefers_home_indicator_auto_hidden(hidden);
+        self.view_controller
+            .set_prefers_home_indicator_auto_hidden(hidden);
     }
 
     pub fn set_preferred_screen_edges_deferring_system_gestures(&self, edges: ScreenEdge) {
-        self.view_controller.set_preferred_screen_edges_deferring_system_gestures(edges);
+        self.view_controller
+            .set_preferred_screen_edges_deferring_system_gestures(edges);
     }
 
     pub fn set_prefers_status_bar_hidden(&self, hidden: bool) {
@@ -625,7 +659,8 @@ impl Inner {
     }
 
     pub fn set_preferred_status_bar_style(&self, status_bar_style: StatusBarStyle) {
-        self.view_controller.set_preferred_status_bar_style(status_bar_style);
+        self.view_controller
+            .set_preferred_status_bar_style(status_bar_style);
     }
 
     pub fn recognize_pinch_gesture(&self, should_recognize: bool) {
@@ -661,12 +696,14 @@ impl Inner {
 
     fn rect_to_screen_space(&self, rect: CGRect) -> CGRect {
         let screen_space = self.window.screen().coordinateSpace();
-        self.window.convertRect_toCoordinateSpace(rect, &screen_space)
+        self.window
+            .convertRect_toCoordinateSpace(rect, &screen_space)
     }
 
     fn rect_from_screen_space(&self, rect: CGRect) -> CGRect {
         let screen_space = self.window.screen().coordinateSpace();
-        self.window.convertRect_fromCoordinateSpace(rect, &screen_space)
+        self.window
+            .convertRect_fromCoordinateSpace(rect, &screen_space)
     }
 
     fn safe_area_screen_space(&self) -> CGRect {
@@ -700,8 +737,14 @@ impl Inner {
                 (y, height)
             };
             CGRect {
-                origin: CGPoint { x: screen_frame.origin.x, y },
-                size: CGSize { width: screen_frame.size.width, height },
+                origin: CGPoint {
+                    x: screen_frame.origin.x,
+                    y,
+                },
+                size: CGSize {
+                    width: screen_frame.size.width,
+                    height,
+                },
             }
         }
     }
@@ -714,7 +757,9 @@ pub struct WindowId {
 
 impl WindowId {
     pub const fn dummy() -> Self {
-        WindowId { window: std::ptr::null_mut() }
+        WindowId {
+            window: std::ptr::null_mut(),
+        }
     }
 }
 
@@ -726,7 +771,9 @@ impl From<WindowId> for u64 {
 
 impl From<u64> for WindowId {
     fn from(raw_id: u64) -> Self {
-        Self { window: raw_id as _ }
+        Self {
+            window: raw_id as _,
+        }
     }
 }
 
@@ -735,7 +782,9 @@ unsafe impl Sync for WindowId {}
 
 impl From<&AnyObject> for WindowId {
     fn from(window: &AnyObject) -> WindowId {
-        WindowId { window: window as *const _ as _ }
+        WindowId {
+            window: window as *const _ as _,
+        }
     }
 }
 

@@ -16,7 +16,7 @@ pub mod manifest;
 pub mod presets;
 pub mod query;
 pub mod registry;
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod sidecar;
 pub mod sqlite_adapter;
 pub mod wasm_host;

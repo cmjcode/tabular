@@ -84,9 +84,9 @@ pub(crate) fn sort_table_data(
             .all_table_data
             .sort_by_cached_key(|row| SortKey::from_cell(row.get(column_index)));
     } else {
-        tabular.all_table_data.sort_by_cached_key(|row| {
-            std::cmp::Reverse(SortKey::from_cell(row.get(column_index)))
-        });
+        tabular
+            .all_table_data
+            .sort_by_cached_key(|row| std::cmp::Reverse(SortKey::from_cell(row.get(column_index))));
     }
 
     // Update current page data after sorting
@@ -1309,7 +1309,9 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             (seed >> 33) as u32
         };
-        let special = ["NULL", "", "NaN", "inf", "-inf", "-0", "0", "1e2", "abc", "ABC"];
+        let special = [
+            "NULL", "", "NaN", "inf", "-inf", "-0", "0", "1e2", "abc", "ABC",
+        ];
         let values: Vec<String> = (0..300)
             .map(|_| {
                 let r = next();

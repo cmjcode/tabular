@@ -1863,7 +1863,7 @@ fn render_response_panel(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            #[cfg(not(target_os = "ios"))]
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if style::ai_icon_button(
                 ui,
                 egui_icons::icons::ICON_DOWNLOAD.codepoint,
@@ -2343,7 +2343,7 @@ fn render_response_empty(ui: &mut egui::Ui) {
     });
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 fn save_response_to_file(
     state: &HttpClientState,
     syntax: crate::http_client_widgets::Syntax,
