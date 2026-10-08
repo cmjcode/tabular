@@ -3458,7 +3458,17 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Block highlight for statements
             // Quick parse to find statement boundaries with robust comment handling
             // Only run if text is reasonably sized to avoid lags on huge files every frame
-            let (start_byte, end_byte) = {
+            // Rentang statement hanya berubah bila teks atau kursor berubah;
+            // tanpa cache, pemindaian dari awal teks berjalan setiap frame.
+            let block_cache_id = egui::Id::new("stmt_block_range");
+            let block_cache_key = (tabular.editor.revision, cur);
+            let cached_range = ui
+                .data(|d| d.get_temp::<((u64, usize), (usize, usize))>(block_cache_id))
+                .filter(|(key, _)| *key == block_cache_key)
+                .map(|(_, range)| range);
+            let (start_byte, end_byte) = if let Some(range) = cached_range {
+                range
+            } else {
                 let mut stmt_start = 0;
                 let mut found_range = (0, text_len);
 
@@ -3530,6 +3540,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 if !found && cur >= stmt_start {
                     found_range = (stmt_start, text_len);
                 }
+                ui.data_mut(|d| d.insert_temp(block_cache_id, (block_cache_key, found_range)));
                 found_range
             };
 
@@ -3742,8 +3753,12 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             // Use galley_pos to get the actual vertical position of each row
             let y = galley_pos.y + row.rect().min.y;
 
+            // Baris galley urut dari atas: setelah lewat area terlihat, berhenti.
+            if y > final_rect.bottom() + 20.0 {
+                break;
+            }
             // Only render if within visible gutter area
-            if y >= final_rect.top() && y <= final_rect.bottom() + 20.0 {
+            if y >= final_rect.top() {
                 painter.text(
                     egui::pos2(final_rect.right() - 8.0, y + 1.5),
                     egui::Align2::RIGHT_TOP,
@@ -3767,15 +3782,40 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Paint find & replace match highlights on buffer
     if tabular.advanced_editor.show_find_replace && !tabular.advanced_editor.find_text.is_empty() {
-        let matches_res = get_search_matches(
-            &tabular.editor.text,
-            &tabular.advanced_editor.find_text,
+        // Regex dan pencarian seluruh teks hanya diulang bila teks, pola,
+        // atau opsinya berubah; sebelumnya berjalan setiap frame selama
+        // panel find terbuka.
+        let find_cache_id = egui::Id::new("find_matches_cache");
+        let find_key = (
+            tabular.editor.revision,
+            tabular.advanced_editor.find_text.clone(),
             tabular.advanced_editor.case_sensitive,
             tabular.advanced_editor.whole_word,
             tabular.advanced_editor.use_regex,
             tabular.advanced_editor.in_selection,
             tabular.advanced_editor.selection_range,
         );
+        type FindKey = (u64, String, bool, bool, bool, bool, Option<(usize, usize)>);
+        type FindCache = (FindKey, Result<Vec<EditorSearchMatch>, String>);
+        let matches_res = match ui
+            .data(|d| d.get_temp::<FindCache>(find_cache_id))
+            .filter(|(key, _)| *key == find_key)
+        {
+            Some((_, cached)) => cached,
+            None => {
+                let computed = get_search_matches(
+                    &tabular.editor.text,
+                    &tabular.advanced_editor.find_text,
+                    tabular.advanced_editor.case_sensitive,
+                    tabular.advanced_editor.whole_word,
+                    tabular.advanced_editor.use_regex,
+                    tabular.advanced_editor.in_selection,
+                    tabular.advanced_editor.selection_range,
+                );
+                ui.data_mut(|d| d.insert_temp(find_cache_id, (find_key, computed.clone())));
+                computed
+            }
+        };
 
         match matches_res {
             Ok(matches) => {
@@ -4603,7 +4643,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             state.store(ui.ctx(), id);
             ui.memory_mut(|m| m.request_focus(id));
             request_scroll_to_cursor = true;
-        } else if cur >= 4 && &tabular.editor.text[cur - 4..cur] == "    " {
+        } else if cur >= 4 && tabular.editor.text.get(cur - 4..cur) == Some("    ") {
             // Remove inserted 4 spaces via rope edit
             let start = cur - 4;
             tabular.editor.apply_single_replace(start..cur, "");
@@ -4660,7 +4700,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
             if tabular.editor.text.contains('\t') {
                 // Remove a lone tab right before cursor via rope edit if exists
                 let cur = tabular.cursor_position.min(tabular.editor.text.len());
-                if cur > 0 && tabular.editor.text.chars().nth(cur - 1) == Some('\t') {
+                if cur > 0 && tabular.editor.text.as_bytes().get(cur - 1) == Some(&b'\t') {
                     let start = cur - 1;
                     tabular.editor.apply_single_replace(start..cur, "");
                     tabular.cursor_position = tabular.cursor_position.saturating_sub(1);
@@ -10243,8 +10283,11 @@ pub(crate) fn process_query_result(
             debug!("Skip saving to history karena hasil error");
         }
         // Detect EXPLAIN output JSON/XML/text and set active view to Explain
-        let is_explain =
-            looks_like_explain_output(query, &tabular.current_table_headers, &tabular.current_table_data);
+        let is_explain = looks_like_explain_output(
+            query,
+            &tabular.current_table_headers,
+            &tabular.current_table_data,
+        );
         // Teks plan (kolom pertama semua baris) hanya dirangkai bila memang
         // hasil EXPLAIN; untuk hasil biasa ini dulu menyalin kolom pertama
         // seluruh result set pada setiap query.
@@ -11267,7 +11310,11 @@ mod tests {
         job_id
     }
 
-    fn result_message(job_id: u64, tab_id: Option<usize>, rows: usize) -> connection::QueryResultMessage {
+    fn result_message(
+        job_id: u64,
+        tab_id: Option<usize>,
+        rows: usize,
+    ) -> connection::QueryResultMessage {
         let mut message = crate::window_egui::query_jobs::failed_query_message(
             job_id,
             1,
@@ -11383,18 +11430,37 @@ mod tests {
     #[test]
     fn explain_detection_matches_previous_rules() {
         let rows = |cells: &[&str]| -> Vec<Vec<String>> {
-            cells.iter().map(|c| vec![c.to_string(), "x".to_string()]).collect()
+            cells
+                .iter()
+                .map(|c| vec![c.to_string(), "x".to_string()])
+                .collect()
         };
         let headers = vec!["id".to_string(), "name".to_string()];
-        assert!(!looks_like_explain_output("SELECT * FROM t", &headers, &rows(&["1", "2"])));
-        assert!(looks_like_explain_output("  explain select 1", &headers, &rows(&["1"])));
-        assert!(looks_like_explain_output("SET STATISTICS XML ON", &headers, &[]));
+        assert!(!looks_like_explain_output(
+            "SELECT * FROM t",
+            &headers,
+            &rows(&["1", "2"])
+        ));
+        assert!(looks_like_explain_output(
+            "  explain select 1",
+            &headers,
+            &rows(&["1"])
+        ));
+        assert!(looks_like_explain_output(
+            "SET STATISTICS XML ON",
+            &headers,
+            &[]
+        ));
         assert!(looks_like_explain_output(
             "SELECT 1",
             &["QUERY PLAN".to_string()],
             &rows(&["Seq Scan"])
         ));
-        assert!(looks_like_explain_output("SELECT doc FROM t", &headers, &rows(&[" {\"a\":1}"])));
+        assert!(looks_like_explain_output(
+            "SELECT doc FROM t",
+            &headers,
+            &rows(&[" {\"a\":1}"])
+        ));
         assert!(looks_like_explain_output(
             "SELECT 1",
             &headers,

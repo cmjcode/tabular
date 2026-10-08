@@ -166,17 +166,16 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
 
 pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
     // 1. In-memory check
-    let mut all = Vec::new();
-    for tbls in app.autocomplete_tables_mem.values() {
-        for t in tbls {
-            if !all.contains(t) {
-                all.push(t.clone());
-            }
-        }
-    }
+    let mut all: Vec<String> = app
+        .autocomplete_tables_mem
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
     if !all.is_empty() {
         all.sort_unstable();
-        all.dedup();
         return all;
     }
 

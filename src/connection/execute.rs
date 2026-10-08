@@ -331,6 +331,23 @@ fn timeout_message(options: &QueryExecutionOptions) -> String {
     }
 }
 
+/// Pool read-only ke `connections.db` untuk membaca cache primary key saat
+/// hasil MySQL diproses. Dibuat sekali per proses; sebelumnya setiap SELECT
+/// yang mengembalikan baris membuka pool SQLite baru.
+async fn index_cache_pool(conn_str: &str) -> Result<&'static sqlx::SqlitePool, sqlx::Error> {
+    static POOL: std::sync::OnceLock<sqlx::SqlitePool> = std::sync::OnceLock::new();
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(conn_str)
+        .await?;
+    // Dua task bisa balapan di sini; pool yang kalah ditutup oleh drop.
+    let _ = POOL.set(pool);
+    Ok(POOL.get().expect("pool cache index baru saja diisi"))
+}
+
 /// Memecah query job menjadi statement dengan splitter yang paham quote,
 /// dollar-quote, dan komentar; statement yang hanya berisi komentar dibuang.
 fn job_statements(options: &QueryExecutionOptions) -> Vec<String> {
@@ -769,8 +786,10 @@ async fn execute_query_job_in(
             tab_id,
             connection_id,
             success: true,
-            headers: output.headers.clone(),
-            rows: output.rows.clone(),
+            // `output` sudah milik kita: dipindahkan, bukan disalin (hasil
+            // besar sempat digandakan di sini).
+            headers: output.headers,
+            rows: output.rows,
             error: None,
             duration: start.elapsed(),
             query: query.clone(),
@@ -1146,7 +1165,7 @@ async fn execute_mysql_query_job(
                             let cache_conn_str =
                                 format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
 
-                            match sqlx::sqlite::SqlitePool::connect(&cache_conn_str).await {
+                            match index_cache_pool(&cache_conn_str).await {
                                 Ok(cache_pool) => {
                                     for table_full_name in &unique_tables {
                                         let parts: Vec<&str> = table_full_name.split('.').collect();
@@ -1167,7 +1186,7 @@ async fn execute_mysql_query_job(
                                                 .bind(options.connection.id.unwrap_or(0))
                                                 .bind(target_db)
                                                 .bind(target_table)
-                                                .fetch_optional(&cache_pool)
+                                                .fetch_optional(cache_pool)
                                                 .await;
 
                                         match result {

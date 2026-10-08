@@ -146,6 +146,64 @@ fn build_schema_for_db(
     out
 }
 
+/// Versi headless [`build_schema_context_for_prompt`] tanpa ranking
+/// relevansi: hanya membaca `table_cache` dan `column_cache` dari pool cache
+/// lokal, sehingga bisa dijalankan di runtime latar belakang (dipakai ghost
+/// text agar UI thread tidak menunggu puluhan query SQLite).
+pub async fn build_schema_context_async(
+    pool: &sqlx::SqlitePool,
+    connection_id: i64,
+    db_name: &str,
+    max_tables: usize,
+) -> String {
+    let tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT table_name FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_type = 'table' ORDER BY table_name",
+    )
+    .bind(connection_id)
+    .bind(db_name)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if tables.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("-- Database: {db_name}\n");
+    for (table,) in tables.iter().take(max_tables) {
+        out.push_str(&format!("-- Table: {table}\n"));
+        let cols: Vec<(String, String)> = sqlx::query_as(
+            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND database_name = ? COLLATE NOCASE AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position",
+        )
+        .bind(connection_id)
+        .bind(db_name)
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        if cols.is_empty() {
+            out.push_str(&format!(
+                "-- Table {table}: (columns not cached yet — browse the table first)\n"
+            ));
+        } else {
+            let col_list: Vec<String> = cols
+                .iter()
+                .map(|(name, typ)| format!("  {name} {typ}"))
+                .collect();
+            out.push_str(&format!(
+                "CREATE TABLE {table} (\n{}\n);\n",
+                col_list.join(",\n")
+            ));
+        }
+        out.push('\n');
+    }
+    if tables.len() > max_tables {
+        out.push_str(&format!(
+            "-- ... and {} more tables (showing first {max_tables})\n",
+            tables.len() - max_tables
+        ));
+    }
+    out
+}
+
 /// Request an AI suggestion asynchronously.
 /// Returns a receiver that will yield `Ok(suggestion)` or `Err(message)`.
 pub fn request_ai_suggestion(

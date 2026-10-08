@@ -44,7 +44,7 @@
 
 #![allow(dead_code)]
 
-use eframe::egui::text::LayoutJob; // For public highlight API (ported from legacy syntax.rs)
+use eframe::egui::text::{ByteIndex, LayoutJob, LayoutSection}; // For public highlight API (ported from legacy syntax.rs)
 use eframe::egui::{Color32, TextFormat};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -1491,11 +1491,133 @@ fn highlight_cache_key(text: &str, lang: LanguageKind, dark: bool) -> u64 {
 pub struct HighlightCache {
     entries: std::collections::HashMap<u64, (u64, LayoutJob)>,
     tick: u64,
+    /// Cache per baris: hash (isi baris, bahasa, tema, jenis baris) →
+    /// section dengan offset relatif ke awal baris. Highlighter ini bekerja
+    /// per baris, jadi setelah satu ketikan hanya baris yang berubah yang
+    /// dihitung ulang; sebelumnya seluruh dokumen di-highlight dari nol pada
+    /// setiap perubahan teks.
+    lines: std::collections::HashMap<u64, Vec<LayoutSection>>,
+}
+
+/// Batas entri cache per baris; saat terlampaui cache dikosongkan.
+const LINE_CACHE_CAPACITY: usize = 16 * 1024;
+
+/// Jenis baris yang menentukan cara highlight-nya.
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum LineKind {
+    Code,
+    AiBlock,
+    AiPlaceholder,
+}
+
+fn line_kind(line: &str, ai_block: bool) -> LineKind {
+    if ai_block {
+        LineKind::AiBlock
+    } else if line.trim_start().starts_with("-- ✨ AI:") {
+        LineKind::AiPlaceholder
+    } else {
+        LineKind::Code
+    }
+}
+
+/// Indeks baris yang berada di dalam blok `--AI ... --` (inklusif).
+fn ai_block_lines(text: &str) -> std::collections::HashSet<usize> {
+    let mut in_ai_block = false;
+    let mut ai_block_lines = std::collections::HashSet::<usize>::new();
+    for (i, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "--AI" || trimmed.starts_with("--AI ") || trimmed.starts_with("--AI\t") {
+            in_ai_block = true;
+        }
+        if in_ai_block {
+            ai_block_lines.insert(i);
+        }
+        if in_ai_block && !ai_block_lines.is_empty() && trimmed == "--" {
+            in_ai_block = false;
+        }
+    }
+    ai_block_lines
+}
+
+/// Highlight satu baris sesuai jenisnya ke `job` (tanpa newline).
+fn highlight_line_kind(
+    line: &str,
+    lang: LanguageKind,
+    dark: bool,
+    kind: LineKind,
+    job: &mut LayoutJob,
+) {
+    match kind {
+        LineKind::AiBlock => job.append(
+            line,
+            0.0,
+            TextFormat {
+                color: ai_block_color(dark),
+                italics: true,
+                ..Default::default()
+            },
+        ),
+        LineKind::AiPlaceholder => job.append(
+            line,
+            0.0,
+            TextFormat {
+                color: if dark {
+                    Color32::from_rgb(140, 90, 220)
+                } else {
+                    Color32::from_rgb(150, 60, 210)
+                },
+                italics: true,
+                ..Default::default()
+            },
+        ),
+        LineKind::Code => highlight_single_line(line, lang, dark, job),
+    }
+}
+
+fn line_cache_key(line: &str, lang: LanguageKind, dark: bool, kind: LineKind) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    line.hash(&mut hasher);
+    lang.hash(&mut hasher);
+    dark.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl HighlightCache {
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.lines.clear();
+    }
+
+    /// Susun `LayoutJob` seluruh teks dari cache per baris; baris yang belum
+    /// ada di cache di-highlight lalu disimpan.
+    fn highlight_incremental(&mut self, text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
+        if self.lines.len() > LINE_CACHE_CAPACITY {
+            self.lines.clear();
+        }
+        let ai_lines = ai_block_lines(text);
+        let mut job = LayoutJob::default();
+        for (i, line) in text.lines().enumerate() {
+            if i > 0 {
+                job.append("\n", 0.0, TextFormat::default());
+            }
+            let kind = line_kind(line, ai_lines.contains(&i));
+            let key = line_cache_key(line, lang, dark, kind);
+            let offset = job.text.len();
+            let sections = self.lines.entry(key).or_insert_with(|| {
+                let mut tmp = LayoutJob::default();
+                highlight_line_kind(line, lang, dark, kind, &mut tmp);
+                tmp.sections
+            });
+            job.text.push_str(line);
+            job.sections.extend(sections.iter().map(|s| LayoutSection {
+                leading_space: s.leading_space,
+                byte_range: ByteIndex(s.byte_range.start.0 + offset)
+                    ..ByteIndex(s.byte_range.end.0 + offset),
+                format: s.format.clone(),
+            }));
+        }
+        job
     }
 
     pub fn len(&self) -> usize {
@@ -1523,7 +1645,7 @@ impl HighlightCache {
             let cutoff = ticks[ticks.len() / 2];
             self.entries.retain(|_, (t, _)| *t >= cutoff);
         }
-        let job = highlight_text(text, lang, dark);
+        let job = self.highlight_incremental(text, lang, dark);
         self.entries.insert(key, (tick, job.clone()));
         job
     }
@@ -1558,56 +1680,18 @@ pub fn highlight_text_cached(
 pub fn highlight_text(text: &str, lang: LanguageKind, dark: bool) -> LayoutJob {
     let mut job = LayoutJob::default();
 
-    // Pre-scan for --AI ... -- blocks so we can highlight them with AI prompt color.
-    // Build a set of line indices that fall inside an AI block (inclusive of --AI and -- lines).
-    let mut in_ai_block = false;
-    let mut ai_block_lines = std::collections::HashSet::<usize>::new();
-    for (i, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed == "--AI" || trimmed.starts_with("--AI ") || trimmed.starts_with("--AI\t") {
-            in_ai_block = true;
-        }
-        if in_ai_block {
-            ai_block_lines.insert(i);
-        }
-        if in_ai_block && !ai_block_lines.is_empty() && trimmed == "--" {
-            in_ai_block = false;
-        }
-    }
-
+    let ai_lines = ai_block_lines(text);
     for (i, line) in text.lines().enumerate() {
         if i > 0 {
             job.append("\n", 0.0, TextFormat::default());
         }
-        if ai_block_lines.contains(&i) {
-            // Highlight the entire line with the distinct AI-block color
-            job.append(
-                line,
-                0.0,
-                TextFormat {
-                    color: ai_block_color(dark),
-                    italics: true,
-                    ..Default::default()
-                },
-            );
-        } else if line.trim_start().starts_with("-- ✨ AI:") {
-            // Loading placeholder line — styled differently so user knows AI is working
-            job.append(
-                line,
-                0.0,
-                TextFormat {
-                    color: if dark {
-                        Color32::from_rgb(140, 90, 220)
-                    } else {
-                        Color32::from_rgb(150, 60, 210)
-                    },
-                    italics: true,
-                    ..Default::default()
-                },
-            );
-        } else {
-            highlight_single_line(line, lang, dark, &mut job);
-        }
+        highlight_line_kind(
+            line,
+            lang,
+            dark,
+            line_kind(line, ai_lines.contains(&i)),
+            &mut job,
+        );
     }
     job
 }
@@ -1960,7 +2044,10 @@ mod highlight_cache_tests {
             assert!(cache.len() <= HIGHLIGHT_CACHE_CAPACITY);
         }
         let key = highlight_cache_key(hot, LanguageKind::Sql, true);
-        assert!(cache.entries.contains_key(&key), "entri panas ikut terbuang");
+        assert!(
+            cache.entries.contains_key(&key),
+            "entri panas ikut terbuang"
+        );
         // Entri paling baru juga masih ada.
         let last = format!("SELECT {}", HIGHLIGHT_CACHE_CAPACITY * 4 - 1);
         let key = highlight_cache_key(&last, LanguageKind::Sql, true);
@@ -1968,5 +2055,30 @@ mod highlight_cache_tests {
         assert!(!cache.is_empty());
         cache.clear();
         assert!(cache.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod incremental_cache_tests {
+    use super::*;
+
+    #[test]
+    fn hasil_cache_per_baris_identik_dengan_highlight_penuh() {
+        let text = "SELECT a, 'x;y' FROM t -- c\n--AI\nbuat laporan\n--\nWHERE id = 1\n";
+        let mut cache = HighlightCache::default();
+        let incremental = cache.get_or_highlight(text, LanguageKind::Sql, true);
+        let full = highlight_text(text, LanguageKind::Sql, true);
+        assert_eq!(incremental.text, full.text);
+        assert_eq!(incremental.sections.len(), full.sections.len());
+        for (a, b) in incremental.sections.iter().zip(&full.sections) {
+            assert_eq!(a.byte_range, b.byte_range);
+            assert_eq!(a.format, b.format);
+        }
+        // Ketikan di satu baris: baris lain diambil dari cache, hasil tetap sama.
+        let edited = text.replace("id = 1", "id = 12");
+        let incremental = cache.get_or_highlight(&edited, LanguageKind::Sql, true);
+        let full = highlight_text(&edited, LanguageKind::Sql, true);
+        assert_eq!(incremental.text, full.text);
+        assert_eq!(incremental.sections.len(), full.sections.len());
     }
 }

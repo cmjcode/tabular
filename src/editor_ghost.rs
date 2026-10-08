@@ -346,8 +346,24 @@ pub struct GhostSuggestion {
 
 /// State ghost text milik editor (satu untuk seluruh aplikasi; saran terikat
 /// pada tab lewat [`GhostAnchor::tab_index`]).
+/// Ringkasan skema yang sudah dibangun untuk satu (koneksi, database).
+pub struct SchemaContextCache {
+    pub connection_id: i64,
+    pub database: String,
+    pub text: String,
+    pub built_at: Instant,
+}
+
+/// Masa berlaku ringkasan skema sebelum dibangun ulang.
+const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(120);
+
 #[derive(Default)]
 pub struct GhostState {
+    /// Ringkasan skema terakhir; dibangun di runtime latar belakang supaya
+    /// UI thread tidak menunggu query cache SQLite setiap request.
+    pub schema_cache: Option<SchemaContextCache>,
+    /// Pembangunan skema yang sedang berjalan: (koneksi, database, hasil).
+    pub schema_rx: Option<mpsc::Receiver<(i64, String, String)>>,
     /// Penanda keadaan editor pada frame sebelumnya.
     pub last_anchor: Option<GhostAnchor>,
     /// Waktu ketikan terakhir; `Some` berarti pemicu sedang menunggu debounce.
@@ -525,13 +541,85 @@ fn engine_label(tabular: &Tabular) -> String {
         .unwrap_or_default()
 }
 
+/// (koneksi, database) yang dipakai ringkasan skema: koneksi aktif dan
+/// database tab aktif, atau database pertama yang diketahui.
+fn schema_target(tabular: &Tabular) -> Option<(i64, String)> {
+    let conn_id = tabular.current_connection_id?;
+    let db = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.database_name.clone())
+        .filter(|d| !d.is_empty())
+        .or_else(|| {
+            tabular
+                .database_cache
+                .get(&conn_id)
+                .and_then(|dbs| dbs.first().cloned())
+        })?;
+    Some((conn_id, db))
+}
+
+/// Ringkasan skema dari cache bila masih berlaku; kalau tidak, bangun di
+/// latar belakang dan kembalikan yang lama (atau kosong). Request saat ini
+/// tetap dikirim tanpa menunggu.
+fn schema_context(tabular: &mut Tabular) -> String {
+    let Some((conn_id, db)) = schema_target(tabular) else {
+        return String::new();
+    };
+    let cached = tabular
+        .ghost
+        .schema_cache
+        .as_ref()
+        .filter(|c| c.connection_id == conn_id && c.database == db);
+    let fresh = cached.is_some_and(|c| c.built_at.elapsed() < SCHEMA_CACHE_TTL);
+    let text = cached.map(|c| c.text.clone()).unwrap_or_default();
+    if !fresh
+        && tabular.ghost.schema_rx.is_none()
+        && let (Some(pool), Some(rt)) = (tabular.db_pool.clone(), tabular.runtime.clone())
+    {
+        let (tx, rx) = mpsc::channel();
+        tabular.ghost.schema_rx = Some(rx);
+        let db_for_task = db.clone();
+        rt.spawn(async move {
+            let text = crate::ai_assistant::build_schema_context_async(
+                &pool,
+                conn_id,
+                &db_for_task,
+                MAX_SCHEMA_TABLES,
+            )
+            .await;
+            let _ = tx.send((conn_id, db_for_task, text));
+        });
+    }
+    text
+}
+
+/// Ambil hasil pembangunan skema latar belakang bila sudah ada.
+fn poll_schema(tabular: &mut Tabular) {
+    let Some(rx) = tabular.ghost.schema_rx.as_ref() else {
+        return;
+    };
+    match rx.try_recv() {
+        Ok((connection_id, database, text)) => {
+            tabular.ghost.schema_rx = None;
+            tabular.ghost.schema_cache = Some(SchemaContextCache {
+                connection_id,
+                database,
+                text,
+                built_at: Instant::now(),
+            });
+        }
+        Err(mpsc::TryRecvError::Empty) => {}
+        Err(mpsc::TryRecvError::Disconnected) => tabular.ghost.schema_rx = None,
+    }
+}
+
 fn fire_request(tabular: &mut Tabular, backend: crate::ai_assistant::ChatBackend) {
     let anchor = current_anchor(tabular);
     let (prefix, suffix) = bounded_context(&tabular.editor.text, anchor.cursor);
     let (prefix, suffix) = (prefix.to_string(), suffix.to_string());
     let engine = engine_label(tabular);
-    let schema_full =
-        crate::ai_assistant::build_schema_context_for_prompt(tabular, "", MAX_SCHEMA_TABLES);
+    let schema_full = schema_context(tabular);
     let schema = truncate_bytes(&schema_full, MAX_SCHEMA_BYTES);
     let (system, user) = build_prompts(&prefix, &suffix, &engine, schema);
     log::debug!(
@@ -577,6 +665,7 @@ pub(crate) fn update_after_render(
         return;
     }
 
+    poll_schema(tabular);
     let anchor = current_anchor(tabular);
     if tabular.ghost.last_anchor != Some(anchor) {
         let typed = tabular
