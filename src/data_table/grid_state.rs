@@ -220,7 +220,11 @@ impl RowJsonNode {
     pub fn to_json(&self) -> serde_json::Value {
         let mut map = serde_json::Map::new();
         for (i, col) in self.columns.iter().enumerate() {
-            let raw = self.values.get(i).map(String::as_str).unwrap_or("NULL");
+            let raw = self
+                .values
+                .get(i)
+                .map(String::as_str)
+                .unwrap_or(crate::models::structs::NULL_CELL);
             map.insert(col.clone(), json_scalar(raw));
             if let Some(FkChild::Loaded(child)) = self.children.get(&i) {
                 map.insert(format!("{} ({})", col, child.table), child.to_json());
@@ -1991,7 +1995,11 @@ mod tests {
         let mut root = RowJsonNode {
             table: "orders".into(),
             columns: vec!["id".into(), "customer_id".into(), "note".into()],
-            values: vec!["10".into(), "7".into(), "NULL".into()],
+            values: vec![
+                "10".into(),
+                "7".into(),
+                crate::models::structs::NULL_CELL.into(),
+            ],
             ..Default::default()
         };
         root.children.insert(

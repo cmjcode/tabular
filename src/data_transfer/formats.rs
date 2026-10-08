@@ -528,7 +528,11 @@ mod tests {
         TableData::new(
             vec!["id".into(), "name".into(), "note".into()],
             vec![
-                vec!["1".into(), "Ann <A&B>".into(), "NULL".into()],
+                vec![
+                    "1".into(),
+                    "Ann <A&B>".into(),
+                    crate::data_transfer::NULL_MARKER.into(),
+                ],
                 vec!["2".into(), "Bob \"B\"".into(), "line1\nline2".into()],
             ],
         )

@@ -996,9 +996,22 @@ mod tests {
         assert_eq!(loaded.data.headers, vec!["id", "tags", "extra", "name"]);
         assert_eq!(
             loaded.data.rows[0],
-            vec!["1", "[\"a\",\"b\"]", "NULL", "NULL"]
+            vec![
+                "1",
+                "[\"a\",\"b\"]",
+                crate::data_transfer::NULL_MARKER,
+                crate::data_transfer::NULL_MARKER
+            ]
         );
-        assert_eq!(loaded.data.rows[1], vec!["2", "NULL", "NULL", "x"]);
+        assert_eq!(
+            loaded.data.rows[1],
+            vec![
+                "2",
+                crate::data_transfer::NULL_MARKER,
+                crate::data_transfer::NULL_MARKER,
+                "x"
+            ]
+        );
     }
 
     #[test]

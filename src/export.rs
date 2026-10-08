@@ -41,7 +41,7 @@ fn write_csv_file(
 
     // Write data rows
     for row in all_table_data.iter() {
-        writer.write_record(row)?;
+        writer.write_record(row.iter().map(|c| crate::models::structs::cell_display(c)))?;
     }
 
     writer.flush()?;
@@ -91,6 +91,7 @@ fn write_xlsx_file(
     // Write data rows
     for (row_idx, row) in all_table_data.iter().enumerate() {
         for (col_idx, cell) in row.iter().enumerate() {
+            let cell = crate::models::structs::cell_display(cell);
             // Try to parse as number first, otherwise write as string
             if let Ok(number) = cell.parse::<f64>() {
                 worksheet.write_number((row_idx + 1) as u32, col_idx as u16, number)?;
@@ -137,8 +138,7 @@ fn build_json(all_table_data: &[Vec<String>], headers: &[String]) -> String {
             let mut obj = serde_json::Map::new();
             for (i, header) in headers.iter().enumerate() {
                 let cell = row.get(i).map(String::as_str).unwrap_or("");
-                // Grid semantics: the literal NULL marker means SQL NULL.
-                let value = if cell.eq_ignore_ascii_case("null") {
+                let value = if crate::models::structs::is_null_cell(cell) {
                     serde_json::Value::Null
                 } else if let Ok(n) = cell.parse::<i64>() {
                     serde_json::Value::from(n)
@@ -191,7 +191,11 @@ pub fn build_markdown(all_table_data: &[Vec<String>], headers: &[String]) -> Str
     out.push_str(&format!("|{}\n", " --- |".repeat(headers.len())));
     for row in all_table_data {
         let cells: Vec<String> = (0..headers.len())
-            .map(|i| escape(row.get(i).map(String::as_str).unwrap_or("")))
+            .map(|i| {
+                escape(crate::models::structs::cell_display(
+                    row.get(i).map(String::as_str).unwrap_or(""),
+                ))
+            })
             .collect();
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
@@ -353,7 +357,7 @@ pub fn build_sql_inserts(
         }
     };
     let quote_value = |v: &str| -> String {
-        if v.is_empty() || v.eq_ignore_ascii_case("null") {
+        if crate::models::structs::is_null_cell(v) {
             return "NULL".to_string();
         }
         match db_type {
@@ -536,7 +540,7 @@ pub fn build_sql_dump(
             for row in all_table_data.iter().take(50) {
                 if let Some(val) = row.get(i) {
                     let v = val.trim();
-                    if !v.is_empty() && !v.eq_ignore_ascii_case("null") {
+                    if !v.is_empty() && !crate::models::structs::is_null_cell(v) {
                         has_values = true;
                         if v.parse::<i64>().is_err() {
                             is_integer = false;
@@ -649,7 +653,10 @@ mod tests {
     fn sql_inserts_escape_and_chunk() {
         let data = vec![
             vec!["1".to_string(), "it's".to_string()],
-            vec!["2".to_string(), "NULL".to_string()],
+            vec![
+                "2".to_string(),
+                crate::models::structs::NULL_CELL.to_string(),
+            ],
         ];
         let headers = vec!["id".to_string(), "name".to_string()];
         let sql = build_sql_inserts(&data, &headers, "Table: users", Some(&DatabaseType::MySQL));
@@ -689,7 +696,11 @@ mod tests {
 
     #[test]
     fn json_nulls_and_numbers() {
-        let data = vec![vec!["NULL".to_string(), "42".to_string(), "x".to_string()]];
+        let data = vec![vec![
+            crate::models::structs::NULL_CELL.to_string(),
+            "42".to_string(),
+            "x".to_string(),
+        ]];
         let headers = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let json = build_json(&data, &headers);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

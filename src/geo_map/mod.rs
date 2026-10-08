@@ -27,7 +27,7 @@ pub fn detect_geometry_columns(headers: &[String], rows: &[Vec<String>]) -> Vec<
             for row in rows.iter().take(200) {
                 let Some(v) = row.get(c) else { continue };
                 let t = v.trim();
-                if t.is_empty() || t.eq_ignore_ascii_case("null") {
+                if t.is_empty() || crate::models::structs::is_null_cell(v) {
                     continue;
                 }
                 seen += 1;
@@ -735,7 +735,7 @@ mod tests {
         let headers = s(&["id", "name", "geom"]);
         let rows = vec![
             s(&["1", "Jakarta", "POINT(106.8 -6.2)"]),
-            s(&["2", "Bandung", "NULL"]),
+            s(&["2", "Bandung", crate::models::structs::NULL_CELL]),
             s(&["3", "Surabaya", "SRID=4326;POINT(112.75 -7.25)"]),
         ];
         assert_eq!(detect_geometry_columns(&headers, &rows), vec![2]);

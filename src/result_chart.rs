@@ -108,8 +108,7 @@ pub struct ChartData {
 }
 
 fn is_null(v: &str) -> bool {
-    let t = v.trim();
-    t.is_empty() || t.eq_ignore_ascii_case("null")
+    crate::models::structs::is_null_cell(v) || v.trim().is_empty()
 }
 
 /// Membaca angka dari sel; menerima pemisah ribuan koma bila pola angkanya jelas.
@@ -336,7 +335,7 @@ pub fn build_chart_data(headers: &[String], rows: &[Vec<String>], cfg: &ChartCon
         };
         let x = if categorical {
             let key = if is_null(raw_x) {
-                "NULL".to_string()
+                crate::models::structs::NULL_DISPLAY.to_string()
             } else {
                 raw_x.trim().to_string()
             };
@@ -704,7 +703,11 @@ mod tests {
         let rows = vec![
             s(&["a", "1", "2024-01-01"]),
             s(&["b", "2.5", "2024-01-02 10:00:00"]),
-            s(&["c", "NULL", "2024-01-03T11:00:00Z"]),
+            s(&[
+                "c",
+                crate::models::structs::NULL_CELL,
+                "2024-01-03T11:00:00Z",
+            ]),
         ];
         assert_eq!(infer_column_kind(&rows, 0), ColumnKind::Text);
         assert_eq!(infer_column_kind(&rows, 1), ColumnKind::Numeric);

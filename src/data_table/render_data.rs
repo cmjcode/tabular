@@ -90,7 +90,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                             .get(c)
                                             .cloned()
                                             .unwrap_or_else(|| format!("Col {}", c + 1));
-                                        tabular.cell_inspector.open(val.clone(), col_name, r, c);
+                                        tabular.cell_inspector.open(
+                                            crate::models::structs::cell_display(val).to_string(),
+                                            col_name,
+                                            r,
+                                            c,
+                                        );
                                     }
                                 }
                             }
@@ -945,7 +950,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                     let is_raw_value = super::grid_model::as_raw_sql(cell).is_some();
                                     let is_fk_link = fk_info.is_some()
                                         && !cell.is_empty()
-                                        && cell != "NULL"
+                                        && !super::grid_model::is_null_cell(cell)
                                         && !is_raw_value;
                                     let rule_cell_color = rule_cell_colors
                                         .iter()
@@ -1859,7 +1864,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
             tabular.selected_cell = selected_cell;
             tabular.table_dragging = table_dragging;
             if let Some((val, col_title, r, c)) = inspect_value_request {
-                tabular.cell_inspector.open(val, col_title, r, c);
+                tabular.cell_inspector.open(
+                    crate::models::structs::cell_display(&val).to_string(),
+                    col_title,
+                    r,
+                    c,
+                );
             }
             if open_plugin_modal {
                 tabular.settings_active_pref_tab = crate::window_egui::PrefTab::Plugins;
@@ -2007,7 +2017,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 .get(c)
                                 .cloned()
                                 .unwrap_or_else(|| format!("Col {}", c + 1));
-                            tabular.cell_inspector.open(val.clone(), col_name, r, c);
+                            tabular.cell_inspector.open(
+                                crate::models::structs::cell_display(val).to_string(),
+                                col_name,
+                                r,
+                                c,
+                            );
                         }
                     }
                 }

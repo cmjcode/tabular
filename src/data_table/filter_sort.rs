@@ -19,7 +19,8 @@ impl SortKey {
     /// `None` = baris tidak memiliki kolom tersebut; diperlakukan seperti NULL.
     pub(crate) fn from_cell(cell: Option<&String>) -> Self {
         match cell.map(String::as_str) {
-            None | Some("NULL") | Some("") => SortKey::Null,
+            None | Some("") => SortKey::Null,
+            Some(value) if crate::models::structs::is_null_cell(value) => SortKey::Null,
             Some(value) => match value.parse::<f64>() {
                 Ok(num) => SortKey::Num(num),
                 Err(_) => SortKey::Str(value.to_lowercase()),
@@ -1212,6 +1213,8 @@ mod tests {
         SortKey::from_cell(Some(&value.to_string()))
     }
 
+    use crate::models::structs::NULL_CELL;
+
     fn sorted_column(values: &[&str], ascending: bool) -> Vec<String> {
         let mut t = crate::window_egui::Tabular::new();
         t.current_table_headers = vec!["v".to_string(), "pos".to_string()];
@@ -1241,12 +1244,12 @@ mod tests {
     #[test]
     fn sort_places_nulls_last_ascending_and_first_descending() {
         assert_eq!(
-            sorted_column(&["b", "NULL", "a", "", "C"], true),
-            vec!["a", "b", "C", "NULL", ""]
+            sorted_column(&["b", NULL_CELL, "a", "", "C"], true),
+            vec!["a", "b", "C", NULL_CELL, ""]
         );
         assert_eq!(
-            sorted_column(&["b", "NULL", "a", "", "C"], false),
-            vec!["NULL", "", "C", "b", "a"]
+            sorted_column(&["b", NULL_CELL, "a", "", "C"], false),
+            vec![NULL_CELL, "", "C", "b", "a"]
         );
     }
 
@@ -1261,8 +1264,8 @@ mod tests {
     #[test]
     fn sort_handles_nan_and_infinity_strings() {
         assert_eq!(
-            sorted_column(&["NaN", "inf", "1", "-inf", "NULL", "0"], true),
-            vec!["-inf", "0", "1", "inf", "NaN", "NULL"]
+            sorted_column(&["NaN", "inf", "1", "-inf", NULL_CELL, "0"], true),
+            vec!["-inf", "0", "1", "inf", "NaN", NULL_CELL]
         );
         assert_eq!(sort_key("NaN"), sort_key("nan"));
     }
@@ -1312,7 +1315,7 @@ mod tests {
             (seed >> 33) as u32
         };
         let special = [
-            "NULL", "", "NaN", "inf", "-inf", "-0", "0", "1e2", "abc", "ABC",
+            NULL_CELL, "", "NaN", "inf", "-inf", "-0", "0", "1e2", "abc", "ABC",
         ];
         let values: Vec<String> = (0..300)
             .map(|_| {

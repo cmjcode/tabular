@@ -105,10 +105,11 @@ pub(crate) fn copy_selected_rows_as_csv(tabular: &window_egui::Tabular) -> Optio
             let line = row
                 .iter()
                 .map(|cell| {
+                    let cell = crate::models::structs::cell_display(cell);
                     if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
                         format!("\"{}\"", cell.replace('"', "\"\""))
                     } else {
-                        cell.clone()
+                        cell.to_string()
                     }
                 })
                 .collect::<Vec<_>>()
@@ -138,10 +139,11 @@ pub(crate) fn copy_selected_columns_as_csv(tabular: &window_egui::Tabular) -> Op
         let mut cols = Vec::new();
         for (i, cell) in row.iter().enumerate() {
             if tabular.selected_columns.contains(&i) {
+                let cell = crate::models::structs::cell_display(cell);
                 if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
                     cols.push(format!("\"{}\"", cell.replace('"', "\"\"")));
                 } else {
-                    cols.push(cell.clone());
+                    cols.push(cell.to_string());
                 }
             }
         }

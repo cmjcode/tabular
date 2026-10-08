@@ -379,7 +379,11 @@ pub(crate) fn fetch_tables_with_comments_from_postgres_connection(
         .iter()
         .find(|c| c.id == Some(connection_id))?
         .clone();
-    rt.block_on(list_postgres_tables_with_comments(&conn, database_name, table_type))
+    rt.block_on(list_postgres_tables_with_comments(
+        &conn,
+        database_name,
+        table_type,
+    ))
 }
 
 pub(crate) async fn list_postgres_tables_with_comments(
@@ -462,12 +466,12 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     fn show<T: ToString>(v: Result<Option<T>, sqlx::Error>) -> Option<String> {
         v.ok().map(|o| {
             o.map(|x| x.to_string())
-                .unwrap_or_else(|| "NULL".to_string())
+                .unwrap_or_else(|| crate::models::structs::NULL_CELL.to_string())
         })
     }
     fn show_array<T: ToString>(v: Result<Option<Vec<Option<T>>>, sqlx::Error>) -> Option<String> {
         v.ok().map(|o| match o {
-            None => "NULL".to_string(),
+            None => crate::models::structs::NULL_CELL.to_string(),
             Some(items) => format!(
                 "{{{}}}",
                 items
@@ -475,7 +479,7 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
                     .map(|i| i
                         .as_ref()
                         .map(|x| x.to_string())
-                        .unwrap_or_else(|| "NULL".to_string()))
+                        .unwrap_or_else(|| crate::models::structs::NULL_CELL.to_string()))
                     .collect::<Vec<_>>()
                     .join(",")
             ),
@@ -483,7 +487,7 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     }
 
     match row.try_get_raw(idx) {
-        Ok(raw) if raw.is_null() => return "NULL".to_string(),
+        Ok(raw) if raw.is_null() => return crate::models::structs::NULL_CELL.to_string(),
         Err(e) => return format!("[error: {}]", e),
         Ok(_) => {}
     }
@@ -510,7 +514,7 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
             .try_get::<Option<Vec<u8>>, _>(idx)
             .ok()
             .map(|o| match o {
-                None => "NULL".to_string(),
+                None => crate::models::structs::NULL_CELL.to_string(),
                 Some(b) => format!("\\x{}", hex::encode(b)),
             }),
         "UUID" => row.try_get_raw(idx).ok().and_then(|raw| {

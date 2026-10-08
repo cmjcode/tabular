@@ -39,7 +39,7 @@ pub fn display_value(value: &str) -> Cow<'_, str> {
     match as_raw_sql(value) {
         Some(RAW_NOW) => Cow::Borrowed("NOW()"),
         Some(expr) => Cow::Borrowed(expr),
-        None => Cow::Borrowed(value),
+        None => Cow::Borrowed(crate::models::structs::cell_display(value)),
     }
 }
 
@@ -84,7 +84,7 @@ impl QuickValue {
     /// Nilai sel yang disimpan di grid untuk pilihan ini.
     pub fn cell_value(self) -> String {
         match self {
-            QuickValue::Null => "NULL".to_string(),
+            QuickValue::Null => crate::models::structs::NULL_CELL.to_string(),
             QuickValue::EmptyString => raw_sql_value(RAW_EMPTY_STRING),
             QuickValue::Default => raw_sql_value(RAW_DEFAULT),
             QuickValue::Now => raw_sql_value(RAW_NOW),
@@ -310,8 +310,11 @@ pub fn highlight_operators() -> &'static [FilterOperator] {
     ]
 }
 
+/// Apakah sel adalah SQL NULL. Teks `NULL` yang diketik pengguna adalah
+/// string biasa; NULL hanya lewat penanda `NULL_CELL` (driver atau menu
+/// "Set NULL").
 pub fn is_null_cell(cell: &str) -> bool {
-    cell.eq_ignore_ascii_case("null")
+    crate::models::structs::is_null_cell(cell)
 }
 
 /// Bandingkan secara numerik bila keduanya angka, selain itu leksikografis
@@ -362,10 +365,12 @@ fn split_range(value: &str) -> Option<(&str, &str)> {
 
 /// Apakah nilai sel memenuhi operator + nilai pembanding.
 pub fn rule_matches(op: FilterOperator, expected: &str, cell: &str) -> bool {
+    // Null diperiksa pada nilai mentah: `display_value` sudah mengubah
+    // penanda NULL menjadi teks.
+    let null = is_null_cell(cell);
     let cell = display_value(cell);
     let cell = cell.as_ref();
     let expected = expected.trim();
-    let null = is_null_cell(cell);
     match op {
         FilterOperator::IsNull => null,
         FilterOperator::IsNotNull => !null,
@@ -931,7 +936,12 @@ mod tests {
             "CURRENT_TIMESTAMP"
         );
         assert_eq!(quote_literal(&db, &raw_sql_value(RAW_EMPTY_STRING)), "''");
-        assert_eq!(quote_literal(&db, "NULL"), "NULL");
+        assert_eq!(
+            quote_literal(&db, crate::models::structs::NULL_CELL),
+            "NULL"
+        );
+        // Teks `NULL` adalah string, bukan SQL NULL.
+        assert_eq!(quote_literal(&db, "NULL"), "'NULL'");
         assert_eq!(quote_literal(&db, ""), "''");
         assert_eq!(quote_literal(&db, "O'Brien"), "'O''Brien'");
         assert_eq!(
@@ -988,8 +998,17 @@ mod tests {
         assert!(!rule_matches(FilterOperator::GreaterThan, "10", "9"));
         assert!(rule_matches(FilterOperator::Equal, "ACTIVE", "active"));
         assert!(rule_matches(FilterOperator::Contains, "err", "Some ERROR"));
-        assert!(rule_matches(FilterOperator::IsNull, "", "NULL"));
-        assert!(!rule_matches(FilterOperator::Equal, "NULL", "NULL"));
+        assert!(rule_matches(
+            FilterOperator::IsNull,
+            "",
+            crate::models::structs::NULL_CELL
+        ));
+        assert!(!rule_matches(
+            FilterOperator::Equal,
+            "NULL",
+            crate::models::structs::NULL_CELL
+        ));
+        assert!(rule_matches(FilterOperator::Equal, "NULL", "NULL"));
         assert!(rule_matches(FilterOperator::Between, "1, 5", "3"));
         assert!(rule_matches(FilterOperator::In, "a, b", "B"));
         assert!(rule_matches(FilterOperator::Like, "a_c%", "abcdef"));

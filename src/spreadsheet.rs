@@ -794,9 +794,13 @@ impl SpreadsheetOperations for Tabular {
             .and_then(|r| r.get(col))
             .cloned()
         {
-            // Nilai mentah (DEFAULT/NOW) tidak diedit sebagai teks: editor
-            // dimulai kosong dan nilai asal dipakai lagi bila tidak diketik.
-            let text = if crate::data_table::grid_model::as_raw_sql(&val).is_some() {
+            // Nilai mentah (DEFAULT/NOW) dan NULL tidak diedit sebagai teks:
+            // editor dimulai kosong dan nilai asal dipakai lagi bila tidak
+            // diketik. Mengetik `NULL` menghasilkan string, bukan SQL NULL;
+            // NULL lewat menu "Set NULL".
+            let text = if crate::data_table::grid_model::as_raw_sql(&val).is_some()
+                || crate::data_table::grid_model::is_null_cell(&val)
+            {
                 self.grid_ext.raw_edit_origin = Some(val);
                 String::new()
             } else {
@@ -1062,7 +1066,7 @@ impl SpreadsheetOperations for Tabular {
                             val = v.clone();
                         }
 
-                        let clause = if val.to_uppercase() == "NULL" {
+                        let clause = if crate::data_table::grid_model::is_null_cell(&val) {
                             format!("{} IS NULL", qt(&id_name))
                         } else {
                             format!("{} = {}", qt(&id_name), qv(&val))
@@ -1123,7 +1127,7 @@ impl SpreadsheetOperations for Tabular {
                         .and_then(|meta| meta.get(i))
                         .and_then(|m| m.original_name.clone())
                         .unwrap_or_else(|| header.clone());
-                    let clause = if val.to_uppercase() == "NULL" {
+                    let clause = if crate::data_table::grid_model::is_null_cell(&val) {
                         format!("{} IS NULL", qt(&col_name_for_where))
                     } else {
                         format!("{} = {}", qt(&col_name_for_where), qv(&val))

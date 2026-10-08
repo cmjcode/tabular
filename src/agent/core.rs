@@ -960,7 +960,23 @@ impl HeadlessSession {
             connection_id: id,
             database,
             columns: msg.headers,
-            rows: msg.rows,
+            // Baris ke agent adalah teks; penanda NULL internal ditampilkan
+            // sebagai `NULL` seperti di grid.
+            rows: msg
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| {
+                            if crate::models::structs::is_null_cell(&cell) {
+                                crate::models::structs::NULL_DISPLAY.to_string()
+                            } else {
+                                cell
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
             row_count: 0,
             truncated: msg.truncated,
             execution_ms: msg.duration.as_millis(),

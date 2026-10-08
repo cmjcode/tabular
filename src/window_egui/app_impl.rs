@@ -4050,7 +4050,9 @@ impl Tabular {
                     if let Some(row) = self.current_table_data.get(r)
                         && let Some(val) = row.get(c)
                     {
-                        ctx.copy_text(val.clone());
+                        // Penanda NULL/nilai mentah disalin sebagai teks tampilan.
+                        let val = crate::data_table::grid_model::display_value(val);
+                        ctx.copy_text(val.to_string());
                         debug!("📋 Copied cell ({},{}) len={} chars", r, c, val.len());
                     }
                 }

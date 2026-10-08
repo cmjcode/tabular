@@ -62,7 +62,7 @@ pub(crate) async fn connect_mssql(
 /// Convert a dynamic SqlValue into the display string used by the data grid.
 pub(crate) fn sql_value_to_string(value: &SqlValue) -> String {
     match value {
-        SqlValue::Null => "NULL".to_string(),
+        SqlValue::Null => crate::models::structs::NULL_CELL.to_string(),
         SqlValue::Bool(v) => v.to_string(),
         SqlValue::TinyInt(v) => v.to_string(),
         SqlValue::SmallInt(v) => v.to_string(),
@@ -91,7 +91,7 @@ pub(crate) fn row_values_to_strings(row: &mssql_client::Row) -> Vec<String> {
     (0..row.len())
         .map(|i| match row.get_raw(i) {
             Some(v) => sql_value_to_string(&v),
-            None => "NULL".to_string(),
+            None => crate::models::structs::NULL_CELL.to_string(),
         })
         .collect()
 }

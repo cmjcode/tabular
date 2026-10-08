@@ -975,9 +975,9 @@ mod tests {
         let changed = &r.diffs[0];
         assert_eq!(changed.source_value(1), Some("NULL"));
         assert_eq!(changed.target_value(1), None);
-        // Teks tampilan tetap memakai penanda di kedua sisi.
+        // Teks tampilan: string `NULL` tetap teks, NULL memakai penanda.
         assert_eq!(changed.source[1], "NULL");
-        assert_eq!(changed.target[1], "NULL");
+        assert_eq!(changed.target[1], crate::data_transfer::NULL_MARKER);
     }
 
     #[test]
@@ -1058,7 +1058,11 @@ mod tests {
     fn sync_script_makes_target_match_source() {
         let src = table(
             &["id", "name"],
-            &[&["1", "a"], &["2", "it's"], &["3", "NULL"]],
+            &[
+                &["1", "a"],
+                &["2", "it's"],
+                &["3", crate::data_transfer::NULL_MARKER],
+            ],
         );
         let dst = table(&["id", "name"], &[&["1", "old"], &["9", "gone"]]);
         let r = diff_tables(&src, &dst, &keyed("id")).unwrap();

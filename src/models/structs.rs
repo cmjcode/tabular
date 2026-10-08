@@ -485,6 +485,31 @@ impl ForeignKeyRelation {
     }
 }
 
+/// Penanda sel SQL NULL di baris hasil query (`Vec<Vec<String>>`). Diawali
+/// byte NUL, yang tidak sah dalam teks SQL, sehingga tidak mungkin bertabrakan
+/// dengan string `'NULL'` sungguhan dari database. Semua driver menghasilkan
+/// nilai ini untuk NULL; jangan ditampilkan mentah, pakai [`cell_display`]
+/// atau `data_table::grid_model::display_value`.
+pub const NULL_CELL: &str = "\0NULL";
+
+/// Teks yang ditampilkan atau diekspor untuk sel NULL.
+pub const NULL_DISPLAY: &str = "NULL";
+
+/// Apakah sel adalah SQL NULL (bukan teks `NULL`).
+pub fn is_null_cell(cell: &str) -> bool {
+    cell == NULL_CELL
+}
+
+/// Teks sel untuk tampilan/ekspor: NULL menjadi [`NULL_DISPLAY`], sisanya
+/// apa adanya.
+pub fn cell_display(cell: &str) -> &str {
+    if is_null_cell(cell) {
+        NULL_DISPLAY
+    } else {
+        cell
+    }
+}
+
 /// Zero-copy & memory-efficient cell representation for large payloads (JSON, BLOB, Text)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum CellValue {

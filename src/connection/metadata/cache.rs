@@ -212,7 +212,7 @@ async fn prefetch_first_rows_for_all_tables(
                                     (0..row.len())
                                         .map(|j| match row.try_get::<Option<String>, _>(j) {
                                             Ok(Some(v)) => v,
-                                            Ok(None) => "NULL".to_string(),
+                                            Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                                             Err(_) => {
                                                 if let Ok(Some(bytes)) =
                                                     row.try_get::<Option<Vec<u8>>, _>(j)

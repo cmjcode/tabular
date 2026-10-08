@@ -18,8 +18,10 @@ pub mod transfer;
 pub mod types;
 pub mod values;
 
-/// Penanda sel SQL NULL yang dipakai grid dan konverter driver.
-pub const NULL_MARKER: &str = "NULL";
+/// Penanda sel SQL NULL yang dipakai grid dan konverter driver (lihat
+/// `models::structs::NULL_CELL`; diawali byte NUL sehingga teks `NULL`
+/// sungguhan tetap string).
+pub const NULL_MARKER: &str = crate::models::structs::NULL_CELL;
 
 /// Satu-satunya tempat penanda teks [`NULL_MARKER`] ditafsirkan sebagai SQL
 /// NULL.
@@ -256,7 +258,10 @@ mod tests {
         );
         data.normalize();
         assert_eq!(data.headers, vec!["id", "col_2", "ID_2", "col_4"]);
-        assert_eq!(data.rows[0], vec!["1", "NULL", "NULL", "NULL"]);
+        assert_eq!(
+            data.rows[0],
+            vec!["1", NULL_MARKER, NULL_MARKER, NULL_MARKER]
+        );
         assert_eq!(data.rows[1].len(), 4);
         assert!(data.is_null(0, 1));
         assert_eq!(data.value(1, 1), Some("b"));
@@ -278,14 +283,14 @@ mod tests {
         assert_eq!(data.value(0, 1), None);
         assert_eq!(data.value(0, 2), None);
         assert_eq!(data.value(1, 1), Some(""));
-        assert_eq!(data.rows[0], vec!["NULL", "NULL", "NULL"]);
+        assert_eq!(data.rows[0], vec!["NULL", NULL_MARKER, NULL_MARKER]);
         assert_eq!(
             data.clone().into_cells()[0],
             vec![Some("NULL".to_string()), None, None]
         );
 
-        // Mode penanda (grid): teks `NULL` tidak bisa dibedakan dari NULL.
-        let grid = TableData::new(vec!["a".into()], vec![vec!["NULL".into()]]);
+        // Mode penanda (grid): hanya penanda yang berarti NULL.
+        let grid = TableData::new(vec!["a".into()], vec![vec![NULL_MARKER.into()]]);
         assert!(!grid.has_explicit_nulls());
         assert_eq!(grid.value(0, 0), None);
         assert_eq!(grid.value(9, 9), None);

@@ -1285,7 +1285,7 @@ fn render_fk_picker(t: &mut Tabular, ctx: &egui::Context) {
                     ui.add(egui::Spinner::new());
                 }
                 if ui.button("Set NULL").clicked() {
-                    chosen = Some("NULL".to_string());
+                    chosen = Some(crate::models::structs::NULL_CELL.to_string());
                 }
             });
             if let Some(at) = picker.search_changed_at {
@@ -1377,7 +1377,11 @@ fn render_row_node(
         .spacing(egui::vec2(12.0, 3.0))
         .show(ui, |ui| {
             for (i, col) in node.columns.iter().enumerate() {
-                let raw = node.values.get(i).map(String::as_str).unwrap_or("NULL");
+                let raw = node
+                    .values
+                    .get(i)
+                    .map(String::as_str)
+                    .unwrap_or(crate::models::structs::NULL_CELL);
                 ui.label(egui::RichText::new(col).strong());
                 ui.horizontal(|ui| {
                     if gm::is_null_cell(raw) {

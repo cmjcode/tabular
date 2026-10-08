@@ -84,16 +84,16 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_idx) {
                         val.to_string()
                     } else if let Ok(None) = row.try_get::<Option<i64>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else if let Ok(Some(val)) = row.try_get::<Option<i32>, _>(col_idx) {
                         val.to_string()
                     } else if let Ok(None) = row.try_get::<Option<i32>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else {
                         // Fallback to string
                         match row.try_get::<Option<String>, _>(col_idx) {
                             Ok(Some(val)) => val,
-                            Ok(None) => "NULL".to_string(),
+                            Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                             Err(_) => format!("Error reading INTEGER from column {}", column_name),
                         }
                     }
@@ -103,12 +103,12 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(col_idx) {
                         val.to_string()
                     } else if let Ok(None) = row.try_get::<Option<f64>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else {
                         // Fallback to string
                         match row.try_get::<Option<String>, _>(col_idx) {
                             Ok(Some(val)) => val,
-                            Ok(None) => "NULL".to_string(),
+                            Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                             Err(_) => format!("Error reading REAL from column {}", column_name),
                         }
                     }
@@ -116,19 +116,19 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                 // SQLite TEXT type
                 "TEXT" => match row.try_get::<Option<String>, _>(col_idx) {
                     Ok(Some(val)) => val,
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => format!("Error reading TEXT from column {}", column_name),
                 },
                 // SQLite BLOB type
                 "BLOB" => {
                     match row.try_get::<Option<Vec<u8>>, _>(col_idx) {
                         Ok(Some(val)) => format!("<BLOB {} bytes>", val.len()),
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => {
                             // Try as string fallback
                             match row.try_get::<Option<String>, _>(col_idx) {
                                 Ok(Some(val)) => val,
-                                Ok(None) => "NULL".to_string(),
+                                Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                                 Err(_) => format!("Error reading BLOB from column {}", column_name),
                             }
                         }
@@ -144,7 +144,7 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     } else if let Ok(Some(val)) = row.try_get::<Option<String>, _>(col_idx) {
                         val
                     } else if let Ok(None) = row.try_get::<Option<String>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else {
                         format!("Error reading NUMERIC from column {}", column_name)
                     }
@@ -154,7 +154,7 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     if let Ok(Some(val)) = row.try_get::<Option<bool>, _>(col_idx) {
                         val.to_string()
                     } else if let Ok(None) = row.try_get::<Option<bool>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_idx) {
                         // Convert 0/1 to boolean
                         match val {
@@ -166,7 +166,7 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                         // Fallback to string
                         match row.try_get::<Option<String>, _>(col_idx) {
                             Ok(Some(val)) => val,
-                            Ok(None) => "NULL".to_string(),
+                            Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                             Err(_) => format!("Error reading BOOLEAN from column {}", column_name),
                         }
                     }
@@ -176,7 +176,7 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     // SQLite doesn't have native date types, try string first
                     match row.try_get::<Option<String>, _>(col_idx) {
                         Ok(Some(val)) => val,
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => {
                             // Try as integer (Unix timestamp)
                             if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_idx) {
@@ -193,7 +193,7 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                     if let Ok(Some(val)) = row.try_get::<Option<String>, _>(col_idx) {
                         val
                     } else if let Ok(None) = row.try_get::<Option<String>, _>(col_idx) {
-                        "NULL".to_string()
+                        crate::models::structs::NULL_CELL.to_string()
                     } else if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_idx) {
                         val.to_string()
                     } else if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(col_idx) {

@@ -498,8 +498,11 @@ mod tests {
             vec!["INSERT INTO \"t\" (\"v\") VALUES\n('NULL'),\n(NULL),\n(NULL);"]
         );
 
-        // Tabel dari grid: penanda teks tetap berarti NULL (batasan eksekutor).
-        let grid = TableData::new(vec!["v".into()], rows(&[&["NULL"], &["x"]]));
+        // Tabel dari grid: penanda NULL dari driver berarti NULL.
+        let grid = TableData::new(
+            vec!["v".into()],
+            rows(&[&[crate::data_transfer::NULL_MARKER], &["x"]]),
+        );
         let sql = build_insert_batches(
             &DatabaseType::PostgreSQL,
             "\"t\"",
@@ -551,9 +554,18 @@ mod tests {
                     "2026-01-02T03:04",
                     "04567",
                     "x",
-                    "NULL",
+                    crate::data_transfer::NULL_MARKER,
                 ],
-                &["", "NULL", "true", "", "", "", "", ""],
+                &[
+                    "",
+                    crate::data_transfer::NULL_MARKER,
+                    "true",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
             ]),
         );
         assert_eq!(

@@ -430,8 +430,14 @@ mod tests {
             .await
             .unwrap()
             .rows;
-        assert_eq!(rows[0], vec!["1", "it's; ann", "NULL", "00FF"]);
-        assert_eq!(rows[1], vec!["2", "bob", "x", "NULL"]);
+        assert_eq!(
+            rows[0],
+            vec!["1", "it's; ann", crate::data_transfer::NULL_MARKER, "00FF"]
+        );
+        assert_eq!(
+            rows[1],
+            vec!["2", "bob", "x", crate::data_transfer::NULL_MARKER]
+        );
         assert_eq!(rows[2][2], "");
         let p = progress.lock().unwrap();
         assert!(p.finished && p.error.is_none());

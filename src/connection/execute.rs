@@ -249,7 +249,10 @@ impl SqliteInterruptHandle {
                 raw: locked.as_raw_handle(),
             }),
             Err(e) => {
-                log::warn!("[EXEC] Cannot obtain the SQLite handle for interrupts: {}", e);
+                log::warn!(
+                    "[EXEC] Cannot obtain the SQLite handle for interrupts: {}",
+                    e
+                );
                 None
             }
         }
@@ -722,12 +725,8 @@ async fn execute_query_job_in(
     let (outcome, timing) = super::timing::with_probe(start, async {
         match job.options.connection.connection_type {
             models::enums::DatabaseType::MySQL => {
-                execute_mysql_query_job(
-                    &job.options,
-                    job.connection_pool.clone(),
-                    batch_connection,
-                )
-                .await
+                execute_mysql_query_job(&job.options, job.connection_pool.clone(), batch_connection)
+                    .await
             }
             models::enums::DatabaseType::PostgreSQL => {
                 execute_postgres_query_job(
@@ -1547,7 +1546,10 @@ async fn execute_mysql_query_job(
             && !conn_in_flight
             && let Err(e) = sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await
         {
-            log::warn!("[EXEC] MySQL read-only transaction could not be closed: {}", e);
+            log::warn!(
+                "[EXEC] MySQL read-only transaction could not be closed: {}",
+                e
+            );
         }
 
         if conn_in_flight {
@@ -1824,9 +1826,7 @@ async fn execute_postgres_query_job(
 
     // Akhiri transaksi read-only. Koneksi yang gagal di-rollback tidak
     // disimpan: saat dilepas, `after_release` me-reset sesinya.
-    if read_only_tx_open
-        && let Err(e) = sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await
-    {
+    if read_only_tx_open && let Err(e) = sqlx::raw_sql("ROLLBACK").execute(&mut *conn).await {
         return Err(QueryExecutionError::from_sqlx_with_context(
             "Cannot close the read-only transaction: ",
             e,
@@ -2301,7 +2301,10 @@ async fn execute_redis_query_job(
                 }),
                 Ok(Ok(None)) => Ok(QueryJobOutput {
                     headers: vec!["Key".to_string(), "Value".to_string()],
-                    rows: vec![vec![parts[1].to_string(), "NULL".to_string()]],
+                    rows: vec![vec![
+                        parts[1].to_string(),
+                        crate::models::structs::NULL_CELL.to_string(),
+                    ]],
                     ast_debug_sql: None,
                     ast_headers: None,
                     column_metadata: None,
@@ -2761,7 +2764,10 @@ mod tests {
         let msg = execute_query_job(read_only("INSERT INTO t (name) VALUES ('x')")).await;
         assert!(!msg.success, "write must fail in a read-only job");
         assert!(
-            msg.error.as_deref().unwrap_or_default().contains("readonly"),
+            msg.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("readonly"),
             "{:?}",
             msg.error
         );
@@ -2949,7 +2955,9 @@ mod tests {
         let Ok(target) = std::env::var("TABULAR_TEST_REDIS") else {
             return;
         };
-        let (host, port) = target.rsplit_once(':').expect("TABULAR_TEST_REDIS=host:port");
+        let (host, port) = target
+            .rsplit_once(':')
+            .expect("TABULAR_TEST_REDIS=host:port");
 
         let shared = crate::driver_redis::open_redis_manager(host, port, "", "", None)
             .await
@@ -2986,10 +2994,9 @@ mod tests {
         assert_eq!(redis_current_db(&mut db3).await, "3");
 
         // Pengganti KEYS: pemindaian SCAN sampai kursor habis.
-        let (keys, truncated) =
-            scan_redis_keys(&mut db3, "tabular-live-test-no-such-key-*", 10)
-                .await
-                .expect("scan");
+        let (keys, truncated) = scan_redis_keys(&mut db3, "tabular-live-test-no-such-key-*", 10)
+            .await
+            .expect("scan");
         assert!(keys.is_empty());
         assert!(!truncated);
 
@@ -3129,7 +3136,10 @@ mod tests {
             msg.rows,
             vec![
                 vec!["1".to_string(), "a".to_string()],
-                vec!["2".to_string(), "NULL".to_string()]
+                vec![
+                    "2".to_string(),
+                    crate::models::structs::NULL_CELL.to_string()
+                ]
             ]
         );
         assert!(msg.truncated);

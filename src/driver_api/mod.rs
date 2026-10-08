@@ -272,7 +272,7 @@ pub struct ExecuteOutput {
 }
 
 impl ExecuteOutput {
-    /// Ubah ke bentuk grid Tabular (`"NULL"` untuk nilai kosong, sama dengan
+    /// Ubah ke bentuk grid Tabular (`NULL_CELL` untuk nilai kosong, sama dengan
     /// konverter driver builtin) dan terapkan batas baris host.
     pub fn into_table_rows(self, max_rows: usize) -> (Vec<String>, Vec<Vec<String>>, bool) {
         let mut truncated = self.truncated;
@@ -281,7 +281,9 @@ impl ExecuteOutput {
             .into_iter()
             .map(|row| {
                 row.into_iter()
-                    .map(|cell| cell.unwrap_or_else(|| "NULL".to_string()))
+                    .map(|cell| {
+                        cell.unwrap_or_else(|| crate::models::structs::NULL_CELL.to_string())
+                    })
                     .collect()
             })
             .collect();
@@ -381,7 +383,13 @@ mod tests {
         };
         let (headers, rows, truncated) = out.into_table_rows(2);
         assert_eq!(headers, vec!["a"]);
-        assert_eq!(rows, vec![vec!["1".to_string()], vec!["NULL".to_string()]]);
+        assert_eq!(
+            rows,
+            vec![
+                vec!["1".to_string()],
+                vec![crate::models::structs::NULL_CELL.to_string()]
+            ]
+        );
         assert!(truncated);
     }
 

@@ -35,7 +35,7 @@ fn get_value_as_string_fallback(
     // Try with column name as fallback
     match row.try_get::<Option<String>, _>(column_name) {
         Ok(Some(val)) => val,
-        Ok(None) => "NULL".to_string(),
+        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
         Err(_) => format!("[CONVERSION_ERROR:{}]", type_name),
     }
 }
@@ -189,40 +189,40 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 // Integer types
                 "TINYINT" => match row.try_get::<Option<i8>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "SMALLINT" => match row.try_get::<Option<i16>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "MEDIUMINT" | "INT" | "INTEGER" => match row.try_get::<Option<i32>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "BIGINT" => match row.try_get::<Option<i64>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
 
                 // Unsigned integer types
                 "TINYINT UNSIGNED" => match row.try_get::<Option<u8>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "SMALLINT UNSIGNED" => match row.try_get::<Option<u16>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "MEDIUMINT UNSIGNED" | "INT UNSIGNED" | "INTEGER UNSIGNED" => {
                     match row.try_get::<Option<u32>, _>(idx) {
                         Ok(Some(val)) => val.to_string(),
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     }
                 }
@@ -230,7 +230,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                     // Prefer u64 for BIGINT UNSIGNED
                     match row.try_get::<Option<u64>, _>(idx) {
                         Ok(Some(val)) => val.to_string(),
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(er) => {
                             debug!(
                                 "BIGINT UNSIGNED conversion error for column '{}'",
@@ -240,7 +240,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                             // Try signed as a fallback (if fits) before string fallback
                             match row.try_get::<Option<i64>, _>(idx) {
                                 Ok(Some(val)) => val.to_string(),
-                                Ok(None) => "NULL".to_string(),
+                                Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                                 Err(_) => {
                                     get_value_as_string_fallback_idx(row, idx, column_name, &t)
                                 }
@@ -253,12 +253,12 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 ,
                 "FLOAT" => match row.try_get::<Option<f32>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
                 "DOUBLE" | "REAL" => match row.try_get::<Option<f64>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
 
@@ -286,7 +286,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM"
                 | "SET" | "VAR_STRING" | "STRING" => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(val)) => val,
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => {
                         // Some drivers may expose these as bytes, try to decode
                         if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
@@ -303,7 +303,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
                     match row.try_get::<Option<Vec<u8>>, _>(idx) {
                         Ok(Some(val)) => bytes_to_string_or_marker(val),
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     }
                 }
@@ -336,19 +336,19 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 // Date and time types
                 "DATE" => match row.try_get::<Option<chrono::NaiveDate>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => match row.try_get::<Option<String>, _>(idx) {
                         Ok(Some(val)) => val,
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     },
                 },
                 "TIME" => match row.try_get::<Option<chrono::NaiveTime>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => match row.try_get::<Option<String>, _>(idx) {
                         Ok(Some(val)) => val,
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     },
                 },
@@ -374,17 +374,17 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 }
                 "YEAR" => match row.try_get::<Option<i16>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                 },
 
                 // Boolean type
                 "BOOLEAN" | "BOOL" => match row.try_get::<Option<bool>, _>(idx) {
                     Ok(Some(val)) => val.to_string(),
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => match row.try_get::<Option<i8>, _>(idx) {
                         Ok(Some(val)) => (val != 0).to_string(),
-                        Ok(None) => "NULL".to_string(),
+                        Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                         Err(_) => get_value_as_string_fallback_idx(row, idx, column_name, &t),
                     },
                 },
@@ -407,7 +407,7 @@ pub(crate) fn convert_mysql_rows_to_table_data(
                 // Default
                 _ => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(val)) => val,
-                    Ok(None) => "NULL".to_string(),
+                    Ok(None) => crate::models::structs::NULL_CELL.to_string(),
                     Err(_) => {
                         // If not directly convertible to String, try bytes -> text
                         if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {

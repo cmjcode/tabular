@@ -29,7 +29,8 @@ pub fn format_as_markdown_table(headers: &[String], rows: &[Vec<String>]) -> Str
         output.push('|');
         for i in 0..headers.len() {
             output.push(' ');
-            let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            let cell =
+                crate::models::structs::cell_display(row.get(i).map(|s| s.as_str()).unwrap_or(""));
             output.push_str(&cell.replace('|', "\\|").replace('\n', " "));
             output.push_str(" |");
         }
@@ -46,7 +47,12 @@ pub fn format_as_json(headers: &[String], rows: &[Vec<String>]) -> String {
         let mut map = serde_json::Map::new();
         for (i, h) in headers.iter().enumerate() {
             let val = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            map.insert(h.clone(), serde_json::Value::String(val.to_string()));
+            let json = if crate::models::structs::is_null_cell(val) {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(val.to_string())
+            };
+            map.insert(h.clone(), json);
         }
         objects.push(serde_json::Value::Object(map));
     }
@@ -75,7 +81,8 @@ pub fn format_as_csv(headers: &[String], rows: &[Vec<String>]) -> String {
     for row in rows {
         let mut row_cells = Vec::with_capacity(headers.len());
         for i in 0..headers.len() {
-            let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            let cell =
+                crate::models::structs::cell_display(row.get(i).map(|s| s.as_str()).unwrap_or(""));
             row_cells.push(escape_csv(cell));
         }
         output.push_str(&row_cells.join(","));
@@ -97,7 +104,7 @@ pub fn format_as_sql_inserts(table_name: &str, headers: &[String], rows: &[Vec<S
         let mut vals = Vec::with_capacity(headers.len());
         for i in 0..headers.len() {
             let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            if cell.eq_ignore_ascii_case("NULL") {
+            if crate::models::structs::is_null_cell(cell) {
                 vals.push("NULL".to_string());
             } else {
                 vals.push(format!("'{}'", cell.replace('\'', "''")));
@@ -158,7 +165,7 @@ mod tests {
         let headers = vec!["id".into(), "name".into()];
         let rows = vec![
             vec!["1".into(), "O'Connor".into()],
-            vec!["2".into(), "NULL".into()],
+            vec!["2".into(), crate::models::structs::NULL_CELL.into()],
         ];
         let sql = format_as_sql_inserts("users", &headers, &rows);
         assert!(sql.contains("INSERT INTO users (id, name) VALUES ('1', 'O''Connor');"));

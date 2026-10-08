@@ -1429,7 +1429,7 @@ pub fn table_cell_style(
     let trimmed = cell.trim();
 
     // 1. Cek NULL
-    if trimmed.is_empty() || trimmed == "NULL" || trimmed.eq_ignore_ascii_case("null") {
+    if trimmed.is_empty() || crate::models::structs::is_null_cell(cell) {
         let null_color = if is_dark {
             egui::Color32::from_rgb(148, 163, 184) // Slate-400
         } else {
