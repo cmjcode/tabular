@@ -10,6 +10,7 @@
 //   crud     – connection CRUD (update, remove, test) + background refresh
 //   ui       – egui connection-selector popup
 
+pub mod atomic;
 pub mod crud;
 pub mod execute;
 pub mod metadata;

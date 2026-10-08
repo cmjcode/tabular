@@ -636,10 +636,7 @@ async fn execute_query_job_all_in(
         return vec![execute_query_job_in(job, batch_connection).await];
     };
 
-    let mut query = job.options.query.trim().to_string();
-    if query.contains("TOP") && query.contains("ROWS FETCH NEXT") {
-        query = query.replace("TOP 10000", "");
-    }
+    let query = job.options.query.trim().to_string();
     // Batas baris diterapkan saat membaca (bukan setelah semua baris
     // dikonversi), dan timeout membatalkan query di server lalu membuang
     // koneksinya.
@@ -2549,15 +2546,11 @@ async fn execute_mssql_query_job(
         }
     };
 
-    let mut query_str = options.query.trim().to_string();
+    let query_str = options.query.trim().to_string();
     if query_str.is_empty() {
         return Err(QueryExecutionError::Message(
             "Empty MsSQL query".to_string(),
         ));
-    }
-
-    if query_str.contains("TOP") && query_str.contains("ROWS FETCH NEXT") {
-        query_str = query_str.replace("TOP 10000", "");
     }
 
     // Sama seperti engine lain: berhenti di `max_rows`, tandai terpotong, dan

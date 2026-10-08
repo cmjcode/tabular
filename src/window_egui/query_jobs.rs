@@ -514,6 +514,100 @@ impl super::Tabular {
         }
     }
 
+    /// Jalankan statement simpan grid dalam satu transaksi (lihat
+    /// `connection::atomic`), lalu panggil `callback` dengan hasilnya seperti
+    /// job ber-callback biasa. Koneksi tanpa dukungan transaksi di sini
+    /// (plugin, Redis, MongoDB) atau pool yang belum siap jatuh ke eksekusi
+    /// biasa statement-per-statement.
+    pub(crate) fn run_grid_save(
+        &mut self,
+        connection_id: i64,
+        statements: Vec<connection::atomic::TransactionalStatement>,
+        callback: super::QueryCallback,
+    ) {
+        let joined = statements
+            .iter()
+            .map(|s| s.sql.as_str())
+            .collect::<Vec<_>>()
+            .join(";\n");
+        let pool = self
+            .connection_pools
+            .get(&connection_id)
+            .cloned()
+            .or_else(|| {
+                connection::pool::lock_or_recover(&self.shared_connection_pools)
+                    .get(&connection_id)
+                    .cloned()
+            })
+            .filter(connection::atomic::supports_transactions);
+        let (Some(pool), Some(runtime)) = (pool, self.runtime.clone()) else {
+            log::warn!(
+                "[GRID] transactional save unavailable for connection {}; running statements one by one",
+                connection_id
+            );
+            self.run_query_with_callback(connection_id, joined, callback);
+            return;
+        };
+
+        let job_id = self.jobs.allocate_id();
+        let sender = self.query_result_sender.clone();
+        let wake = self.result_wake_hook();
+        let tab_id = self.query_tabs.get(self.active_tab_index).map(|t| t.id);
+        let timeout = (self.query_timeout_secs > 0)
+            .then(|| std::time::Duration::from_secs(self.query_timeout_secs as u64));
+        let query = joined.clone();
+        let handle = runtime.spawn(async move {
+            let started = std::time::Instant::now();
+            let outcome =
+                connection::atomic::execute_in_transaction(&pool, &statements, timeout).await;
+            let (success, affected_rows, error) = match outcome {
+                Ok(affected) => (true, Some(affected as usize), None),
+                Err(e) => (false, None, Some(e.to_string())),
+            };
+            let message = connection::QueryResultMessage {
+                job_id,
+                tab_id,
+                connection_id,
+                success,
+                headers: if success {
+                    Vec::new()
+                } else {
+                    vec!["Error".to_string()]
+                },
+                rows: error
+                    .as_ref()
+                    .map(|e| vec![vec![e.clone()]])
+                    .unwrap_or_default(),
+                error,
+                duration: started.elapsed(),
+                query,
+                dba_special_mode: None,
+                ast_debug_sql: None,
+                ast_headers: None,
+                affected_rows,
+                column_metadata: None,
+                truncated: false,
+                error_location: None,
+                timing: None,
+            };
+            connection::execute::send_and_wake(&sender, message, wake.as_ref());
+        });
+        self.jobs.active.insert(
+            job_id,
+            connection::QueryJobStatus {
+                job_id,
+                connection_id,
+                query_preview: joined.chars().take(80).collect(),
+                started_at: std::time::Instant::now(),
+                completed: false,
+            },
+        );
+        self.jobs.handles.insert(job_id, handle);
+        self.jobs.callbacks.insert(job_id, callback);
+        self.query_execution_in_progress = true;
+        self.extend_query_icon_hold();
+    }
+
     fn spawn_callback_job(
         &mut self,
         connection_id: i64,
@@ -665,7 +759,11 @@ impl super::Tabular {
             }
         }
         if cancelled > 0 {
-            log::debug!("[QUERY] {} job dibatalkan karena tab {} ditutup", cancelled, tab_id);
+            log::debug!(
+                "[QUERY] {} job dibatalkan karena tab {} ditutup",
+                cancelled,
+                tab_id
+            );
         }
         cancelled
     }

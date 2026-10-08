@@ -105,112 +105,155 @@ impl super::Tabular {
         self.query_execution_in_progress = false;
         self.extend_query_icon_hold();
     }
-    pub fn build_paginated_query(&self, offset: usize, limit: usize) -> String {
-        // Get the base query from the active tab - NO fallback to global state
-        let base_query = if let Some(tab) = self.query_tabs.get(self.active_tab_index) {
-            if tab.base_query.is_empty() {
-                None
-            } else {
-                Some(&tab.base_query)
-            }
-        } else {
-            None
-        };
-
-        debug!(
-            "🔍 build_paginated_query: active_tab_index={}, base_query='{}'",
-            self.active_tab_index,
-            base_query.unwrap_or(&"<empty>".to_string())
-        );
-
-        let Some(base_query) = base_query else {
-            debug!("❌ build_paginated_query: base_query is empty, returning empty string");
+    /// Query untuk halaman `offset..offset+limit` dari `base_query` tab aktif.
+    ///
+    /// Query tanpa `ORDER BY` di level teratas diberi `ORDER BY <primary key>`
+    /// (dari cache index) supaya urutan halaman stabil: tanpa itu server bebas
+    /// mengembalikan urutan berbeda tiap halaman, sehingga baris bisa terulang
+    /// atau hilang saat berpindah halaman. Deteksi `LIMIT`/`ORDER BY` memakai
+    /// token level teratas, jadi subquery, literal, dan kolom bernama `offset`
+    /// tidak mengecoh.
+    pub fn build_paginated_query(&mut self, offset: usize, limit: usize) -> String {
+        let Some(base_query) = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .map(|tab| tab.base_query.clone())
+            .filter(|q| !q.trim().is_empty())
+        else {
+            debug!("build_paginated_query: base_query is empty, returning empty string");
             return String::new();
         };
 
-        // Get the database type from active tab's connection
         let connection_id = self
             .query_tabs
             .get(self.active_tab_index)
             .and_then(|tab| tab.connection_id);
+        let db_type = connection_id
+            .and_then(|id| self.connections.iter().find(|c| c.id == Some(id)))
+            .map(|c| c.connection_type.clone())
+            .unwrap_or(models::enums::DatabaseType::MySQL);
 
-        let db_type = if let Some(connection_id) = connection_id {
-            self.connections
-                .iter()
-                .find(|c| c.id == Some(connection_id))
-                .map(|c| &c.connection_type)
-                .unwrap_or(&models::enums::DatabaseType::MySQL)
-        } else {
-            &models::enums::DatabaseType::MySQL
+        // Prefiks `USE db;` (MySQL/MsSQL) dipisah agar klausa paginasi hanya
+        // menempel pada SELECT-nya.
+        let is_mysql = matches!(db_type, models::enums::DatabaseType::MySQL);
+        let statements = connection::split_sql_statements(&base_query, is_mysql);
+        let (prefix, select_part) = match statements.as_slice() {
+            [first, .., last] if connection::sql::starts_with_ascii_ci(first.trim(), "USE") => (
+                format!("{};\n", first.trim().trim_end_matches(';')),
+                last.trim().trim_end_matches(';').to_string(),
+            ),
+            _ => (
+                String::new(),
+                base_query.trim().trim_end_matches(';').to_string(),
+            ),
         };
 
-        // If base_query already contains a LIMIT clause, avoid appending another LIMIT/OFFSET
-        let has_limit = {
-            let upper = base_query.to_uppercase();
-            upper.contains(" LIMIT ") || upper.ends_with(" LIMIT") || upper.contains("\nLIMIT ")
-        };
-
-        if has_limit {
-            debug!(
-                "🔍 build_paginated_query: base_query already has LIMIT, returning without pagination"
-            );
-            return base_query.clone();
+        if ["LIMIT", "OFFSET", "FETCH"]
+            .iter()
+            .any(|kw| connection::sql::has_top_level_keyword(&select_part, kw))
+        {
+            debug!("build_paginated_query: base_query already paginated, returned as is");
+            return base_query;
         }
 
+        let has_order_by = connection::sql::has_top_level_keyword(&select_part, "ORDER BY");
+        let order_by = if has_order_by {
+            None
+        } else {
+            connection_id.and_then(|id| self.paginated_order_by(id, &db_type, &select_part))
+        };
+
         match db_type {
-            models::enums::DatabaseType::MySQL | models::enums::DatabaseType::SQLite => {
-                format!("{} LIMIT {} OFFSET {}", base_query, limit, offset)
-            }
-            models::enums::DatabaseType::PostgreSQL => {
-                format!("{} LIMIT {} OFFSET {}", base_query, limit, offset)
+            models::enums::DatabaseType::MySQL
+            | models::enums::DatabaseType::SQLite
+            | models::enums::DatabaseType::PostgreSQL => {
+                format!(
+                    "{}{}{} LIMIT {} OFFSET {}",
+                    prefix,
+                    select_part,
+                    order_by.unwrap_or_default(),
+                    limit,
+                    offset
+                )
             }
             models::enums::DatabaseType::MsSQL => {
-                // MsSQL requires ORDER BY for OFFSET/FETCH. Inject ORDER BY 1 if missing.
-                // Handle optional leading USE statement separated by semicolon.
-                let mut base = base_query.clone();
-                debug!("🔍 MsSQL base query before processing: {}", base);
-
-                let mut prefix = String::new();
-                // Separate USE ...; prefix if present so pagination applies only to SELECT part
-                if let Some(use_end) = base.find(";\nSELECT") {
-                    // include the semicolon in prefix
-                    prefix = base[..=use_end].to_string();
-                    base = base[use_end + 2..].to_string(); // skip "\n" keeping SELECT...
-                }
-
-                // Trim and remove trailing semicolons/spaces
-                let mut select_part = base.trim().trim_end_matches(';').to_string();
-                debug!("🔍 MsSQL select part before TOP removal: {}", select_part);
-
-                // Enhanced TOP removal using case-insensitive regex-like approach
-                select_part = driver_mssql::sanitize_mssql_select_for_pagination(&select_part);
-                debug!("🔍 MsSQL select part after TOP removal: {}", select_part);
-
-                // Detect ORDER BY (case-insensitive)
-                let has_order = select_part.to_lowercase().contains("order by");
-                if !has_order {
-                    select_part.push_str(" ORDER BY 1");
-                }
-                let effective_limit = if limit == 0 { 100 } else { limit }; // safety
-                let mut final_query = format!(
-                    "{}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
-                    prefix, select_part, offset, effective_limit
+                // OFFSET/FETCH butuh ORDER BY; tanpa PK yang diketahui pakai
+                // `ORDER BY 1` (kolom pertama).
+                let select_part = driver_mssql::sanitize_mssql_select_for_pagination(&select_part);
+                let order = if has_order_by {
+                    String::new()
+                } else {
+                    order_by.unwrap_or_else(|| " ORDER BY 1".to_string())
+                };
+                let effective_limit = if limit == 0 { 100 } else { limit };
+                let final_query = format!(
+                    "{}{}{} OFFSET {} ROWS FETCH NEXT {} ROWS ONLY",
+                    prefix, select_part, order, offset, effective_limit
                 );
-                // check if contain TOP 1000 than replace it
-                final_query = final_query.replace("TOP 10000", "");
-                debug!(" *** final_query *** : {}", final_query);
-
-                debug!("🧪 MsSQL final paginated query: {}", final_query);
+                debug!("MsSQL paginated query: {}", final_query);
                 final_query
             }
             _ => {
-                // For Redis/MongoDB, return original query (these don't use SQL pagination)
-                base_query.clone()
+                // Redis/MongoDB tidak memakai paginasi SQL.
+                base_query
             }
         }
     }
+
+    /// ` ORDER BY pk1, pk2` dari primary key (cache index) tabel tunggal yang
+    /// dibaca `select_part`; `None` bila query bukan SELECT satu tabel atau
+    /// PK-nya belum ada di cache. Hanya membaca cache lokal, tidak ke server.
+    fn paginated_order_by(
+        &mut self,
+        connection_id: i64,
+        db_type: &models::enums::DatabaseType,
+        select_part: &str,
+    ) -> Option<String> {
+        let table = connection::sql::single_table_of_select(select_part)?;
+        let parts = connection::sql::split_qualified_ident(&table);
+        let (qualifier, table_name) = match parts.as_slice() {
+            [t] => (None, t.clone()),
+            [q, .., t] => (Some(q.clone()), t.clone()),
+            [] => return None,
+        };
+        let tab_database = self
+            .query_tabs
+            .get(self.active_tab_index)
+            .and_then(|t| t.database_name.clone())
+            .filter(|d| !d.trim().is_empty())
+            .or_else(|| {
+                self.connections
+                    .iter()
+                    .find(|c| c.id == Some(connection_id))
+                    .map(|c| c.database.clone())
+            })
+            .unwrap_or_default();
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(q) = qualifier {
+            candidates.push(q);
+        }
+        if !candidates.iter().any(|c| c == &tab_database) {
+            candidates.push(tab_database);
+        }
+        let pks = candidates.iter().find_map(|db| {
+            crate::cache_data::get_primary_keys_from_cache(self, connection_id, db, &table_name)
+                .filter(|cols| !cols.is_empty())
+        })?;
+        let quoted: Vec<String> = pks
+            .iter()
+            .map(|col| match db_type {
+                models::enums::DatabaseType::MySQL => format!("`{}`", col.replace('`', "``")),
+                models::enums::DatabaseType::MsSQL => format!("[{}]", col.replace(']', "]]")),
+                _ => format!("\"{}\"", col.replace('"', "\"\"")),
+            })
+            .collect();
+        Some(format!(" ORDER BY {}", quoted.join(", ")))
+    }
     pub fn set_page_size(&mut self, new_size: usize) {
         if new_size > 0 {
+            if self.grid_refuse_while_dirty("changing the page size") {
+                return;
+            }
             // Check if we have a base query in the active tab for server-side pagination
             let has_base_query = self
                 .query_tabs

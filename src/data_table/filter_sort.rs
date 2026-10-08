@@ -70,6 +70,9 @@ pub(crate) fn sort_table_data(
     if column_index >= tabular.current_table_headers.len() || tabular.all_table_data.is_empty() {
         return;
     }
+    if tabular.grid_refuse_while_dirty("sorting") {
+        return;
+    }
 
     // Update sort state
     tabular.sort_column = Some(column_index);
@@ -580,6 +583,9 @@ pub fn build_where_from_visual_filter(
 
 /// Applies the current SQL WHERE filter to the active table and fetches fresh paginated rows from the database.
 pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
+    if tabular.grid_refuse_while_dirty("filtering") {
+        return;
+    }
     // If no connection or table name available, can't apply filter
     let Some(connection_id) = tabular.current_connection_id else {
         return;
@@ -692,11 +698,7 @@ pub(crate) fn apply_sql_filter(tabular: &mut window_egui::Tabular) {
     debug!("🔍 Applying SQL filter: {}", sql_query);
 
     // If the filtered query doesn't specify pagination, enable server-side pagination automatically
-    let upper = sql_query.to_uppercase();
-    let has_pagination_clause = upper.contains(" LIMIT ")
-        || upper.contains(" OFFSET ")
-        || upper.contains(" FETCH ")
-        || upper.contains(" TOP ");
+    let has_pagination_clause = crate::connection::sql::query_contains_pagination(&sql_query);
     if !has_pagination_clause {
         // Use server pagination: set base query and execute first page only
         let base_query = sql_query.trim().trim_end_matches(';').to_string();

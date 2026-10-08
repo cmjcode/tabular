@@ -117,13 +117,15 @@ pub fn new_uuid_v4() -> String {
     )
 }
 
-/// Quote literal string sesuai dialek. `NULL` / kosong menjadi `NULL`
-/// (konvensi grid yang sudah ada), nilai mentah dikeluarkan apa adanya.
+/// Quote literal string sesuai dialek. Teks `NULL` (tampilan sel NULL di grid)
+/// menjadi SQL `NULL`; string kosong tetap `''`, bukan NULL, supaya
+/// mengosongkan sel tidak diam-diam menulis NULL dan `WHERE kolom = ''`
+/// benar-benar cocok. Nilai mentah (DEFAULT, NOW()) dikeluarkan apa adanya.
 pub fn quote_literal(db: &DatabaseType, value: &str) -> String {
     if let Some(expr) = as_raw_sql(value) {
         return expr.to_string();
     }
-    if value.is_empty() || value.eq_ignore_ascii_case("null") {
+    if is_null_cell(value) {
         return "NULL".to_string();
     }
     quote_text_literal(db, value)
@@ -930,6 +932,7 @@ mod tests {
         );
         assert_eq!(quote_literal(&db, &raw_sql_value(RAW_EMPTY_STRING)), "''");
         assert_eq!(quote_literal(&db, "NULL"), "NULL");
+        assert_eq!(quote_literal(&db, ""), "''");
         assert_eq!(quote_literal(&db, "O'Brien"), "'O''Brien'");
         assert_eq!(
             quote_literal(&DatabaseType::MySQL, "a\\"),
@@ -1157,6 +1160,7 @@ mod tests {
                 col_index: 0,
                 old_value: "a".into(),
                 new_value: "b".into(),
+                row_values: vec![],
             },
             CellEditOperation::DeleteRow {
                 row_index: 3,
@@ -1179,12 +1183,14 @@ mod tests {
                 col_index: 0,
                 old_value: "a".into(),
                 new_value: "b".into(),
+                row_values: vec![],
             },
             CellEditOperation::Update {
                 row_index: 0,
                 col_index: 0,
                 old_value: "b".into(),
                 new_value: "c".into(),
+                row_values: vec![],
             },
             CellEditOperation::InsertRow {
                 row_index: 5,
@@ -1236,7 +1242,11 @@ mod tests {
         for text in samples {
             for max_chars in [0usize, 1, 2, 3, 4, 10, 11, 22, 200] {
                 let (shown, truncated) = truncate_for_cell(text, max_chars);
-                assert_eq!(shown, truncate_reference(text, max_chars), "{text:?} / {max_chars}");
+                assert_eq!(
+                    shown,
+                    truncate_reference(text, max_chars),
+                    "{text:?} / {max_chars}"
+                );
                 assert_eq!(truncated, text.chars().count() > max_chars);
                 if !truncated {
                     assert!(matches!(shown, Cow::Borrowed(_)));

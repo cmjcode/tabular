@@ -484,6 +484,22 @@ fn refresh_after_external_change(t: &mut Tabular) {
 impl Tabular {
     /// Indeks `all_table_data` untuk baris tampil `row`. Pada paginasi sisi
     /// klien `current_table_data` hanya potongan halaman aktif.
+    /// Tolak aksi yang menyusun ulang atau mengganti baris grid selagi ada edit
+    /// yang belum disimpan. Indeks baris di antrean edit mengacu ke urutan
+    /// tampilan saat ini; sort, ganti halaman, atau filter akan menggeser
+    /// penanda sel dan membuat review menunjuk baris lain. Mengembalikan true
+    /// bila aksi harus dibatalkan.
+    pub(crate) fn grid_refuse_while_dirty(&mut self, action: &str) -> bool {
+        if self.spreadsheet_state.pending_operations.is_empty() {
+            return false;
+        }
+        self.toasts.warning(format!(
+            "Save or discard the pending grid changes before {}.",
+            action
+        ));
+        true
+    }
+
     pub(crate) fn grid_all_index(&self, row: usize) -> usize {
         if !self.use_server_pagination && self.all_table_data.len() > self.current_table_data.len()
         {

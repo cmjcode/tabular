@@ -2344,6 +2344,11 @@ pub enum CellEditOperation {
         col_index: usize,
         old_value: String,
         new_value: String,
+        /// Salinan seluruh baris saat edit dicatat (nilai sebelum perubahan
+        /// sel ini). WHERE dibangun dari sini, bukan dari posisi baris di
+        /// grid, supaya sort/paging/filter setelah edit tidak membuat UPDATE
+        /// mengenai baris lain. Kosong = pakai baris di grid (data lama).
+        row_values: Vec<String>,
     },
     InsertRow {
         row_index: usize,

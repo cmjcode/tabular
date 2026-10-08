@@ -1713,7 +1713,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                     && !app.autocomplete_loading
                                     && accept_current_suggestion(app)
                                 {
-                                    let id = egui::Id::new("sql_editor");
+                                    let id = crate::editor::editor_widget_id(app);
                                     if let Some(mut state) =
                                         egui::text_edit::TextEditState::load(ui.ctx(), id)
                                     {
@@ -1726,7 +1726,7 @@ pub fn render_autocomplete(app: &mut Tabular, ui: &mut egui::Ui, pos: egui::Pos2
                                         )));
                                         state.store(ui.ctx(), id);
                                     }
-                                    ui.memory_mut(|m| m.request_focus(egui::Id::new("sql_editor")));
+                                    ui.memory_mut(|m| m.request_focus(id));
                                     app.editor_focus_boost_frames =
                                         app.editor_focus_boost_frames.max(6);
                                 }

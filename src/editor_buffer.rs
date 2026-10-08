@@ -1,5 +1,8 @@
 /// Lightweight text buffer for egui-only mode (String-backed).
-/// Provides basic editing, undo/redo, and line index maintenance.
+/// Provides basic editing and line index maintenance. Undo/redo milik
+/// `TextEdit` egui (id per tab, lihat `editor::editor_widget_id`); buffer ini
+/// sengaja tidak menyimpan riwayat sendiri supaya memori tidak tumbuh tanpa
+/// batas tiap ganti tab.
 pub struct EditorBuffer {
     /// Cached full text for egui TextEdit binding (temporary until full custom editor)
     pub text: String,
@@ -9,24 +12,12 @@ pub struct EditorBuffer {
     dirty_to_rope: bool,
     /// Last known revision of the underlying buffer (for incremental features later)
     pub last_revision: u64,
-    /// Undo stack (Vec of Edit record). Most recent at end.
-    undo_stack: Vec<EditRecord>,
-    /// Redo stack.
-    redo_stack: Vec<EditRecord>,
     /// Cached line start offsets (byte indices) for fast line/col translation.
     line_starts: Vec<usize>,
     /// Monotonic revision counter we control (separate from any internal lapce buffer revs)
     pub revision: u64,
     /// Per-line version numbers for fine-grained cache invalidation (same length as logical lines).
     line_versions: Vec<u64>,
-}
-
-/// A simple reversible edit representation (single replace operation)
-#[derive(Clone, Debug)]
-struct EditRecord {
-    range: std::ops::Range<usize>, // replaced old text range in the PREVIOUS document
-    inserted: String,              // new inserted text
-    removed: String,               // old removed text (for undo)
 }
 
 impl Default for EditorBuffer {
@@ -43,8 +34,6 @@ impl EditorBuffer {
             dirty_to_string: false,
             dirty_to_rope: false,
             last_revision: 0,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
             line_starts,
             revision: 0,
             line_versions: vec![0],
@@ -61,15 +50,7 @@ impl EditorBuffer {
         if self.text == new_text {
             return;
         }
-        let old = std::mem::take(&mut self.text);
-        let old_len = old.len();
-        self.undo_stack.push(EditRecord {
-            range: 0..old_len,
-            inserted: new_text.clone(),
-            removed: old,
-        });
-        self.redo_stack.clear();
-        self.text = new_text.clone();
+        self.text = new_text;
         self.last_revision = 0;
         self.dirty_to_string = false;
         self.dirty_to_rope = false;
@@ -165,13 +146,6 @@ impl EditorBuffer {
         self.last_revision = 0;
         self.dirty_to_rope = false;
         self.dirty_to_string = false;
-        self.undo_stack.push(EditRecord {
-            range: start..start + replacement.len(),
-            inserted: replacement.to_string(),
-            removed: removed.clone(),
-        });
-        self.redo_stack.clear();
-
         if single_line_edit {
             let delta: isize = replacement.len() as isize - (end - start) as isize;
             if delta != 0 {
@@ -377,69 +351,6 @@ impl EditorBuffer {
 }
 
 impl EditorBuffer {
-    /// Can we undo?
-    pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
-    }
-    /// Can we redo?
-    pub fn can_redo(&self) -> bool {
-        !self.redo_stack.is_empty()
-    }
-
-    /// Undo last edit (if any). Returns true if something changed.
-    pub fn undo(&mut self) -> bool {
-        if let Some(edit) = self.undo_stack.pop() {
-            // The recorded range in edit.range reflects the inserted text region after the edit.
-            let start = edit.range.start;
-            let end = start + edit.inserted.len();
-            // Replace inserted with original removed text
-            if end <= self.text.len() {
-                self.text.replace_range(start..end, &edit.removed);
-                self.last_revision = 0;
-                // Push inverse onto redo stack
-                let inverse = EditRecord {
-                    range: start..start + edit.removed.len(),
-                    inserted: edit.removed.clone(),
-                    removed: edit.inserted,
-                }; // note swapped roles
-                self.redo_stack.push(inverse);
-                self.recompute_line_starts();
-                for v in &mut self.line_versions {
-                    *v = v.wrapping_add(1);
-                }
-                self.revision = self.revision.wrapping_add(1);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Redo last undone edit (if any). Returns true if something changed.
-    pub fn redo(&mut self) -> bool {
-        if let Some(edit) = self.redo_stack.pop() {
-            let start = edit.range.start;
-            let end = start + edit.inserted.len();
-            if end <= self.text.len() {
-                self.text.replace_range(start..end, &edit.removed);
-                self.last_revision = 0;
-                // Push inverse back to undo
-                let inverse = EditRecord {
-                    range: start..start + edit.removed.len(),
-                    inserted: edit.removed.clone(),
-                    removed: edit.inserted,
-                };
-                self.undo_stack.push(inverse);
-                self.recompute_line_starts();
-                for v in &mut self.line_versions {
-                    *v = v.wrapping_add(1);
-                }
-                self.revision = self.revision.wrapping_add(1);
-                return true;
-            }
-        }
-        false
-    }
-
     /// Notify that external bulk text changes were applied directly on self.text (e.g., multi-cursor direct mutations)
     /// This recomputes line indices and bumps all line versions.
     pub fn notify_bulk_text_changed(&mut self) {

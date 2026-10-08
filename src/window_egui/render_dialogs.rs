@@ -1237,7 +1237,7 @@ impl super::Tabular {
                                         .clicked()
                                         && !is_loading
                                     {
-                                        let id = egui::Id::new("sql_editor");
+                                        let id = crate::editor::editor_widget_id(self);
                                         let mut direct_selected = String::new();
                                         if let Some(range) =
                                             crate::editor_state_adapter::EditorStateAdapter::get_range(&ctx, id)

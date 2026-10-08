@@ -114,48 +114,212 @@ pub(crate) fn infer_column_origins(query: &str) -> (Option<Vec<Option<String>>>,
     }
 }
 
-fn keyword_in_sql(upper_sql: &str, keyword: &str) -> bool {
-    let bytes = upper_sql.as_bytes();
-    let key_bytes = keyword.as_bytes();
-    let mut search_from = 0;
-    while search_from + key_bytes.len() <= bytes.len() {
-        if let Some(rel_pos) = upper_sql[search_from..].find(keyword) {
-            let start = search_from + rel_pos;
-            let end = start + key_bytes.len();
-
-            let prev_is_ident = if start == 0 {
-                false
-            } else {
-                let prev = bytes[start - 1];
-                prev.is_ascii_alphanumeric() || prev == b'_'
-            };
-            let next_is_ident = match bytes.get(end) {
-                Some(next) => next.is_ascii_alphanumeric() || *next == b'_',
-                None => false,
-            };
-            if !prev_is_ident && !next_is_ident {
-                return true;
-            }
-            search_from = end;
-        } else {
-            break;
-        }
-    }
-    false
+pub fn query_contains_pagination(sql: &str) -> bool {
+    ["LIMIT", "OFFSET", "FETCH", "TOP"]
+        .iter()
+        .any(|kw| has_top_level_keyword(sql, kw))
 }
 
-pub fn query_contains_pagination(sql: &str) -> bool {
-    let upper = sql.to_uppercase();
-    let upper_ref = upper.as_str();
-    keyword_in_sql(upper_ref, "LIMIT")
-        || keyword_in_sql(upper_ref, "OFFSET")
-        || keyword_in_sql(upper_ref, "FETCH")
-        || keyword_in_sql(upper_ref, "TOP")
-        || upper_ref.contains("FETCH NEXT")
-        || upper_ref.contains("FETCH FIRST")
-        || upper_ref.contains("FETCH PRIOR")
-        || upper_ref.contains("FETCH ROW")
-        || upper_ref.contains("FETCH ROWS")
+/// Token di level teratas statement: identifier (termasuk yang ber-quote dan
+/// berkualifikasi `db.tabel`), angka, dan tanda baca di luar string, komentar,
+/// dan tanda kurung. Dipakai untuk mendeteksi klausa seperti `LIMIT`/`ORDER BY`
+/// tanpa terkecoh subquery, literal (`WHERE x = 'top'`), atau kolom bernama
+/// `offset`. Kurung buka/tutup di level teratas ikut dikembalikan sebagai
+/// token `(` / `)` supaya subquery di FROM bisa dikenali.
+pub fn top_level_tokens(sql: &str) -> Vec<&str> {
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    let mut depth = 0usize;
+
+    // Lewati literal/identifier ber-quote mulai di `pos` (karakter pembuka),
+    // kembalikan posisi setelah penutup. Quote ganda (`''`) dan backslash
+    // (untuk `'`/`"`) dianggap escape.
+    fn skip_quoted(bytes: &[u8], pos: usize) -> usize {
+        let q = bytes[pos];
+        let close = if q == b'[' { b']' } else { q };
+        let mut i = pos + 1;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'\\' && (q == b'\'' || q == b'"') {
+                i += 2;
+                continue;
+            }
+            if b == close {
+                if close != b']' && bytes.get(i + 1) == Some(&close) {
+                    i += 2;
+                    continue;
+                }
+                return i + 1;
+            }
+            i += 1;
+        }
+        bytes.len()
+    }
+
+    while i < len {
+        let b = bytes[i];
+        if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            continue;
+        }
+        if b == b'\'' {
+            i = skip_quoted(bytes, i);
+            continue;
+        }
+        // Dollar quoting PostgreSQL: `$$ ... $$` atau `$tag$ ... $tag$`.
+        if b == b'$' {
+            let mut j = i + 1;
+            while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j < len && bytes[j] == b'$' {
+                let tag = &sql[i..=j];
+                i = match sql[j + 1..].find(tag) {
+                    Some(rel) => j + 1 + rel + tag.len(),
+                    None => len,
+                };
+                continue;
+            }
+        }
+        match b {
+            b'(' => {
+                if depth == 0 {
+                    tokens.push(&sql[i..i + 1]);
+                }
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    tokens.push(&sql[i..i + 1]);
+                }
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        let ident_start = b.is_ascii_alphanumeric() || matches!(b, b'_' | b'"' | b'`' | b'[');
+        if ident_start {
+            let start = i;
+            loop {
+                if i < len && matches!(bytes[i], b'"' | b'`' | b'[') {
+                    i = skip_quoted(bytes, i);
+                } else {
+                    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                        i += 1;
+                    }
+                }
+                if i < len && bytes[i] == b'.' {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            if depth == 0 {
+                tokens.push(&sql[start..i]);
+            }
+            continue;
+        }
+        if depth == 0 && b.is_ascii() && !b.is_ascii_whitespace() {
+            tokens.push(&sql[i..i + 1]);
+        }
+        i += 1;
+    }
+    tokens
+}
+
+/// Apakah `keyword` (boleh beberapa kata, mis. "ORDER BY") muncul di level
+/// teratas `sql`. Lihat [`top_level_tokens`].
+pub fn has_top_level_keyword(sql: &str, keyword: &str) -> bool {
+    let words: Vec<&str> = keyword.split_whitespace().collect();
+    if words.is_empty() {
+        return false;
+    }
+    top_level_tokens(sql).windows(words.len()).any(|window| {
+        window
+            .iter()
+            .zip(&words)
+            .all(|(token, word)| token.eq_ignore_ascii_case(word))
+    })
+}
+
+/// Nama tabel (apa adanya, termasuk kualifikasi dan quote) bila statement
+/// berbentuk `SELECT ... FROM <satu tabel> [WHERE ...]`: tanpa JOIN, GROUP BY,
+/// DISTINCT, set operation, CTE, alias, atau subquery di FROM. Dipakai untuk
+/// memilih primary key sebagai `ORDER BY` paginasi.
+pub fn single_table_of_select(sql: &str) -> Option<String> {
+    let tokens = top_level_tokens(sql);
+    if !tokens.first()?.eq_ignore_ascii_case("SELECT") {
+        return None;
+    }
+    const COMPLEX: [&str; 8] = [
+        "JOIN",
+        "GROUP",
+        "DISTINCT",
+        "UNION",
+        "INTERSECT",
+        "EXCEPT",
+        "HAVING",
+        "WITH",
+    ];
+    if tokens
+        .iter()
+        .any(|t| COMPLEX.iter().any(|k| t.eq_ignore_ascii_case(k)))
+    {
+        return None;
+    }
+    let from = tokens.iter().position(|t| t.eq_ignore_ascii_case("FROM"))?;
+    let table = tokens.get(from + 1)?;
+    if table.len() == 1 && !table.as_bytes()[0].is_ascii_alphanumeric() {
+        return None;
+    }
+    match tokens.get(from + 2) {
+        None => {}
+        Some(next) if next.eq_ignore_ascii_case("WHERE") || *next == ";" => {}
+        Some(_) => return None,
+    }
+    Some((*table).to_string())
+}
+
+/// Pecah identifier berkualifikasi (`db.tabel`, `"s"."t"`, `[d].[s].[t]`)
+/// menjadi segmen tanpa quote.
+pub fn split_qualified_ident(ident: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for c in ident.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            None => match c {
+                '"' | '`' => quote = Some(c),
+                '[' => quote = Some(']'),
+                '.' => parts.push(std::mem::take(&mut current)),
+                _ => current.push(c),
+            },
+        }
+    }
+    parts.push(current);
+    parts
 }
 
 fn normalize_sql_token(token: &str) -> String {
@@ -905,9 +1069,45 @@ pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) 
 #[cfg(test)]
 pub(crate) fn odd_sql_inputs() -> Vec<String> {
     let pieces = [
-        "SELECT", "select", "FROM", "from", " as ", " AS ", "TOP", "top", "PERCENT", "(", ")",
-        ",", "'", "\"", "`", ".", "*", " ", "\n", "\t", "café", "—", "İ", "ı", "ſ", "\u{212A}", "😀",
-        "ß", "ǅ", "日本語", "\u{0301}", "\u{200d}", "10", "%", "[", "]", ";", "USE ", "t",
+        "SELECT",
+        "select",
+        "FROM",
+        "from",
+        " as ",
+        " AS ",
+        "TOP",
+        "top",
+        "PERCENT",
+        "(",
+        ")",
+        ",",
+        "'",
+        "\"",
+        "`",
+        ".",
+        "*",
+        " ",
+        "\n",
+        "\t",
+        "café",
+        "—",
+        "İ",
+        "ı",
+        "ſ",
+        "\u{212A}",
+        "😀",
+        "ß",
+        "ǅ",
+        "日本語",
+        "\u{0301}",
+        "\u{200d}",
+        "10",
+        "%",
+        "[",
+        "]",
+        ";",
+        "USE ",
+        "t",
     ];
     // LCG sederhana: urutan selalu sama di setiap run.
     let mut state: u64 = 0x2545_F491_4F6C_DD1D;
@@ -929,7 +1129,9 @@ pub(crate) fn odd_sql_inputs() -> Vec<String> {
     // Setiap potongan juga diuji sebagai awalan/akhiran SELECT sederhana.
     for piece in pieces {
         inputs.push(format!("SELECT {piece} FROM t"));
-        inputs.push(format!("{piece}SELECT TOP 5 {piece} AS {piece} FROM {piece}"));
+        inputs.push(format!(
+            "{piece}SELECT TOP 5 {piece} AS {piece} FROM {piece}"
+        ));
         inputs.push(format!("SELECT{piece}"));
     }
     inputs
@@ -962,7 +1164,9 @@ mod tests {
         );
         // FROM di dalam literal, kurung, atau nama kolom bukan pemisah.
         assert_eq!(
-            infer_select_headers("SELECT 'a from b' AS s, from_date, (SELECT 1 FROM x) AS y FROM t"),
+            infer_select_headers(
+                "SELECT 'a from b' AS s, from_date, (SELECT 1 FROM x) AS y FROM t"
+            ),
             vec!["s", "from_date", "y"]
         );
         assert!(infer_select_headers("SELECT 'café'").is_empty());
@@ -1198,5 +1402,68 @@ mod tests {
         let stmts2 = split_sql_statements(tagged, false);
         assert_eq!(stmts2.len(), 2);
         assert_eq!(stmts2[1], "SELECT 4");
+    }
+}
+
+#[cfg(test)]
+mod top_level_tests {
+    use super::*;
+
+    #[test]
+    fn keyword_di_level_teratas_saja() {
+        assert!(has_top_level_keyword("SELECT * FROM t LIMIT 5", "LIMIT"));
+        assert!(!has_top_level_keyword(
+            "SELECT * FROM (SELECT * FROM t LIMIT 5) x",
+            "LIMIT"
+        ));
+        assert!(!has_top_level_keyword(
+            "SELECT * FROM t WHERE x = 'top'",
+            "TOP"
+        ));
+        assert!(!has_top_level_keyword("SELECT \"offset\" FROM t", "OFFSET"));
+        assert!(!has_top_level_keyword(
+            "SELECT * FROM t -- limit 1",
+            "LIMIT"
+        ));
+        assert!(!has_top_level_keyword(
+            "SELECT * FROM t /* limit 1 */",
+            "LIMIT"
+        ));
+        assert!(!has_top_level_keyword(
+            "SELECT $$ order by $$ FROM t",
+            "ORDER BY"
+        ));
+        assert!(has_top_level_keyword(
+            "SELECT * FROM t ORDER BY id",
+            "ORDER BY"
+        ));
+        assert!(!has_top_level_keyword(
+            "SELECT row_number() OVER (ORDER BY id) FROM t",
+            "ORDER BY"
+        ));
+        assert!(!query_contains_pagination("SELECT offset_ms FROM t"));
+        assert!(query_contains_pagination("SELECT TOP 10 * FROM t"));
+    }
+
+    #[test]
+    fn tabel_tunggal_select() {
+        assert_eq!(
+            single_table_of_select("SELECT * FROM `db`.`users` WHERE id > 1"),
+            Some("`db`.`users`".to_string())
+        );
+        assert_eq!(
+            single_table_of_select("SELECT a, b FROM \"s\".\"t\""),
+            Some("\"s\".\"t\"".to_string())
+        );
+        assert_eq!(single_table_of_select("SELECT * FROM t u"), None);
+        assert_eq!(
+            single_table_of_select("SELECT * FROM a JOIN b ON 1=1"),
+            None
+        );
+        assert_eq!(single_table_of_select("SELECT * FROM (SELECT 1) x"), None);
+        assert_eq!(
+            split_qualified_ident("[db].[dbo].[t]"),
+            vec!["db", "dbo", "t"]
+        );
     }
 }

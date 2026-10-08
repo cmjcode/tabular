@@ -588,6 +588,9 @@ pub(crate) fn update_current_page_data(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn next_page(tabular: &mut window_egui::Tabular) {
+    if tabular.grid_refuse_while_dirty("changing page") {
+        return;
+    }
     // Check if we have a base query in the active tab for server-side pagination
     let has_base_query = tabular
         .query_tabs
@@ -615,6 +618,9 @@ pub(crate) fn next_page(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn previous_page(tabular: &mut window_egui::Tabular) {
+    if tabular.grid_refuse_while_dirty("changing page") {
+        return;
+    }
     // Check if we have a base query in the active tab for server-side pagination
     let has_base_query = tabular
         .query_tabs
@@ -640,6 +646,9 @@ pub(crate) fn previous_page(tabular: &mut window_egui::Tabular) {
 }
 
 pub(crate) fn go_to_page(tabular: &mut window_egui::Tabular, page: usize) {
+    if tabular.grid_refuse_while_dirty("changing page") {
+        return;
+    }
     // Check if we have a base query in the active tab for server-side pagination
     let has_base_query = tabular
         .query_tabs

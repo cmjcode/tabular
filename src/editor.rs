@@ -16,6 +16,18 @@ use std::time::Instant;
 
 /// Pindahkan filter global (WHERE + visual filter) ke tab aktif dan kosongkan
 /// state global. Dipakai sebelum tab lain menjadi aktif.
+/// Id widget `TextEdit` editor SQL. Unik per tab supaya riwayat undo egui
+/// dan posisi kursor tidak bocor antar tab: dengan satu id bersama, Cmd+Z
+/// setelah pindah tab bisa memulihkan teks tab sebelumnya.
+pub(crate) fn editor_widget_id(tabular: &window_egui::Tabular) -> egui::Id {
+    let tab_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id)
+        .unwrap_or(usize::MAX);
+    egui::Id::new(("sql_editor", tab_id))
+}
+
 pub(crate) fn stash_active_tab_filter(tabular: &mut window_egui::Tabular) {
     let sql_filter = std::mem::take(&mut tabular.sql_filter_text);
     let visual_filter = std::mem::take(&mut tabular.visual_filter);
@@ -1061,7 +1073,7 @@ pub(crate) fn save_current_tab_with_name(
 // 3. All cursors stay active and typing applies to all positions
 // 4. Press Escape or navigate with arrow keys to clear multi-selection
 fn handle_add_next_occurrence(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
-    let id = ui.make_persistent_id("sql_editor");
+    let id = editor_widget_id(tabular);
 
     // Get current selection or word under cursor
     let (sel_start, sel_end) = if tabular.selection_start != tabular.selection_end {
@@ -1205,7 +1217,7 @@ fn clear_multi_selection_state(tabular: &mut window_egui::Tabular, ui: &egui::Ui
     tabular.pending_cursor_set = Some(caret);
     tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
 
-    let id = ui.make_persistent_id("sql_editor");
+    let id = editor_widget_id(tabular);
     let s = &tabular.editor.text;
     let caret_chars = s[..caret].chars().count();
     crate::editor_state_adapter::EditorStateAdapter::set_single(ui.ctx(), id, caret_chars);
@@ -1278,7 +1290,7 @@ fn slice_on_char_boundaries(
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
     let mut request_scroll_to_cursor = false;
     let mut inserted_newline_this_frame = false;
-    let editor_id = ui.make_persistent_id("sql_editor");
+    let editor_id = editor_widget_id(tabular);
 
     // Shortcut: Format SQL (Cmd/Ctrl + Shift + F)
     let trigger_format_sql =
@@ -1336,7 +1348,7 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         crate::keymap::Action::ExplainQuery,
     );
     if trigger_explain_query {
-        let id = egui::Id::new("sql_editor");
+        let id = editor_widget_id(tabular);
         let mut direct_selected = String::new();
         if let Some(range) =
             crate::editor_state_adapter::EditorStateAdapter::get_range(ui.ctx(), id)
@@ -7572,7 +7584,7 @@ mod ai_panel_tests {
 
 /// Preserves caret and selection where possible.
 pub(crate) fn reformat_current_sql(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
-    let id = ui.make_persistent_id("sql_editor");
+    let id = editor_widget_id(tabular);
     // Helper: convert char idx -> byte idx
     let to_b = |s: &str, ci: usize| -> usize {
         match s.char_indices().nth(ci) {
@@ -7835,7 +7847,7 @@ pub(crate) fn find_next_match(tabular: &mut window_egui::Tabular, ui: &egui::Ui)
     tabular.pending_cursor_set = Some(target.end);
     tabular.selected_text = tabular.editor.text[target.start..target.end].to_string();
 
-    let id = ui.make_persistent_id("sql_editor");
+    let id = editor_widget_id(tabular);
     let to_char_index = |s: &str, byte_idx: usize| -> usize {
         let b = byte_idx.min(s.len());
         s[..b].chars().count()
@@ -7890,7 +7902,7 @@ pub(crate) fn find_previous_match(tabular: &mut window_egui::Tabular, ui: &egui:
     tabular.pending_cursor_set = Some(target.end);
     tabular.selected_text = tabular.editor.text[target.start..target.end].to_string();
 
-    let id = ui.make_persistent_id("sql_editor");
+    let id = editor_widget_id(tabular);
     let to_char_index = |s: &str, byte_idx: usize| -> usize {
         let b = byte_idx.min(s.len());
         s[..b].chars().count()
@@ -7987,7 +7999,7 @@ pub(crate) fn perform_replace_current(tabular: &mut window_egui::Tabular, ui: &e
         tabular.pending_cursor_set = Some(next_target.end);
         tabular.selected_text = tabular.editor.text[next_target.start..next_target.end].to_string();
 
-        let id = ui.make_persistent_id("sql_editor");
+        let id = editor_widget_id(tabular);
         let to_char_index = |s: &str, byte_idx: usize| -> usize {
             let b = byte_idx.min(s.len());
             s[..b].chars().count()
@@ -8413,7 +8425,7 @@ pub(crate) fn render_find_replace_floating_panel(
 
     if close_requested {
         tabular.advanced_editor.show_find_replace = false;
-        let id = ui.make_persistent_id("sql_editor");
+        let id = editor_widget_id(tabular);
         ui.memory_mut(|m| m.request_focus(id));
         ui.ctx().request_repaint();
     }
@@ -9534,21 +9546,6 @@ pub(crate) fn explain_current_query(tabular: &mut window_egui::Tabular, selected
         .find(|c| c.id == Some(connection_id))
         .map(|c| c.connection_type.clone());
 
-    let prefix = match connection_type {
-        Some(crate::models::enums::DatabaseType::PostgreSQL) => {
-            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
-        }
-        Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
-        Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
-        Some(crate::models::enums::DatabaseType::MsSQL) => "SET STATISTICS XML ON; ",
-        _ => {
-            tabular
-                .toasts
-                .error("EXPLAIN is not supported for this connection type yet".to_string());
-            return;
-        }
-    };
-
     // EXPLAIN applies to a single statement: take the first one.
     let is_mysql = matches!(
         connection_type,
@@ -9559,12 +9556,62 @@ pub(crate) fn explain_current_query(tabular: &mut window_egui::Tabular, selected
         .next()
         .unwrap_or(raw);
 
+    // `EXPLAIN ANALYZE` (PostgreSQL) dan `SET STATISTICS XML ON` (SQL Server)
+    // benar-benar menjalankan statement-nya. Untuk statement yang mengubah
+    // data, pakai estimasi saja atau tolak, supaya "lihat rencana" tidak
+    // diam-diam menghapus/mengubah baris.
+    let modifies_data = statement_modifies_data(&stmt);
+    let prefix = match connection_type {
+        Some(crate::models::enums::DatabaseType::PostgreSQL) => {
+            if modifies_data {
+                tabular.toasts.info(
+                    "Showing the estimated plan: EXPLAIN ANALYZE would execute this statement."
+                        .to_string(),
+                );
+                "EXPLAIN (FORMAT JSON) "
+            } else {
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+            }
+        }
+        Some(crate::models::enums::DatabaseType::MySQL) => "EXPLAIN FORMAT=JSON ",
+        Some(crate::models::enums::DatabaseType::SQLite) => "EXPLAIN QUERY PLAN ",
+        Some(crate::models::enums::DatabaseType::MsSQL) => {
+            if modifies_data {
+                tabular.toasts.error(
+                    "EXPLAIN on SQL Server runs the statement to collect the plan. Wrap it in a transaction you roll back, or EXPLAIN the equivalent SELECT."
+                        .to_string(),
+                );
+                return;
+            }
+            "SET STATISTICS XML ON; "
+        }
+        _ => {
+            tabular
+                .toasts
+                .error("EXPLAIN is not supported for this connection type yet".to_string());
+            return;
+        }
+    };
+
     let explain_sql = if stmt.trim_start().to_uppercase().starts_with("EXPLAIN") {
         stmt
     } else {
         format!("{}{}", prefix, stmt)
     };
     execute_query_internal(tabular, explain_sql);
+}
+
+/// Apakah statement berpotensi mengubah data bila dijalankan. Selain SELECT
+/// dan SHOW dianggap mengubah; `WITH ... INSERT/UPDATE/DELETE/MERGE` ikut
+/// terdeteksi lewat kata kunci di level teratas.
+pub(crate) fn statement_modifies_data(stmt: &str) -> bool {
+    use crate::models::structs::StatementType;
+    match StatementType::from_sql(stmt) {
+        StatementType::Select | StatementType::Show => ["INSERT", "UPDATE", "DELETE", "MERGE"]
+            .iter()
+            .any(|kw| connection::sql::has_top_level_keyword(stmt, kw)),
+        _ => true,
+    }
 }
 
 pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
@@ -9840,6 +9887,10 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
                 debug!(
                     "🚀 Auto server-pagination enabled (simple SELECT). Executing first page..."
                 );
+                // Halaman berikutnya memakai job berpaginasi yang sengaja tidak
+                // dicatat; query dasarnya dicatat sekali di sini supaya SELECT
+                // paling umum tetap masuk riwayat dan melatih autocomplete.
+                sidebar_history::save_query_to_history(tabular, &stmt, connection_id);
                 tabular.execute_paginated_query();
                 return;
             }
