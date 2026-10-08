@@ -79,6 +79,19 @@ pub(crate) fn sort_table_data(
     tabular.sort_column = Some(column_index);
     tabular.sort_ascending = ascending;
 
+    // Paginasi server: yang dimuat hanya satu halaman, jadi urutkan di server
+    // (ORDER BY disisipkan `build_paginated_query`) dan muat ulang dari
+    // halaman pertama.
+    let has_base_query = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .is_some_and(|tab| !tab.base_query.is_empty());
+    if tabular.use_server_pagination && has_base_query {
+        tabular.current_page = 0;
+        tabular.execute_paginated_query();
+        return;
+    }
+
     // Sort ALL the data (not just current page). Kunci dihitung sekali per
     // baris (bukan parse + lowercase di setiap perbandingan) dan urutannya
     // total, jadi `sort` tidak bisa panik karena komparator tidak konsisten.

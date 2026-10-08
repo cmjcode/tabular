@@ -492,12 +492,36 @@ const MSSQL_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// batch, lalu koneksi di-detach dan ditutup. Koneksi yang masih punya respons
 /// tertunda tidak boleh kembali ke pool karena pemakai berikutnya akan membaca
 /// sisa respons query lama.
+/// Cancel handle batch yang sedang berjalan, per job id, supaya tombol
+/// Cancel bisa mengirim ATTENTION ke server. Sebelumnya hanya timeout yang
+/// membatalkan di server; cancel user cuma membuang future-nya.
+static CANCEL_HANDLES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, mssql_client::cancel::CancelHandle>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Hapus pendaftaran cancel handle saat batch selesai (juga saat task di-abort).
+struct CancelRegistration(Option<u64>);
+
+impl Drop for CancelRegistration {
+    fn drop(&mut self) {
+        if let Some(job_id) = self.0 {
+            crate::connection::pool::lock_or_recover(&CANCEL_HANDLES).remove(&job_id);
+        }
+    }
+}
+
+/// Ambil cancel handle job yang masih berjalan (sekali pakai).
+pub(crate) fn take_cancel_handle(job_id: u64) -> Option<mssql_client::cancel::CancelHandle> {
+    crate::connection::pool::lock_or_recover(&CANCEL_HANDLES).remove(&job_id)
+}
+
 async fn execute_bounded(
     pool: &mssql_driver_pool::Pool,
     query: &str,
     max_rows: usize,
     timeout: Option<std::time::Duration>,
     split: bool,
+    job_id: Option<u64>,
 ) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
     let mut conn = pool
         .get()
@@ -507,6 +531,9 @@ async fn execute_bounded(
         .client_mut()
         .ok_or_else(|| MssqlExecError::Connection("MsSQL pooled connection unavailable".into()))?;
     let cancel = client.cancel_handle();
+    let _registration = CancelRegistration(job_id.inspect(|id| {
+        crate::connection::pool::lock_or_recover(&CANCEL_HANDLES).insert(*id, cancel.clone());
+    }));
 
     let run = async {
         if split {
@@ -542,8 +569,9 @@ pub(crate) async fn execute_query_bounded(
     query: &str,
     max_rows: usize,
     timeout: Option<std::time::Duration>,
+    job_id: Option<u64>,
 ) -> Result<MssqlResultSet, MssqlExecError> {
-    let mut sets = execute_bounded(pool.as_ref(), query, max_rows, timeout, false).await?;
+    let mut sets = execute_bounded(pool.as_ref(), query, max_rows, timeout, false, job_id).await?;
     Ok(sets.pop().unwrap_or_default())
 }
 
@@ -554,8 +582,9 @@ pub(crate) async fn execute_query_multi_bounded(
     query: &str,
     max_rows: usize,
     timeout: Option<std::time::Duration>,
+    job_id: Option<u64>,
 ) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
-    execute_bounded(pool.as_ref(), query, max_rows, timeout, true).await
+    execute_bounded(pool.as_ref(), query, max_rows, timeout, true, job_id).await
 }
 
 /// Jalankan batch lewat pool dan kembalikan semua result set secara terpisah.

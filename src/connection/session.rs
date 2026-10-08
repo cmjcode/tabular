@@ -32,6 +32,15 @@ pub struct SessionHandle {
     pub connection_id: i64,
     pub sender: tokio::sync::mpsc::UnboundedSender<SessionCommand>,
     pub abort: tokio::task::AbortHandle,
+    /// Backend pid / connection id koneksi sesi (PostgreSQL, MySQL) supaya
+    /// Cancel bisa menghentikan statement yang sedang berjalan di server.
+    pub backend_pid: std::sync::Arc<std::sync::Mutex<Option<i64>>>,
+}
+
+impl SessionHandle {
+    pub fn backend_pid(&self) -> Option<i64> {
+        *super::pool::lock_or_recover(&self.backend_pid)
+    }
 }
 
 impl SessionHandle {
@@ -120,6 +129,7 @@ pub fn spawn_session(
             .then(|| std::time::Duration::from_secs(tabular.query_timeout_secs as u64)),
     };
 
+    let backend_pid = std::sync::Arc::new(std::sync::Mutex::new(None));
     let handle = runtime.spawn(run_session(
         pool,
         connection_type,
@@ -130,12 +140,14 @@ pub fn spawn_session(
         rx,
         result_sender,
         tabular.result_wake_hook(),
+        backend_pid.clone(),
     ));
 
     Some(SessionHandle {
         connection_id,
         sender: tx,
         abort: handle.abort_handle(),
+        backend_pid,
     })
 }
 
@@ -149,15 +161,23 @@ async fn run_session(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<SessionCommand>,
     result_sender: std::sync::mpsc::Sender<QueryResultMessage>,
     wake: Option<super::types::ResultWakeHook>,
+    backend_pid: std::sync::Arc<std::sync::Mutex<Option<i64>>>,
 ) {
     // Setiap hasil juga membangunkan UI (lihat `ResultWakeHook`).
     let send = |message: QueryResultMessage| {
         super::execute::send_and_wake(&result_sender, message, wake.as_ref());
     };
+    let set_pid = |pid: Option<i64>| {
+        *super::pool::lock_or_recover(&backend_pid) = pid;
+    };
     // URUTAN DEKLARASI PENTING: `conn` dideklarasikan sebelum
     // `SqliteStatementGuard` mana pun (lihat invarian di guard tersebut).
     let mut conn: Option<SessionConn> = None;
     let mut tx_open = false;
+    // PostgreSQL: setelah satu statement gagal, transaksi berstatus aborted
+    // dan setiap statement berikutnya hanya menghasilkan error yang sama.
+    // Statement yang masih antre dilewati sampai COMMIT/ROLLBACK.
+    let mut tx_aborted = false;
 
     while let Some(command) = rx.recv().await {
         match command {
@@ -165,7 +185,10 @@ async fn run_session(
                 // Acquire lazily so connect errors land on a real job id.
                 if conn.is_none() {
                     match acquire(&pool, &connection_type, database_name.as_deref()).await {
-                        Ok(c) => conn = Some(c),
+                        Ok((c, pid)) => {
+                            conn = Some(c);
+                            set_pid(pid);
+                        }
                         Err(e) => {
                             send(session_message(
                                 job_id,
@@ -181,6 +204,83 @@ async fn run_session(
                 }
                 let c = conn.as_mut().expect("session connection acquired");
                 let started = Instant::now();
+
+                // BEGIN/COMMIT/ROLLBACK yang diketik user disinkronkan dengan
+                // status transaksi sesi, bukan dikirim mentah (yang membuat
+                // `tx_open` tidak lagi cocok dengan keadaan server).
+                match super::sql::transaction_verb(&sql) {
+                    Some(super::sql::TxVerb::Begin) => {
+                        let outcome = if tx_open {
+                            Ok(status_output("Transaction is already open"))
+                        } else {
+                            let begin = match connection_type {
+                                models::enums::DatabaseType::MySQL => "START TRANSACTION",
+                                models::enums::DatabaseType::MsSQL => "BEGIN TRANSACTION",
+                                _ => "BEGIN",
+                            };
+                            match run_simple(c, begin).await {
+                                Ok(()) => {
+                                    tx_open = true;
+                                    tx_aborted = false;
+                                    Ok(status_output("Transaction started"))
+                                }
+                                Err(e) => Err(format!("BEGIN failed: {}", e)),
+                            }
+                        };
+                        send(session_message(
+                            job_id,
+                            tab_id,
+                            connection_id,
+                            &sql,
+                            outcome,
+                            started,
+                        ));
+                        continue;
+                    }
+                    Some(super::sql::TxVerb::Commit) => {
+                        let outcome = finish_tx(Some(c), &mut tx_open, "COMMIT")
+                            .await
+                            .map(|(h, r)| (h, r, None, false));
+                        tx_aborted = false;
+                        send(session_message(
+                            job_id,
+                            tab_id,
+                            connection_id,
+                            &sql,
+                            outcome,
+                            started,
+                        ));
+                        continue;
+                    }
+                    Some(super::sql::TxVerb::Rollback) => {
+                        let outcome = finish_tx(Some(c), &mut tx_open, "ROLLBACK")
+                            .await
+                            .map(|(h, r)| (h, r, None, false));
+                        tx_aborted = false;
+                        send(session_message(
+                            job_id,
+                            tab_id,
+                            connection_id,
+                            &sql,
+                            outcome,
+                            started,
+                        ));
+                        continue;
+                    }
+                    None => {}
+                }
+
+                if tx_aborted {
+                    send(session_message(
+                        job_id,
+                        tab_id,
+                        connection_id,
+                        &sql,
+                        Err("Skipped: the transaction is aborted by an earlier error. Roll back (or commit) before running more statements.".to_string()),
+                        started,
+                    ));
+                    continue;
+                }
 
                 if !tx_open {
                     let begin = match connection_type {
@@ -222,6 +322,11 @@ async fn run_session(
                 let outcome = match timed {
                     Ok(result) => {
                         statement_guard.finish();
+                        if result.is_err()
+                            && matches!(connection_type, models::enums::DatabaseType::PostgreSQL)
+                        {
+                            tx_aborted = true;
+                        }
                         result
                     }
                     Err(limit) => {
@@ -231,7 +336,9 @@ async fn run_session(
                         // Koneksi masih punya query berjalan / respons tertunda;
                         // tidak boleh dipakai lagi atau kembali ke pool.
                         discard_session_connection(conn.take());
+                        set_pid(None);
                         tx_open = false;
+                        tx_aborted = false;
                         Err(format!(
                             "Query timed out after {}s. The session connection was closed and its open transaction was rolled back.",
                             limit.as_secs()
@@ -249,6 +356,7 @@ async fn run_session(
             }
             SessionCommand::Commit { job_id } => {
                 let started = Instant::now();
+                tx_aborted = false;
                 let outcome = finish_tx(conn.as_mut(), &mut tx_open, "COMMIT")
                     .await
                     .map(|(h, r)| (h, r, None, false));
@@ -263,6 +371,7 @@ async fn run_session(
             }
             SessionCommand::Rollback { job_id } => {
                 let started = Instant::now();
+                tx_aborted = false;
                 let outcome = finish_tx(conn.as_mut(), &mut tx_open, "ROLLBACK")
                     .await
                     .map(|(h, r)| (h, r, None, false));
@@ -319,14 +428,31 @@ async fn finish_tx(
     Ok((Vec::new(), Vec::new()))
 }
 
+/// Keluaran status satu baris untuk perintah transaksi (BEGIN/COMMIT/ROLLBACK).
+fn status_output(message: &str) -> StatementOutput {
+    (
+        vec!["Status".to_string()],
+        vec![vec![message.to_string()]],
+        None,
+        false,
+    )
+}
+
+/// Koneksi sesi beserta backend pid-nya (bila dialek mendukung cancel di
+/// server).
 async fn acquire(
     pool: &models::enums::DatabasePool,
     connection_type: &models::enums::DatabaseType,
     database_name: Option<&str>,
-) -> Result<SessionConn, String> {
+) -> Result<(SessionConn, Option<i64>), String> {
     match pool {
         models::enums::DatabasePool::MySQL(p) => {
             let mut conn = p.acquire().await.map_err(|e| e.to_string())?;
+            let pid = sqlx::query_scalar::<_, u64>("SELECT CONNECTION_ID()")
+                .fetch_one(&mut *conn)
+                .await
+                .ok()
+                .map(|id| id as i64);
             if let Some(db) = database_name.filter(|d| !d.trim().is_empty()) {
                 let use_stmt = format!("USE `{}`", db.replace('`', "``"));
                 // Protokol teks: `USE` ditolak protokol prepared statement.
@@ -336,16 +462,21 @@ async fn acquire(
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            Ok(SessionConn::MySql(conn))
+            Ok((SessionConn::MySql(conn), pid))
         }
         models::enums::DatabasePool::PostgreSQL(p) => {
             // The pool is already bound to the selected database.
-            Ok(SessionConn::Postgres(
-                p.acquire().await.map_err(|e| e.to_string())?,
-            ))
+            let mut conn = p.acquire().await.map_err(|e| e.to_string())?;
+            let pid = sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+                .fetch_one(&mut *conn)
+                .await
+                .ok()
+                .map(|id| id as i64);
+            Ok((SessionConn::Postgres(conn), pid))
         }
-        models::enums::DatabasePool::SQLite(p) => Ok(SessionConn::Sqlite(
-            p.acquire().await.map_err(|e| e.to_string())?,
+        models::enums::DatabasePool::SQLite(p) => Ok((
+            SessionConn::Sqlite(p.acquire().await.map_err(|e| e.to_string())?),
+            None,
         )),
         models::enums::DatabasePool::MsSQL(p) => {
             let mut conn = p.get().await.map_err(|e| e.to_string())?;
@@ -357,7 +488,7 @@ async fn acquire(
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            Ok(SessionConn::MsSQL(Box::new(conn)))
+            Ok((SessionConn::MsSQL(Box::new(conn)), None))
         }
         _ => Err(format!(
             "Transactions are not supported for {:?}",

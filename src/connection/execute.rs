@@ -331,6 +331,63 @@ fn timeout_message(options: &QueryExecutionOptions) -> String {
     }
 }
 
+/// Metadata kolom untuk hasil SELECT satu tabel: tabel asal dan primary key
+/// dari cache index lokal. Dipakai PostgreSQL dan SQLite, yang sebelumnya
+/// tidak mengisi metadata sehingga grid tidak tahu kunci baris untuk edit.
+/// `databases` adalah kandidat nama database di cache, urut prioritas.
+async fn single_table_metadata(
+    connection_id: i64,
+    databases: &[String],
+    statement: &str,
+    columns: &[(String, String)],
+) -> Option<Vec<models::structs::ColumnMetadata>> {
+    let table = super::sql::single_table_of_select(statement)?;
+    let parts = super::sql::split_qualified_ident(&table);
+    let (qualifier, table_name) = match parts.as_slice() {
+        [t] => (None, t.clone()),
+        [q, .., t] => (Some(q.clone()), t.clone()),
+        [] => return None,
+    };
+    let mut candidates: Vec<String> = qualifier.into_iter().collect();
+    candidates.extend(databases.iter().filter(|d| !d.is_empty()).cloned());
+
+    let data_dir = crate::directory::get_data_dir();
+    let db_path = data_dir.join("connections.db");
+    let cache_conn_str = format!("sqlite://{}?mode=ro", db_path.to_string_lossy());
+    let mut pks: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Ok(cache_pool) = index_cache_pool(&cache_conn_str).await {
+        for db in &candidates {
+            let result: Result<Option<(String,)>, _> = sqlx::query_as(
+                "SELECT columns_json FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? COLLATE NOCASE AND index_name = 'PRIMARY'",
+            )
+            .bind(connection_id)
+            .bind(db)
+            .bind(&table_name)
+            .fetch_optional(cache_pool)
+            .await;
+            if let Ok(Some((json,))) = result
+                && let Ok(cols) = serde_json::from_str::<Vec<String>>(&json)
+                && !cols.is_empty()
+            {
+                pks = cols.into_iter().map(|c| c.to_lowercase()).collect();
+                break;
+            }
+        }
+    }
+    Some(
+        columns
+            .iter()
+            .map(|(name, type_name)| models::structs::ColumnMetadata {
+                name: name.clone(),
+                type_name: type_name.clone(),
+                table_name: Some(table_name.clone()),
+                original_name: Some(name.clone()),
+                is_primary_key: pks.contains(&name.to_lowercase()),
+            })
+            .collect(),
+    )
+}
+
 /// Pool read-only ke `connections.db` untuk membaca cache primary key saat
 /// hasil MySQL diproses. Dibuat sekali per proses; sebelumnya setiap SELECT
 /// yang mengembalikan baris membuka pool SQLite baru.
@@ -665,6 +722,7 @@ async fn execute_query_job_all_in(
         &query,
         job.options.max_rows.max(1),
         job.options.query_timeout,
+        Some(job.job_id),
     )
     .await;
     let message_for = |headers: Vec<String>, rows: Vec<Vec<String>>| QueryResultMessage {
@@ -1753,6 +1811,7 @@ async fn execute_postgres_query_job(
     let mut final_data = Vec::new();
     let mut final_affected: Option<u64> = None;
     let mut final_truncated = false;
+    let mut final_column_metadata: Option<Vec<models::structs::ColumnMetadata>> = None;
 
     for (i, statement) in statements_ref.iter().enumerate() {
         let trimmed = statement.trim();
@@ -1790,6 +1849,22 @@ async fn execute_postgres_query_job(
                             .iter()
                             .map(|c| c.name().to_string())
                             .collect();
+                        let columns: Vec<(String, String)> = rows[0]
+                            .columns()
+                            .iter()
+                            .map(|c| (c.name().to_string(), c.type_info().name().to_string()))
+                            .collect();
+                        let databases = [
+                            options.selected_database.clone().unwrap_or_default(),
+                            options.connection.database.clone(),
+                        ];
+                        final_column_metadata = single_table_metadata(
+                            options.connection_id,
+                            &databases,
+                            trimmed,
+                            &columns,
+                        )
+                        .await;
                         final_data =
                             crate::driver_postgres::convert_postgres_rows_to_table_data(rows);
                     } else {
@@ -1861,7 +1936,7 @@ async fn execute_postgres_query_job(
         rows: final_data,
         ast_debug_sql,
         ast_headers,
-        column_metadata: None,
+        column_metadata: final_column_metadata,
         affected_rows: final_affected,
         truncated: final_truncated,
     })
@@ -2037,6 +2112,7 @@ async fn execute_sqlite_query_job(
     let mut final_data = Vec::new();
     let mut final_affected: Option<u64> = None;
     let mut final_truncated = false;
+    let mut final_column_metadata: Option<Vec<models::structs::ColumnMetadata>> = None;
 
     for (i, statement) in statements_ref.iter().enumerate() {
         let trimmed = statement.trim();
@@ -2085,6 +2161,23 @@ async fn execute_sqlite_query_job(
                             .iter()
                             .map(|c| c.name().to_string())
                             .collect();
+                        let columns: Vec<(String, String)> = rows[0]
+                            .columns()
+                            .iter()
+                            .map(|c| (c.name().to_string(), c.type_info().name().to_string()))
+                            .collect();
+                        let databases = [
+                            options.selected_database.clone().unwrap_or_default(),
+                            options.connection.database.clone(),
+                            "main".to_string(),
+                        ];
+                        final_column_metadata = single_table_metadata(
+                            options.connection_id,
+                            &databases,
+                            trimmed,
+                            &columns,
+                        )
+                        .await;
                         final_data = driver_sqlite::convert_sqlite_rows_to_table_data(rows);
                     } else {
                         #[cfg(feature = "query_ast")]
@@ -2149,7 +2242,7 @@ async fn execute_sqlite_query_job(
         rows: final_data,
         ast_debug_sql,
         ast_headers,
-        column_metadata: None,
+        column_metadata: final_column_metadata,
         affected_rows: final_affected,
         truncated: final_truncated,
     })
@@ -2582,6 +2675,7 @@ async fn execute_mssql_query_job(
         &query_str,
         options.max_rows.max(1),
         options.query_timeout,
+        Some(options.job_id),
     )
     .await
     {

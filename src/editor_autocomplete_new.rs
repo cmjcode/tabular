@@ -846,7 +846,7 @@ fn active_connection(app: &Tabular) -> (Option<i64>, String) {
 }
 
 /// Dialek SQL koneksi; `None` untuk koneksi non-SQL (Redis, MongoDB, HTTP).
-fn dialect_for(app: &Tabular, cid: Option<i64>) -> Option<Dialect> {
+pub(crate) fn dialect_for(app: &Tabular, cid: Option<i64>) -> Option<Dialect> {
     use crate::models::enums::DatabaseType;
     let Some(conn) = cid.and_then(|cid| app.connections.iter().find(|c| c.id == Some(cid))) else {
         return Some(Dialect::Generic);

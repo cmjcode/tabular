@@ -1315,6 +1315,49 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         ui.ctx().request_repaint();
     }
 
+    // Navigasi statement, run-and-advance, dan Go to Line.
+    if crate::keymap::consume(ui.ctx(), &tabular.keymap, crate::keymap::Action::GoToLine) {
+        tabular.advanced_editor.show_goto_line = true;
+        tabular.advanced_editor.focus_goto_line = true;
+        tabular.advanced_editor.goto_line_text.clear();
+    }
+    let nav_next = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::NextStatement,
+    );
+    let nav_prev = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::PrevStatement,
+    );
+    let run_advance = crate::keymap::consume(
+        ui.ctx(),
+        &tabular.keymap,
+        crate::keymap::Action::RunAndAdvance,
+    );
+    if nav_next || nav_prev || run_advance {
+        let dialect = active_dialect(tabular).unwrap_or_default();
+        let spans = statement_spans(&tabular.editor.text, dialect);
+        let cursor = tabular.cursor_position.min(tabular.editor.text.len());
+        if run_advance {
+            let stmt = extract_query_from_cursor(tabular);
+            if !stmt.trim().is_empty() {
+                tabular.selected_text.clear();
+                execute_query_internal(tabular, stmt);
+            }
+            if let Some(pos) = next_statement_start(&spans, cursor) {
+                move_cursor_to(tabular, pos);
+            }
+        } else if nav_next {
+            if let Some(pos) = next_statement_start(&spans, cursor) {
+                move_cursor_to(tabular, pos);
+            }
+        } else if let Some(pos) = prev_statement_start(&spans, cursor) {
+            move_cursor_to(tabular, pos);
+        }
+    }
+
     // Shortcut: Toggle AI Panel (Cmd/Ctrl + Shift + A)
     let trigger_toggle_ai = crate::keymap::consume(
         ui.ctx(),
@@ -1787,58 +1830,87 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Detect ' or " input.
     // If Custom View dialog is open, skip to avoid interference.
     if !tabular.show_add_view_dialog && tabular.multi_selection.len() <= 1 {
-        let handle_quote = ui.input(|i| {
+        // Kutip dan kurung pembuka ditutup otomatis; penutup yang sudah ada
+        // di depan kursor di-overtype; dengan seleksi aktif, seleksinya
+        // dibungkus ('teks', (teks), [teks], {teks}).
+        let typed = ui.input(|i| {
             i.events.iter().find_map(|ev| match ev {
-                egui::Event::Text(text) if text == "'" || text == "\"" => Some(text.clone()),
+                egui::Event::Text(text)
+                    if matches!(
+                        text.as_str(),
+                        "'" | "\"" | "(" | "[" | "{" | ")" | "]" | "}"
+                    ) =>
+                {
+                    Some(text.clone())
+                }
                 _ => None,
             })
         });
 
-        if let Some(quote_char) = handle_quote {
-            let cursor = tabular.cursor_position;
+        if let Some(quote_char) = typed {
+            let closer = match quote_char.as_str() {
+                "(" => Some(")"),
+                "[" => Some("]"),
+                "{" => Some("}"),
+                "'" => Some("'"),
+                "\"" => Some("\""),
+                _ => None,
+            };
             let text_len = tabular.editor.text.len();
-            let safe_cursor = cursor.min(text_len);
-
-            // Check character valid for auto-close (at end, or before whitespace/closer)
+            let safe_cursor = clamp_char_boundary_left(
+                &tabular.editor.text,
+                tabular.cursor_position.min(text_len),
+            );
             let next_char = tabular.editor.text[safe_cursor..].chars().next();
-            // Allow auto-close if next char is whitespace/empty or closing punctuation
+            // Auto-close hanya bila di akhir, sebelum spasi, atau sebelum penutup.
             let should_autoclose = match next_char {
-                None => true, // End of file
-                Some(c) => {
-                    c.is_whitespace() || c == ')' || c == ']' || c == '}' || c == ',' || c == ';'
-                }
+                None => true,
+                Some(c) => c.is_whitespace() || matches!(c, ')' | ']' | '}' | ',' | ';'),
             };
-
-            // Special Overtype case: cursor is before matching quote
-            let is_overtype = if let Some(c) = next_char {
-                c.to_string() == quote_char
-            } else {
-                false
-            };
+            let is_overtype = next_char.is_some_and(|c| c.to_string() == quote_char);
+            let (sel_a, sel_b) = (
+                tabular.selection_start.min(tabular.selection_end),
+                tabular.selection_start.max(tabular.selection_end),
+            );
+            let has_selection = sel_a < sel_b
+                && sel_b <= text_len
+                && tabular.editor.text.is_char_boundary(sel_a)
+                && tabular.editor.text.is_char_boundary(sel_b);
 
             let mut handled = false;
 
-            if is_overtype {
-                // Just move cursor forward
-                tabular.cursor_position += 1;
+            if let Some(close) = closer
+                && has_selection
+            {
+                let inner = tabular.editor.text[sel_a..sel_b].to_string();
+                let wrapped = format!("{}{}{}", quote_char, inner, close);
+                tabular.editor.apply_single_replace(sel_a..sel_b, &wrapped);
+                tabular.cursor_position = sel_a + wrapped.len();
                 tabular.selection_start = tabular.cursor_position;
                 tabular.selection_end = tabular.cursor_position;
                 handled = true;
                 request_scroll_to_cursor = true;
-                log::debug!("Overtyped quote '{}'", quote_char);
-            } else if should_autoclose {
-                // Insert quote pair: quote + quote
-                let pair = format!("{}{}", quote_char, quote_char);
-                tabular
-                    .editor
-                    .apply_single_replace(safe_cursor..safe_cursor, &pair);
-
-                // Move cursor between them
-                tabular.cursor_position += 1;
+            } else if is_overtype {
+                // Just move cursor forward
+                tabular.cursor_position = safe_cursor + quote_char.len();
                 tabular.selection_start = tabular.cursor_position;
                 tabular.selection_end = tabular.cursor_position;
                 handled = true;
-                log::debug!("Auto-closed quote '{}'", quote_char);
+                request_scroll_to_cursor = true;
+                log::debug!("Overtyped '{}'", quote_char);
+            } else if let Some(close) = closer
+                && should_autoclose
+            {
+                let pair = format!("{}{}", quote_char, close);
+                tabular
+                    .editor
+                    .apply_single_replace(safe_cursor..safe_cursor, &pair);
+                // Move cursor between them
+                tabular.cursor_position = safe_cursor + quote_char.len();
+                tabular.selection_start = tabular.cursor_position;
+                tabular.selection_end = tabular.cursor_position;
+                handled = true;
+                log::debug!("Auto-closed '{}'", quote_char);
             }
 
             if handled {
@@ -4906,6 +4978,9 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Render floating Find & Replace panel overlay
     if tabular.advanced_editor.show_find_replace {
         render_find_replace_floating_panel(tabular, ui, response.rect);
+    }
+    if tabular.advanced_editor.show_goto_line {
+        render_goto_line_popup(tabular, ui);
     }
 }
 
@@ -9782,6 +9857,7 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
 
     // Reset pagination state before evaluating auto-pagination rules
     tabular.use_server_pagination = false;
+    tabular.sort_column = None;
 
     // We no longer branch on first execution; per-tab connection must always be set explicitly.
 
@@ -9842,6 +9918,33 @@ pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, qu
         if statements.is_empty() {
             // Should not happen as we checked query.is_empty() above
             statements.push(query.clone());
+        }
+
+        // Mode autocommit: BEGIN tanpa COMMIT di-rollback diam-diam saat
+        // koneksi kembali ke pool. Beri tahu, jangan biarkan user mengira
+        // perubahannya tersimpan.
+        let tx_mode = tabular
+            .query_tabs
+            .get(tabular.active_tab_index)
+            .is_some_and(|t| t.tx_mode);
+        if !tx_mode {
+            let verbs: Vec<connection::sql::TxVerb> = statements
+                .iter()
+                .filter_map(|s| connection::sql::transaction_verb(s))
+                .collect();
+            let opens = verbs.contains(&connection::sql::TxVerb::Begin);
+            let closes = verbs.iter().any(|v| {
+                matches!(
+                    v,
+                    connection::sql::TxVerb::Commit | connection::sql::TxVerb::Rollback
+                )
+            });
+            if opens && !closes {
+                tabular.toasts.warning(
+                    "BEGIN without COMMIT: the transaction is rolled back when the connection is released. Add COMMIT or enable manual-commit mode."
+                        .to_string(),
+                );
+            }
         }
 
         tabular.query_execution_in_progress = true;
@@ -10402,7 +10505,138 @@ pub(crate) fn extract_query_from_cursor(tabular: &mut window_egui::Tabular) -> S
     }
     let text = &tabular.editor.text;
     let cursor_pos = tabular.cursor_position.min(text.len());
+    // Lexer yang paham dialek (dollar-quote PostgreSQL, backtick MySQL,
+    // bracket SQL Server) adalah sumber tunggal batas statement; splitter
+    // lama tetap jadi cadangan untuk koneksi non-SQL.
+    if let Some(dialect) = active_dialect(tabular) {
+        let probe = statement_probe_cursor(text, cursor_pos);
+        let (s0, s1) = crate::autocomplete::lexer::statement_bounds(text, probe, dialect);
+        let stmt = text[s0..s1.max(s0)].trim();
+        if !stmt.is_empty() {
+            return stmt.to_string();
+        }
+    }
     extract_statement_at_cursor_from_text(text, cursor_pos)
+}
+
+/// Dialek SQL tab aktif untuk lexer; `None` untuk koneksi non-SQL.
+fn active_dialect(tabular: &window_egui::Tabular) -> Option<crate::autocomplete::lexer::Dialect> {
+    let cid = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)
+        .or(tabular.current_connection_id);
+    crate::editor_autocomplete::dialect_for(tabular, cid)
+}
+
+/// Kursor tepat setelah `;` masih milik statement sebelumnya.
+fn statement_probe_cursor(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    if cursor > 0 && text.as_bytes()[cursor - 1] == b';' {
+        cursor - 1
+    } else {
+        cursor
+    }
+}
+
+/// Rentang (awal, akhir) setiap statement yang tidak kosong, tanpa spasi di
+/// tepi, memakai lexer dialek. Dipakai navigasi statement dan run-and-advance.
+pub(crate) fn statement_spans(
+    text: &str,
+    dialect: crate::autocomplete::lexer::Dialect,
+) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    while pos <= text.len() {
+        let (s0, s1) = crate::autocomplete::lexer::statement_bounds(text, pos, dialect);
+        let s1 = s1.max(s0).min(text.len());
+        let piece = &text[s0..s1];
+        let trimmed = piece.trim();
+        if !trimmed.is_empty() {
+            let lead = piece.len() - piece.trim_start().len();
+            spans.push((s0 + lead, s0 + lead + trimmed.len()));
+        }
+        if s1 >= text.len() {
+            break;
+        }
+        pos = s1 + 1;
+    }
+    spans
+}
+
+/// Pindahkan kursor editor (dan seleksi) ke `pos`.
+pub(crate) fn move_cursor_to(tabular: &mut window_egui::Tabular, pos: usize) {
+    let pos = clamp_char_boundary_left(&tabular.editor.text, pos.min(tabular.editor.text.len()));
+    tabular.multi_selection.clear();
+    tabular.multi_selection.add_collapsed(pos);
+    tabular.cursor_position = pos;
+    tabular.selection_start = pos;
+    tabular.selection_end = pos;
+    tabular.selection_force_clear = true;
+    tabular.pending_cursor_set = Some(pos);
+    tabular.editor_focus_boost_frames = tabular.editor_focus_boost_frames.max(6);
+}
+
+/// Awal statement berikutnya setelah kursor, bila ada.
+fn next_statement_start(spans: &[(usize, usize)], cursor: usize) -> Option<usize> {
+    spans.iter().find(|(s, _)| *s > cursor).map(|(s, _)| *s)
+}
+
+/// Awal statement saat ini bila kursor belum di awalnya; kalau sudah, awal
+/// statement sebelumnya.
+fn prev_statement_start(spans: &[(usize, usize)], cursor: usize) -> Option<usize> {
+    spans
+        .iter()
+        .rev()
+        .find(|(s, _)| *s < cursor)
+        .map(|(s, _)| *s)
+}
+
+/// Popup "Go to line": Enter melompat, Esc menutup.
+fn render_goto_line_popup(tabular: &mut window_egui::Tabular, ui: &egui::Ui) {
+    let mut open = tabular.advanced_editor.show_goto_line;
+    let mut jump: Option<usize> = None;
+    let mut close = false;
+    egui::Window::new("Go to line")
+        .id(egui::Id::new("goto_line_popup"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 48.0))
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            let total = tabular.editor.line_count().max(1);
+            ui.label(format!("Line number (1 to {})", total));
+            ui.horizontal(|ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut tabular.advanced_editor.goto_line_text)
+                        .desired_width(120.0),
+                );
+                if tabular.advanced_editor.focus_goto_line {
+                    response.request_focus();
+                    tabular.advanced_editor.focus_goto_line = false;
+                }
+                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+                if enter || ui.button("Go").clicked() {
+                    if let Ok(n) = tabular
+                        .advanced_editor
+                        .goto_line_text
+                        .trim()
+                        .parse::<usize>()
+                    {
+                        jump = Some(n.clamp(1, total));
+                    }
+                    close = true;
+                }
+            });
+        });
+    if let Some(line) = jump {
+        let pos = tabular.editor.line_start(line - 1);
+        move_cursor_to(tabular, pos);
+    }
+    tabular.advanced_editor.show_goto_line = open && !close;
 }
 
 pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usize) -> String {

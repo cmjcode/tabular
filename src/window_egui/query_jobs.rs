@@ -190,8 +190,10 @@ impl super::Tabular {
             headers: message.headers.clone(),
             rows: Vec::new(),
             all_rows: rows,
+            // Komentar baris pertama (`-- Total per bulan`) menjadi judul tab.
             table_name: if message.success {
-                format!("Result {}", new_index + 1)
+                connection::sql::result_title_from_query(&message.query)
+                    .unwrap_or_else(|| format!("Result {}", new_index + 1))
             } else {
                 "Error".to_string()
             },
@@ -715,8 +717,34 @@ impl super::Tabular {
                             .cloned()
                     })
             });
-            if let (Some(pid), Some(pool)) = (pid, pool) {
-                runtime.spawn(connection::execute::cancel_backend_query(pool, pid));
+            // Job sesi (manual commit) tidak ada di registry pid; pid-nya ada
+            // di handle sesi tab asalnya.
+            let pid = pid.or_else(|| {
+                let tab_id = self.jobs.tab_of.get(job_id).copied()?;
+                let session = self
+                    .query_tabs
+                    .iter()
+                    .find(|t| t.id == tab_id)?
+                    .session
+                    .as_ref()?;
+                session.backend_pid()
+            });
+            if let (Some(pid), Some(pool)) = (pid, pool.as_ref()) {
+                runtime.spawn(connection::execute::cancel_backend_query(pool.clone(), pid));
+            }
+            // SQL Server: kirim ATTENTION lewat cancel handle batch yang berjalan.
+            if matches!(pool, Some(models::enums::DatabasePool::MsSQL(_)))
+                && let Some(handle) = crate::driver_mssql::take_cancel_handle(*job_id)
+            {
+                runtime.spawn(async move {
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), handle.cancel())
+                        .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => log::warn!("[CANCEL] MsSQL cancel failed: {}", e),
+                        Err(_) => log::warn!("[CANCEL] MsSQL cancel timed out"),
+                    }
+                });
             }
         }
     }

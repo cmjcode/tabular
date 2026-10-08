@@ -1040,7 +1040,13 @@ pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) 
     if statement.is_empty() {
         return None;
     }
-    let start = text.find(statement)?;
+    // Statement yang dikirim ke server bisa sudah ditulis ulang (prefiks
+    // `USE db;`, `ORDER BY`/`LIMIT ... OFFSET` paginasi); coba juga bentuk
+    // aslinya supaya "Go to error" tetap bekerja pada SELECT berpaginasi.
+    let (statement, start) = statement_candidates(statement)
+        .into_iter()
+        .find_map(|candidate| text.find(&candidate).map(|start| (candidate, start)))?;
+    let statement = statement.as_str();
     let relative = if let Some(char_offset) = location.char_offset {
         statement
             .char_indices()
@@ -1062,6 +1068,115 @@ pub fn locate_error_in_text(text: &str, location: &super::types::ErrorLocation) 
         0
     };
     Some(start + relative)
+}
+
+/// Varian teks statement yang mungkin ada di editor, dari yang paling
+/// lengkap: apa adanya, tanpa `;` akhir, tanpa prefiks `USE db;`, tanpa
+/// sufiks ` LIMIT n OFFSET m` dan ` ORDER BY ...` yang ditambah paginasi.
+fn statement_candidates(statement: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let s = s.trim().trim_end_matches(';').trim_end();
+        if !s.is_empty() && !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    };
+    push(statement);
+    let mut body = statement.trim();
+    if starts_with_ascii_ci(body, "USE")
+        && let Some(pos) = body.find(';')
+    {
+        body = body[pos + 1..].trim();
+        push(body);
+    }
+    if let Some(pos) = body.rfind(" LIMIT ") {
+        body = &body[..pos];
+        push(body);
+    }
+    if let Some(pos) = body.rfind(" OFFSET ") {
+        body = &body[..pos];
+        push(body);
+    }
+    if let Some(pos) = body.rfind(" ORDER BY ") {
+        push(&body[..pos]);
+    }
+    out
+}
+
+/// Kata kunci kontrol transaksi di awal statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxVerb {
+    Begin,
+    Commit,
+    Rollback,
+}
+
+/// `BEGIN` / `START TRANSACTION` / `COMMIT` / `ROLLBACK` (juga `END` sebagai
+/// COMMIT di PostgreSQL/SQLite) di awal statement, setelah komentar.
+pub fn transaction_verb(statement: &str) -> Option<TxVerb> {
+    let body = strip_leading_sql_comments(statement);
+    let mut words = body
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .filter(|w| !w.is_empty());
+    let first = words.next()?.to_ascii_uppercase();
+    match first.as_str() {
+        "BEGIN" => {
+            // `BEGIN ... END` (blok procedure) bukan kontrol transaksi, tetapi
+            // `BEGIN`, `BEGIN TRANSACTION`, `BEGIN WORK`, `BEGIN TRAN` iya.
+            match words.next().map(|w| w.to_ascii_uppercase()) {
+                None => Some(TxVerb::Begin),
+                Some(w)
+                    if matches!(
+                        w.as_str(),
+                        "TRANSACTION"
+                            | "TRAN"
+                            | "WORK"
+                            | "DEFERRED"
+                            | "IMMEDIATE"
+                            | "EXCLUSIVE"
+                            | "ISOLATION"
+                    ) =>
+                {
+                    Some(TxVerb::Begin)
+                }
+                Some(_) => None,
+            }
+        }
+        "START" => words
+            .next()
+            .filter(|w| w.eq_ignore_ascii_case("TRANSACTION"))
+            .map(|_| TxVerb::Begin),
+        "COMMIT" | "END" => Some(TxVerb::Commit),
+        "ROLLBACK" => {
+            // `ROLLBACK TO SAVEPOINT` tidak menutup transaksi.
+            match words.next().map(|w| w.to_ascii_uppercase()) {
+                Some(w) if w == "TO" => None,
+                _ => Some(TxVerb::Rollback),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Judul tab hasil dari komentar baris pertama statement (`-- Total per
+/// bulan` menjadi "Total per bulan"). Komentar `--AI` dan baris kosong
+/// diabaikan.
+pub fn result_title_from_query(query: &str) -> Option<String> {
+    let first = query.lines().find(|l| !l.trim().is_empty())?.trim();
+    let title = first.strip_prefix("--")?;
+    if title.starts_with("AI") {
+        return None;
+    }
+    let title = title.trim().trim_end_matches(';').trim();
+    if title.is_empty() {
+        return None;
+    }
+    let shortened: String = title.chars().take(40).collect();
+    Some(if shortened.len() < title.len() {
+        format!("{}…", shortened)
+    } else {
+        shortened
+    })
 }
 
 /// Kumpulan teks "aneh" deterministik untuk uji tahan-panic: potongan SQL
@@ -1273,6 +1388,45 @@ mod tests {
             line: None,
         };
         assert_eq!(locate_error_in_text(text, &missing), None);
+    }
+
+    #[test]
+    fn locates_error_in_rewritten_paginated_statement() {
+        use crate::connection::types::ErrorLocation;
+        let text = "SELECT naem FROM users";
+        let location = ErrorLocation {
+            statement: "SELECT naem FROM users ORDER BY \"id\" LIMIT 100 OFFSET 0".to_string(),
+            char_offset: Some(7),
+            line: None,
+        };
+        let pos = locate_error_in_text(text, &location).unwrap();
+        assert!(text[pos..].starts_with("naem"));
+        let with_use = ErrorLocation {
+            statement: "USE `db`;\nSELECT naem FROM users LIMIT 10 OFFSET 0".to_string(),
+            char_offset: None,
+            line: None,
+        };
+        assert_eq!(locate_error_in_text(text, &with_use), Some(0));
+    }
+
+    #[test]
+    fn transaction_verbs_and_result_titles() {
+        assert_eq!(transaction_verb("begin"), Some(TxVerb::Begin));
+        assert_eq!(
+            transaction_verb("-- c\nSTART TRANSACTION;"),
+            Some(TxVerb::Begin)
+        );
+        assert_eq!(transaction_verb("BEGIN\n UPDATE t SET a = 1; END"), None);
+        assert_eq!(transaction_verb("COMMIT"), Some(TxVerb::Commit));
+        assert_eq!(transaction_verb("ROLLBACK TO SAVEPOINT s"), None);
+        assert_eq!(transaction_verb("ROLLBACK"), Some(TxVerb::Rollback));
+        assert_eq!(transaction_verb("SELECT 1"), None);
+        assert_eq!(
+            result_title_from_query("\n-- Total per bulan\nSELECT 1"),
+            Some("Total per bulan".to_string())
+        );
+        assert_eq!(result_title_from_query("--AI buat laporan\nSELECT 1"), None);
+        assert_eq!(result_title_from_query("SELECT 1 -- x"), None);
     }
 
     #[test]

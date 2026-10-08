@@ -2132,6 +2132,10 @@ pub struct AdvancedEditor {
     pub focus_find_input: bool,
     pub keyword_casing: crate::models::enums::KeywordCasing,
     pub highlight_active_line: bool,
+    /// Popup "Go to line" (Cmd+L).
+    pub show_goto_line: bool,
+    pub goto_line_text: String,
+    pub focus_goto_line: bool,
 }
 
 impl Default for AdvancedEditor {
@@ -2160,6 +2164,9 @@ impl Default for AdvancedEditor {
             focus_find_input: false,
             keyword_casing: crate::models::enums::KeywordCasing::default(),
             highlight_active_line: true,
+            show_goto_line: false,
+            goto_line_text: String::new(),
+            focus_goto_line: false,
         }
     }
 }

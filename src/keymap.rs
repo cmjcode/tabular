@@ -11,6 +11,10 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     RunQuery,
+    RunAndAdvance,
+    NextStatement,
+    PrevStatement,
+    GoToLine,
     ExplainQuery,
     FormatSql,
     ToggleComment,
@@ -45,6 +49,10 @@ pub struct ActionSpec {
 #[rustfmt::skip]
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { action: Action::RunQuery, id: "run_query", label: "Run query / selection", category: "Query", defaults: &["Cmd+Enter"] },
+    ActionSpec { action: Action::RunAndAdvance, id: "run_and_advance", label: "Run statement and move to next", category: "Query", defaults: &["Cmd+Shift+Enter"] },
+    ActionSpec { action: Action::NextStatement, id: "next_statement", label: "Go to next statement", category: "Editor", defaults: &["Cmd+Alt+ArrowDown"] },
+    ActionSpec { action: Action::PrevStatement, id: "prev_statement", label: "Go to previous statement", category: "Editor", defaults: &["Cmd+Alt+ArrowUp"] },
+    ActionSpec { action: Action::GoToLine, id: "go_to_line", label: "Go to line", category: "Editor", defaults: &["Cmd+L"] },
     ActionSpec { action: Action::ExplainQuery, id: "explain_query", label: "Explain query", category: "Query", defaults: &["Cmd+Shift+E"] },
     ActionSpec { action: Action::ToggleTransactionMode, id: "toggle_transaction_mode", label: "Toggle manual-commit mode", category: "Query", defaults: &["Cmd+Shift+T"] },
     ActionSpec { action: Action::FormatSql, id: "format_sql", label: "Format SQL", category: "Editor", defaults: &["Cmd+Shift+F"] },

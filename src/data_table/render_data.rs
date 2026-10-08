@@ -1591,6 +1591,15 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     ui.separator();
+                                                    if tab.use_server_pagination {
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                "Server pagination: export covers the loaded page only",
+                                                            )
+                                                            .small()
+                                                            .weak(),
+                                                        );
+                                                    }
                                                     if ui.button("📄 Export to CSV").clicked() {
                                                         export::export_to_csv(
                                                             &tab.all_table_data,

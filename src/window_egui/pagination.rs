@@ -157,10 +157,21 @@ impl super::Tabular {
         }
 
         let has_order_by = connection::sql::has_top_level_keyword(&select_part, "ORDER BY");
+        // Kolom sort yang dipilih di header grid menang atas primary key.
+        let sort_order_by = self.sort_column.and_then(|col| {
+            let name = self.current_table_headers.get(col)?;
+            Some(format!(
+                " ORDER BY {} {}",
+                quote_ident_for(&db_type, name),
+                if self.sort_ascending { "ASC" } else { "DESC" }
+            ))
+        });
         let order_by = if has_order_by {
             None
         } else {
-            connection_id.and_then(|id| self.paginated_order_by(id, &db_type, &select_part))
+            sort_order_by.or_else(|| {
+                connection_id.and_then(|id| self.paginated_order_by(id, &db_type, &select_part))
+            })
         };
 
         match db_type {
@@ -241,11 +252,7 @@ impl super::Tabular {
         })?;
         let quoted: Vec<String> = pks
             .iter()
-            .map(|col| match db_type {
-                models::enums::DatabaseType::MySQL => format!("`{}`", col.replace('`', "``")),
-                models::enums::DatabaseType::MsSQL => format!("[{}]", col.replace(']', "]]")),
-                _ => format!("\"{}\"", col.replace('"', "\"\"")),
-            })
+            .map(|col| quote_ident_for(db_type, col))
             .collect();
         Some(format!(" ORDER BY {}", quoted.join(", ")))
     }
@@ -329,6 +336,8 @@ impl super::Tabular {
             "🚀 Initializing server pagination with base query: {}",
             base_query
         );
+        // Sort header milik tabel sebelumnya tidak boleh terbawa.
+        self.sort_column = None;
         self.current_base_query = base_query.clone();
         self.current_page = 0;
 
@@ -357,5 +366,14 @@ impl super::Tabular {
             "🎯 Ready for pagination with {} total pages",
             data_table::get_total_pages(self)
         );
+    }
+}
+
+/// Quote identifier kolom sesuai dialek untuk klausa ORDER BY paginasi.
+fn quote_ident_for(db_type: &models::enums::DatabaseType, name: &str) -> String {
+    match db_type {
+        models::enums::DatabaseType::MySQL => format!("`{}`", name.replace('`', "``")),
+        models::enums::DatabaseType::MsSQL => format!("[{}]", name.replace(']', "]]")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
