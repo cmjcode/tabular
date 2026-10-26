@@ -7425,7 +7425,7 @@ dependencies = [
 
 [[package]]
 name = "tabular"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "aes-gcm",
  "android_logger",
