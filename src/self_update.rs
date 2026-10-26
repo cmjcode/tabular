@@ -255,76 +255,26 @@ fn find_asset_for_platform(
         debug!("  - {}", asset.name);
     }
 
-    // ── Windows: prioritaskan MSI > ZIP > EXE standalone ──────────────────
+    // ── Windows: MSI untuk instalasi Program Files, ZIP untuk portable ───────
     #[cfg(target_os = "windows")]
     {
-        // Tahap 1: cari MSI yang cocok dengan arch
-        for asset in assets {
-            let name = asset.name.to_lowercase();
-            if name.ends_with(".msi") && platform.arch_matches(&name) {
-                debug!("✅ Found MSI asset: {}", asset.name);
-                return (
+        let prefer_msi = std::env::current_exe()
+            .map(|p| is_windows_system_install(&p.to_string_lossy()))
+            .unwrap_or(true);
+        match pick_windows_asset(assets, &platform, prefer_msi) {
+            Some((asset, kind)) => {
+                debug!("✅ Found Windows asset: {} ({:?})", asset.name, kind);
+                (
                     Some(asset.browser_download_url.clone()),
                     Some(asset.name.clone()),
-                    Some(WindowsUpdateKind::Msi),
-                );
+                    Some(kind),
+                )
+            }
+            None => {
+                warn!("❌ No matching Windows asset found");
+                (None, None, None)
             }
         }
-
-        // Tahap 2: cari MSI tanpa filter arch (universal)
-        for asset in assets {
-            let name = asset.name.to_lowercase();
-            if name.ends_with(".msi") && name.contains("windows") {
-                debug!("🔄 Using fallback MSI (no arch filter): {}", asset.name);
-                return (
-                    Some(asset.browser_download_url.clone()),
-                    Some(asset.name.clone()),
-                    Some(WindowsUpdateKind::Msi),
-                );
-            }
-        }
-
-        // Tahap 3: cari ZIP yang cocok
-        for asset in assets {
-            let name = asset.name.to_lowercase();
-            if name.ends_with(".zip") && name.contains("windows") && platform.arch_matches(&name) {
-                debug!("✅ Found ZIP asset: {}", asset.name);
-                return (
-                    Some(asset.browser_download_url.clone()),
-                    Some(asset.name.clone()),
-                    Some(WindowsUpdateKind::Zip),
-                );
-            }
-        }
-
-        // Tahap 4: ZIP tanpa filter arch
-        for asset in assets {
-            let name = asset.name.to_lowercase();
-            if name.ends_with(".zip") && name.contains("windows") {
-                debug!("🔄 Using fallback ZIP (no arch filter): {}", asset.name);
-                return (
-                    Some(asset.browser_download_url.clone()),
-                    Some(asset.name.clone()),
-                    Some(WindowsUpdateKind::Zip),
-                );
-            }
-        }
-
-        // Tahap 5: EXE standalone
-        for asset in assets {
-            let name = asset.name.to_lowercase();
-            if name.ends_with(".exe") && name.contains("windows") {
-                debug!("🔄 Using EXE standalone: {}", asset.name);
-                return (
-                    Some(asset.browser_download_url.clone()),
-                    Some(asset.name.clone()),
-                    Some(WindowsUpdateKind::Exe),
-                );
-            }
-        }
-
-        warn!("❌ No matching Windows asset found");
-        return (None, None, None);
     }
 
     // ── macOS / Linux: path lama ───────────────────────────────────────────
@@ -360,6 +310,59 @@ fn find_asset_for_platform(
         warn!("❌ No matching asset found for platform: {}", platform);
         (None, None, None)
     }
+}
+
+/// Apakah exe terpasang di folder sistem (Program Files dsb.), yaitu instalasi
+/// MSI? Instalasi portable (folder user) harus di-update dari ZIP, bukan MSI.
+pub fn is_windows_system_install(exe_path: &str) -> bool {
+    let p = exe_path.to_lowercase().replace('/', "\\");
+    [":\\program files", ":\\windows\\", ":\\programdata\\"]
+        .iter()
+        .any(|marker| p.contains(marker))
+}
+
+/// Pilih asset Windows. Urutan jenis: MSI > ZIP > EXE untuk instalasi MSI,
+/// ZIP > EXE > MSI untuk portable. Per jenis, asset dengan arch yang cocok
+/// didahulukan; fallback hanya asset tanpa penanda arch (bukan arch lain).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn pick_windows_asset<'a>(
+    assets: &'a [GitHubAsset],
+    platform: &PlatformInfo,
+    prefer_msi: bool,
+) -> Option<(&'a GitHubAsset, WindowsUpdateKind)> {
+    let order: [(&str, WindowsUpdateKind); 3] = if prefer_msi {
+        [
+            (".msi", WindowsUpdateKind::Msi),
+            (".zip", WindowsUpdateKind::Zip),
+            (".exe", WindowsUpdateKind::Exe),
+        ]
+    } else {
+        [
+            (".zip", WindowsUpdateKind::Zip),
+            (".exe", WindowsUpdateKind::Exe),
+            (".msi", WindowsUpdateKind::Msi),
+        ]
+    };
+    let arch_neutral = |n: &str| {
+        !["x86_64", "amd64", "aarch64", "arm64"]
+            .iter()
+            .any(|a| n.contains(a))
+    };
+    for (ext, kind) in order {
+        let candidates = || {
+            assets.iter().filter(move |a| {
+                let n = a.name.to_lowercase();
+                n.ends_with(ext) && n.contains("windows")
+            })
+        };
+        let found = candidates()
+            .find(|a| platform.arch_matches(&a.name.to_lowercase()))
+            .or_else(|| candidates().find(|a| arch_neutral(&a.name.to_lowercase())));
+        if let Some(asset) = found {
+            return Some((asset, kind));
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -495,6 +498,53 @@ mod tests {
         };
         assert!(win_arm.arch_matches("tabular-0.10.5-windows-aarch64.msi"));
         assert!(!win_arm.arch_matches("tabular-0.10.5-windows-x86_64.msi"));
+    }
+
+    fn asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{}", name),
+        }
+    }
+
+    #[test]
+    fn windows_asset_follows_install_type() {
+        let assets = vec![
+            asset("Tabular-1.8.0-windows-aarch64.msi"),
+            asset("tabular-1.8.0-windows-aarch64.zip"),
+            asset("Tabular-1.8.0-windows-x86_64.msi"),
+            asset("tabular-1.8.0-windows-x86_64.zip"),
+            asset("tabular-x86_64-unknown-linux-gnu.tar.gz"),
+        ];
+        let x64 = PlatformInfo {
+            os: "windows",
+            arch: "x86_64",
+        };
+        let (a, k) = pick_windows_asset(&assets, &x64, true).unwrap();
+        assert_eq!(
+            (a.name.as_str(), k),
+            ("Tabular-1.8.0-windows-x86_64.msi", WindowsUpdateKind::Msi)
+        );
+        let (a, k) = pick_windows_asset(&assets, &x64, false).unwrap();
+        assert_eq!(
+            (a.name.as_str(), k),
+            ("tabular-1.8.0-windows-x86_64.zip", WindowsUpdateKind::Zip)
+        );
+
+        // Arch lain tidak pernah dipilih sebagai fallback.
+        let only_arm = vec![asset("tabular-1.8.0-windows-aarch64.zip")];
+        assert!(pick_windows_asset(&only_arm, &x64, false).is_none());
+    }
+
+    #[test]
+    fn detects_windows_system_install() {
+        assert!(is_windows_system_install(
+            r"C:\Program Files\Tabular\Tabular.exe"
+        ));
+        assert!(is_windows_system_install(
+            r"D:\Program Files (x86)\Tabular\Tabular.exe"
+        ));
+        assert!(!is_windows_system_install(r"C:\Users\me\Tools\tabular.exe"));
     }
 
     #[test]
