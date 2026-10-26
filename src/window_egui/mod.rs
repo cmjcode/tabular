@@ -43,6 +43,7 @@ pub mod git_sidebar;
 pub mod git_view;
 pub mod init;
 pub mod notifications;
+mod persist_notices;
 pub mod pagination;
 pub mod platform_ui;
 pub(crate) mod plugin_connection_form;

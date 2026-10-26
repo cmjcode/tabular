@@ -164,6 +164,9 @@ pub struct ImportSummary {
     pub queries_restored: usize,
     pub http_workspaces_restored: usize,
     pub history_restored: usize,
+    /// Kegagalan yang tidak menghentikan restore (mis. satu koneksi gagal
+    /// disimpan). Ditampilkan di dialog agar restore tidak tampak sukses penuh.
+    pub errors: Vec<String>,
 }
 
 // ─── File Helper Functions ──────────────────────────────────────────────────
@@ -586,12 +589,12 @@ pub fn import_all_data(
     archive_path: &Path,
     options: &ImportAllOptions,
 ) -> Result<ImportSummary, ExportImportError> {
-    eprintln!("[RESTORE] ========================================================");
-    eprintln!(
+    log::debug!("[RESTORE] ========================================================");
+    log::debug!(
         "[RESTORE] Starting import_all_data from: {}",
         archive_path.display()
     );
-    eprintln!(
+    log::debug!(
         "[RESTORE] Options: include_connections={}, include_queries={}, include_http_api={}, include_history={}, strategy={:?}",
         options.include_connections,
         options.include_queries,
@@ -608,7 +611,7 @@ pub fn import_all_data(
     let file = match File::open(archive_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ❌ Failed to open archive file '{}': {}",
                 archive_path.display(),
                 e
@@ -624,14 +627,14 @@ pub fn import_all_data(
 
     let mut archive = match ZipArchive::new(file) {
         Ok(a) => {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ZIP archive opened successfully. Total entries: {}",
                 a.len()
             );
             a
         }
         Err(e) => {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ❌ Failed to parse ZIP archive '{}': {}",
                 archive_path.display(),
                 e
@@ -646,21 +649,22 @@ pub fn import_all_data(
     };
 
     // Zip slip verification
-    eprintln!("[RESTORE] Verifying archive entries against zip slip path traversal...");
+    log::debug!("[RESTORE] Verifying archive entries against zip slip path traversal...");
     for i in 0..archive.len() {
         let entry = match archive.by_index(i) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!(
+                log::debug!(
                     "[RESTORE] ❌ Failed to read entry index {} from ZIP: {}",
-                    i, e
+                    i,
+                    e
                 );
                 return Err(ExportImportError::Zip(e));
             }
         };
         if entry.enclosed_name().is_none() {
             let name = entry.name().to_string();
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ❌ Potential zip slip detected on entry: '{}'",
                 name
             );
@@ -668,7 +672,7 @@ pub fn import_all_data(
             return Err(ExportImportError::ZipSlip(name));
         }
     }
-    eprintln!("[RESTORE] ✅ Zip slip verification passed for all entries.");
+    log::debug!("[RESTORE] ✅ Zip slip verification passed for all entries.");
 
     let mut summary = ImportSummary::default();
     let mut old_id_to_new_id: HashMap<i64, i64> = HashMap::new();
@@ -676,21 +680,21 @@ pub fn import_all_data(
 
     let rt = tabular.get_runtime();
     let pool_opt = if options.include_connections || options.include_history {
-        eprintln!("[RESTORE] Database pool required. Requesting pool via ensure_db_pool()...");
+        log::debug!("[RESTORE] Database pool required. Requesting pool via ensure_db_pool()...");
         match tabular.ensure_db_pool() {
             Ok(pool) => {
-                eprintln!("[RESTORE] ✅ Database pool successfully acquired.");
+                log::debug!("[RESTORE] ✅ Database pool successfully acquired.");
                 info!("[RESTORE] Database pool successfully acquired.");
                 Some(pool)
             }
             Err(e) => {
-                eprintln!("[RESTORE] ❌ Failed to acquire database pool: {}", e);
+                log::debug!("[RESTORE] ❌ Failed to acquire database pool: {}", e);
                 error!("[RESTORE] Failed to acquire database pool: {}", e);
                 return Err(ExportImportError::NoDatabasePool(e));
             }
         }
     } else {
-        eprintln!("[RESTORE] Database pool not required (connections and history not selected).");
+        log::debug!("[RESTORE] Database pool not required (connections and history not selected).");
         None
     };
 
@@ -702,10 +706,10 @@ pub fn import_all_data(
             )
         })?;
 
-        eprintln!("[RESTORE] ── Step 1: Restoring Connections & Folders ──");
+        log::debug!("[RESTORE] ── Step 1: Restoring Connections & Folders ──");
         let mut preserved_secrets: HashMap<String, ConnectionConfig> = HashMap::new();
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            eprintln!("[RESTORE] CleanRestore: Clearing existing connection and cache tables...");
+            log::debug!("[RESTORE] CleanRestore: Clearing existing connection and cache tables...");
             rt.block_on(async {
                 let delete_queries = [
                     "DELETE FROM connection_folders",
@@ -721,8 +725,11 @@ pub fn import_all_data(
                 ];
                 for q in delete_queries {
                     if let Err(e) = sqlx::query(q).execute(pool.as_ref()).await {
-                        eprintln!("[RESTORE] ⚠️ Warning: Failed to execute '{}': {}", q, e);
+                        log::debug!("[RESTORE] ⚠️ Warning: Failed to execute '{}': {}", q, e);
                         warn!("[RESTORE] Failed to execute '{}': {}", q, e);
+                        summary
+                            .errors
+                            .push(format!("Failed to execute '{}': {}", q, e));
                     }
                 }
             });
@@ -737,7 +744,7 @@ pub fn import_all_data(
             tabular.connection_pools.clear();
             // Id koneksi berubah: memo FK lama tidak berlaku lagi.
             crate::cache_data::invalidate_foreign_key_memo_all();
-            eprintln!("[RESTORE] CleanRestore: Completed clearing tables and in-memory caches.");
+            log::debug!("[RESTORE] CleanRestore: Completed clearing tables and in-memory caches.");
         }
 
         // Restore Folders
@@ -745,14 +752,14 @@ pub fn import_all_data(
             Ok(mut entry) => {
                 let mut content = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut content) {
-                    eprintln!(
+                    log::debug!(
                         "[RESTORE] ⚠️ Failed reading 'connections/folders.json': {}",
                         e
                     );
                 } else {
                     match serde_json::from_slice::<Vec<String>>(&content) {
                         Ok(folders) => {
-                            eprintln!("[RESTORE] Restoring {} folders...", folders.len());
+                            log::debug!("[RESTORE] Restoring {} folders...", folders.len());
                             for folder in folders {
                                 let folder_clone = folder.clone();
                                 let pool_clone = pool.clone();
@@ -769,13 +776,13 @@ pub fn import_all_data(
                                 }
                                 summary.folders_restored += 1;
                             }
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Restored {} folders successfully.",
                                 summary.folders_restored
                             );
                         }
                         Err(e) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] ❌ Failed to parse 'connections/folders.json': {}",
                                 e
                             );
@@ -783,12 +790,15 @@ pub fn import_all_data(
                                 "[RESTORE] Failed to parse 'connections/folders.json': {}",
                                 e
                             );
+                            summary
+                                .errors
+                                .push(format!("Failed to parse 'connections/folders.json': {}", e));
                         }
                     }
                 }
             }
             Err(_) => {
-                eprintln!("[RESTORE] Note: 'connections/folders.json' not found in archive.");
+                log::debug!("[RESTORE] Note: 'connections/folders.json' not found in archive.");
             }
         }
 
@@ -797,7 +807,7 @@ pub fn import_all_data(
             Ok(mut entry) => {
                 let mut content = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut content) {
-                    eprintln!(
+                    log::debug!(
                         "[RESTORE] ❌ Failed reading 'connections/connections.json': {}",
                         e
                     );
@@ -805,10 +815,14 @@ pub fn import_all_data(
                         "[RESTORE] Failed reading 'connections/connections.json': {}",
                         e
                     );
+                    summary.errors.push(format!(
+                        "Failed reading 'connections/connections.json': {}",
+                        e
+                    ));
                 } else {
                     match serde_json::from_slice::<Vec<ConnectionConfig>>(&content) {
                         Ok(conns) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Parsed {} connections from 'connections/connections.json'",
                                 conns.len()
                             );
@@ -833,9 +847,10 @@ pub fn import_all_data(
 
                                 match (options.conflict_strategy, existing_id) {
                                     (ConflictStrategy::MergeKeepExisting, Some(eid)) => {
-                                        eprintln!(
+                                        log::debug!(
                                             "[RESTORE] Connection '{}' already exists (id={}). Keeping existing.",
-                                            conn_name, eid
+                                            conn_name,
+                                            eid
                                         );
                                         if let Some(oid) = old_id {
                                             old_id_to_new_id.insert(oid, eid);
@@ -843,9 +858,10 @@ pub fn import_all_data(
                                         name_to_new_id.insert(conn_name, eid);
                                     }
                                     (ConflictStrategy::MergeOverwrite, Some(eid)) => {
-                                        eprintln!(
+                                        log::debug!(
                                             "[RESTORE] Connection '{}' exists (id={}). Overwriting...",
-                                            conn_name, eid
+                                            conn_name,
+                                            eid
                                         );
                                         let pool_clone = pool.clone();
                                         let conn_clone = conn.clone();
@@ -897,20 +913,27 @@ pub fn import_all_data(
                                                 }
                                                 name_to_new_id.insert(conn_name, eid);
                                                 summary.connections_restored += 1;
-                                                eprintln!(
+                                                log::debug!(
                                                     "[RESTORE] ✅ Connection '{}' updated (id={}).",
-                                                    conn.name, eid
+                                                    conn.name,
+                                                    eid
                                                 );
                                             }
                                             Err(e) => {
-                                                eprintln!(
+                                                log::debug!(
                                                     "[RESTORE] ❌ Failed to update connection '{}' (id={}): {}",
-                                                    conn_name, eid, e
+                                                    conn_name,
+                                                    eid,
+                                                    e
                                                 );
                                                 error!(
                                                     "[RESTORE] Failed to update connection '{}' (id={}): {}",
                                                     conn_name, eid, e
                                                 );
+                                                summary.errors.push(format!(
+                                                    "Failed to update connection '{}' (id={}): {}",
+                                                    conn_name, eid, e
+                                                ));
                                             }
                                         }
                                     }
@@ -968,32 +991,38 @@ pub fn import_all_data(
                                                 }
                                                 name_to_new_id.insert(conn_name.clone(), new_id);
                                                 summary.connections_restored += 1;
-                                                eprintln!(
+                                                log::debug!(
                                                     "[RESTORE] ✅ Connection '{}' inserted with new id={}.",
-                                                    conn_name, new_id
+                                                    conn_name,
+                                                    new_id
                                                 );
                                             }
                                             Err(e) => {
-                                                eprintln!(
+                                                log::debug!(
                                                     "[RESTORE] ❌ Failed to insert connection '{}': {}",
-                                                    conn_name, e
+                                                    conn_name,
+                                                    e
                                                 );
                                                 error!(
                                                     "[RESTORE] Failed to insert connection '{}': {}",
                                                     conn_name, e
                                                 );
+                                                summary.errors.push(format!(
+                                                    "Failed to insert connection '{}': {}",
+                                                    conn_name, e
+                                                ));
                                             }
                                         }
                                     }
                                 }
                             }
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Step 1 finished. Restored {} connections.",
                                 summary.connections_restored
                             );
                         }
                         Err(e) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] ❌ Failed to parse 'connections/connections.json': {}",
                                 e
                             );
@@ -1001,12 +1030,16 @@ pub fn import_all_data(
                                 "[RESTORE] Failed to parse 'connections/connections.json': {}",
                                 e
                             );
+                            summary.errors.push(format!(
+                                "Failed to parse 'connections/connections.json': {}",
+                                e
+                            ));
                         }
                     }
                 }
             }
             Err(_) => {
-                eprintln!("[RESTORE] Note: 'connections/connections.json' not found in archive.");
+                log::debug!("[RESTORE] Note: 'connections/connections.json' not found in archive.");
             }
         }
     }
@@ -1014,12 +1047,12 @@ pub fn import_all_data(
     // ── 2. Restore Saved Queries ──
     if options.include_queries {
         let query_dir = crate::directory::get_query_dir();
-        eprintln!(
+        log::debug!(
             "[RESTORE] ── Step 2: Restoring Saved Queries to '{}' ──",
             query_dir.display()
         );
         if let Err(e) = std::fs::create_dir_all(&query_dir) {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ❌ Failed to create queries directory '{}': {}",
                 query_dir.display(),
                 e
@@ -1033,7 +1066,7 @@ pub fn import_all_data(
         }
 
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] CleanRestore: Clearing existing contents of '{}'...",
                 query_dir.display()
             );
@@ -1044,9 +1077,10 @@ pub fn import_all_data(
             let mut entry = match archive.by_index(i) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!(
+                    log::debug!(
                         "[RESTORE] ❌ Failed to read query entry at index {}: {}",
-                        i, e
+                        i,
+                        e
                     );
                     return Err(ExportImportError::Zip(e));
                 }
@@ -1061,7 +1095,7 @@ pub fn import_all_data(
 
                 // Zip slip defense
                 if !target.starts_with(&query_dir) {
-                    eprintln!("[RESTORE] ❌ Zip slip detected for query path: {}", name);
+                    log::debug!("[RESTORE] ❌ Zip slip detected for query path: {}", name);
                     return Err(ExportImportError::ZipSlip(name));
                 }
 
@@ -1071,7 +1105,7 @@ pub fn import_all_data(
                     if options.conflict_strategy == ConflictStrategy::MergeKeepExisting
                         && target.exists()
                     {
-                        eprintln!(
+                        log::debug!(
                             "[RESTORE] Query '{}' exists. Skipping (MergeKeepExisting).",
                             rel
                         );
@@ -1083,7 +1117,7 @@ pub fn import_all_data(
                     match File::create(&target) {
                         Ok(mut out) => {
                             if let Err(e) = std::io::copy(&mut entry, &mut out) {
-                                eprintln!(
+                                log::debug!(
                                     "[RESTORE] ❌ Failed writing query file '{}': {}",
                                     target.display(),
                                     e
@@ -1093,7 +1127,7 @@ pub fn import_all_data(
                             summary.queries_restored += 1;
                         }
                         Err(e) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] ❌ Failed creating query file '{}': {}",
                                 target.display(),
                                 e
@@ -1104,7 +1138,7 @@ pub fn import_all_data(
                 }
             }
         }
-        eprintln!(
+        log::debug!(
             "[RESTORE] Step 2 finished. Restored {} query files.",
             summary.queries_restored
         );
@@ -1113,12 +1147,12 @@ pub fn import_all_data(
     // ── 3. Restore HTTP API Collections ──
     if options.include_http_api {
         let http_dir = crate::directory::get_app_data_dir().join("http_collections");
-        eprintln!(
+        log::debug!(
             "[RESTORE] ── Step 3: Restoring HTTP API Collections to '{}' ──",
             http_dir.display()
         );
         if let Err(e) = std::fs::create_dir_all(&http_dir) {
-            eprintln!(
+            log::debug!(
                 "[RESTORE] ❌ Failed creating http_collections directory '{}': {}",
                 http_dir.display(),
                 e
@@ -1132,7 +1166,7 @@ pub fn import_all_data(
         }
 
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            eprintln!("[RESTORE] CleanRestore: Clearing existing http_collections directory...");
+            log::debug!("[RESTORE] CleanRestore: Clearing existing http_collections directory...");
             let _ = clear_directory_contents(&http_dir);
         }
 
@@ -1140,9 +1174,10 @@ pub fn import_all_data(
             let mut entry = match archive.by_index(i) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!(
+                    log::debug!(
                         "[RESTORE] ❌ Failed reading http entry at index {}: {}",
-                        i, e
+                        i,
+                        e
                     );
                     return Err(ExportImportError::Zip(e));
                 }
@@ -1157,7 +1192,7 @@ pub fn import_all_data(
 
                 // Zip slip defense
                 if !target.starts_with(&http_dir) {
-                    eprintln!(
+                    log::debug!(
                         "[RESTORE] ❌ Zip slip detected for http_collections path: {}",
                         name
                     );
@@ -1170,7 +1205,7 @@ pub fn import_all_data(
                     if options.conflict_strategy == ConflictStrategy::MergeKeepExisting
                         && target.exists()
                     {
-                        eprintln!(
+                        log::debug!(
                             "[RESTORE] HTTP collection '{}' exists. Skipping (MergeKeepExisting).",
                             rel
                         );
@@ -1182,7 +1217,7 @@ pub fn import_all_data(
                     match File::create(&target) {
                         Ok(mut out) => {
                             if let Err(e) = std::io::copy(&mut entry, &mut out) {
-                                eprintln!(
+                                log::debug!(
                                     "[RESTORE] ❌ Failed writing HTTP collection '{}': {}",
                                     target.display(),
                                     e
@@ -1192,7 +1227,7 @@ pub fn import_all_data(
                             summary.http_workspaces_restored += 1;
                         }
                         Err(e) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] ❌ Failed creating HTTP collection file '{}': {}",
                                 target.display(),
                                 e
@@ -1203,7 +1238,7 @@ pub fn import_all_data(
                 }
             }
         }
-        eprintln!(
+        log::debug!(
             "[RESTORE] Step 3 finished. Restored {} HTTP collection files.",
             summary.http_workspaces_restored
         );
@@ -1217,16 +1252,16 @@ pub fn import_all_data(
             )
         })?;
 
-        eprintln!("[RESTORE] ── Step 4: Restoring Query History ──");
+        log::debug!("[RESTORE] ── Step 4: Restoring Query History ──");
         if options.conflict_strategy == ConflictStrategy::CleanRestore {
-            eprintln!("[RESTORE] CleanRestore: Clearing query_history table...");
+            log::debug!("[RESTORE] CleanRestore: Clearing query_history table...");
             let res = rt.block_on(async {
                 sqlx::query("DELETE FROM query_history")
                     .execute(pool.as_ref())
                     .await
             });
             if let Err(e) = res {
-                eprintln!("[RESTORE] ⚠️ Warning: Failed to clear query_history: {}", e);
+                log::debug!("[RESTORE] ⚠️ Warning: Failed to clear query_history: {}", e);
             }
             tabular.history_items.clear();
         }
@@ -1235,11 +1270,11 @@ pub fn import_all_data(
             Ok(mut entry) => {
                 let mut content = Vec::new();
                 if let Err(e) = entry.read_to_end(&mut content) {
-                    eprintln!("[RESTORE] ❌ Failed reading 'history/history.json': {}", e);
+                    log::debug!("[RESTORE] ❌ Failed reading 'history/history.json': {}", e);
                 } else {
                     match serde_json::from_slice::<Vec<HistoryItem>>(&content) {
                         Ok(items) => {
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Parsed {} history items from archive.",
                                 items.len()
                             );
@@ -1250,7 +1285,7 @@ pub fn import_all_data(
                                     .await
                                     .unwrap_or(None)
                             });
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Fallback connection ID for history: {:?}",
                                 default_conn_id
                             );
@@ -1309,7 +1344,7 @@ pub fn import_all_data(
                                     match res {
                                         Ok(_) => summary.history_restored += 1,
                                         Err(e) => {
-                                            eprintln!(
+                                            log::debug!(
                                                 "[RESTORE] ⚠️ Warning: Failed to insert history item: {}",
                                                 e
                                             );
@@ -1317,26 +1352,32 @@ pub fn import_all_data(
                                     }
                                 }
                             }
-                            eprintln!(
+                            log::debug!(
                                 "[RESTORE] Step 4 finished. Restored {} history items.",
                                 summary.history_restored
                             );
                         }
                         Err(e) => {
-                            eprintln!("[RESTORE] ❌ Failed to parse 'history/history.json': {}", e);
+                            log::debug!(
+                                "[RESTORE] ❌ Failed to parse 'history/history.json': {}",
+                                e
+                            );
                             error!("[RESTORE] Failed to parse 'history/history.json': {}", e);
+                            summary
+                                .errors
+                                .push(format!("Failed to parse 'history/history.json': {}", e));
                         }
                     }
                 }
             }
             Err(_) => {
-                eprintln!("[RESTORE] Note: 'history/history.json' not found in archive.");
+                log::debug!("[RESTORE] Note: 'history/history.json' not found in archive.");
             }
         }
     }
 
     // ── 5. Reload Application State ──
-    eprintln!("[RESTORE] ── Step 5: Reloading Application State from DB & Disk ──");
+    log::debug!("[RESTORE] ── Step 5: Reloading Application State from DB & Disk ──");
     crate::sidebar_database::load_connections(tabular);
     crate::sidebar_database::load_connection_folders(tabular);
     crate::sidebar_query::load_queries_from_directory(tabular);
@@ -1344,8 +1385,8 @@ pub fn import_all_data(
     crate::sidebar_history::load_query_history(tabular);
     tabular.needs_refresh = true;
 
-    eprintln!("[RESTORE] ========================================================");
-    eprintln!(
+    log::debug!("[RESTORE] ========================================================");
+    log::debug!(
         "[RESTORE] ✅ RESTORE COMPLETED SUCCESSFULLY:\n          • Connections: {}\n          • Folders: {}\n          • Queries: {}\n          • HTTP Workspaces: {}\n          • History: {}",
         summary.connections_restored,
         summary.folders_restored,
@@ -1353,7 +1394,7 @@ pub fn import_all_data(
         summary.http_workspaces_restored,
         summary.history_restored
     );
-    eprintln!("[RESTORE] ========================================================");
+    log::debug!("[RESTORE] ========================================================");
 
     info!(
         "📥 Import All Data restored: {} connections, {} folders, {} queries, {} HTTP workspaces, {} history items",

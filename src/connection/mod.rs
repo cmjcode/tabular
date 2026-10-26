@@ -52,8 +52,8 @@ pub(crate) use metadata::{
 
 // Connection CRUD + testing
 pub(crate) use crud::{
-    refresh_connection_background_async, remove_connection, test_database_connection,
-    update_connection_in_database,
+    note_cache_clear_failure, refresh_connection_background_async, remove_connection,
+    test_database_connection, update_connection_in_database,
 };
 pub(crate) use pool::create_connection_pool_by_id;
 

@@ -50,6 +50,39 @@ pub fn delete_http_secrets(connection_id: i64) {
     }
 }
 
+/// Kejadian penyimpanan secret yang perlu diketahui user (bukan hanya log).
+/// Kode headless tidak punya akses ke toast, jadi UI mengambilnya lewat
+/// [`take_notices`] setiap frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretNotice {
+    /// Tidak ada backend secret yang berhasil: nilai disimpan apa adanya
+    /// (plaintext) di database lokal.
+    PlaintextFallback { name: String },
+    /// Kolom menunjuk ke secret store, tetapi secret-nya tidak ada (mis.
+    /// `secrets.enc` dipindah/rusak atau kunci berbeda antar mesin).
+    Missing { name: String },
+}
+
+static NOTICES: std::sync::Mutex<Vec<SecretNotice>> = std::sync::Mutex::new(Vec::new());
+
+fn push_notice(notice: SecretNotice) {
+    let mut list = NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Batasi agar loop pembacaan berulang tidak menumpuk tanpa batas.
+    if list.len() < 64 && !list.contains(&notice) {
+        list.push(notice);
+    }
+}
+
+/// Ambil (dan kosongkan) kejadian secret yang belum ditampilkan ke user.
+pub fn take_notices() -> Vec<SecretNotice> {
+    let mut list = NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::take(&mut *list)
+}
+
 /// Store `value` under `name` and return the string to persist in the
 /// database column: the sentinel when stored externally, or the raw value
 /// when no secret backend succeeded (so credentials are never lost).
@@ -70,6 +103,9 @@ pub fn store_or_keep(name: &str, value: &str) -> String {
             "no secret backend available for '{}'; keeping value in local database",
             name
         );
+        push_notice(SecretNotice::PlaintextFallback {
+            name: name.to_string(),
+        });
         value.to_string()
     }
 }
@@ -85,6 +121,9 @@ pub fn resolve_stored(name: &str, stored: &str) -> (String, Option<String>) {
             Some(v) => (v, None),
             None => {
                 warn!("secret '{}' missing from keychain and fallback store", name);
+                push_notice(SecretNotice::Missing {
+                    name: name.to_string(),
+                });
                 (String::new(), None)
             }
         }
@@ -104,6 +143,9 @@ pub fn resolve_readonly(name: &str, stored: &str) -> String {
     if stored == SECRET_SENTINEL {
         get_secret(name).unwrap_or_else(|| {
             warn!("secret '{}' missing from keychain and fallback store", name);
+            push_notice(SecretNotice::Missing {
+                name: name.to_string(),
+            });
             String::new()
         })
     } else {

@@ -705,105 +705,73 @@ pub(crate) fn render_connection_dialog(
                         if is_edit_mode {
                             // Update existing connection
                             if let Some(id) = connection_data.id {
+                                // Gagal simpan: dialog tetap terbuka dan error sudah
+                                // ditampilkan oleh fungsi update. Tidak ada fallback ke
+                                // memori, karena perubahan itu akan hilang saat restart.
                                 if connection::update_connection_in_database(
                                     tabular,
                                     &connection_data,
                                 ) {
+                                    let _ = id;
                                     load_connections(tabular);
-                                    // Use incremental update instead of full rebuild
                                     update_connection_in_tree(tabular, &connection_data);
-                                } else {
-                                    // Fallback to in-memory update
-                                    if let Some(existing) =
-                                        tabular.connections.iter_mut().find(|c| c.id == Some(id))
-                                    {
-                                        *existing = connection_data.clone();
-                                        // Use incremental update
-                                        update_connection_in_tree(tabular, &connection_data);
-                                    } else {
-                                        debug!("ERROR: Could not find connection {} in memory", id);
-                                    }
+                                    tabular.show_edit_connection = false;
                                 }
                             } else {
-                                debug!("ERROR: Connection has no ID, cannot update");
+                                log::error!("[CONN] connection has no ID, cannot update");
+                                tabular
+                                    .toasts
+                                    .error("Could not update connection: it has no saved ID.");
                             }
-                            tabular.show_edit_connection = false;
                         } else {
                             // Add new connection
-                            let mut connection_to_add = connection_data.clone();
+                            let connection_to_add = connection_data.clone();
                             let is_api_http = connection_to_add.connection_type
                                 == models::enums::DatabaseType::ApiHttp;
 
-                            let mut new_conn_id: Option<i64> = None;
-                            let mut new_conn_name = connection_to_add.name.clone();
-
-                            // Try to save to database first
-                            if save_connection_to_database(tabular, &connection_to_add) {
-                                // If database save successful, reload from database to get ID
-                                // load_connections already calls refresh_connections_tree internally,
-                                // so no need to call add_connection_to_tree again (would cause duplicates)
+                            // Gagal simpan: error sudah tampil sebagai toast. Dialog tetap
+                            // terbuka agar isian tidak hilang; tidak ada koneksi "sementara"
+                            // di memori yang lenyap saat restart.
+                            if let Some(id) = save_connection_to_database_id(tabular, &connection_to_add) {
+                                // load_connections memanggil refresh_connections_tree, jadi
+                                // add_connection_to_tree tidak perlu (akan menggandakan node).
                                 load_connections(tabular);
-                                // Find the newly added connection to get its assigned ID
-                                let added_conn = tabular
+                                let new_conn_id = Some(id);
+                                let new_conn_name = tabular
                                     .connections
                                     .iter()
-                                    .find(|c| {
-                                        c.name == connection_to_add.name
-                                            && c.host == connection_to_add.host
-                                            && c.port == connection_to_add.port
-                                    })
-                                    .cloned();
+                                    .find(|c| c.id == new_conn_id)
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| connection_to_add.name.clone());
 
-                                if let Some(conn) = added_conn {
-                                    new_conn_id = conn.id;
-                                    new_conn_name = conn.name.clone();
-                                }
-                            } else {
-                                // Fallback to in-memory storage
-                                let new_id = tabular
-                                    .connections
-                                    .iter()
-                                    .filter_map(|c| c.id)
-                                    .max()
-                                    .unwrap_or(0)
-                                    + 1;
-                                connection_to_add.id = Some(new_id);
-                                new_conn_id = Some(new_id);
-                                tabular.connections.push(connection_to_add.clone());
-                                // Add to tree incrementally
-                                add_connection_to_tree(tabular, &connection_to_add);
-                            }
+                                tabular.new_connection = models::structs::ConnectionConfig::default();
+                                tabular.test_connection_status = None;
+                                tabular.test_connection_in_progress = false;
+                                tabular.show_add_connection = false;
 
-                            tabular.new_connection = models::structs::ConnectionConfig::default();
-                            tabular.test_connection_status = None;
-                            tabular.test_connection_in_progress = false;
-                            tabular.show_add_connection = false;
-
-                            // Kick off a background schema-cache sync so autocomplete works
-                            // immediately. Shows a loading badge on the connection name and
-                            // skips API-HTTP connections (no schema to cache).
-                            debug!(
-                                "[AUTO-SYNC] Add Connection done: new_conn_id={:?} is_api_http={}",
-                                new_conn_id, is_api_http
-                            );
-                            if let Some(id) = new_conn_id {
-                                tabular.maybe_auto_sync_connection(id);
-                            }
-
-                            // Open HTTP client tab for API-HTTP connections
-                            if is_api_http {
-                                tabular.selected_menu = "APIs".to_string();
-                                crate::editor::create_new_tab_with_connection(
-                                    tabular,
-                                    new_conn_name,
-                                    String::new(),
-                                    new_conn_id,
+                                // Sinkron cache skema di latar agar autocomplete langsung jalan
+                                // (dilewati untuk koneksi API-HTTP).
+                                debug!(
+                                    "[AUTO-SYNC] Add Connection done: new_conn_id={:?} is_api_http={}",
+                                    new_conn_id, is_api_http
                                 );
-                                if let Some(tab) =
-                                    tabular.query_tabs.get_mut(tabular.active_tab_index)
-                                {
-                                    tab.http_client_state =
-                                        Some(models::structs::HttpClientState::default());
+                                tabular.maybe_auto_sync_connection(id);
+
+                                // Koneksi API-HTTP langsung membuka tab HTTP client.
+                                if is_api_http {
+                                    tabular.selected_menu = "APIs".to_string();
+                                    crate::editor::create_new_tab_with_connection(
+                                        tabular,
+                                        new_conn_name,
+                                        String::new(),
+                                        new_conn_id,
+                                    );
+                                    if let Some(tab) =
+                                        tabular.query_tabs.get_mut(tabular.active_tab_index)
+                                    {
+                                        tab.http_client_state =
+                                            Some(models::structs::HttpClientState::default());
+                                    }
                                 }
                             }
                         }
@@ -820,9 +788,18 @@ pub(crate) fn render_connection_dialog(
                                 tabular.test_connection_in_progress = true;
                                 tabular.test_connection_status = None;
                                 if let Some(sender) = &tabular.background_sender {
-                                    let _ = sender.send(models::enums::BackgroundTask::TestConnection {
-                                        connection: Box::new(connection_data.clone()),
-                                    });
+                                    if sender
+                                        .send(models::enums::BackgroundTask::TestConnection {
+                                            connection: Box::new(connection_data.clone()),
+                                        })
+                                        .is_err()
+                                    {
+                                        // Worker sudah mati: jangan biarkan spinner berputar terus.
+                                        tabular.test_connection_in_progress = false;
+                                        tabular.toasts.error(
+                                            "Could not start the connection test: background worker is not running.",
+                                        );
+                                    }
                                 } else {
                                     let result = connection::test_database_connection(&connection_data);
                                     tabular.test_connection_status = Some(result);
@@ -1325,10 +1302,42 @@ pub(crate) fn externalize_connection_secrets(
     });
 }
 
+/// Folder data yang dikonfigurasi tidak bisa dibuka sehingga sesi ini memakai
+/// `connections.db` di folder lokal: `(folder yang dikonfigurasi, folder yang dipakai)`.
+/// Dibaca UI untuk menampilkan peringatan; koneksi yang tampil bukan milik folder asli.
+static LOCAL_DB_FALLBACK: std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
+fn note_local_db_fallback(configured: &std::path::Path, used: &std::path::Path) {
+    let mut slot = LOCAL_DB_FALLBACK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = Some((configured.to_path_buf(), used.to_path_buf()));
+}
+
+/// `Some((configured, used))` bila sesi ini berjalan di atas DB lokal pengganti.
+pub(crate) fn local_db_fallback() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    LOCAL_DB_FALLBACK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 pub(crate) fn save_connection_to_database(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) -> bool {
+    save_connection_to_database_id(tabular, connection).is_some()
+}
+
+/// Simpan koneksi baru dan kembalikan id barisnya. Bila gagal, error ditampilkan
+/// sebagai toast (dan dicatat ke log) lalu `None` dikembalikan; pemanggil tidak
+/// boleh menganggap koneksi tersimpan.
+pub(crate) fn save_connection_to_database_id(
+    tabular: &mut window_egui::Tabular,
+    connection: &models::structs::ConnectionConfig,
+) -> Option<i64> {
+    let display_name = connection.name.clone();
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
         let secret_password = connection.password.clone();
@@ -1389,13 +1398,26 @@ pub(crate) fn save_connection_to_database(
                     res.last_insert_rowid(),
                 )) {
                     log::warn!("[DRIVER-PLUGIN] Failed to save plugin options: {e}");
+                    tabular.toasts.warning(format!(
+                        "Connection \"{display_name}\" was saved, but its driver options were not: {e}"
+                    ));
                 }
-                true
+                Some(res.last_insert_rowid())
             }
-            Err(_) => false,
+            Err(e) => {
+                log::error!("[CONN] failed to save connection '{display_name}': {e}");
+                tabular
+                    .toasts
+                    .error(format!("Could not save connection \"{display_name}\": {e}"));
+                None
+            }
         }
     } else {
-        false
+        log::error!("[CONN] cannot save connection '{display_name}': local database not open");
+        tabular.toasts.error(format!(
+            "Could not save connection \"{display_name}\": the local database is not available."
+        ));
+        None
     }
 }
 
@@ -1476,7 +1498,12 @@ pub(crate) fn update_connection_in_database(
     tabular: &mut window_egui::Tabular,
     connection: &models::structs::ConnectionConfig,
 ) -> bool {
+    let display_name = connection.name.clone();
     let Some(pool_clone) = tabular.db_pool.clone() else {
+        log::error!("[CONN] cannot update connection '{display_name}': local database not open");
+        tabular.toasts.error(format!(
+            "Could not update connection \"{display_name}\": the local database is not available."
+        ));
         return false;
     };
     let connection = connection.clone();
@@ -1495,7 +1522,16 @@ pub(crate) fn update_connection_in_database(
         ssh_password_stored,
     ));
 
-    result.is_ok()
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            log::error!("[CONN] failed to update connection '{display_name}': {e}");
+            tabular.toasts.error(format!(
+                "Could not update connection \"{display_name}\": {e}"
+            ));
+            false
+        }
+    }
 }
 
 /// Non-blocking variant of [`update_connection_in_database`]: the UPDATE runs
@@ -1566,37 +1602,11 @@ pub(crate) fn copy_connection(tabular: &mut window_egui::Tabular, connection_id:
         copied_connection.id = None;
         copied_connection.name = format!("{} - Copy", copied_connection.name);
 
-        // Try to save to database first
-        if save_connection_to_database(tabular, &copied_connection) {
-            // If database save successful, reload from database to get ID
+        // Gagal simpan sudah ditampilkan sebagai toast; tidak ada salinan
+        // "sementara" di memori yang hilang saat restart.
+        if save_connection_to_database_id(tabular, &copied_connection).is_some() {
+            // load_connections membangun ulang tree dari database.
             load_connections(tabular);
-            // Find the newly copied connection and add to tree incrementally
-            let added_conn = tabular
-                .connections
-                .iter()
-                .find(|c| {
-                    c.name == copied_connection.name
-                        && c.host == copied_connection.host
-                        && c.port == copied_connection.port
-                })
-                .cloned();
-
-            if let Some(conn) = added_conn {
-                add_connection_to_tree(tabular, &conn);
-            }
-        } else {
-            // Fallback to in-memory storage
-            let new_id = tabular
-                .connections
-                .iter()
-                .filter_map(|c| c.id)
-                .max()
-                .unwrap_or(0)
-                + 1;
-            copied_connection.id = Some(new_id);
-            tabular.connections.push(copied_connection.clone());
-            // Add to tree incrementally
-            add_connection_to_tree(tabular, &copied_connection);
         }
     } else {
         debug!(
@@ -1708,6 +1718,7 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
                     "⚠️ Failed to connect to SQLite at {:?}. Retrying with local container fallback {:?}",
                     data_dir, local_default_dir
                 );
+                note_local_db_fallback(&data_dir, &local_default_dir);
                 let _ = std::fs::create_dir_all(&local_default_dir);
                 let fallback_db = local_default_dir.join("connections.db");
                 let fallback_conn_str =
@@ -2102,6 +2113,7 @@ fn initialize_database_impl(
                             "⚠️ Failed to connect to SQLite at {:?}: {}. Retrying with local container fallback {:?}",
                             data_dir, e, local_default_dir
                         );
+                        note_local_db_fallback(&data_dir, &local_default_dir);
                         let _ = std::fs::create_dir_all(&local_default_dir);
                         let fallback_db = local_default_dir.join("connections.db");
                         let fallback_conn_str = format!("sqlite://{}?mode=rwc", fallback_db.to_string_lossy());
@@ -2758,53 +2770,6 @@ fn restore_tree_expansion_states(
 
     for node in tree {
         restore_states(node, states, node.name.clone());
-    }
-}
-
-// Incremental update: Add a new connection to the tree without full rebuild
-pub(crate) fn add_connection_to_tree(
-    tabular: &mut window_egui::Tabular,
-    connection: &models::structs::ConnectionConfig,
-) {
-    if let Some(id) = connection.id {
-        let folder_name = connection
-            .folder
-            .as_ref()
-            .unwrap_or(&"Default".to_string())
-            .clone();
-
-        let display_name = connection.name.clone();
-        let new_node = models::structs::TreeNode::new_connection(display_name, id);
-
-        // Find or create the folder
-        if let Some(folder) = tabular
-            .items_tree
-            .iter_mut()
-            .find(|n| n.name == folder_name)
-        {
-            // Add to existing folder, maintaining sort order by database type
-            folder.children.push(new_node);
-            sort_connections_in_folder(folder, &tabular.connections);
-        } else {
-            // Create new folder
-            let mut new_folder = models::structs::TreeNode::new(
-                folder_name.clone(),
-                models::enums::NodeType::CustomFolder,
-            );
-            new_folder.children.push(new_node);
-            tabular.items_tree.push(new_folder);
-
-            // Re-sort folders
-            tabular.items_tree.sort_by(|a, b| {
-                if a.name == "Default" {
-                    std::cmp::Ordering::Less
-                } else if b.name == "Default" {
-                    std::cmp::Ordering::Greater
-                } else {
-                    a.name.cmp(&b.name)
-                }
-            });
-        }
     }
 }
 
@@ -3542,21 +3507,52 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
 
     // If new pool was initialized, restore preserved data back into fresh SQLite DB
     if let Some(pool) = tabular.db_pool.clone() {
-        let conns_to_insert = preserved_connections.clone();
+        // Kredensial di memori adalah nilai asli; kolom harus tetap memuat
+        // sentinel (secret store), bukan plaintext.
+        let conns_to_insert: Vec<(models::structs::ConnectionConfig, String, String, String)> =
+            preserved_connections
+                .iter()
+                .map(|conn| {
+                    let (pw, key, ssh_pw) = match conn.id {
+                        Some(id) => (
+                            crate::secrets::store_or_keep(
+                                &crate::secrets::connection_secret_name(id, "password"),
+                                &conn.password,
+                            ),
+                            crate::secrets::store_or_keep(
+                                &crate::secrets::connection_secret_name(id, "ssh_private_key"),
+                                &conn.ssh_private_key,
+                            ),
+                            crate::secrets::store_or_keep(
+                                &crate::secrets::connection_secret_name(id, "ssh_password"),
+                                &conn.ssh_password,
+                            ),
+                        ),
+                        None => (
+                            conn.password.clone(),
+                            conn.ssh_private_key.clone(),
+                            conn.ssh_password.clone(),
+                        ),
+                    };
+                    (conn.clone(), pw, key, ssh_pw)
+                })
+                .collect();
         let hist_to_insert = preserved_history.clone();
         let rt = tabular.get_runtime();
-        rt.block_on(async move {
+        let failures: Vec<String> = rt.block_on(async move {
+            let mut failures = Vec::new();
             let _ = sqlx::query("PRAGMA foreign_keys = OFF").execute(pool.as_ref()).await;
 
             // Restore connections
-            for conn in &conns_to_insert {
-                let _ = sqlx::query(
+            for (conn, password, ssh_key, ssh_password) in &conns_to_insert {
+                let res = sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO connections (
                         id, name, host, port, username, password, database_name, connection_type,
                         folder, ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
-                        ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ssh_private_key, ssh_password, ssh_accept_unknown_host_keys, custom_views, replication_master_id,
+                        ssh_jump_host, ssl_enabled, ssl_ca_cert, ssl_client_cert, ssl_client_key, ssl_key_passphrase, ssl_verify_server
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     "#
                 )
                 .bind(conn.id)
@@ -3564,7 +3560,7 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(&conn.host)
                 .bind(&conn.port)
                 .bind(&conn.username)
-                .bind(&conn.password)
+                .bind(password)
                 .bind(&conn.database)
                 .bind(conn.connection_type.as_db_str().into_owned())
                 .bind(&conn.folder)
@@ -3573,22 +3569,41 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(&conn.ssh_port)
                 .bind(&conn.ssh_username)
                 .bind(conn.ssh_auth_method.as_db_value())
-                .bind(&conn.ssh_private_key)
-                .bind(&conn.ssh_password)
+                .bind(ssh_key)
+                .bind(ssh_password)
                 .bind(if conn.ssh_accept_unknown_host_keys { 1 } else { 0 })
                 .bind(serde_json::to_string(&conn.custom_views).unwrap_or_else(|_| "[]".to_string()))
                 .bind(conn.replication_master_id)
+                .bind(&conn.ssh_jump_host)
+                .bind(if conn.ssl_enabled { 1 } else { 0 })
+                .bind(&conn.ssl_ca_cert)
+                .bind(&conn.ssl_client_cert)
+                .bind(&conn.ssl_client_key)
+                .bind(&conn.ssl_key_passphrase)
+                .bind(if conn.ssl_verify_server { 1 } else { 0 })
                 .execute(pool.as_ref())
                 .await;
-                if let Some(id) = conn.id {
-                    let _ = crate::driver_api::connect::save_plugin_options(pool.as_ref(), conn, id)
-                        .await;
+                match res {
+                    Ok(_) => {
+                        if let Some(id) = conn.id
+                            && let Err(e) = crate::driver_api::connect::save_plugin_options(
+                                pool.as_ref(),
+                                conn,
+                                id,
+                            )
+                            .await
+                        {
+                            failures.push(format!("driver options of \"{}\": {e}", conn.name));
+                        }
+                    }
+                    Err(e) => failures.push(format!("connection \"{}\": {e}", conn.name)),
                 }
             }
 
             // Restore query history
+            let mut history_failed = 0usize;
             for hist in &hist_to_insert {
-                let _ = sqlx::query(
+                if sqlx::query(
                     "INSERT INTO query_history (query_text, connection_id, connection_name, executed_at) VALUES (?, ?, ?, ?)"
                 )
                 .bind(&hist.query)
@@ -3596,19 +3611,40 @@ pub(crate) fn reset_corrupted_sqlite_db(tabular: &mut window_egui::Tabular) -> b
                 .bind(&hist.connection_name)
                 .bind(&hist.executed_at)
                 .execute(pool.as_ref())
-                .await;
+                .await
+                .is_err()
+                {
+                    history_failed += 1;
+                }
+            }
+            if history_failed > 0 {
+                failures.push(format!("{history_failed} history item(s)"));
             }
 
             let _ = sqlx::query("PRAGMA foreign_keys = ON").execute(pool.as_ref()).await;
+            failures
         });
 
         // Restore connections & history back into Tabular state
         tabular.connections = preserved_connections;
         tabular.history_items = preserved_history;
         sidebar_history::load_query_history(tabular);
-        info!(
-            "✅ [reset_sqlite] Successfully recreated clean connections.db and restored all memory connections and query history!"
-        );
+        if failures.is_empty() {
+            info!(
+                "[reset_sqlite] recreated connections.db and restored all connections and history"
+            );
+        } else {
+            error!(
+                "[reset_sqlite] recreated connections.db but could not restore: {}",
+                failures.join("; ")
+            );
+            tabular.toasts.error(format!(
+                "connections.db was rebuilt after corruption, but {} item(s) could not be restored: {}. The corrupt file was kept as a backup next to it.",
+                failures.len(),
+                failures.join("; ")
+            ));
+        }
+        // DB baru aktif dan dipakai; kegagalan sebagian sudah dilaporkan di atas.
         true
     } else {
         error!(
@@ -3741,7 +3777,6 @@ pub async fn save_table_group_config(
 
     Ok(())
 }
-
 
 /// Baris form khusus MsSQL: mode enkripsi dan versi TDS (untuk server lama).
 /// Nilai disimpan di `plugin_options`; nilai bawaan tidak ditulis supaya

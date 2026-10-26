@@ -80,6 +80,8 @@ impl Toast {
 #[derive(Default)]
 pub struct ToastManager {
     toasts: Vec<Toast>,
+    /// Kunci pesan yang sudah pernah ditampilkan lewat `*_once` di sesi ini.
+    reported_once: std::collections::HashSet<String>,
 }
 
 impl ToastManager {
@@ -128,6 +130,25 @@ impl ToastManager {
 
     pub fn info(&mut self, message: impl Into<String>) {
         self.push(ToastKind::Info, message);
+    }
+
+    /// Error yang cukup ditampilkan sekali per sesi untuk `key` yang sama
+    /// (mis. penulisan riwayat yang gagal setiap query). Selalu dicatat ke log.
+    pub fn error_once(&mut self, key: &str, message: impl Into<String>) {
+        let message = message.into();
+        log::error!("[PERSIST] {key}: {message}");
+        if self.reported_once.insert(key.to_string()) {
+            self.push(ToastKind::Error, message);
+        }
+    }
+
+    /// Seperti [`Self::error_once`] tetapi dengan tingkat peringatan.
+    pub fn warning_once(&mut self, key: &str, message: impl Into<String>) {
+        let message = message.into();
+        log::warn!("[PERSIST] {key}: {message}");
+        if self.reported_once.insert(key.to_string()) {
+            self.push(ToastKind::Warning, message);
+        }
     }
 
     /// Render the toast stack and drop expired entries. Call once per frame.

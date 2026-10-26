@@ -596,18 +596,22 @@ pub(crate) fn clear_tables_from_cache_for_db(
                             sqlx::query("VACUUM").execute(pool_clone.as_ref()).await;
                         match vacuum_result {
                             Ok(_) => {
-                                let _ = sqlx::query(
+                                if let Err(e) = sqlx::query(
                                     "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
                                 )
                                 .bind(connection_id)
                                 .bind(&db)
                                 .execute(pool_clone.as_ref())
-                                .await;
+                                .await {
+ crate::connection::note_cache_clear_failure("table_cache", connection_id, &e);
+ }
                             }
                             Err(_) => {
-                                let _ = sqlx::query("DELETE FROM table_cache")
+                                if let Err(e) = sqlx::query("DELETE FROM table_cache")
                                     .execute(pool_clone.as_ref())
-                                    .await;
+                                    .await {
+ crate::connection::note_cache_clear_failure("table_cache", -1, &e);
+ }
                             }
                         }
                     }

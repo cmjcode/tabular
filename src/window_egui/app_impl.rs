@@ -920,13 +920,14 @@ impl Tabular {
             ctx.request_repaint();
         }
 
-        while let Ok((tab_index, result)) = self.dba_result_receiver.try_recv() {
+        while let Ok((tab_id, result)) = self.dba_result_receiver.try_recv() {
             log::debug!(
-                "[DBA-MONITOR] UI received result for tab_index={}, is_ok={}",
-                tab_index,
+                "[DBA-MONITOR] UI received result for tab_id={}, is_ok={}",
+                tab_id,
                 result.is_ok()
             );
-            if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+            // Tab sudah ditutup: buang hasilnya (jangan mendarat di tab lain).
+            if let Some(tab) = self.query_tabs.iter_mut().find(|t| t.id == tab_id) {
                 if let Some(state) = &mut tab.dba_monitor_state {
                     state.is_loading = false;
                     state.last_refreshed = Some(std::time::Instant::now());
@@ -944,11 +945,12 @@ impl Tabular {
             ctx.request_repaint();
         }
 
-        while let Ok((tab_index, result)) = self.server_metrics_receiver.try_recv() {
+        while let Ok((tab_id, result)) = self.server_metrics_receiver.try_recv() {
             let now = std::time::Instant::now();
             if let Some(state) = self
                 .query_tabs
-                .get_mut(tab_index)
+                .iter_mut()
+                .find(|t| t.id == tab_id)
                 .and_then(|t| t.dba_monitor_state.as_mut())
             {
                 match result {
@@ -979,9 +981,9 @@ impl Tabular {
             ctx.request_repaint();
         }
 
-        while let Ok((tab_index, result)) = self.user_manager_result_receiver.try_recv() {
-            log::debug!("[USER-MGR] UI received result for tab_index={}", tab_index);
-            if let Some(tab) = self.query_tabs.get_mut(tab_index) {
+        while let Ok((tab_id, result)) = self.user_manager_result_receiver.try_recv() {
+            log::debug!("[USER-MGR] UI received result for tab_id={}", tab_id);
+            if let Some(tab) = self.query_tabs.iter_mut().find(|t| t.id == tab_id) {
                 if let Some(state) = &mut tab.user_manager_state {
                     state.is_loading = false;
                     match result {
@@ -1205,6 +1207,21 @@ impl Tabular {
                                             crate::window_egui::repo_setup_jobs::pick_and_start(self);
                                         }
                                     });
+                                    if let Some((configured, used)) =
+                                        crate::sidebar_database::local_db_fallback()
+                                    {
+                                        let msg = format!(
+                                            "Your data folder {} could not be opened. Tabular is using a temporary local database at {}, so your saved connections are not shown. Reconnect the drive or fix the folder permissions, then restart Tabular.",
+                                            configured.display(),
+                                            used.display()
+                                        );
+                                        self.toasts.warning_once("local-db-fallback", msg.clone());
+                                        ui.colored_label(
+                                            egui::Color32::from_rgb(230, 150, 40),
+                                            "Using a temporary local database",
+                                        )
+                                        .on_hover_text(msg);
+                                    }
                                     if self.connections.is_empty() && self.items_tree.is_empty() {
                                         ui.label("No connections configured");
                                         ui.label("Click ➕ to add a new connection");
@@ -3448,6 +3465,9 @@ impl Tabular {
                             && let Some(action) = dba_action
                         {
                             let active_tab = self.active_tab_index;
+                            // Hasil async dialamatkan ke id tab yang stabil, bukan index:
+                            // tab bisa ditutup/digeser sebelum hasilnya tiba.
+                            let active_tab_id = self.query_tabs.get(active_tab).map(|t| t.id).unwrap_or(usize::MAX);
                             crate::connection::ensure_background_pool_creation(self, conn_id);
                             let direct_pool = self.connection_pools.get(&conn_id).cloned()
                                 .or_else(|| crate::connection::pool::lock_or_recover(&self.shared_connection_pools).get(&conn_id).cloned());
@@ -3477,16 +3497,16 @@ impl Tabular {
                                             match wait_for_connection_pool(direct_pool, shared_pools, conn_id).await {
                                                 Ok(pool) => {
                                                     let counters = fetch_counters(&pool, &db_type).await;
-                                                    let _ = sender.send((active_tab, MetricsResult::Counters(counters)));
+                                                    let _ = sender.send((active_tab_id, MetricsResult::Counters(counters)));
                                                     if fetch_slow {
                                                         let slow = fetch_slow_statements(&pool, &db_type).await;
-                                                        let _ = sender.send((active_tab, MetricsResult::Slow(slow)));
+                                                        let _ = sender.send((active_tab_id, MetricsResult::Slow(slow)));
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    let _ = sender.send((active_tab, MetricsResult::Counters(Err(e.clone()))));
+                                                    let _ = sender.send((active_tab_id, MetricsResult::Counters(Err(e.clone()))));
                                                     if fetch_slow {
-                                                        let _ = sender.send((active_tab, MetricsResult::Slow(Err(e))));
+                                                        let _ = sender.send((active_tab_id, MetricsResult::Slow(Err(e))));
                                                     }
                                                 }
                                             }
@@ -3506,7 +3526,7 @@ impl Tabular {
                                                 Ok(pool) => crate::server_metrics::fetch_slow_statements(&pool, &db_type).await,
                                                 Err(e) => Err(e),
                                             };
-                                            let _ = sender.send((active_tab, crate::server_metrics::MetricsResult::Slow(slow)));
+                                            let _ = sender.send((active_tab_id, crate::server_metrics::MetricsResult::Slow(slow)));
                                             ctx.request_repaint();
                                         });
                                     }
@@ -3526,7 +3546,7 @@ impl Tabular {
                                                 Ok(pool) => crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await,
                                                 Err(e) => Err(e),
                                             };
-                                            let _ = sender.send((active_tab, res));
+                                            let _ = sender.send((active_tab_id, res));
                                             ctx.request_repaint();
                                         });
                                     }
@@ -3543,7 +3563,7 @@ impl Tabular {
                                                         Err(e) => log::error!("Failed to cancel query for PID {}: {}", pid, e),
                                                     }
                                                     let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
-                                                    let _ = sender.send((active_tab, res));
+                                                    let _ = sender.send((active_tab_id, res));
                                                     ctx.request_repaint();
                                                 }
                                             });
@@ -3562,7 +3582,7 @@ impl Tabular {
                                                         Err(e) => log::error!("Failed to kill process PID {}: {}", pid, e),
                                                     }
                                                     let res = crate::dba_monitor::fetch_dba_processes(&pool, &db_type).await;
-                                                    let _ = sender.send((active_tab, res));
+                                                    let _ = sender.send((active_tab_id, res));
                                                     ctx.request_repaint();
                                                 }
                                             });
@@ -3586,6 +3606,9 @@ impl Tabular {
                             && let Some(action) = user_mgr_action
                         {
                             let active_tab = self.active_tab_index;
+                            // Hasil async dialamatkan ke id tab yang stabil, bukan index:
+                            // tab bisa ditutup/digeser sebelum hasilnya tiba.
+                            let active_tab_id = self.query_tabs.get(active_tab).map(|t| t.id).unwrap_or(usize::MAX);
                             if let (Some(conn_id), Some(db_type)) = (conn_id_opt, db_type_opt.clone()) {
                                 log::debug!("[USER-MGR] Processing action={:?} for conn_id={}, db_type={:?}", action, conn_id, db_type);
                                 crate::connection::ensure_background_pool_creation(self, conn_id);
@@ -3625,7 +3648,7 @@ impl Tabular {
                                                     ).await,
                                                     Err(e) => Err(e),
                                                 };
-                                                let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(res)));
+                                                let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::Data(res)));
                                                 ctx.request_repaint();
                                             });
                                         }
@@ -3640,7 +3663,7 @@ impl Tabular {
                                                 Ok(pool) => {
                                                     let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
                                                     let cmd_res = exec_res.map(|_| format!("User '{}' created successfully", form.username));
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Create User".to_string(),
                                                         sql: sql_clone,
                                                         result: cmd_res,
@@ -3653,10 +3676,10 @@ impl Tabular {
                                                         db_name.as_deref(),
                                                         schema_name.as_deref(),
                                                     ).await;
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::Data(fetch_res)));
                                                 }
                                                 Err(e) => {
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Create User".to_string(),
                                                         sql: sql_clone,
                                                         result: Err(e),
@@ -3682,14 +3705,14 @@ impl Tabular {
                                                 Ok(pool) => {
                                                     let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
                                                     let cmd_res = exec_res.map(|_| format!("Password updated for user '{}'", form.target_user));
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Change Password".to_string(),
                                                         sql: sql_clone,
                                                         result: cmd_res,
                                                     }));
                                                 }
                                                 Err(e) => {
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Change Password".to_string(),
                                                         sql: sql_clone,
                                                         result: Err(e),
@@ -3710,7 +3733,7 @@ impl Tabular {
                                                 Ok(pool) => {
                                                     let exec_res = crate::user_manager::execute_user_manager_command(&pool, &sql_clone).await;
                                                     let cmd_res = exec_res.map(|_| format!("User '{}' dropped successfully", user));
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Drop User".to_string(),
                                                         sql: sql_clone,
                                                         result: cmd_res,
@@ -3723,10 +3746,10 @@ impl Tabular {
                                                         db_name.as_deref(),
                                                         schema_name.as_deref(),
                                                     ).await;
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::Data(fetch_res)));
                                                 }
                                                 Err(e) => {
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Drop User".to_string(),
                                                         sql: sql_clone,
                                                         result: Err(e),
@@ -3755,7 +3778,7 @@ impl Tabular {
                                                     } else {
                                                         Err(errors.join("; "))
                                                     };
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Apply Privileges".to_string(),
                                                         sql: all_sqls,
                                                         result: cmd_res,
@@ -3768,10 +3791,10 @@ impl Tabular {
                                                         db_name.as_deref(),
                                                         schema_name.as_deref(),
                                                     ).await;
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::Data(fetch_res)));
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::Data(fetch_res)));
                                                 }
                                                 Err(e) => {
-                                                    let _ = sender.send((active_tab, crate::user_manager::UserManagerResult::CommandExecuted {
+                                                    let _ = sender.send((active_tab_id, crate::user_manager::UserManagerResult::CommandExecuted {
                                                         action_name: "Apply Privileges".to_string(),
                                                         sql: all_sqls,
                                                         result: Err(e),
@@ -4478,11 +4501,17 @@ impl Tabular {
                     notify_long_queries: self.notify_long_queries,
                     notify_threshold_secs: self.notify_threshold_secs,
                 };
-                rt.block_on(store.save(&prefs));
-                log::debug!(
-                    "Preferences saved successfully to: {}",
-                    crate::config::get_data_dir().display()
-                );
+                match rt.block_on(store.save(&prefs)) {
+                    Ok(()) => log::debug!(
+                        "Preferences saved successfully to: {}",
+                        crate::config::get_data_dir().display()
+                    ),
+                    // Sekali per sesi: flush berjalan otomatis setiap perubahan.
+                    Err(e) => self.toasts.error_once(
+                        "prefs-save",
+                        format!("Settings could not be saved and will be lost on restart: {e}"),
+                    ),
+                }
                 self.last_saved_prefs = Some(prefs);
                 self.prefs_dirty = false;
                 // Simpan ini sudah memuat nilai yang sedang di-debounce.
@@ -5731,22 +5760,23 @@ impl App for Tabular {
 
                     // Save replication_master_id to the target connection
                     if let (Some(target_id), Some(source_id)) = (target_id_opt, source_id_opt) {
-                        // Update the connection in memory
-                        if let Some(conn) = self
-                            .connections
-                            .iter_mut()
-                            .find(|c| c.id == Some(target_id))
-                        {
-                            conn.replication_master_id = Some(source_id);
-                        }
-                        // Save to database (clone to avoid borrow issues)
-                        if let Some(conn) = self
+                        // Simpan dulu, baru ubah memori; bila gagal toast sudah tampil
+                        // dan relasi replikasi tidak dianggap tersimpan.
+                        if let Some(mut conn) = self
                             .connections
                             .iter()
                             .find(|c| c.id == Some(target_id))
                             .cloned()
                         {
-                            sidebar_database::update_connection_in_database(self, &conn);
+                            conn.replication_master_id = Some(source_id);
+                            if sidebar_database::update_connection_in_database(self, &conn)
+                                && let Some(existing) = self
+                                    .connections
+                                    .iter_mut()
+                                    .find(|c| c.id == Some(target_id))
+                            {
+                                *existing = conn;
+                            }
                         }
                     }
 
@@ -5852,6 +5882,7 @@ impl App for Tabular {
 
         // Centralized, non-blocking toast notifications. Rendered last so they
         // stack above all panels and dialogs.
+        self.surface_secret_notices();
         self.toasts.show(ctx);
         if is_first {
             crate::log_startup_step(

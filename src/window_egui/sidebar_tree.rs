@@ -1984,16 +1984,26 @@ impl super::Tabular {
                 d.remove_temp::<(i64, String)>(egui::Id::new("conn_dnd_drop"));
                 d.remove_temp::<i64>(egui::Id::new("conn_dnd_source"));
             });
-            if let Some(conn) = self
+            // Simpan dulu, baru ubah memori: bila gagal (toast sudah tampil)
+            // koneksi tetap di folder lama, sesuai yang ada di disk.
+            if let Some(mut conn_clone) = self
                 .connections
-                .iter_mut()
+                .iter()
                 .find(|c| c.id == Some(drag_conn_id))
+                .cloned()
             {
-                conn.folder = Some(target_folder);
-                let conn_clone = conn.clone();
-                sidebar_database::update_connection_in_database(self, &conn_clone);
-                sidebar_database::refresh_connections_tree(self);
-                self.needs_refresh = true;
+                conn_clone.folder = Some(target_folder);
+                if sidebar_database::update_connection_in_database(self, &conn_clone) {
+                    if let Some(conn) = self
+                        .connections
+                        .iter_mut()
+                        .find(|c| c.id == Some(drag_conn_id))
+                    {
+                        *conn = conn_clone;
+                    }
+                    sidebar_database::refresh_connections_tree(self);
+                    self.needs_refresh = true;
+                }
                 ui.ctx().request_repaint();
             }
         }

@@ -178,6 +178,13 @@ pub(crate) fn save_query_to_history(
                 }
                 Err(e) => {
                     warn!("[HISTORY] failed to save query to history: {}", e);
+                    crate::persist_notice::report(
+                        "history-save",
+                        crate::persist_notice::Level::Warning,
+                        format!(
+                            "Query history is not being saved and will be lost on restart: {e}"
+                        ),
+                    );
                 }
             }
         });

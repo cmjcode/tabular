@@ -519,8 +519,8 @@ impl super::Tabular {
     /// Jalankan statement simpan grid dalam satu transaksi (lihat
     /// `connection::atomic`), lalu panggil `callback` dengan hasilnya seperti
     /// job ber-callback biasa. Koneksi tanpa dukungan transaksi di sini
-    /// (plugin, Redis, MongoDB) atau pool yang belum siap jatuh ke eksekusi
-    /// biasa statement-per-statement.
+    /// (plugin, Redis, MongoDB) jatuh ke eksekusi statement-per-statement dengan
+    /// peringatan; pool yang belum siap tidak menyimpan apa pun.
     pub(crate) fn run_grid_save(
         &mut self,
         connection_id: i64,
@@ -540,16 +540,37 @@ impl super::Tabular {
                 connection::pool::lock_or_recover(&self.shared_connection_pools)
                     .get(&connection_id)
                     .cloned()
-            })
-            .filter(connection::atomic::supports_transactions);
-        let (Some(pool), Some(runtime)) = (pool, self.runtime.clone()) else {
-            log::warn!(
-                "[GRID] transactional save unavailable for connection {}; running statements one by one",
-                connection_id
+            });
+        let Some(pool) = pool else {
+            // Pool belum siap: jangan turun ke eksekusi per statement (tidak atomik,
+            // tanpa cek jumlah baris). Edit tetap di antrean; user menyimpan ulang.
+            connection::ensure_background_pool_creation(self, connection_id);
+            self.toasts.warning(
+                "Still connecting to the database. Nothing was saved; press Save again in a moment.",
             );
-            self.run_query_with_callback(connection_id, joined, callback);
             return;
         };
+        let Some(runtime) = self.runtime.clone() else {
+            self.toasts
+                .error("Nothing was saved: the background runtime is not available.");
+            return;
+        };
+        if !connection::atomic::supports_transactions(&pool) {
+            // Engine tanpa transaksi di sini (plugin, Redis, MongoDB): satu-satunya
+            // jalur yang ada. Beri tahu bila lebih dari satu statement tidak atomik.
+            log::warn!(
+                "[GRID] connection {} does not support transactional save; running {} statement(s) one by one",
+                connection_id,
+                statements.len()
+            );
+            if statements.len() > 1 {
+                self.toasts.warning(
+                    "This connection does not support transactions: changes are saved one statement at a time, and a failure part-way will not undo earlier ones.",
+                );
+            }
+            self.run_query_with_callback(connection_id, joined, callback);
+            return;
+        }
 
         let job_id = self.jobs.allocate_id();
         let sender = self.query_result_sender.clone();

@@ -1079,9 +1079,13 @@ impl ConfigStore {
         AppPreferences::default()
     }
 
-    pub async fn save(&self, prefs: &AppPreferences) {
+    /// Simpan preferensi. Mengembalikan error pertama (bila ada) agar UI bisa
+    /// memberi tahu user; tulis yang lain tetap dicoba.
+    pub async fn save(&self, prefs: &AppPreferences) -> Result<(), String> {
         if self.use_json_fallback {
-            let _ = self.save_to_json(prefs);
+            let result = self
+                .save_to_json(prefs)
+                .map_err(|e| format!("could not write preferences.json: {e}"));
             debug!(
                 "Saved prefs to JSON: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, use_server_pagination={}, enable_debug_logging={}",
                 prefs.theme,
@@ -1094,7 +1098,7 @@ impl ConfigStore {
                 prefs.use_server_pagination,
                 prefs.enable_debug_logging
             );
-            return;
+            return result;
         }
 
         if let Some(ref pool) = self.pool {
@@ -1227,25 +1231,34 @@ impl ConfigStore {
                 ("notify_threshold_secs", &notify_threshold_secs),
             ];
 
+            let mut first_error: Option<String> = None;
             for (k, v) in entries.iter() {
-                let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
+                if let Err(e) = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
                     .bind(k)
                     .bind(v)
                     .execute(pool)
-                    .await;
+                    .await
+                {
+                    log::error!("[PREFS] failed to save preference '{k}': {e}");
+                    first_error.get_or_insert_with(|| format!("could not save '{k}': {e}"));
+                }
             }
 
             // Persist last_update_check_iso if present so it isn't lost on preference save
-            if let Some(ref iso) = prefs.last_update_check_iso {
-                let _ = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
+            if let Some(ref iso) = prefs.last_update_check_iso
+                && let Err(e) = sqlx::query("REPLACE INTO preferences (key,value) VALUES (?,?)")
                     .bind("last_update_check_iso")
                     .bind(iso)
                     .execute(pool)
-                    .await;
+                    .await
+            {
+                log::warn!("[PREFS] failed to save last_update_check_iso: {e}");
             }
 
             // Mirror to JSON for fast-path startup loading
-            let _ = self.save_to_json(prefs);
+            if let Err(e) = self.save_to_json(prefs) {
+                log::warn!("[PREFS] failed to mirror preferences to JSON: {e}");
+            }
 
             debug!(
                 "Saved prefs to SQLite: theme={:?}, link_editor_theme={}, editor_theme={}, font_size={}, word_wrap={}, data_directory={:?}, auto_check_updates={}, enable_debug_logging={}",
@@ -1258,7 +1271,9 @@ impl ConfigStore {
                 prefs.auto_check_updates,
                 prefs.enable_debug_logging
             );
+            return first_error.map_or(Ok(()), Err);
         }
+        Err("the local preferences database is not open".to_string())
     }
 
     pub fn json_path() -> PathBuf {

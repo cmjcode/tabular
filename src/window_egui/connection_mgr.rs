@@ -843,36 +843,44 @@ impl super::Tabular {
                 debug!("🧹 Clearing cache for table {}.{}", db, tbl);
 
                 // Clear table cache entry
-                let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                if let Err(e) = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                     .bind(connection_id)
                     .bind(&db)
                     .bind(&tbl)
                     .execute(pool_clone.as_ref())
-                    .await;
+                    .await {
+ crate::connection::note_cache_clear_failure("table_cache", connection_id, &e);
+ }
 
                 // Clear column cache for this table
-                let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                if let Err(e) = sqlx::query("DELETE FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                     .bind(connection_id)
                     .bind(&db)
                     .bind(&tbl)
                     .execute(pool_clone.as_ref())
-                    .await;
+                    .await {
+ crate::connection::note_cache_clear_failure("column_cache", connection_id, &e);
+ }
 
                 // Clear row cache for this table
-                let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                if let Err(e) = sqlx::query("DELETE FROM row_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                     .bind(connection_id)
                     .bind(&db)
                     .bind(&tbl)
                     .execute(pool_clone.as_ref())
-                    .await;
+                    .await {
+ crate::connection::note_cache_clear_failure("row_cache", connection_id, &e);
+ }
 
                 // Clear index cache for this table
-                let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
+                if let Err(e) = sqlx::query("DELETE FROM index_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
                     .bind(connection_id)
                     .bind(&db)
                     .bind(&tbl)
                     .execute(pool_clone.as_ref())
-                    .await;
+                    .await {
+ crate::connection::note_cache_clear_failure("index_cache", connection_id, &e);
+ }
 
                 debug!("✅ Cache cleared for table {}.{}", db, tbl);
             });
@@ -1059,48 +1067,74 @@ impl super::Tabular {
                     "🧹 Clearing database cache for db '{}' on conn {}",
                     db, connection_id
                 );
-                let _ = sqlx::query(
+                if let Err(e) = sqlx::query(
                     "DELETE FROM database_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
-                let _ = sqlx::query(
+                .await
+                {
+                    crate::connection::note_cache_clear_failure(
+                        "database_cache",
+                        connection_id,
+                        &e,
+                    );
+                }
+                if let Err(e) = sqlx::query(
                     "DELETE FROM table_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
-                let _ = sqlx::query(
+                .await
+                {
+                    crate::connection::note_cache_clear_failure("table_cache", connection_id, &e);
+                }
+                if let Err(e) = sqlx::query(
                     "DELETE FROM column_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
-                let _ = sqlx::query(
+                .await
+                {
+                    crate::connection::note_cache_clear_failure("column_cache", connection_id, &e);
+                }
+                if let Err(e) = sqlx::query(
                     "DELETE FROM row_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
-                let _ = sqlx::query(
+                .await
+                {
+                    crate::connection::note_cache_clear_failure("row_cache", connection_id, &e);
+                }
+                if let Err(e) = sqlx::query(
                     "DELETE FROM index_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
-                let _ = sqlx::query(
+                .await
+                {
+                    crate::connection::note_cache_clear_failure("index_cache", connection_id, &e);
+                }
+                if let Err(e) = sqlx::query(
                     "DELETE FROM partition_cache WHERE connection_id = ? AND database_name = ?",
                 )
                 .bind(connection_id)
                 .bind(&db)
                 .execute(pool_clone.as_ref())
-                .await;
+                .await
+                {
+                    crate::connection::note_cache_clear_failure(
+                        "partition_cache",
+                        connection_id,
+                        &e,
+                    );
+                }
                 debug!(
                     "✅ Database cache cleared for db '{}' on conn {}",
                     db, connection_id

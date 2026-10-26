@@ -91,7 +91,11 @@ pub(crate) fn update_connection_in_database(
                     }
                 }
                 Err(e) => {
-                    debug!("Update failed: {}", e);
+                    log::error!("[CONN] failed to update connection {id}: {e}");
+                    tabular.toasts.error(format!(
+                        "Could not update connection \"{}\": {e}",
+                        with_options.name
+                    ));
                 }
             }
 
@@ -110,11 +114,21 @@ pub(crate) fn update_connection_in_database(
 
             result.is_ok()
         } else {
-            debug!("Cannot update connection: no ID found");
+            log::error!(
+                "[CONN] cannot update connection '{}': no ID",
+                connection.name
+            );
+            tabular
+                .toasts
+                .error("Could not update connection: it has no saved ID.");
             false
         }
     } else {
-        debug!("Cannot update connection: no database pool available");
+        log::error!("[CONN] cannot update connection: local database not open");
+        tabular.toasts.error(format!(
+            "Could not update connection \"{}\": the local database is not available.",
+            connection.name
+        ));
         false
     }
 }
@@ -149,6 +163,19 @@ fn connection_endpoint_changed(
         || previous.plugin_options != updated.plugin_options
 }
 
+/// Gagal menghapus baris cache metadata: tree bisa menampilkan objek basi,
+/// sehingga refresh tampak tidak bekerja. Dicatat ke log dan ditampilkan sekali.
+pub(crate) fn note_cache_clear_failure(table: &str, connection_id: i64, error: &sqlx::Error) {
+    warn!("[CACHE] failed to clear {table} for connection {connection_id}: {error}");
+    crate::persist_notice::report(
+        "cache-clear",
+        crate::persist_notice::Level::Warning,
+        format!(
+            "Part of the metadata cache could not be cleared ({table}: {error}). The sidebar may show outdated tables until you refresh again."
+        ),
+    );
+}
+
 pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_id: i64) {
     if let Some(ref pool) = tabular.db_pool {
         let pool_clone = pool.clone();
@@ -157,20 +184,29 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
         let result: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> = rt.block_on(async {
             let mut tx = pool_clone.begin().await?;
 
-            let _ = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
+            if let Err(e) = sqlx::query("DELETE FROM database_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(&mut *tx)
-                .await;
+                .await
+            {
+                crate::connection::note_cache_clear_failure("database_cache", connection_id, &e);
+            }
 
-            let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+            if let Err(e) = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(&mut *tx)
-                .await;
+                .await
+            {
+                crate::connection::note_cache_clear_failure("table_cache", connection_id, &e);
+            }
 
-            let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+            if let Err(e) = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
                 .bind(connection_id)
                 .execute(&mut *tx)
-                .await;
+                .await
+            {
+                crate::connection::note_cache_clear_failure("column_cache", connection_id, &e);
+            }
 
             let delete_result = sqlx::query("DELETE FROM connections WHERE id = ?")
                 .bind(connection_id)
@@ -852,22 +888,34 @@ pub(crate) async fn clear_connection_cache_sqlite(connection_id: i64, cache_pool
         ),
     }
 
-    let _ = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
+    if let Err(e) = sqlx::query("DELETE FROM table_cache WHERE connection_id = ?")
         .bind(connection_id)
         .execute(cache_pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
+        .await
+    {
+        crate::connection::note_cache_clear_failure("table_cache", connection_id, &e);
+    }
+    if let Err(e) = sqlx::query("DELETE FROM column_cache WHERE connection_id = ?")
         .bind(connection_id)
         .execute(cache_pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
+        .await
+    {
+        crate::connection::note_cache_clear_failure("column_cache", connection_id, &e);
+    }
+    if let Err(e) = sqlx::query("DELETE FROM row_cache WHERE connection_id = ?")
         .bind(connection_id)
         .execute(cache_pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
+        .await
+    {
+        crate::connection::note_cache_clear_failure("row_cache", connection_id, &e);
+    }
+    if let Err(e) = sqlx::query("DELETE FROM index_cache WHERE connection_id = ?")
         .bind(connection_id)
         .execute(cache_pool)
-        .await;
+        .await
+    {
+        crate::connection::note_cache_clear_failure("index_cache", connection_id, &e);
+    }
 }
 
 #[cfg(test)]

@@ -127,6 +127,7 @@ pub mod safety_guard;
 pub mod sample_data;
 pub mod schema_objects;
 pub mod search_match;
+pub mod persist_notice;
 pub mod secrets;
 pub mod self_update;
 pub mod server_metrics;

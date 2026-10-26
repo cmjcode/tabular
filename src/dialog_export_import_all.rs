@@ -460,7 +460,11 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         );
                         ui.vertical(|ui| {
                             ui.label(
-                                egui::RichText::new("Data restored successfully!")
+                                egui::RichText::new(if summary.errors.is_empty() {
+                                    "Data restored successfully!"
+                                } else {
+                                    "Data restored with errors"
+                                })
                                     .strong()
                                     .color(egui::Color32::from_rgb(80, 200, 120)),
                             );
@@ -472,6 +476,26 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 summary.http_workspaces_restored,
                                 summary.history_restored
                             ));
+                            // Kegagalan sebagian tidak boleh tersembunyi di balik "sukses".
+                            if !summary.errors.is_empty() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} item(s) could not be restored:",
+                                        summary.errors.len()
+                                    ))
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(230, 150, 40)),
+                                );
+                                egui::ScrollArea::vertical()
+                                    .id_salt("restore_errors")
+                                    .max_height(120.0)
+                                    .show(ui, |ui| {
+                                        for err in &summary.errors {
+                                            ui.label(egui::RichText::new(err).small());
+                                        }
+                                    });
+                            }
                         });
                     });
                 });
