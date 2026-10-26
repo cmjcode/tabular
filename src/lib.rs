@@ -295,9 +295,100 @@ pub fn run() -> Result<(), eframe::Error> {
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     single_instance::start_global();
 
-    let options = build_native_options();
+    #[allow(unused_mut)]
+    let mut options = build_native_options();
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        options.renderer = renderer_select::select();
+        log::info!("[RENDER] using renderer: {}", options.renderer);
+    }
     log_startup_step("starting eframe::run_native");
-    eframe::run_native("Tabular", options, app_creator())
+    let result = eframe::run_native("Tabular", options, app_creator());
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let result = renderer_select::retry_with_glow_if_wgpu_failed(result);
+    result
+}
+
+/// Pemilihan renderer desktop: wgpu (default) atau OpenGL/glow sebagai cadangan.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+mod renderer_select {
+    use eframe::Renderer;
+
+    /// Penanda bahwa wgpu gagal di mesin ini. Isinya versi aplikasi, sehingga
+    /// rilis baru mencoba wgpu lagi (dan kembali ke glow bila masih gagal).
+    const MARKER_FILE: &str = "renderer_fallback";
+
+    /// `TABULAR_RENDERER=glow|wgpu` menang; lalu penanda fallback; lalu wgpu.
+    pub fn select() -> Renderer {
+        let env = std::env::var("TABULAR_RENDERER").ok();
+        if let Some(renderer) = parse_env(env.as_deref()) {
+            return renderer;
+        }
+        let marker = std::fs::read_to_string(crate::config::get_data_dir().join(MARKER_FILE)).ok();
+        if marker_applies(marker.as_deref(), env!("CARGO_PKG_VERSION")) {
+            log::info!("[RENDER] wgpu failed on a previous launch; using OpenGL (glow)");
+            return Renderer::Glow;
+        }
+        Renderer::Wgpu
+    }
+
+    fn remember_glow_fallback() {
+        let path = crate::config::get_data_dir().join(MARKER_FILE);
+        if let Err(err) = std::fs::write(&path, env!("CARGO_PKG_VERSION")) {
+            log::warn!("[RENDER] could not write {}: {err}", path.display());
+        }
+    }
+
+    /// wgpu bisa gagal sebelum jendela tampil (driver Metal/Vulkan tidak lengkap,
+    /// mis. Intel Iris Pro di macOS 15 via OCLP). Event loop eframe dipakai ulang
+    /// (`run_and_return`), jadi cukup ulangi sekali dengan OpenGL (glow).
+    pub fn retry_with_glow_if_wgpu_failed(
+        result: Result<(), eframe::Error>,
+    ) -> Result<(), eframe::Error> {
+        match result {
+            Err(eframe::Error::Wgpu(err)) => {
+                log::warn!("[RENDER] wgpu failed to start ({err}); retrying with OpenGL (glow)");
+                remember_glow_fallback();
+                let mut options = super::build_native_options();
+                options.renderer = Renderer::Glow;
+                eframe::run_native("Tabular", options, super::app_creator())
+            }
+            other => other,
+        }
+    }
+
+    fn parse_env(value: Option<&str>) -> Option<Renderer> {
+        match value?.trim().to_ascii_lowercase().as_str() {
+            "glow" | "gl" | "opengl" => Some(Renderer::Glow),
+            "wgpu" => Some(Renderer::Wgpu),
+            _ => None,
+        }
+    }
+
+    fn marker_applies(marker: Option<&str>, version: &str) -> bool {
+        marker.is_some_and(|m| m.trim() == version)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn env_override_parsing() {
+            assert_eq!(parse_env(Some("GLOW")), Some(Renderer::Glow));
+            assert_eq!(parse_env(Some(" opengl ")), Some(Renderer::Glow));
+            assert_eq!(parse_env(Some("wgpu")), Some(Renderer::Wgpu));
+            assert_eq!(parse_env(Some("vulkan")), None);
+            assert_eq!(parse_env(None), None);
+        }
+
+        #[test]
+        fn marker_only_applies_to_same_version() {
+            assert!(marker_applies(Some("1.8.0\n"), "1.8.0"));
+            assert!(!marker_applies(Some("1.7.9"), "1.8.0"));
+            assert!(!marker_applies(None, "1.8.0"));
+        }
+    }
 }
 
 /// Opsi jendela eframe bersama desktop/iOS/Android. Android menimpa

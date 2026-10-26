@@ -194,6 +194,10 @@ objc2-foundation = { version = "0.3", features = [
 ] }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+# Renderer cadangan OpenGL (glow). Dipakai bila wgpu gagal membuat device/surface,
+# mis. Mac Intel lama (Iris Pro) di macOS 15 via OCLP yang driver Metal-nya tidak
+# lengkap: `RequestDeviceError(Device(Lost))`. Lihat `select_renderer` di src/lib.rs.
+eframe = { version = "0.36", default-features = false, features = ["glow"] }
 rfd = "0.17"
 # Server MCP (`tabular mcp`) untuk harness agent AI — lihat src/agent/ dan docs/MCP.md.
 # Hanya transport stdio; tidak ada HTTP server. Dikunci minor karena SDK masih
