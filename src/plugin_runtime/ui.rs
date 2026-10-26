@@ -878,7 +878,8 @@ fn render_catalog_tab(
                                         if !selected_rows.is_empty() {
                                             ui.label(
                                                 egui::RichText::new(format!(
-                                                    "✓ {} rows selected",
+                                                    "{} {} rows selected",
+                egui_icons::icons::ICON_CHECK.codepoint,
                                                     selected_rows.len()
                                                 ))
                                                 .size(12.0)

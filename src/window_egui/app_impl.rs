@@ -1159,10 +1159,10 @@ impl Tabular {
                                     // under "Database" (like VS Code's view-container
                                     // sub-views) so each gets full space + a contextual "+".
                                     let segments = [
-                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: crate::i18n::tr("Cons") },
-                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: crate::i18n::tr("Sqls") },
-                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: crate::i18n::tr("Hist") },
-                                        style::NavSegment { key: "Comparisons", icon: egui_icons::icons::ICON_DIFFERENCE.codepoint, label: crate::i18n::tr("Comp") },
+                                        style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: crate::i18n::tr("Connections") },
+                                        style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: crate::i18n::tr("Queries") },
+                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: crate::i18n::tr("History") },
+                                        style::NavSegment { key: "Comparisons", icon: egui_icons::icons::ICON_DIFFERENCE.codepoint, label: crate::i18n::tr("Compare") },
                                     ];
                                     let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
                                     if let Some(key) = style::render_segmented_nav(
@@ -1225,8 +1225,22 @@ impl Tabular {
                                         .on_hover_text(msg);
                                     }
                                     if self.connections.is_empty() && self.items_tree.is_empty() {
-                                        ui.label("No connections configured");
-                                        ui.label("Click ➕ to add a new connection");
+                                        ui.add_space(8.0);
+                                        ui.label(egui::RichText::new("No connections yet").strong());
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Add your database, or explore Tabular with a small sample SQLite database.",
+                                            )
+                                            .weak(),
+                                        );
+                                        ui.add_space(6.0);
+                                        if ui.add(style::btn_primary_ctx(ui.ctx(), "Add Connection…")).clicked() {
+                                            self.new_connection.folder = Some("Default".to_string());
+                                            self.show_add_connection = true;
+                                        }
+                                        if ui.button("Open Sample Database").clicked() {
+                                            self.add_sample_database();
+                                        }
                                     } else {
                                         self.render_tree_for_database_section(ui);
                                     }
@@ -1531,7 +1545,7 @@ impl Tabular {
                                                     [24.0, 24.0],
                                                     egui::Button::new(egui::RichText::new("📂").color(egui::Color32::WHITE))
                                                         .fill(style::theme_accent(ctx)),
-                                                ).on_hover_text("Open .sql File (Cmd+O)");
+                                                ).on_hover_text(format!("Open SQL File ({})", self.keymap.label(crate::keymap::Action::OpenFile)));
 
                                                 if open_btn.clicked() {
                                                     sidebar_query::prompt_open_sql_file(self, None);
@@ -2405,7 +2419,7 @@ impl Tabular {
                                                         .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color))
                                                         .corner_radius(0.0),
                                                 )
-                                                .on_hover_text("Open .sql file (Cmd+O)")
+                                                .on_hover_text(format!("Open SQL File ({})", self.keymap.label(crate::keymap::Action::OpenFile)))
                                                 .clicked()
                                         {
                                             sidebar_query::prompt_open_sql_file(self, None);
@@ -2538,7 +2552,7 @@ impl Tabular {
                                     .stroke(egui::Stroke::NONE)
                                     .corner_radius(egui::CornerRadius::same(5)),
                                 )
-                                .on_hover_text("Settings & Account")
+                                .on_hover_text("Account & Preferences")
                             };
 
                             if gear_response.clicked() {
@@ -2746,101 +2760,13 @@ impl Tabular {
                                                 }
                                             }
 
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_SETTINGS.codepoint, "Preferences", Some("⌘,")) {
+                                            if draw_menu_item(ui, egui_icons::icons::ICON_SETTINGS.codepoint, "Preferences…", Some(&self.keymap.label(crate::keymap::Action::OpenSettings))) {
                                                 self.show_settings_window = true;
                                                 self.show_settings_menu = false;
                                             }
 
-                                            draw_menu_sep(ui);
-
-                                            if draw_menu_item(ui, "📦", "Export All Data (ZIP)...", None) {
-                                                self.show_export_all_dialog = true;
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            if draw_menu_item(ui, "📥", "Import All Data (ZIP)...", None) {
-                                                self.show_import_all_dialog = true;
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            draw_menu_sep(ui);
-
-                                            {
-                                                use super::transfer_ui::TransferAction;
-                                                let none = || (None, None, None);
-                                                let mut picked = None;
-                                                if draw_menu_item(ui, egui_icons::icons::ICON_DESCRIPTION.codepoint, "Open File...", None) {
-                                                    self.show_settings_menu = false;
-                                                    super::file_viewer_ui::open_dialog(self);
-                                                }
-                                                if draw_menu_item(ui, egui_icons::icons::ICON_FILE_OPEN.codepoint, "Open Data File...", None) {
-                                                    picked = Some(TransferAction::OpenDataFile(None));
-                                                }
-                                                if draw_menu_item(ui, egui_icons::icons::ICON_SWAP_HORIZ.codepoint, "Transfer Tables...", None) {
-                                                    let (conn_id, database, table) = none();
-                                                    picked = Some(TransferAction::Transfer { conn_id, database, table });
-                                                }
-                                                if draw_menu_item(ui, egui_icons::icons::ICON_COMPARE_ARROWS.codepoint, "Compare Data...", None) {
-                                                    let (conn_id, database, table) = none();
-                                                    picked = Some(TransferAction::CompareData { conn_id, database, table });
-                                                }
-                                                if draw_menu_item(ui, egui_icons::icons::ICON_LOCK_OPEN.codepoint, "Decrypt Exported File...", None) {
-                                                    picked = Some(TransferAction::DecryptFile);
-                                                }
-                                                if let Some(action) = picked {
-                                                    self.transfer_ui.request(action);
-                                                    self.show_settings_menu = false;
-                                                }
-                                            }
-
-                                            draw_menu_sep(ui);
-
-                                            // Hidden on iOS — the App Store is the only
-                                            // update channel there (Guideline 2.5.2).
-                                            if crate::self_update::SELF_UPDATE_SUPPORTED
-                                                && draw_menu_item(ui, egui_icons::icons::ICON_REFRESH.codepoint, "Check for Updates", None)
-                                            {
-                                                self.check_for_updates(true);
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            #[cfg(not(any(target_os = "ios", target_os = "android")))]
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_FOLDER.codepoint, "Open Logs Folder", None) {
-                                                let dir = crate::app_logging::logs_dir();
-                                                let _ = std::fs::create_dir_all(&dir);
-                                                if let Err(e) = crate::url_opener::open_url(&dir.to_string_lossy()) {
-                                                    self.toasts.error(format!("Cannot open {}: {}", dir.display(), e));
-                                                }
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_MONITORING.codepoint, "Query Insights", None) {
-                                                self.open_query_insights();
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            #[cfg(not(any(target_os = "ios", target_os = "android")))]
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_SECURITY.codepoint, "Agent Access (MCP)", None) {
-                                                self.open_agent_access();
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_KEYBOARD.codepoint, "Keyboard Shortcuts", None) {
-                                                self.show_shortcuts_window = true;
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_CONTENT_COPY.codepoint, "Copy Diagnostics", None) {
-                                                ui.ctx().copy_text(crate::app_logging::diagnostics_report());
-                                                self.toasts.success("Diagnostics copied. Review it before sharing — recent log lines are included.");
-                                                self.show_settings_menu = false;
-                                            }
-
-                                            if draw_menu_item(ui, egui_icons::icons::ICON_INFO.codepoint, "About Tabular", None) {
-                                                self.show_about_dialog = true;
-                                                self.show_settings_menu = false;
-                                            }
-
+                                            // File, Tools, dan Help kini ada di menu bar; gear
+                                            // hanya untuk akun dan preferensi.
                                             if self.sync_account.is_some() {
                                                 draw_menu_sep(ui);
                                                 if draw_menu_item(ui, egui_icons::icons::ICON_LOGOUT.codepoint, "Sign Out", None) {
@@ -2897,9 +2823,9 @@ impl Tabular {
                                         .corner_radius(egui::CornerRadius::same(5)),
                                 )
                                 .on_hover_text(if self.show_ai_panel {
-                                    "Close AI Assistant (Cmd+Shift+A)"
+                                    format!("Close AI Assistant ({})", self.keymap.label(crate::keymap::Action::ToggleAiPanel))
                                 } else {
-                                    "Open AI Assistant (Cmd+Shift+A)"
+                                    format!("Open AI Assistant ({})", self.keymap.label(crate::keymap::Action::ToggleAiPanel))
                                 })
                                 .clicked()
                             {
@@ -5055,7 +4981,7 @@ impl App for Tabular {
         // Periodic cleanup of stale connection pools (every 10 minutes to reduce overhead)
         if self.last_cleanup_time.elapsed().as_secs() > 600 {
             // 10 minutes instead of 5
-            debug!("🧹 Performing periodic connection pool cleanup");
+            debug!("Performing periodic connection pool cleanup");
 
             // Clean up connections that might be stale
             let mut connections_to_refresh: Vec<i64> =
@@ -5872,6 +5798,8 @@ impl App for Tabular {
 
         // M11: Split View / Slide Over iPad — sembunyikan panel samping saat sempit.
         self.apply_adaptive_layout(root_ui.ctx());
+        // Menu bar di atas semua panel: pintu masuk tunggal untuk setiap fitur.
+        self.render_app_menu_bar(root_ui);
         self.render_left_sidebar(root_ui);
 
         // Tangani file .sql yang di-drop ke jendela Tabular

@@ -288,7 +288,8 @@ pub(crate) fn render_connection_dialog(
                             .selected_text(match &connection_data.connection_type {
                                 models::enums::DatabaseType::ApiHttp => "API - HTTP".to_string(),
                                 models::enums::DatabaseType::Plugin(_) => format!(
-                                    "🧩 {}",
+                                    "{} {}",
+                                                egui_icons::icons::ICON_EXTENSION.codepoint,
                                     connection_data.connection_type.display_name()
                                 ),
                                 other => other.display_name(),
@@ -815,12 +816,12 @@ pub(crate) fn render_connection_dialog(
                     ui.separator();
                     if *success {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(50,205,50), "✓");
+                            ui.colored_label(egui::Color32::from_rgb(50,205,50), egui_icons::icons::ICON_CHECK.codepoint);
                             ui.colored_label(egui::Color32::from_rgb(50,205,50), message);
                         });
                     } else {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(255, 0, 0), "✗");
+                            ui.colored_label(egui::Color32::from_rgb(255, 0, 0), egui_icons::icons::ICON_CLOSE.codepoint);
                             ui.colored_label(egui::Color32::from_rgb(255, 0, 0), message);
                         });
                     }

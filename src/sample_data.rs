@@ -7,8 +7,9 @@
 //! credentials for a remote server they may not have. Guideline 2.1 rejections
 //! follow from exactly that.
 //!
-//! Desktop builds are untouched: they have a working file picker, and silently
-//! adding a connection to someone's existing sidebar would be surprising.
+//! Desktop builds never seed silently (adding a connection to someone's
+//! existing sidebar would be surprising); they offer an explicit "Open Sample
+//! Database" button in the empty sidebar instead ([`add_sample_connection`]).
 
 #[cfg(target_os = "ios")]
 use log::{info, warn};
@@ -58,6 +59,35 @@ pub async fn ensure_sample_database(pool: &sqlx::SqlitePool) {
         Ok(_) => info!("Seeded sample database at {path}"),
         Err(e) => warn!("Could not register the sample connection: {e}"),
     }
+}
+
+/// Buat database contoh dan daftarkan koneksinya atas permintaan user (tombol
+/// di sidebar kosong). Mengembalikan id koneksi baru, atau id yang sudah ada
+/// bila koneksi contoh sudah terdaftar.
+pub async fn add_sample_connection(pool: &sqlx::SqlitePool) -> Result<i64, String> {
+    const NAME: &str = "Sample Database";
+    if let Some(id) =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM connections WHERE name = ? LIMIT 1")
+            .bind(NAME)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        return Ok(id);
+    }
+    let path = write_sample_database(&crate::config::get_data_dir().join("sample")).await?;
+    let result = sqlx::query(
+        "INSERT INTO connections \
+         (name, host, port, username, password, database_name, connection_type, folder) \
+         VALUES (?, ?, '', '', '', ?, 'SQLite', NULL)",
+    )
+    .bind(NAME)
+    .bind(&path)
+    .bind(&path)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.last_insert_rowid())
 }
 
 /// Write the sample SQLite file into `dir`, returning its path.

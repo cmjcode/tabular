@@ -184,7 +184,7 @@ impl super::Tabular {
                                     let _ = crate::auto_updater::AutoUpdater::restart_app(staged);
                                 }
                             } else if self.update_download_in_progress {
-                                ui.add_enabled(false, egui::Button::new("Updating..."));
+                                ui.add_enabled(false, egui::Button::new("Updating…"));
                             } else if update_info.download_url.is_some() {
                                 if ui.button("Update Now").clicked() {
                                     self.start_update_download();

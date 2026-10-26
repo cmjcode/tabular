@@ -377,7 +377,7 @@ impl Tabular {
             .collect();
         let state = &mut self.agent_access;
 
-        egui::Window::new("Agent Access")
+        egui::Window::new("Agent Access (MCP Server)")
             .id(egui::Id::new("agent_access_window"))
             .open(&mut open)
             .default_width(760.0)

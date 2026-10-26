@@ -352,7 +352,7 @@ pub fn save_workspaces(workspaces: &[HttpWorkspace]) -> Result<(), String> {
                 path.display(),
                 e
             );
-            first_error.get_or_insert(format!("Could not save workspace '{}': {}", ws.name, e));
+            first_error.get_or_insert(format!("Could not save collection '{}': {}", ws.name, e));
         }
     }
     first_error.map_or(Ok(()), Err)

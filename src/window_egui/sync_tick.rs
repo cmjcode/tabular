@@ -514,7 +514,7 @@ impl super::Tabular {
                     }
                     if self.sync_refresh_attempt_count >= MAX_REFRESH_ATTEMPTS {
                         warn!(
-                            "[sync] 🛑 Max refresh attempts reached. Stopping auto-retry. User must sign in manually."
+                            "[sync] Max refresh attempts reached. Stopping auto-retry. User must sign in manually."
                         );
                     }
                 }

@@ -987,7 +987,7 @@ fn kind_icon(kind: Option<AutocompleteKind>) -> &'static str {
         Some(AutocompleteKind::Table) => "📦",
         Some(AutocompleteKind::Column) => "🏷️",
         Some(AutocompleteKind::Syntax) => "⚡",
-        Some(AutocompleteKind::Function) => "🧩",
+        Some(AutocompleteKind::Function) => egui_icons::icons::ICON_EXTENSION.codepoint,
         Some(AutocompleteKind::Snippet) => "📄",
         Some(AutocompleteKind::Parameter) => "🔧",
         Some(AutocompleteKind::Join) => "🔗",

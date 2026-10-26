@@ -43,7 +43,7 @@ impl PrefTab {
             PrefTab::ApplicationTheme => "Appearance",
             PrefTab::EditorTheme => "Editor",
             PrefTab::Performance => "Performance",
-            PrefTab::DataDirectory => "Data & Backup",
+            PrefTab::DataDirectory => "Data & App Export",
             PrefTab::Update => "Updates",
             PrefTab::AiAssistant => "AI Assistant",
             PrefTab::Sync => "Cloud Sync",
@@ -725,9 +725,11 @@ impl Tabular {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Perubahan sudah tersimpan otomatis; "Done" hanya menutup
+                // (dan memastikan perubahan terakhir ikut ditulis).
                 if ui
                     .add(
-                        style::btn_primary_ctx(ui.ctx(), crate::i18n::tr("Save"))
+                        style::btn_primary_ctx(ui.ctx(), crate::i18n::tr("Done"))
                             .min_size(egui::vec2(80.0, 28.0)),
                     )
                     .clicked()
@@ -735,7 +737,7 @@ impl Tabular {
                     self.prefs_dirty = true;
                     self.try_save_prefs();
                     crate::platform_prefs::persist();
-                    self.set_pref_feedback(crate::i18n::tr("Preferences saved"));
+                    self.show_settings_window = false;
                 }
             });
         });
@@ -1163,7 +1165,7 @@ impl Tabular {
     fn render_pref_data(&mut self, ui: &mut egui::Ui) {
         page_header(
             ui,
-            "Data & Backup",
+            "Data & App Export",
             "Where Tabular stores connections, saved queries and history, and how to back them up.",
         );
 
@@ -1250,7 +1252,7 @@ impl Tabular {
             });
         });
 
-        section(ui, "Backup & Restore", |ui| {
+        section(ui, "Export and Import App Data", |ui| {
             hint(
                 ui,
                 "Export or restore all database connections, saved queries, HTTP API collections and query history as a portable ZIP archive.",
@@ -1548,7 +1550,7 @@ impl Tabular {
                 status(
                     ui,
                     Tone::Success,
-                    format!("✓ Key configured: {}", mask_secret(&self.ai_api_key)),
+                    format!("Key configured: {}", mask_secret(&self.ai_api_key)),
                 );
             }
         });

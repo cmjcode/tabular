@@ -105,7 +105,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let screen_rect = ctx.content_rect();
     let dialog_w = (screen_rect.width() - 32.0).clamp(420.0, 560.0);
 
-    egui::Window::new("📦 Export All Application Data (ZIP)")
+    egui::Window::new("Export App Data (ZIP)")
         .open(&mut is_open)
         .title_bar(false)
         .frame(crate::window_egui::style::modal_window_frame(ctx))
@@ -118,7 +118,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .show(ctx, |ui| {
             crate::window_egui::style::render_modal_header(
                 ui,
-                "📦 Export All Application Data",
+                "Export App Data (ZIP)",
                 &mut close_requested,
             );
 
@@ -129,7 +129,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     ui.label(egui::RichText::new("📦").size(24.0));
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("Full Workspace Backup")
+                            egui::RichText::new("Full App Data Backup")
                                 .strong()
                                 .size(14.0),
                         );
@@ -153,7 +153,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(
-                            egui::RichText::new("Exporting workspace data to ZIP archive, please wait...")
+                            egui::RichText::new("Exporting app data to a ZIP archive, please wait…")
                                 .color(egui::Color32::from_rgb(100, 180, 255))
                                 .strong(),
                         );
@@ -187,7 +187,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                 summary.zip_file_size as f64 / 1024.0
                             ));
                             ui.label(format!(
-                                "Included: {} connections, {} folders, {} queries, {} HTTP workspaces, {} history items",
+                                "Included: {} connections, {} folders, {} queries, {} HTTP collections, {} history items",
                                 summary.connections_count,
                                 summary.folders_count,
                                 summary.queries_count,
@@ -289,7 +289,7 @@ pub fn render_export_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     ui.checkbox(
                         &mut state.options.include_http_api,
                         format!(
-                            "🌐 HTTP API Collections ({} workspaces)",
+                            "🌐 HTTP API Collections ({} collections)",
                             tabular.yaak_workspaces.len()
                         ),
                     );
@@ -407,7 +407,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let screen_rect = ctx.content_rect();
     let dialog_w = (screen_rect.width() - 32.0).clamp(440.0, 580.0);
 
-    egui::Window::new("📥 Import & Restore All Data (ZIP)")
+    egui::Window::new("Import App Data (ZIP)")
         .open(&mut is_open)
         .title_bar(false)
         .frame(crate::window_egui::style::modal_window_frame(ctx))
@@ -420,7 +420,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .show(ctx, |ui| {
             crate::window_egui::style::render_modal_header(
                 ui,
-                "📥 Import & Restore All Data",
+                "Import App Data (ZIP)",
                 &mut close_requested,
             );
 
@@ -431,7 +431,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     ui.label(egui::RichText::new("📥").size(24.0));
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("Workspace Restore")
+                            egui::RichText::new("App Data Restore")
                                 .strong()
                                 .size(14.0),
                         );
@@ -469,7 +469,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                     .color(egui::Color32::from_rgb(80, 200, 120)),
                             );
                             ui.label(format!(
-                                "Restored: {} connections, {} folders, {} queries, {} HTTP workspaces, {} history items",
+                                "Restored: {} connections, {} folders, {} queries, {} HTTP collections, {} history items",
                                 summary.connections_restored,
                                 summary.folders_restored,
                                 summary.queries_restored,
@@ -623,7 +623,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         ui.label(format!("• Queries: {}", manifest.counts.queries));
                     });
                     ui.horizontal(|ui| {
-                        ui.label(format!("• HTTP Workspaces: {}", manifest.counts.http_workspaces));
+                        ui.label(format!("• HTTP Collections: {}", manifest.counts.http_workspaces));
                         ui.label(format!("• History Items: {}", manifest.counts.history_items));
                     });
                 });
@@ -646,7 +646,7 @@ pub fn render_import_all_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 );
                 ui.checkbox(
                     &mut state.options.include_http_api,
-                    "🌐 HTTP API Collections (workspaces & requests)",
+                    "🌐 HTTP API Collections (collections and requests)",
                 );
                 ui.checkbox(
                     &mut state.options.include_history,

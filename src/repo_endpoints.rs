@@ -1192,7 +1192,7 @@ pub fn enrich_flexurio_endpoints(root: &Path, endpoints: &mut [GeneratedEndpoint
                         }
                         if ep.description.is_empty() {
                             ep.description =
-                                format!("Validasi payload record `{route}` tanpa simpan.");
+                                format!("Validate a `{route}` record payload without saving.");
                         }
                     } else {
                         if ep.name.is_empty() || ep.name.starts_with("POST") {
@@ -1200,7 +1200,7 @@ pub fn enrich_flexurio_endpoints(root: &Path, endpoints: &mut [GeneratedEndpoint
                         }
                         if ep.description.is_empty() {
                             ep.description = format!(
-                                "Tambah record baru `{route}` (mendukung transaksi atomik)."
+                                "Create a new `{route}` record (supports atomic transactions)."
                             );
                         }
                     }
@@ -1230,7 +1230,7 @@ pub fn enrich_flexurio_endpoints(root: &Path, endpoints: &mut [GeneratedEndpoint
                         ep.name = format!("Delete {route}");
                     }
                     if ep.description.is_empty() {
-                        ep.description = format!("Hapus record `{route}`.");
+                        ep.description = format!("Delete a `{route}` record.");
                     }
                     ep.status_codes = vec!["200".into(), "404".into(), "500".into()];
                 }
@@ -2421,7 +2421,7 @@ pub fn add_endpoints_to_folder(
     let ws = workspaces
         .iter_mut()
         .find(|w| w.id == ws_id)
-        .ok_or_else(|| "The HTTP workspace no longer exists".to_string())?;
+        .ok_or_else(|| "The HTTP collection no longer exists".to_string())?;
     let folder = crate::http_collection::find_folder_mut(&mut ws.folders, folder_id)
         .ok_or_else(|| "The HTTP folder no longer exists".to_string())?;
     let mut stats = AddStats::default();

@@ -338,6 +338,20 @@ fn app_creator() -> eframe::AppCreator<'static> {
             });
             ctx.add_font(insert);
         }
+
+        // Ubuntu-Light (Proportional) tidak punya panah dan garis kotak (→ ● ▼ └ ─);
+        // Hack bawaan egui punya. Daftarkan Hack dengan nama lain sebagai fallback
+        // terakhir Proportional supaya teks seperti "a → b" tidak tampil kotak.
+        if let Some(hack) = egui::FontDefinitions::default().font_data.get("Hack") {
+            ctx.add_font(egui::epaint::text::FontInsert::new(
+                "tabular-symbol-fallback",
+                (**hack).clone(),
+                vec![InsertFontFamily {
+                    family: egui::FontFamily::Proportional,
+                    priority: FontPriority::Lowest,
+                }],
+            ));
+        }
     }
 
     Box::new(move |cc| {

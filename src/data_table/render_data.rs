@@ -1505,7 +1505,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         ui.close();
                                                     }
                                                     ui.separator();
-                                                    if ui.button("🔍 Inspect Value (JSON / Hex / Image)...").clicked() {
+                                                    if ui.button("🔍 Inspect Value (JSON / Hex / Image)…").clicked() {
                                                         let col_title = tab.current_table_headers.get(col_index).cloned().unwrap_or_else(|| format!("Col {}", col_index + 1));
                                                         inspect_value_request = Some((cell.to_string(), col_title, row_index, col_index));
                                                         ui.close();
@@ -1554,7 +1554,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                         export_selected_to_sql_inserts(tab, db_type.as_ref());
                                                         ui.close();
                                                     }
-                                                    if ui.button("📝 Export Selection as Markdown Table...").clicked() {
+                                                    if ui.button("📝 Export Selection as Markdown Table…").clicked() {
                                                         export_selected_to_markdown(tab);
                                                         ui.close();
                                                     }
@@ -1676,12 +1676,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                     }
                                                     ui.separator();
                                                     crate::window_egui::transfer_ui::result_menu_items(ui);
-                                                    if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
+                                                    if ui.button(format!("{} Plugins & Code Generators (WASM)…", egui_icons::icons::ICON_EXTENSION.codepoint)).clicked() {
                                                         open_plugin_modal = true;
                                                         ui.close();
                                                     }
                                                     if tabular.is_table_browse_mode
-                                                        && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked()
+                                                        && ui.button("📥 Import Data (CSV, JSON, Excel)…").clicked()
                                                     {
                                                         open_csv_import = true;
                                                         ui.close();
@@ -1748,7 +1748,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                 export_selected_to_sql_inserts(tab, db_type_bg.as_ref());
                                 ui.close();
                             }
-                            if ui.button("📝 Export Selection as Markdown Table...").clicked() {
+                            if ui.button("📝 Export Selection as Markdown Table…").clicked() {
                                 export_selected_to_markdown(tab);
                                 ui.close();
                             }
@@ -1818,12 +1818,12 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                             }
                             ui.separator();
                             crate::window_egui::transfer_ui::result_menu_items(ui);
-                                                    if ui.button("🧩 Plugins & Code Generators (WASM)...").clicked() {
+                                                    if ui.button(format!("{} Plugins & Code Generators (WASM)…", egui_icons::icons::ICON_EXTENSION.codepoint)).clicked() {
                                 open_plugin_modal = true;
                                 ui.close();
                             }
                             if tab.is_table_browse_mode
-                                && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked()
+                                && ui.button("📥 Import Data (CSV, JSON, Excel)…").clicked()
                             {
                                 open_csv_import = true;
                                 ui.close();
@@ -2477,9 +2477,12 @@ fn render_executing_query_state(tabular: &mut window_egui::Tabular, ui: &mut egu
                 ui.add_space(14.0);
                 if ui
                     .add(egui::Button::new(
-                        egui::RichText::new(format!("{} Cancel Query", egui_icons::icons::ICON_CLOSE.codepoint))
-                            .color(crate::window_egui::style::theme_danger(ui.ctx()))
-                            .size(12.0),
+                        egui::RichText::new(format!(
+                            "{} Cancel Query",
+                            egui_icons::icons::ICON_CLOSE.codepoint
+                        ))
+                        .color(crate::window_egui::style::theme_danger(ui.ctx()))
+                        .size(12.0),
                     ))
                     .clicked()
                 {
@@ -2688,7 +2691,7 @@ fn render_mutation_success_card(tabular: &mut window_egui::Tabular, ui: &mut egu
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.label(
-                egui::RichText::new("✓")
+                egui::RichText::new(egui_icons::icons::ICON_CHECK.codepoint)
                     .size(16.0)
                     .color(crate::window_egui::style::theme_success(ui.ctx()))
                     .strong(),

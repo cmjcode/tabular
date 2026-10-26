@@ -1534,7 +1534,7 @@ impl super::Tabular {
                                 // If we already showed cache, do NOT auto-fetch from server now.
                                 if had_cache {
                                     debug!(
-                                        "🛑 Skipping live server load on table click because cache exists"
+                                        "Skipping live server load on table click because cache exists"
                                     );
                                     // Keep browse mode enabled for filters to apply on cached data
                                     self.is_table_browse_mode = true;
@@ -1672,7 +1672,7 @@ impl super::Tabular {
                                     }
                                 } else {
                                     debug!(
-                                        "🛑 Skipping client-side live load on table click because cache exists"
+                                        "Skipping client-side live load on table click because cache exists"
                                     );
                                     self.last_structure_target = None;
                                 }
@@ -2889,13 +2889,13 @@ impl super::Tabular {
                             .connection_id
                             .and_then(|id| params.connection_types.get(&id))
                             .is_some_and(|t| t.plugin_id().is_some());
-                        if !is_plugin && ui.button("⚡ Live DBA Process Monitor...").clicked() {
+                        if !is_plugin && ui.button("⚡ Live DBA Process Monitor…").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
                             }
                             ui.close();
                         }
-                        if !is_plugin && ui.button("👥 Manage Users & Privileges...").clicked() {
+                        if !is_plugin && ui.button("👥 Manage Users & Privileges…").clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
                             }
@@ -2951,7 +2951,7 @@ impl super::Tabular {
                             request_add_replication_dialog = Some(conn_id);
                             ui.close();
                         }
-                        if ui.button("🗑 Remove Connection").clicked() {
+                        if ui.button(format!("{} Delete Connection…", egui_icons::icons::ICON_DELETE.codepoint)).clicked() {
                             if let Some(conn_id) = node.connection_id {
                                 context_menu_request = Some(-conn_id); // Negative ID indicates removal
                             }
@@ -3052,7 +3052,7 @@ impl super::Tabular {
                             ui.close();
                         }
 
-                        if ui.button("🤝 Share to Team…").clicked() {
+                        if ui.button(format!("{} Share to Team…", egui_icons::icons::ICON_SHARE.codepoint)).clicked() {
                             let fpath = node.file_path.clone().unwrap_or_else(|| format!("/{}", node.name));
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(egui::Id::new("share_folder_req"), ("query".to_string(), fpath));
@@ -3093,7 +3093,7 @@ impl super::Tabular {
                             ui.close();
                         }
 
-                        if ui.button("🗑️ Remove Folder").clicked() {
+                        if ui.button(format!("{} Delete Folder…", egui_icons::icons::ICON_DELETE.codepoint)).clicked() {
                             // Store the full folder path for removal (relative to query dir)
                             if let Some(full_path) = &node.file_path {
                                 let query_dir = directory::get_query_dir();
@@ -3153,7 +3153,7 @@ impl super::Tabular {
                             });
                             ui.close();
                         }
-                        if ui.button("🤝 Share to Team…").clicked() {
+                        if ui.button(format!("{} Share to Team…", egui_icons::icons::ICON_SHARE.codepoint)).clicked() {
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(egui::Id::new("share_folder_req"), ("connection".to_string(), folder_path.clone()));
                             });
@@ -3176,7 +3176,7 @@ impl super::Tabular {
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🗑️ Delete Folder").clicked() {
+                            if ui.button(format!("{} Delete Folder…", egui_icons::icons::ICON_DELETE.codepoint)).clicked() {
                                 ui.ctx().data_mut(|d| {
                                     d.insert_temp(
                                         egui::Id::new("conn_delete_folder"),
@@ -3218,15 +3218,15 @@ impl super::Tabular {
                                     open_diagram_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
-                                if ui.button("⚡ Live DBA Process Monitor...").clicked() {
+                                if ui.button("⚡ Live DBA Process Monitor…").clicked() {
                                     dba_click_request = Some((conn_id, models::enums::NodeType::ProcessesFolder));
                                     ui.close();
                                 }
-                                if ui.button("👥 Manage Users & Privileges...").clicked() {
+                                if ui.button("👥 Manage Users & Privileges…").clicked() {
                                     dba_click_request = Some((conn_id, models::enums::NodeType::UsersFolder));
                                     ui.close();
                                 }
-                                if ui.button("🔀 Schema Diff...").clicked() {
+                                if ui.button("🔀 Schema Diff…").clicked() {
                                     let database_name = node
                                         .database_name
                                         .clone()
@@ -3235,7 +3235,7 @@ impl super::Tabular {
                                     schema_diff_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
-                                if ui.button("💾 Backup Database...").clicked() {
+                                if ui.button("💾 Backup Database…").clicked() {
                                     let database_name = node
                                         .database_name
                                         .clone()
@@ -3244,7 +3244,7 @@ impl super::Tabular {
                                     backup_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
-                                if ui.button("📥 Restore Database...").clicked() {
+                                if ui.button("📥 Restore Database…").clicked() {
                                     let database_name = node
                                         .database_name
                                         .clone()
@@ -3253,7 +3253,7 @@ impl super::Tabular {
                                     restore_request = Some((conn_id, database_name));
                                     ui.close();
                                 }
-                                if ui.button("📋 Copy Database...").clicked() {
+                                if ui.button("📋 Copy Database…").clicked() {
                                     let database_name = node
                                         .database_name
                                         .clone()
@@ -3277,7 +3277,7 @@ impl super::Tabular {
                                 if supported {
                                     ui.separator();
                                 }
-                                if ui.button("🗑 Drop Database...").clicked() {
+                                if ui.button("🗑 Drop Database…").clicked() {
                                     let database_name = node
                                         .database_name
                                         .clone()
@@ -3457,7 +3457,7 @@ impl super::Tabular {
                             }
                         }
                         if !is_mongodb
-                            && ui.button("📥 Import Data (CSV, JSON, Excel)...").clicked() {
+                            && ui.button("📥 Import Data (CSV, JSON, Excel)…").clicked() {
                                 if let Some(conn_id) = node.connection_id {
                                     let actual_table_name =
                                         node.table_name.as_ref().unwrap_or(&node.name).clone();
@@ -3538,7 +3538,7 @@ impl super::Tabular {
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("🗂️ Show Columns").clicked() {
+                        if ui.button(format!("{} Show Columns", egui_icons::icons::ICON_VIEW_COLUMN.codepoint)).clicked() {
                             // Trigger table expansion to show columns
                             if let Some(conn_id) = node.connection_id {
                                 table_expansion = Some((0, conn_id, node.name.clone()));

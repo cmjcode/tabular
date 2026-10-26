@@ -64,7 +64,11 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
 
                     let inner_resp = ui.horizontal(|ui| {
                         ui.add_space(4.0);
-                        let icon = if is_being_dragged { "🖐️" } else { "🌐" };
+                        let icon = if is_being_dragged {
+                            egui_icons::icons::ICON_PAN_TOOL.codepoint
+                        } else {
+                            "🌐"
+                        };
                         let text_color = if is_being_dragged {
                             accent
                         } else {
@@ -402,7 +406,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                 folder_to_create = Some((ws_id.clone(), None, ws_name.clone()));
                 ui.close();
             }
-            if ui.button("✏️ Rename Workspace").clicked() {
+            if ui.button("✏️ Rename Collection…").clicked() {
                 ws_to_rename = Some((ws_id.clone(), ws_name.clone()));
                 ui.close();
             }
@@ -412,7 +416,13 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             }
             crate::http_repo::workspace_menu_items(ui);
             ui.separator();
-            if ui.button("🗑 Delete Workspace").clicked() {
+            if ui
+                .button(format!(
+                    "{} Delete Collection…",
+                    egui_icons::icons::ICON_DELETE.codepoint
+                ))
+                .clicked()
+            {
                 ws_to_delete = Some(ws_id.clone());
                 ui.close();
             }
@@ -487,7 +497,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
             .iter()
             .find(|w| w.id == ws_id)
             .map(|w| w.name.clone())
-            .unwrap_or_else(|| "Workspace".to_string());
+            .unwrap_or_else(|| "Collection".to_string());
         app.pending_delete_http_workspace = Some((ws_id, ws_name));
     }
     if let Some((ws_id, folder_id_opt, parent_name)) = new_req_target {
@@ -598,7 +608,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                             None,
                         ) {
                             app.toasts.success(format!(
-                                "Moved request '{}' to workspace '{}'",
+                                "Moved request '{}' to collection '{}'",
                                 req_name, ws_name
                             ));
                         }
@@ -635,7 +645,7 @@ pub fn render_collections_sidebar(app: &mut Tabular, ui: &mut egui::Ui) {
                             None,
                         ) {
                             app.toasts.success(format!(
-                                "Moved folder '{}' to workspace '{}'",
+                                "Moved folder '{}' to collection '{}'",
                                 folder_name, ws_name
                             ));
                         }
@@ -757,7 +767,7 @@ fn render_yaak_import_dialog(app: &mut Tabular, _ui: &mut egui::Ui) {
                 }
 
                 let msg = format!(
-                    "Imported {} requests from {} workspace(s)",
+                    "Imported {} requests from {} collection(s)",
                     result.total_requests,
                     imported_ids.len()
                 );
@@ -1123,7 +1133,13 @@ fn render_folder_node(
         }
         crate::http_repo::folder_menu_items(ui, folder);
         ui.separator();
-        if ui.button("🗑 Delete Folder").clicked() {
+        if ui
+            .button(format!(
+                "{} Delete Folder…",
+                egui_icons::icons::ICON_DELETE.codepoint
+            ))
+            .clicked()
+        {
             *folder_to_delete = Some((ws_id.to_string(), folder.id.clone(), folder.name.clone()));
             ui.close();
         }

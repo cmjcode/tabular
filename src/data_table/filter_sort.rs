@@ -115,7 +115,7 @@ pub(crate) fn sort_table_data(
         "v descending"
     };
     debug!(
-        "✓ Sorted table by column '{}' in {} order ({} total rows)",
+        "Sorted table by column '{}' in {} order ({} total rows)",
         tabular.current_table_headers[column_index],
         sort_direction,
         tabular.all_table_data.len()

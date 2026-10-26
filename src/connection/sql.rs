@@ -395,14 +395,14 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
     let from_pos = normalized_tokens.iter().position(|tok| tok == "FROM");
     let Some(from_idx) = from_pos else {
         debug!(
-            "🛑 select_has_alias: no FROM found in tokens: {:?}",
+            "select_has_alias: no FROM found in tokens: {:?}",
             normalized_tokens
         );
         return true; // Cannot determine target without FROM
     };
 
     if from_idx + 1 >= raw_tokens.len() {
-        debug!("🛑 select_has_alias: missing table token after FROM");
+        debug!("select_has_alias: missing table token after FROM");
         return true;
     }
 
@@ -416,7 +416,7 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
         || table_token_raw.contains('(')
     {
         debug!(
-            "🛑 select_has_alias: table segment unclear '{}', raw='{}'",
+            "select_has_alias: table segment unclear '{}', raw='{}'",
             table_token_clean, table_token_raw
         );
         return true;
@@ -424,7 +424,7 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
 
     if let Some(token_upper) = normalized_tokens.get(from_idx + 2) {
         if token_upper == "AS" {
-            debug!("🛑 select_has_alias: alias via AS detected");
+            debug!("select_has_alias: alias via AS detected");
             return true;
         }
         if is_reserved_after_from(token_upper) {
@@ -435,7 +435,7 @@ fn select_has_alias_or_multiple_tables(raw_tokens: &[&str], normalized_tokens: &
         } else {
             // Any non-reserved token after table indicates alias or additional tables
             debug!(
-                "🛑 select_has_alias: token '{}' treated as alias/additional table",
+                "select_has_alias: token '{}' treated as alias/additional table",
                 token_upper
             );
             return true;
@@ -471,20 +471,20 @@ pub(crate) fn is_simple_select_statement(stmt: &str) -> bool {
     }
 
     if contains_complex_keywords(&normalized_tokens) {
-        debug!("🛑 is_simple_select_statement: complex keyword detected");
+        debug!("is_simple_select_statement: complex keyword detected");
         return false;
     }
 
     if normalized_tokens.len() != 4 {
         debug!(
-            "🛑 is_simple_select_statement: expected 4 tokens, got {}",
+            "is_simple_select_statement: expected 4 tokens, got {}",
             normalized_tokens.len()
         );
         return false;
     }
 
     if normalized_tokens.get(1).map(|tok| tok.as_str()) != Some("*") {
-        debug!("🛑 is_simple_select_statement: only SELECT * patterns are eligible");
+        debug!("is_simple_select_statement: only SELECT * patterns are eligible");
         return false;
     }
 
@@ -498,7 +498,7 @@ pub(crate) fn is_simple_select_statement(stmt: &str) -> bool {
 
 pub fn should_enable_auto_pagination(sql: &str) -> bool {
     if query_contains_pagination(sql) {
-        debug!("🛑 should_enable_auto_pagination: pagination clause already present");
+        debug!("should_enable_auto_pagination: pagination clause already present");
         return false;
     }
 
@@ -516,12 +516,12 @@ pub fn should_enable_auto_pagination(sql: &str) -> bool {
                 trimmed, is_simple
             );
             if !is_simple {
-                debug!("🛑 should_enable_auto_pagination: statement not simple enough");
+                debug!("should_enable_auto_pagination: statement not simple enough");
                 return false;
             }
             simple_select_count += 1;
             if simple_select_count > 1 {
-                debug!("🛑 should_enable_auto_pagination: more than one SELECT statement");
+                debug!("should_enable_auto_pagination: more than one SELECT statement");
                 return false;
             }
         }

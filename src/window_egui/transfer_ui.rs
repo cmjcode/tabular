@@ -1356,7 +1356,7 @@ pub(crate) fn table_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Opti
     }
     let table = node.table_name.clone().unwrap_or_else(|| node.name.clone());
     let database = node.database_name.clone();
-    if ui.button("Transfer To...").clicked() {
+    if ui.button("Transfer To…").clicked() {
         push(
             ui,
             TransferAction::Transfer {
@@ -1366,7 +1366,7 @@ pub(crate) fn table_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Opti
             },
         );
     }
-    if ui.button("Compare Data...").clicked() {
+    if ui.button("Compare Data…").clicked() {
         push(
             ui,
             TransferAction::CompareData {
@@ -1376,7 +1376,7 @@ pub(crate) fn table_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Opti
             },
         );
     }
-    if ui.button("Export as SQL...").clicked() {
+    if ui.button("Export as SQL…").clicked() {
         push(
             ui,
             TransferAction::ExportObjects {
@@ -1403,7 +1403,7 @@ pub(crate) fn database_menu_items(
     if matches!(db_type, DatabaseType::MongoDB) {
         // Menu backup engine SQL sudah ada di sidebar; MongoDB memakai dialog
         // yang sama lewat mongodump/mongorestore.
-        if ui.button("Backup Database (mongodump)...").clicked() {
+        if ui.button("Backup Database (mongodump)…").clicked() {
             push(
                 ui,
                 TransferAction::Backup {
@@ -1412,7 +1412,7 @@ pub(crate) fn database_menu_items(
                 },
             );
         }
-        if ui.button("Restore Database (mongorestore)...").clicked() {
+        if ui.button("Restore Database (mongorestore)…").clicked() {
             push(ui, TransferAction::Restore { conn_id, database });
         }
         return;
@@ -1420,7 +1420,7 @@ pub(crate) fn database_menu_items(
     if !catalog::supports_sql(db_type) {
         return;
     }
-    if ui.button("Transfer Tables To...").clicked() {
+    if ui.button("Transfer Tables To…").clicked() {
         push(
             ui,
             TransferAction::Transfer {
@@ -1430,7 +1430,7 @@ pub(crate) fn database_menu_items(
             },
         );
     }
-    if ui.button("Export Objects as SQL...").clicked() {
+    if ui.button("Export Objects as SQL…").clicked() {
         push(
             ui,
             TransferAction::ExportObjects {
@@ -1440,7 +1440,7 @@ pub(crate) fn database_menu_items(
             },
         );
     }
-    if ui.button("Compare Data...").clicked() {
+    if ui.button("Compare Data…").clicked() {
         push(
             ui,
             TransferAction::CompareData {

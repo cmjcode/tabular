@@ -658,7 +658,7 @@ fn render_header(t: &mut Tabular, st: &mut FileViewerTabState, ui: &mut egui::Ui
                                 .size(12.5),
                         ),
                     )
-                    .on_hover_text("Save (Cmd+S)");
+                    .on_hover_text(format!("Save ({})", crate::keymap::fixed_label("Cmd+S")));
                 if save.clicked() {
                     match st.save() {
                         Ok(_) => t.toasts.success(format!("Saved {}", st.file_name())),

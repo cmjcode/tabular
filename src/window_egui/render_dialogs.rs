@@ -503,7 +503,7 @@ impl super::Tabular {
                     if !is_target && is_mysql && has_pool {
                         source_candidates.push((Some(conn_id), conn.display_name()));
                         log::debug!(
-                            "[REPLICATION] ✓ Added '{}' to candidates",
+                            "[REPLICATION] Added '{}' to candidates",
                             conn.display_name()
                         );
                     }
@@ -1197,7 +1197,7 @@ impl super::Tabular {
                                         .corner_radius(egui::CornerRadius::same(button_corner));
                                     if ui
                                         .add_sized(button_size, format_button)
-                                        .on_hover_text("Format SQL (Cmd+Shift+F)")
+                                        .on_hover_text(format!("Format SQL ({})", self.keymap.label(crate::keymap::Action::FormatSql)))
                                         .clicked()
                                     {
                                         format_clicked = true;
@@ -1210,7 +1210,7 @@ impl super::Tabular {
                                         .corner_radius(egui::CornerRadius::same(button_corner));
                                     if ui
                                         .add_sized(button_size, explain_button)
-                                        .on_hover_text("Explain Query Plan (Cmd+Shift+E)")
+                                        .on_hover_text(format!("Explain Query Plan ({})", self.keymap.label(crate::keymap::Action::ExplainQuery)))
                                         .clicked()
                                     {
                                         explain_clicked = true;
@@ -1908,68 +1908,26 @@ pub fn render_schema_diff_dialog(tabular: &mut super::Tabular, ctx: &egui::Conte
 impl super::Tabular {
     /// Render the confirmation popup dialog when attempting to delete a connection.
     pub fn render_delete_connection_confirmation(&mut self, ctx: &egui::Context) {
-        if let Some((conn_id, conn_name)) = self.pending_delete_connection.clone() {
-            let mut close_dialog = false;
-            let mut confirm_delete = false;
-
-            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_conn", true);
-
-            egui::Window::new("Confirm Delete Connection")
-                .title_bar(false)
-                .frame(crate::window_egui::style::modal_window_frame(ctx))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    crate::window_egui::style::render_modal_header(
-                        ui,
-                        "Confirm Delete Connection",
-                        &mut close_dialog,
-                    );
-
-                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("⚠️ Warning")
-                                .strong()
-                                .color(super::style::theme_danger(ctx)),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(format!(
-                            "Are you sure you want to remove connection '{}'?",
-                            conn_name
-                        ));
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("This action cannot be undone.")
-                                .small()
-                                .weak(),
-                        );
-                    });
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let delete_btn = egui::Button::new(
-                                egui::RichText::new("Delete")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(super::style::theme_danger(ctx));
-                            if ui.add(delete_btn).clicked() {
-                                confirm_delete = true;
-                                close_dialog = true;
-                            }
-                        });
-                    });
-                });
-
-            if confirm_delete {
+        let Some((conn_id, conn_name)) = self.pending_delete_connection.clone() else {
+            return;
+        };
+        match super::style::confirm_dialog(
+            ctx,
+            "modal_delete_conn",
+            "Delete Connection?",
+            &format!(
+                "The connection \"{conn_name}\" and its saved credentials will be removed from Tabular. The database itself is not changed."
+            ),
+            "Delete Connection",
+        ) {
+            super::style::ConfirmChoice::Pending => {}
+            super::style::ConfirmChoice::Confirmed => {
                 connection::remove_connection(self, conn_id);
                 self.toasts
-                    .success(format!("Removed connection: {}", conn_name));
+                    .success(format!("Deleted connection: {}", conn_name));
+                self.pending_delete_connection = None;
             }
-            if close_dialog {
+            super::style::ConfirmChoice::Cancelled => {
                 self.pending_delete_connection = None;
             }
         }
@@ -2296,223 +2254,91 @@ impl super::Tabular {
     }
 
     pub fn render_delete_http_request_confirmation(&mut self, ctx: &egui::Context) {
-        if let Some((req_id, req_name)) = self.pending_delete_http_request.clone() {
-            let mut close_dialog = false;
-            let mut confirm_delete = false;
-
-            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_req", true);
-
-            egui::Window::new("Confirm Delete Request")
-                .title_bar(false)
-                .frame(crate::window_egui::style::modal_window_frame(ctx))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    crate::window_egui::style::render_modal_header(
-                        ui,
-                        "Confirm Delete Request",
-                        &mut close_dialog,
-                    );
-
-                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("⚠️ Warning")
-                                .strong()
-                                .color(super::style::theme_danger(ctx)),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(format!(
-                            "Are you sure you want to delete request '{}'?",
-                            req_name
-                        ));
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("This action cannot be undone.")
-                                .small()
-                                .weak(),
-                        );
-                    });
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let delete_btn = egui::Button::new(
-                                egui::RichText::new("Delete")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(super::style::theme_danger(ctx));
-                            if ui.add(delete_btn).clicked() {
-                                confirm_delete = true;
-                                close_dialog = true;
-                            }
-                        });
-                    });
-                });
-
-            if confirm_delete {
+        let Some((req_id, req_name)) = self.pending_delete_http_request.clone() else {
+            return;
+        };
+        match super::style::confirm_dialog(
+            ctx,
+            "modal_delete_http_req",
+            "Delete Request?",
+            &format!("The request \"{req_name}\" will be deleted from its collection."),
+            "Delete Request",
+        ) {
+            super::style::ConfirmChoice::Pending => {}
+            super::style::ConfirmChoice::Confirmed => {
                 if crate::sidebar_collection::delete_request_from_workspaces(
                     &mut self.yaak_workspaces,
                     &req_id,
                 ) {
-                    if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
-                        self.toasts.error(e);
+                    match crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                        Ok(()) => self
+                            .toasts
+                            .success(format!("Deleted request: {}", req_name)),
+                        Err(e) => self.toasts.error(e),
                     }
-                    self.toasts
-                        .success(format!("Deleted request: {}", req_name));
                 }
+                self.pending_delete_http_request = None;
             }
-            if close_dialog {
+            super::style::ConfirmChoice::Cancelled => {
                 self.pending_delete_http_request = None;
             }
         }
     }
 
     pub fn render_delete_http_folder_confirmation(&mut self, ctx: &egui::Context) {
-        if let Some((ws_id, folder_id, folder_name)) = self.pending_delete_http_folder.clone() {
-            let mut close_dialog = false;
-            let mut confirm_delete = false;
-
-            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_folder", true);
-
-            egui::Window::new("Confirm Delete Folder")
-                .title_bar(false)
-                .frame(crate::window_egui::style::modal_window_frame(ctx))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    crate::window_egui::style::render_modal_header(
-                        ui,
-                        "Confirm Delete Folder",
-                        &mut close_dialog,
-                    );
-
-                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("⚠️ Warning")
-                                .strong()
-                                .color(super::style::theme_danger(ctx)),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(format!(
-                            "Are you sure you want to delete folder '{}'?",
-                            folder_name
-                        ));
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "All requests inside this folder will also be deleted.",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                    });
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let delete_btn = egui::Button::new(
-                                egui::RichText::new("Delete")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(super::style::theme_danger(ctx));
-                            if ui.add(delete_btn).clicked() {
-                                confirm_delete = true;
-                                close_dialog = true;
-                            }
-                        });
-                    });
-                });
-
-            if confirm_delete {
+        let Some((ws_id, folder_id, folder_name)) = self.pending_delete_http_folder.clone() else {
+            return;
+        };
+        match super::style::confirm_dialog(
+            ctx,
+            "modal_delete_http_folder",
+            "Delete Folder?",
+            &format!("The folder \"{folder_name}\" and every request inside it will be deleted."),
+            "Delete Folder",
+        ) {
+            super::style::ConfirmChoice::Pending => {}
+            super::style::ConfirmChoice::Confirmed => {
                 crate::sidebar_collection::delete_folder_from_workspaces(
                     &mut self.yaak_workspaces,
                     &ws_id,
                     &folder_id,
                 );
-                if let Err(e) = crate::http_collection::save_workspaces(&self.yaak_workspaces) {
-                    self.toasts.error(e);
+                match crate::http_collection::save_workspaces(&self.yaak_workspaces) {
+                    Ok(()) => self
+                        .toasts
+                        .success(format!("Deleted folder: {}", folder_name)),
+                    Err(e) => self.toasts.error(e),
                 }
-                self.toasts
-                    .success(format!("Deleted folder: {}", folder_name));
+                self.pending_delete_http_folder = None;
             }
-            if close_dialog {
+            super::style::ConfirmChoice::Cancelled => {
                 self.pending_delete_http_folder = None;
             }
         }
     }
 
     pub fn render_delete_http_workspace_confirmation(&mut self, ctx: &egui::Context) {
-        if let Some((ws_id, ws_name)) = self.pending_delete_http_workspace.clone() {
-            let mut close_dialog = false;
-            let mut confirm_delete = false;
-
-            crate::window_egui::style::render_modal_backdrop(ctx, "modal_delete_http_ws", true);
-
-            egui::Window::new("Confirm Delete Workspace")
-                .title_bar(false)
-                .frame(crate::window_egui::style::modal_window_frame(ctx))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .default_width(360.0)
-                .show(ctx, |ui| {
-                    crate::window_egui::style::render_modal_header(
-                        ui,
-                        "Confirm Delete Workspace",
-                        &mut close_dialog,
-                    );
-
-                    crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("⚠️ Warning")
-                                .strong()
-                                .color(super::style::theme_danger(ctx)),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(format!(
-                            "Are you sure you want to delete workspace '{}'?",
-                            ws_name
-                        ));
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "All requests and folders in this workspace will be deleted.",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                    });
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let delete_btn = egui::Button::new(
-                                egui::RichText::new("Delete")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(super::style::theme_danger(ctx));
-                            if ui.add(delete_btn).clicked() {
-                                confirm_delete = true;
-                                close_dialog = true;
-                            }
-                        });
-                    });
-                });
-
-            if confirm_delete {
+        let Some((ws_id, ws_name)) = self.pending_delete_http_workspace.clone() else {
+            return;
+        };
+        match super::style::confirm_dialog(
+            ctx,
+            "modal_delete_http_ws",
+            "Delete Collection?",
+            &format!(
+                "The collection \"{ws_name}\" and all of its requests and folders will be deleted."
+            ),
+            "Delete Collection",
+        ) {
+            super::style::ConfirmChoice::Pending => {}
+            super::style::ConfirmChoice::Confirmed => {
                 crate::http_collection::delete_workspace(&ws_id);
                 self.yaak_workspaces.retain(|w| w.id != ws_id);
                 self.toasts
-                    .success(format!("Deleted workspace: {}", ws_name));
+                    .success(format!("Deleted collection: {}", ws_name));
+                self.pending_delete_http_workspace = None;
             }
-            if close_dialog {
+            super::style::ConfirmChoice::Cancelled => {
                 self.pending_delete_http_workspace = None;
             }
         }
@@ -2772,7 +2598,7 @@ impl super::Tabular {
 
             crate::window_egui::style::render_modal_backdrop(ctx, "modal_rename_http_ws", true);
 
-            egui::Window::new("Rename Workspace")
+            egui::Window::new("Rename Collection")
                 .title_bar(false)
                 .frame(crate::window_egui::style::modal_window_frame(ctx))
                 .collapsible(false)
@@ -2782,14 +2608,14 @@ impl super::Tabular {
                 .show(ctx, |ui| {
                     crate::window_egui::style::render_modal_header(
                         ui,
-                        "✏️ Rename Workspace",
+                        "Rename Collection",
                         &mut close_dialog,
                     );
 
                     crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label(format!("Current workspace: {}", current_name));
                         ui.add_space(6.0);
-                        ui.label("Workspace Name:");
+                        ui.label("Collection name:");
                         ui.add_space(2.0);
                         let text_edit = super::style::render_text_field(
                             ui,

@@ -23,7 +23,7 @@ impl WarningSeverity {
 
     pub fn title_prefix(&self) -> &'static str {
         match self {
-            Self::Critical => "🛑 CRITICAL",
+            Self::Critical => "CRITICAL",
             Self::High => "⚠️ HIGH",
             Self::Medium => "⚡ WARNING",
             Self::Info => "💡 INFO",

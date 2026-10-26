@@ -68,7 +68,7 @@ pub fn render_collab_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     .weak(),
                 );
             } else {
-                ui.label(egui::RichText::new("🔒 Belum Login").small().strong());
+                ui.label(egui::RichText::new("Not signed in").small().strong());
                 ui.label(
                     egui::RichText::new("Sign in to your Tabular account to use collaboration.")
                         .small()

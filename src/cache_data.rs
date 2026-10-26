@@ -1311,7 +1311,7 @@ pub(crate) fn get_table_rows_from_cache(
             }
             Ok(None) => {
                 debug!(
-                    "🕳️ No row cache found for {}/{}/{} — will use live server",
+                    "No row cache found for {}/{}/{} — will use live server",
                     connection_id, database_name, table_name
                 );
                 None

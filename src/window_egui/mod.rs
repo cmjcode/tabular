@@ -43,6 +43,7 @@ pub mod git_sidebar;
 pub mod git_view;
 pub mod init;
 pub mod notifications;
+pub(crate) mod app_menu;
 mod folder_fetch_jobs;
 mod persist_notices;
 pub mod pagination;

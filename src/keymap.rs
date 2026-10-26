@@ -72,6 +72,22 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { action: Action::Quit, id: "quit", label: "Quit Tabular", category: "Application", defaults: &["Cmd+Q"] },
 ];
 
+/// Shortcut editor yang ditangani langsung oleh editor (belum lewat keymap).
+pub const FIXED_EDITOR_SHORTCUTS: &[(&str, &str)] = &[
+    ("Toggle replace", "Cmd+H"),
+    ("Add next occurrence to selection", "Cmd+D"),
+    ("Find next match", "Cmd+G"),
+    ("Go to definition (alternative)", "Cmd+B"),
+];
+
+/// Label shortcut tetap (bukan aksi keymap) sesuai platform, mis. "Cmd+H"
+/// menjadi "⌘H" di macOS dan "Ctrl+H" di Windows/Linux.
+pub fn fixed_label(config: &str) -> String {
+    Shortcut::parse(config)
+        .map(Shortcut::display)
+        .unwrap_or_else(|| config.to_string())
+}
+
 pub fn spec(action: Action) -> &'static ActionSpec {
     ACTIONS
         .iter()
@@ -629,6 +645,32 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                                 Some(RowAction::Clear) => clear = Some(spec.action),
                                 None => {}
                             }
+                        }
+                        // Shortcut editor tetap (belum bisa diubah) tetap ditampilkan
+                        // agar bisa ditemukan.
+                        let mut fixed_header = false;
+                        for (label, config) in FIXED_EDITOR_SHORTCUTS {
+                            let shortcut_text = fixed_label(config);
+                            if !filter.is_empty()
+                                && !label.to_lowercase().contains(&filter)
+                                && !shortcut_text.to_lowercase().contains(&filter)
+                            {
+                                continue;
+                            }
+                            matches += 1;
+                            if !fixed_header {
+                                render_category_header(ui, "Editor (fixed)", current_category.is_empty());
+                                fixed_header = true;
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label(*label);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(egui::RichText::new(shortcut_text).monospace().weak());
+                                    },
+                                );
+                            });
                         }
                         if matches == 0 {
                             ui.add_space(24.0);

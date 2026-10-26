@@ -1100,6 +1100,63 @@ pub fn modal_card_frame(ctx: &egui::Context) -> egui::Frame {
         .inner_margin(egui::Margin::same(14))
 }
 
+/// Hasil [`confirm_dialog`] pada frame ini.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmChoice {
+    /// Dialog masih terbuka.
+    Pending,
+    Confirmed,
+    Cancelled,
+}
+
+/// Dialog konfirmasi bersama: judul berbentuk pertanyaan ("Delete X?"), isi
+/// satu-dua kalimat, lalu tombol "Cancel" dan tombol aksi merah. Esc dan
+/// tombol tutup sama dengan Cancel. Semua konfirmasi destruktif memakai pola
+/// ini agar urutan dan label tombol selalu sama.
+pub fn confirm_dialog(
+    ctx: &egui::Context,
+    id_salt: &str,
+    title: &str,
+    body: &str,
+    danger_label: &str,
+) -> ConfirmChoice {
+    let mut choice = ConfirmChoice::Pending;
+    let mut close = false;
+    render_modal_backdrop(ctx, id_salt, true);
+    egui::Window::new(title)
+        .id(egui::Id::new(("confirm_dialog", id_salt)))
+        .title_bar(false)
+        .frame(modal_window_frame(ctx))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(380.0)
+        .show(ctx, |ui| {
+            render_modal_header(ui, title, &mut close);
+            modal_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(body);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("This cannot be undone.").small().weak());
+            });
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(btn_danger_ctx(ctx, danger_label)).clicked() {
+                    choice = ConfirmChoice::Confirmed;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if choice == ConfirmChoice::Pending {
+            choice = ConfirmChoice::Cancelled;
+        }
+    }
+    choice
+}
+
 /// Kotak "ketik nama untuk konfirmasi" untuk operasi yang menimpa atau
 /// menghapus data. Teks yang diketik disimpan di memori egui per `id_salt`
 /// sehingga dialog tidak perlu field state sendiri. Mengembalikan `true` bila

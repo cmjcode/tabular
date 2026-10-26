@@ -1135,7 +1135,10 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ),
     ];
 
-    for (cmd_title, cmd_sub, sc) in commands {
+    let menu_commands = crate::window_egui::app_menu::PALETTE_COMMANDS
+        .iter()
+        .map(|(title, sub)| (*title, *sub, ""));
+    for (cmd_title, cmd_sub, sc) in commands.into_iter().chain(menu_commands) {
         // Label shortcut diambil dari keymap agar selalu sesuai binding aktif.
         let bound = command_shortcut_action(cmd_title).map(|a| tabular.keymap.label(a));
         let sc = bound.as_deref().unwrap_or(sc);

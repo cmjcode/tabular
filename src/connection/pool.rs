@@ -381,7 +381,7 @@ pub(crate) fn cleanup_stuck_pending_connections(tabular: &mut Tabular) {
 
         if has_pool {
             debug!(
-                "🧹 Removing stuck pending status for connection {} (pool exists)",
+                "Removing stuck pending status for connection {} (pool exists)",
                 connection_id
             );
             clear_pending_state(tabular, connection_id);
@@ -1846,7 +1846,7 @@ pub(crate) async fn get_or_create_connection_pool_with_retry(
 /// Remove and clean up a connection pool (local cache, shared cache, SSH tunnels).
 pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64) {
     debug!(
-        "🧹 Cleaning up connection pool for connection {}",
+        "Cleaning up connection pool for connection {}",
         connection_id
     );
     // Batalkan dulu connect yang masih berjalan. Tanpa sinyal ini attempt

@@ -834,7 +834,7 @@ impl super::Tabular {
             };
 
             rt.block_on(async {
-                debug!("🧹 Clearing cache for table {}.{}", db, tbl);
+                debug!("Clearing cache for table {}.{}", db, tbl);
 
                 // Clear table cache entry
                 if let Err(e) = sqlx::query("DELETE FROM table_cache WHERE connection_id = ? AND database_name = ? AND table_name = ?")
@@ -943,7 +943,7 @@ impl super::Tabular {
                 for conn_node in &mut folder_or_conn.children {
                     if conn_node.connection_id == Some(connection_id) {
                         debug!(
-                            "   ✓ Found connection node: {} (ID: {})",
+                            "   Found connection node: {} (ID: {})",
                             conn_node.name, connection_id
                         );
 
@@ -962,10 +962,7 @@ impl super::Tabular {
             }
             // Also check if this node itself is a connection (for backward compatibility with non-folder structure)
             else if folder_or_conn.connection_id == Some(connection_id) {
-                debug!(
-                    "   ✓ Found connection node (direct): {}",
-                    folder_or_conn.name
-                );
+                debug!("   Found connection node (direct): {}", folder_or_conn.name);
 
                 // Navigate through the tree structure to find the table
                 if Self::remove_table_from_connection_node(
@@ -1055,7 +1052,7 @@ impl super::Tabular {
 
             rt.block_on(async {
                 debug!(
-                    "🧹 Clearing database cache for db '{}' on conn {}",
+                    "Clearing database cache for db '{}' on conn {}",
                     db, connection_id
                 );
                 if let Err(e) = sqlx::query(

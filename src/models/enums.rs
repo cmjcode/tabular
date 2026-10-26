@@ -262,10 +262,10 @@ impl DatabaseType {
             DatabaseType::PostgreSQL => "🐘",
             DatabaseType::SQLite => "📄",
             DatabaseType::Redis => "🔴",
-            DatabaseType::MsSQL => "🛢️",
+            DatabaseType::MsSQL => egui_icons::icons::ICON_STORAGE.codepoint,
             DatabaseType::MongoDB => "🍃",
             DatabaseType::ApiHttp => "🌐",
-            DatabaseType::Plugin(_) => "🧩",
+            DatabaseType::Plugin(_) => egui_icons::icons::ICON_EXTENSION.codepoint,
         }
     }
 

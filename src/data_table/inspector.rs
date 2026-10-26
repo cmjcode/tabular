@@ -600,10 +600,14 @@ pub fn render_cell_inspector(tabular: &mut crate::window_egui::Tabular, ctx: &eg
                     if instant.elapsed().as_secs_f32() < 2.5 {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                egui::RichText::new(format!("✓ {}", msg))
-                                    .size(11.5)
-                                    .color(egui::Color32::from_rgb(70, 200, 120))
-                                    .strong(),
+                                egui::RichText::new(format!(
+                                    "{} {}",
+                                    egui_icons::icons::ICON_CHECK.codepoint,
+                                    msg
+                                ))
+                                .size(11.5)
+                                .color(egui::Color32::from_rgb(70, 200, 120))
+                                .strong(),
                             );
                         });
                     }

@@ -18,7 +18,7 @@ pub fn export_to_csv(
     if let Some(path) = file_dialog.save_file() {
         match write_csv_file(&path, all_table_data, current_table_headers) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows to CSV: {:?}",
+                "Successfully exported {} rows to CSV: {:?}",
                 all_table_data.len(),
                 path
             ),
@@ -62,7 +62,7 @@ pub fn export_to_xlsx(
     if let Some(path) = file_dialog.save_file() {
         match write_xlsx_file(&path, all_table_data, current_table_headers) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows to XLSX: {:?}",
+                "Successfully exported {} rows to XLSX: {:?}",
                 all_table_data.len(),
                 path
             ),
@@ -122,7 +122,7 @@ pub fn export_to_json(
     if let Some(path) = file_dialog.save_file() {
         match std::fs::write(&path, build_json(all_table_data, current_table_headers)) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows to JSON: {:?}",
+                "Successfully exported {} rows to JSON: {:?}",
                 all_table_data.len(),
                 path
             ),
@@ -168,7 +168,7 @@ pub fn export_to_markdown(
     if let Some(path) = file_dialog.save_file() {
         match std::fs::write(&path, build_markdown(all_table_data, current_table_headers)) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows to Markdown: {:?}",
+                "Successfully exported {} rows to Markdown: {:?}",
                 all_table_data.len(),
                 path
             ),
@@ -221,7 +221,7 @@ pub fn export_ai_chat_to_markdown(
     };
     std::fs::write(&path, build_ai_chat_markdown(chat, meta))
         .map_err(|e| format!("Failed to export chat: {e}"))?;
-    debug!("✓ Exported AI chat ({} messages) to {:?}", chat.len(), path);
+    debug!("Exported AI chat ({} messages) to {:?}", chat.len(), path);
     Ok(Some(path))
 }
 
@@ -321,7 +321,7 @@ pub fn export_to_sql_inserts(
         );
         match std::fs::write(&path, sql) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows as SQL INSERTs: {:?}",
+                "Successfully exported {} rows as SQL INSERTs: {:?}",
                 all_table_data.len(),
                 path
             ),
@@ -433,7 +433,7 @@ pub fn export_to_sql_dump(
         );
         match std::fs::write(&path, sql) {
             Ok(_) => debug!(
-                "✓ Successfully exported {} rows as SQL Dump: {:?}",
+                "Successfully exported {} rows as SQL Dump: {:?}",
                 all_table_data.len(),
                 path
             ),

@@ -100,7 +100,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
         let create_resp = if can_create {
             create_resp.on_hover_text("Create Team")
         } else {
-            create_resp.on_hover_text("Ketik nama Team dulu")
+            create_resp.on_hover_text("Type a team name first")
         };
 
         if create_resp.clicked() {
@@ -218,7 +218,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                             egui::Button::new(egui::RichText::new("+").size(sub_btn_font).strong())
                                 .corner_radius(egui::CornerRadius::same(if metrics.is_touch { 4 } else { 3 })),
                         )
-                        .on_hover_text("Tambah Member (Popup)")
+                        .on_hover_text("Add Member")
                         .clicked()
                         {
                             open_add_dialog = true;
@@ -227,7 +227,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                         ui.indent(format!("members_body_{}", team.id), |ui| {
                             if let Some(members) = tabular.team_members.get(&team.id).cloned() {
                                 if members.is_empty() {
-                                    ui.label(egui::RichText::new("Belum ada member.").small().weak());
+                                    ui.label(egui::RichText::new("No members yet.").small().weak());
                                 } else {
                                     for m in &members {
                                         ui.horizontal(|ui| {
@@ -352,7 +352,7 @@ pub fn render_teams_content(tabular: &mut Tabular, ui: &mut egui::Ui) {
                     }).body(|ui| {
                         ui.indent(format!("shares_body_{}", team.id), |ui| {
                             if team_shares.is_empty() {
-                                ui.label(egui::RichText::new("Belum ada folder Connection, Query, atau HTTP yang dibagikan.").small().weak());
+                                ui.label(egui::RichText::new("No connection, query or HTTP folders are shared yet.").small().weak());
                             } else {
                                 for sf in &team_shares {
                                     ui.horizontal(|ui| {
@@ -718,7 +718,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                     let selected_folder_text = if tabular.share_folder_path_input.trim().is_empty()
                     {
-                        "Pilih Folder dari daftar...".to_string()
+                        "Choose a folder from the list…".to_string()
                     } else {
                         tabular.share_folder_path_input.clone()
                     };
@@ -729,7 +729,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .show_ui(ui, |ui| {
                             if available_folders.is_empty() {
                                 ui.label(
-                                    egui::RichText::new("Belum ada folder lokal").small().weak(),
+                                    egui::RichText::new("No local folders yet").small().weak(),
                                 );
                             } else {
                                 for folder in &available_folders {
@@ -745,7 +745,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     crate::window_egui::style::render_text_field(
                         ui,
                         egui::TextEdit::singleline(&mut tabular.share_folder_path_input)
-                            .hint_text("Atau ketik folder baru (cth: /Production)"),
+                            .hint_text("Or type a new folder (e.g. /Production)"),
                         f32::INFINITY,
                         None,
                     );
@@ -760,7 +760,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             .small(),
                     );
                 } else {
-                    ui.label(egui::RichText::new("Pilih Team:").small().strong());
+                    ui.label(egui::RichText::new("Choose a team:").small().strong());
 
                     let selected_team_id = tabular
                         .share_folder_selected_team_id
@@ -772,7 +772,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                         .iter()
                         .find(|t| t.id == selected_team_id)
                         .map(|t| t.name.as_str())
-                        .unwrap_or("Pilih Team...");
+                        .unwrap_or("Choose a team…");
 
                     egui::ComboBox::from_id_salt("share_target_team")
                         .selected_text(selected_team_name)
@@ -794,7 +794,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if ui
                         .add(crate::window_egui::style::btn_primary_ctx(
                             ui.ctx(),
-                            "🤝 Share to Team",
+                            format!("{} Share to Team", egui_icons::icons::ICON_SHARE.codepoint),
                         ))
                         .clicked()
                     {
@@ -833,7 +833,7 @@ pub fn render_share_folder_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
                 if current_shares.is_empty() {
                     ui.label(
-                        egui::RichText::new("Belum ada folder yang dibagikan.")
+                        egui::RichText::new("No folders are shared yet.")
                             .small()
                             .weak(),
                     );
@@ -1201,7 +1201,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                 crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                     ui.set_max_height(140.0);
                     ui.label(
-                        egui::RichText::new("Hasil Pencarian (Pilih Pengguna):")
+                        egui::RichText::new("Search results (choose a user):")
                             .small()
                             .strong(),
                     );
@@ -1235,11 +1235,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     });
                 });
             } else if char_count >= 5 {
-                ui.label(
-                    egui::RichText::new("Tidak ada pengguna yang cocok.")
-                        .small()
-                        .weak(),
-                );
+                ui.label(egui::RichText::new("No matching users.").small().weak());
             }
 
             ui.add_space(10.0);
@@ -1250,10 +1246,7 @@ pub fn render_add_member_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     if ui
                         .add_enabled(
                             can_add,
-                            crate::window_egui::style::btn_primary_ctx(
-                                ui.ctx(),
-                                "➕ Tambah Member",
-                            ),
+                            crate::window_egui::style::btn_primary_ctx(ui.ctx(), "Add Member"),
                         )
                         .clicked()
                     {
@@ -1443,7 +1436,7 @@ pub fn render_delete_team_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     );
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Semua room, share folder, dan data member di dalam team ini akan terhapus.")
+                        egui::RichText::new("All rooms, shared folders and member data in this team will be deleted.")
                             .weak()
                             .small(),
                     );

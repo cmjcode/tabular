@@ -160,7 +160,14 @@ fn render_toolbar(t: &mut Tabular, ui: &mut egui::Ui, g: &mut GraphState, acts: 
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if tool_button(ui, i::ICON_REFRESH.codepoint, "Refresh (Ctrl/Cmd+R)", false).clicked() {
+            if tool_button(
+                ui,
+                i::ICON_REFRESH.codepoint,
+                &format!("Refresh ({})", crate::keymap::fixed_label("Cmd+R")),
+                false,
+            )
+            .clicked()
+            {
                 acts.push(Act::Reload);
             }
             if ui
@@ -186,7 +193,7 @@ fn render_toolbar(t: &mut Tabular, ui: &mut egui::Ui, g: &mut GraphState, acts: 
             if tool_button(
                 ui,
                 i::ICON_SEARCH.codepoint,
-                "Find (Ctrl/Cmd+F)",
+                &format!("Find ({})", crate::keymap::fixed_label("Cmd+F")),
                 g.find.open,
             )
             .clicked()

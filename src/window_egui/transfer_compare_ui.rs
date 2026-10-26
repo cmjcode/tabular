@@ -1583,7 +1583,7 @@ impl Tabular {
                                                 copy_script = true;
                                             }
                                             if !dialog.confirm_apply
-                                                && ui.button("Apply to Target...").clicked()
+                                                && ui.button("Apply to Target…").clicked()
                                             {
                                                 dialog.confirm_apply = true;
                                             }

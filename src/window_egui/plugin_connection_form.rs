@@ -106,7 +106,10 @@ pub(crate) fn render_engine_choices(ui: &mut egui::Ui, conn: &mut ConnectionConf
         ui.label(egui::RichText::new("Plugin drivers").small().weak());
         for d in engines {
             let ty = DatabaseType::Plugin(d.id.clone());
-            let icon = d.icon.clone().unwrap_or_else(|| "🧩".to_string());
+            let icon = d
+                .icon
+                .clone()
+                .unwrap_or_else(|| egui_icons::icons::ICON_EXTENSION.codepoint.to_string());
             if ui
                 .selectable_label(conn.connection_type == ty, format!("{icon} {}", d.name))
                 .clicked()

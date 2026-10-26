@@ -116,7 +116,11 @@ fn render_driver_card(
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            let icon = m.engine.icon.clone().unwrap_or_else(|| "🧩".into());
+            let icon = m
+                .engine
+                .icon
+                .clone()
+                .unwrap_or_else(|| egui_icons::icons::ICON_EXTENSION.codepoint.into());
             ui.label(egui::RichText::new(format!("{icon} {}", m.engine.name)).strong());
             ui.label(egui::RichText::new(format!("v{}", m.version)).weak());
             let kind = match m.kind {

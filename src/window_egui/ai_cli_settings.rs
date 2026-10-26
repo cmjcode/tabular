@@ -233,7 +233,11 @@ impl Tabular {
                     let is_sel = self.ai_settings_cli_tab == kind;
                     let profile_enabled = self.cli_profile(kind).enabled;
                     let label = if profile_enabled {
-                        format!("{} ✓", kind.display_name())
+                        format!(
+                            "{} {}",
+                            kind.display_name(),
+                            egui_icons::icons::ICON_CHECK.codepoint
+                        )
                     } else {
                         kind.display_name().to_string()
                     };
@@ -477,7 +481,7 @@ impl Tabular {
                 status(
                     ui,
                     Tone::Success,
-                    "✓ Passed to Claude Code on every request (--mcp-config); only Tabular's own tools are allowed and database access is read-only.",
+                    "Passed to Claude Code on every request (--mcp-config); only Tabular's own tools are allowed and database access is read-only.",
                 );
             }
             CliAgentKind::Custom => {
@@ -504,7 +508,7 @@ impl Tabular {
                             hint(ui, "Checking…");
                         }
                         Some(true) => {
-                            status(ui, Tone::Success, "✓ Registered in the CLI's global MCP config");
+                            status(ui, Tone::Success, "Registered in the CLI's global MCP config");
                         }
                         Some(false) => {
                             status(
@@ -556,8 +560,8 @@ impl Tabular {
             }
         });
         match &self.ai_cli_test_result {
-            Some(Ok(msg)) => status(ui, Tone::Success, format!("✓ {msg}")),
-            Some(Err(msg)) => status(ui, Tone::Danger, format!("✗ {msg}")),
+            Some(Ok(msg)) => status(ui, Tone::Success, msg.clone()),
+            Some(Err(msg)) => status(ui, Tone::Danger, msg.clone()),
             None => {}
         }
         ui.add_space(2.0);
@@ -765,7 +769,7 @@ impl Tabular {
                 status(
                     ui,
                     Tone::Danger,
-                    "✗ Vault folder not found or not accessible. Choose it again.",
+                    "Vault folder not found or not accessible. Choose it again.",
                 );
                 return;
             }
@@ -817,12 +821,9 @@ impl Tabular {
                         Some(Ok(stats)) => status(
                             ui,
                             Tone::Success,
-                            format!(
-                                "✓ {} notes indexed ({} excerpts)",
-                                stats.notes, stats.chunks
-                            ),
+                            format!("{} notes indexed ({} excerpts)", stats.notes, stats.chunks),
                         ),
-                        Some(Err(e)) => status(ui, Tone::Danger, format!("✗ {e}")),
+                        Some(Err(e)) => status(ui, Tone::Danger, e.clone()),
                         None => hint(ui, "Not indexed yet"),
                     }
                 }

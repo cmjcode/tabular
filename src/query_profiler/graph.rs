@@ -266,7 +266,10 @@ fn render_profiler_header(
             ui,
             card_bg,
             border_stroke,
-            "🧠 Buffer Hit Rate",
+            &format!(
+                "{} Buffer Hit Rate",
+                egui_icons::icons::ICON_MEMORY.codepoint
+            ),
             &format!("{:.1}%", summary.buffer_hit_rate),
             buf_color,
         );
@@ -893,7 +896,13 @@ fn render_node_inspector_drawer(ui: &mut egui::Ui, node: &ExplainNode) {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("🧠 Buffer & I/O Stats").strong());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} Buffer & I/O Stats",
+                            egui_icons::icons::ICON_MEMORY.codepoint
+                        ))
+                        .strong(),
+                    );
                     ui.add_space(4.0);
 
                     egui::Grid::new("node_buffer_grid")

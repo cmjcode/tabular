@@ -3462,18 +3462,18 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     // Right-click Context Menu on SQL Editor
     response.context_menu(|ui| {
         if ui
-            .button("🔍 Go to DDL / Structure (F12 / Cmd+B)")
+            .button(format!("🔍 Go to DDL / Structure ({})", tabular.keymap.label(crate::keymap::Action::GoToDefinition)))
             .clicked()
         {
             jump_to_definition_at_cursor(tabular);
             ui.close();
         }
         ui.separator();
-        if ui.button("⚡ Execute Statement (Cmd+Enter)").clicked() {
+        if ui.button(format!("⚡ Execute Statement ({})", tabular.keymap.label(crate::keymap::Action::RunQuery))).clicked() {
             execute_selected_command(tabular);
             ui.close();
         }
-        if ui.button("🧹 Format SQL (Cmd+Shift+F)").clicked() {
+        if ui.button(format!("{} Format SQL ({})", egui_icons::icons::ICON_FORMAT_ALIGN_LEFT.codepoint, tabular.keymap.label(crate::keymap::Action::FormatSql))).clicked() {
             reformat_current_sql(tabular, ui);
             ui.close();
         }
@@ -6432,8 +6432,15 @@ fn ai_render_header(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui, busy:
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if style::ai_icon_button(ui, icons::ICON_CLOSE.codepoint, "Close panel (Cmd+Shift+A)")
-                .clicked()
+            if style::ai_icon_button(
+                ui,
+                icons::ICON_CLOSE.codepoint,
+                &format!(
+                    "Close panel ({})",
+                    tabular.keymap.label(crate::keymap::Action::ToggleAiPanel)
+                ),
+            )
+            .clicked()
             {
                 tabular.show_ai_panel = false;
             }
@@ -8449,7 +8456,10 @@ pub(crate) fn render_find_replace_floating_panel(
 
                         if ui
                             .add(chevron_btn)
-                            .on_hover_text("Toggle Replace (Cmd+H)")
+                            .on_hover_text(format!(
+                                "Toggle Replace ({})",
+                                crate::keymap::fixed_label("Cmd+H")
+                            ))
                             .clicked()
                         {
                             tabular.advanced_editor.show_replace_row =
@@ -9355,7 +9365,9 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
             tabular.show_shortcuts_window = true;
         }
         _ => {
-            debug!("Unknown command: {}", key);
+            if !window_egui::app_menu::run_extra_command(tabular, key) {
+                debug!("Unknown command: {}", key);
+            }
         }
     }
 }
@@ -9619,7 +9631,7 @@ pub(crate) fn render_theme_selector(tabular: &mut window_egui::Tabular, ctx: &eg
                             ui.horizontal(|ui| {
                                 // Current theme indicator (checkmark)
                                 if is_current {
-                                    ui.label("✓");
+                                    ui.label(egui_icons::icons::ICON_CHECK.codepoint);
                                 } else {
                                     ui.label(" "); // Space for alignment
                                 }
@@ -9698,11 +9710,11 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
     let mut used_pending_query = false;
     let query = if !tabular.pending_query.trim().is_empty() {
         used_pending_query = true;
-        log::debug!("   ✓ Using pending_query");
+        log::debug!("   Using pending_query");
         tabular.pending_query.trim().to_string()
     } else if !selected_text.trim().is_empty() {
         log::debug!(
-            "   ✓ Using provided selected_text (len: {})",
+            "   Using provided selected_text (len: {})",
             selected_text.len()
         );
         let result = selected_text.trim().to_string();
@@ -9712,10 +9724,10 @@ pub(crate) fn execute_query_with_text(tabular: &mut window_egui::Tabular, select
         log::debug!("   ⚠️ Falling back to cursor/full text");
         let cursor_query = extract_query_from_cursor(tabular);
         if !cursor_query.trim().is_empty() {
-            log::debug!("   ✓ Using cursor query");
+            log::debug!("   Using cursor query");
             cursor_query
         } else {
-            log::debug!("   ✓ Using full editor text");
+            log::debug!("   Using full editor text");
             tabular.editor.text.trim().to_string()
         }
     };
@@ -9859,18 +9871,18 @@ pub(crate) fn execute_query(tabular: &mut window_egui::Tabular) {
     let mut used_pending_query = false;
     let query = if !tabular.pending_query.trim().is_empty() {
         used_pending_query = true;
-        log::debug!("   ✓ Using pending_query");
+        log::debug!("   Using pending_query");
         tabular.pending_query.trim().to_string()
     } else if !tabular.selected_text.trim().is_empty() {
-        log::debug!("   ✓ Using selected_text");
+        log::debug!("   Using selected_text");
         tabular.selected_text.trim().to_string()
     } else {
         let cursor_query = extract_query_from_cursor(tabular);
         if !cursor_query.trim().is_empty() {
-            log::debug!("   ✓ Using cursor query");
+            log::debug!("   Using cursor query");
             cursor_query
         } else {
-            log::debug!("   ✓ Using full editor text");
+            log::debug!("   Using full editor text");
             tabular.editor.text.trim().to_string()
         }
     };

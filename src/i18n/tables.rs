@@ -34,13 +34,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Performa", "성능", "Performans", "Hiệu năng", "性能"],
     ),
     (
-        "Data & Backup",
+        "Data & App Export",
         [
-            "Data & Cadangan",
-            "데이터 및 백업",
-            "Veri ve Yedekleme",
-            "Dữ liệu & Sao lưu",
-            "数据与备份",
+            "Data & Ekspor Aplikasi",
+            "데이터 및 앱 내보내기",
+            "Veri ve Uygulama Dışa Aktarımı",
+            "Dữ liệu & Xuất ứng dụng",
+            "数据与应用导出",
         ],
     ),
     (
@@ -111,6 +111,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
         "History",
         ["Riwayat", "기록", "Geçmiş", "Lịch sử", "历史记录"],
+    ),
+    (
+        "Compare",
+        ["Bandingkan", "비교", "Karşılaştır", "So sánh", "比较"],
     ),
     // ── Bahasa ──────────────────────────────────────────────────────────────
     ("Language", ["Bahasa", "언어", "Dil", "Ngôn ngữ", "语言"]),

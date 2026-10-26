@@ -90,7 +90,7 @@ impl super::Tabular {
                     if let Some(ref db_name) = db_node.database_name {
                         debug!("   Checking database: {}", db_name);
                         if db_name == database_name {
-                            debug!("   ✓ Database matches!");
+                            debug!("   Database matches!");
                             // Find Tables folder in this database
                             for folder in &mut db_node.children {
                                 if folder.node_type == models::enums::NodeType::TablesFolder {
@@ -136,7 +136,7 @@ impl super::Tabular {
             {
                 debug!("   Checking direct database node: {}", db_name);
                 if db_name == database_name {
-                    debug!("   ✓ Database matches!");
+                    debug!("   Database matches!");
                     // Find Tables folder in this database
                     for folder in &mut child.children {
                         if folder.node_type == models::enums::NodeType::TablesFolder {

@@ -925,7 +925,7 @@ fn render_save_dialog(
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        ui.label("Workspace:");
+                        ui.label("Collection:");
                         if state.workspaces.is_empty() {
                             ui.label(egui::RichText::new("Default Collection").weak());
                         } else {
@@ -1049,7 +1049,7 @@ fn render_save_dialog(
             save_http_state(conn_id, state);
         }
 
-        toasts.success(format!("Request '{}' saved ✓", req_name));
+        toasts.success(format!("Request '{}' saved", req_name));
     }
 
     if close {
@@ -1156,7 +1156,7 @@ fn render_code_dialog(
         });
 
     if copy_clicked {
-        toasts.success(format!("Copied as {} ✓", state.code_dialog_lang.label()));
+        toasts.success(format!("Copied as {}", state.code_dialog_lang.label()));
     }
 
     if close_requested {
@@ -1250,7 +1250,7 @@ pub fn save_or_update_http_tab(
             } else {
                 state.save_dialog_name.trim()
             };
-            toasts.success(format!("Saved '{}' ✓", display_name));
+            toasts.success(format!("Saved '{}'", display_name));
             true
         } else {
             // Request missing from workspaces, fallback to save dialog
@@ -1270,7 +1270,7 @@ pub fn save_or_update_http_tab(
         }
     } else if let Some(conn_id) = connection_id {
         save_http_state(conn_id, state);
-        toasts.success("HTTP connection state saved ✓");
+        toasts.success("HTTP connection state saved");
         true
     } else {
         // Unsaved request: open save dialog so user can name it and choose collection

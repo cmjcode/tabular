@@ -261,7 +261,7 @@ fn resolve_flexurio_paths(path: &Path) -> Result<ResolvedConfig, String> {
         }
 
         return Err(format!(
-            "File '{}' bukan file JSON konfigurasi Flexurio yang valid.",
+            "File '{}' is not a valid Flexurio JSON configuration file.",
             path.display()
         ));
     }
@@ -335,12 +335,12 @@ fn resolve_flexurio_paths(path: &Path) -> Result<ResolvedConfig, String> {
         }
 
         return Err(format!(
-            "Tidak dapat menemukan 'routes.json' atau folder 'entity' di dalam '{}'.",
+            "Could not find 'routes.json' or an 'entity' folder inside '{}'.",
             path.display()
         ));
     }
 
-    Err(format!("Jalur '{}' tidak ditemukan.", path.display()))
+    Err(format!("Path '{}' was not found.", path.display()))
 }
 
 /// Mencoba mencari konfigurasi port dan base URL dari file `.env` di sekitar konfigurasi.
@@ -433,19 +433,14 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
     if let Some(routes_path) = &resolved.routes_file {
         let content = std::fs::read_to_string(routes_path).map_err(|e| {
             format!(
-                "Gagal membaca file routes '{}': {}",
+                "Could not read routes file '{}': {}",
                 routes_path.display(),
                 e
             )
         })?;
 
-        let routes_config: FlexurioRoutes = serde_json::from_str(&content).map_err(|e| {
-            format!(
-                "Format JSON tidak valid pada '{}': {}",
-                routes_path.display(),
-                e
-            )
-        })?;
+        let routes_config: FlexurioRoutes = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in '{}': {}", routes_path.display(), e))?;
 
         let mut folders = Vec::new();
         let mut total_requests = 0usize;
@@ -467,7 +462,7 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
                             Ok(ent) => Some((ent, entity_file)),
                             Err(e) => {
                                 warnings.push(format!(
-                                    "Route '{route_clean}': gagal mem-parse {}: {e}",
+                                    "Route '{route_clean}': could not parse {}: {e}",
                                     entity_file.display()
                                 ));
                                 None
@@ -475,7 +470,7 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
                         },
                         Err(e) => {
                             warnings.push(format!(
-                                "Route '{route_clean}': gagal membaca {}: {e}",
+                                "Route '{route_clean}': could not read {}: {e}",
                                 entity_file.display()
                             ));
                             None
@@ -483,7 +478,7 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
                     }
                 } else {
                     warnings.push(format!(
-                        "Route '{route_clean}': file skema entity tidak ditemukan di {}",
+                        "Route '{route_clean}': entity schema file not found in {}",
                         entity_file.display()
                     ));
                     None
@@ -560,7 +555,7 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
     // Kasus 2: Mengimpor direktori `entity/` langsung tanpa `routes.json`
     if let Some(entity_dir) = &resolved.entity_dir {
         let Ok(entries) = std::fs::read_dir(entity_dir) else {
-            return Err(format!("Gagal membaca folder '{}'", entity_dir.display()));
+            return Err(format!("Could not read folder '{}'", entity_dir.display()));
         };
 
         let mut folders = Vec::new();
@@ -626,11 +621,11 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
             .to_string();
 
         let data = std::fs::read_to_string(single_file)
-            .map_err(|e| format!("Gagal membaca file '{}': {e}", single_file.display()))?;
+            .map_err(|e| format!("Could not read file '{}': {e}", single_file.display()))?;
 
         let ent: FlexurioEntity = serde_json::from_str(&data).map_err(|e| {
             format!(
-                "Gagal mem-parse entity JSON '{}': {e}",
+                "Could not parse entity JSON '{}': {e}",
                 single_file.display()
             )
         })?;
@@ -663,7 +658,7 @@ pub fn import_from_flexurio(path: &Path) -> Result<FlexurioImportResult, String>
         });
     }
 
-    Err("Tidak ada konfigurasi Flexurio yang dapat diimpor.".to_string())
+    Err("No Flexurio configuration to import was found.".to_string())
 }
 
 /// Memeriksa apakah suatu file routes.json memiliki format array "routes" yang valid.
@@ -790,12 +785,12 @@ pub fn import_flexurio_into_folder(
 
     let Some((ws, _)) = crate::http_collection::find_workspace_folder(workspaces, target_folder_id)
     else {
-        return Err("Target folder tidak ditemukan dalam workspace".to_string());
+        return Err("Target folder was not found in the collection".to_string());
     };
     let ws_id = ws.id.clone();
 
     let Some(target_ws) = workspaces.iter_mut().find(|w| w.id == ws_id) else {
-        return Err("Workspace tidak ditemukan".to_string());
+        return Err("Collection not found".to_string());
     };
 
     // Tambahkan environment variables jika belum ada
@@ -1076,7 +1071,7 @@ fn build_route_folder(
             auth_type: base_auth.clone(),
             bearer_token: base_token.clone(),
             description: format!(
-                "Tambah record baru `{route}`. Mendukung transaksi atomik master-detail."
+                "Create a new `{route}` record. Supports atomic master-detail transactions."
             ),
             tables: tables.clone(),
             source: source_str.clone(),
@@ -1146,9 +1141,7 @@ fn build_route_folder(
             body_type: HttpBodyType::NoBody,
             auth_type: base_auth.clone(),
             bearer_token: base_token.clone(),
-            description: format!(
-                "Hapus record `{route}` berdasarkan `{pk_field}` (Tipe: {del_type} delete)."
-            ),
+            description: format!("Delete a `{route}` record by `{pk_field}` ({del_type} delete)."),
             tables: tables.clone(),
             source: source_str.clone(),
             route: Some(format!("/{route}/{{{pk_field}}}")),
@@ -1179,7 +1172,7 @@ fn build_route_folder(
             body_text: "{}".to_string(),
             auth_type: base_auth.clone(),
             bearer_token: base_token.clone(),
-            description: format!("Prosedur PATCH untuk `{route}`."),
+            description: format!("PATCH procedure for `{route}`."),
             tables: tables.clone(),
             source: source_str.clone(),
             route: Some(format!("/{route}")),
@@ -1201,7 +1194,7 @@ fn build_route_folder(
         auth_type: base_auth.clone(),
         bearer_token: base_token.clone(),
         description: format!(
-            "Validasi kesesuaian skema entity JSON `{route}` dengan struktur database."
+            "Check that the `{route}` entity JSON schema matches the database structure."
         ),
         tables: tables.clone(),
         source: source_str.clone(),

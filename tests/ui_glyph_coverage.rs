@@ -5,7 +5,24 @@
 use std::path::Path;
 
 /// Karakter yang terbukti tidak ada di font manapun yang dimuat Tabular.
-const MISSING_GLYPHS: &[char] = &['\u{2715}', '\u{2325}', '\u{2303}'];
+const MISSING_GLYPHS: &[char] = &[
+    '\u{2715}', // ✕
+    '\u{2325}', // ⌥
+    '\u{2303}', // ⌃
+    // Tidak ada di Proportional maupun fallback Hack (audit fontTools 2026-10).
+    '\u{2713}',  // ✓
+    '\u{2717}',  // ✗
+    '\u{1F9E9}', // 🧩
+    '\u{1F91D}', // 🤝
+    '\u{1F9F9}', // 🧹
+    '\u{1F6D1}', // 🛑
+    '\u{1F9E0}', // 🧠
+    '\u{1F5C2}', // 🗂
+    '\u{1F590}', // 🖐
+    '\u{1F6E2}', // 🛢
+    '\u{1F573}', // 🕳
+    '\u{1F9FE}', // 🧾
+];
 
 /// File yang memakai glyph itu sebagai input parser, bukan teks yang digambar.
 const ALLOWED_FILES: &[&str] = &["keymap.rs"];
@@ -28,6 +45,10 @@ fn scan(dir: &Path, hits: &mut Vec<String>) {
                 continue;
             };
             for (no, line) in text.lines().enumerate() {
+                // Kode test memakai unicode sebagai input, bukan teks yang digambar.
+                if line.contains("#[cfg(test)]") {
+                    break;
+                }
                 let trimmed = line.trim_start();
                 if trimmed.starts_with("//") {
                     continue;
