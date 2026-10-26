@@ -34,6 +34,8 @@ eframe = { version = "0.36", default-features = false, features = [
        "x11",
 ] }
 egui_icons = "0.0.1"
+# Validasi font kode pilihan pengguna (versi sama dengan yang dipakai epaint).
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 image = "0.25"
 # File viewer: rasterisasi SVG (versi sama dengan yang dibawa egui_extras).
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "raster-images"] }

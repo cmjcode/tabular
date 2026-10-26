@@ -3347,10 +3347,19 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Simple layouter with cached highlighting; honor Word Wrap by adjusting max_width
     let word_wrap = tabular.advanced_editor.word_wrap;
+    let metrics =
+        crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
+    let effective_font_size = if metrics.is_touch && tabular.advanced_editor.font_size <= 14.0 {
+        metrics.font_monospace_size.max(16.0)
+    } else {
+        tabular.advanced_editor.font_size
+    };
+    let editor_font = egui::FontId::monospace(effective_font_size);
     // Capture a mutable handle to the highlight cache for this frame to avoid recomputing
     let cache = &mut tabular.highlight_cache;
     let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = cache.get_or_highlight(text.as_str(), lang, dark);
+        crate::syntax_ts::apply_font(&mut job, &editor_font);
         job.wrap.max_width = if word_wrap { wrap_width } else { f32::INFINITY };
         ui.fonts_mut(|f| f.layout_job(job))
     };
@@ -3365,14 +3374,6 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
     let total_lines_for_layout = tabular.editor.line_count().max(1);
     // Record text length before TextEdit renders (O(1)) — used in response.changed() to detect insertions
     let pre_text_len = tabular.editor.text.len();
-
-    let metrics =
-        crate::window_egui::device_profile::DeviceUiMetrics::compute(ui.ctx(), tabular.ui_mode);
-    let effective_font_size = if metrics.is_touch && tabular.advanced_editor.font_size <= 14.0 {
-        metrics.font_monospace_size.max(16.0)
-    } else {
-        tabular.advanced_editor.font_size
-    };
 
     // Calculate gutter width and editor rect
     let gutter_width = if tabular.advanced_editor.show_line_numbers {
@@ -3765,57 +3766,20 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
         handle_add_next_occurrence(tabular, ui);
     }
 
-    // Alt/Option + Click to add an extra caret (approximate hit-test on monospace grid)
+    // Alt/Option + Click menambah caret; hit-test memakai galley agar akurat untuk font apa pun
     if input_snapshot.modifiers.alt
         && let Some(pos) = input_snapshot.pointer.interact_pos()
         && input_snapshot.pointer.primary_clicked()
         && response.rect.contains(pos)
     {
-        // Compute line/column based on painter metrics
-        let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        let char_w =
-            ui.fonts_mut(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), 'M'));
-        let gutter_width = if tabular.advanced_editor.show_line_numbers {
-            let total_lines = tabular.editor.line_count().max(1);
-            ui.fonts_mut(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0'))
-                * (total_lines.to_string().len() as f32)
-        } else {
-            0.0
-        };
-        let local = pos - response.rect.min;
-        let mut line = ((local.y - 6.0) / line_height).floor() as isize;
-        let mut col = ((local.x - gutter_width - 6.0) / char_w).floor() as isize;
-        if line < 0 {
-            line = 0;
-        }
-        if col < 0 {
-            col = 0;
-        }
-        let line = line as usize;
-        let col = col as usize;
-        let start = tabular.editor.line_start(line);
-        let end = if line + 1 < tabular.editor.line_count() {
-            tabular
-                .editor
-                .line_start(line + 1)
-                .min(tabular.editor.text.len())
-        } else {
-            tabular.editor.text.len()
-        };
-        let slice = &tabular.editor.text[start..end];
-        let mut byte_off = start;
-        let mut chars = 0usize;
-        for (i, _) in slice.char_indices() {
-            if chars >= col {
-                break;
-            }
-            chars += 1;
-            byte_off = start + i + 1;
-        }
-        // If requested column beyond line length, clamp to end
-        if chars < col {
-            byte_off = end;
-        }
+        let ccursor = galley.cursor_from_pos(pos - galley_pos);
+        let byte_off = tabular
+            .editor
+            .text
+            .char_indices()
+            .nth(ccursor.index.into())
+            .map(|(i, _)| i)
+            .unwrap_or(tabular.editor.text.len());
         tabular.add_cursor(byte_off);
         ui.ctx().request_repaint();
     }
@@ -6031,9 +5995,7 @@ fn ai_highlight_code(ui: &egui::Ui, lang: &str, code: &str) -> egui::text::Layou
     if ai_is_sql_lang(lang, code) {
         let mut job =
             crate::syntax_ts::highlight_text(code, crate::syntax_ts::LanguageKind::Sql, dark);
-        for section in &mut job.sections {
-            section.format.font_id = font.clone();
-        }
+        crate::syntax_ts::apply_font(&mut job, &font);
         return job;
     }
     let code_lang = match lang {

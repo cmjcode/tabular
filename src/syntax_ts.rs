@@ -1691,6 +1691,16 @@ pub fn highlight_text_cached(
     job
 }
 
+/// Menempelkan `font` ke setiap section `job`. Highlighter di modul ini
+/// memakai `TextFormat::default()` (font Proportional 14pt), sedangkan
+/// `TextEdit::font()` diabaikan saat widget memakai layouter; tanpa ini
+/// editor kode tampil dengan font proporsional.
+pub fn apply_font(job: &mut LayoutJob, font: &eframe::egui::FontId) {
+    for section in &mut job.sections {
+        section.format.font_id = font.clone();
+    }
+}
+
 /// Whole text highlighter (heuristik per baris). Dulu fungsi ini juga
 /// menjalankan parse tree-sitter penuh (`ensure_semantics`) pada setiap
 /// perubahan teks "demi efek samping", padahal snapshot-nya tidak dibaca
@@ -2038,6 +2048,29 @@ fn ai_block_color(dark: bool) -> Color32 {
 #[cfg(test)]
 mod highlight_cache_tests {
     use super::*;
+
+    /// Regresi: editor SQL tampil dengan font proporsional karena section
+    /// hasil highlight tidak membawa font monospace.
+    #[test]
+    fn apply_font_makes_highlighted_sql_monospace() {
+        let font = eframe::egui::FontId::monospace(14.0);
+        let mut job = highlight_text("SELECT iiii FROM mmmm", LanguageKind::Sql, true);
+        apply_font(&mut job, &font);
+        assert!(job.sections.iter().all(|s| s.format.font_id == font));
+
+        let ctx = eframe::egui::Context::default();
+        let mut widths = (0.0, 0.0);
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
+            let glyphs = &galley.rows[0].glyphs;
+            let width_of = |c: char| glyphs.iter().find(|g| g.chr == c).map(|g| g.advance_width);
+            widths = (width_of('i').unwrap_or(0.0), width_of('m').unwrap_or(-1.0));
+        });
+        // Tanpa renderer, perubahan tekstur font dibuang saja.
+        out.textures_delta.clear();
+        assert!(widths.0 > 0.0);
+        assert_eq!(widths.0, widths.1, "'i' and 'm' must have the same width");
+    }
 
     #[test]
     fn cache_returns_same_job_as_direct_highlight() {

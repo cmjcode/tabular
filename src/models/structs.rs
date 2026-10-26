@@ -2123,6 +2123,8 @@ pub struct AdvancedEditor {
     pub show_line_numbers: bool,
     pub theme: EditorColorTheme,
     pub font_size: f32,
+    /// Path file font kode (lihat `code_font`); kosong = Hack bawaan.
+    pub font_path: String,
     #[allow(dead_code)]
     pub tab_size: usize,
     #[allow(dead_code)]
@@ -2159,6 +2161,7 @@ impl Default for AdvancedEditor {
             show_line_numbers: true,
             theme: EditorColorTheme::GithubDark,
             font_size: 14.0,
+            font_path: String::new(),
             tab_size: 4,
             auto_indent: true,
             show_whitespace: false,

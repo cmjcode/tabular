@@ -24,6 +24,7 @@ pub mod auto_updater;
 pub mod autocomplete;
 pub mod backup_restore;
 pub mod cache_data;
+pub mod code_font;
 pub mod config;
 pub mod connection;
 pub mod connection_env;
