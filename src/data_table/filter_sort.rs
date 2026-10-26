@@ -122,31 +122,17 @@ pub(crate) fn sort_table_data(
     );
 }
 
-/// Quotes and escapes a database identifier safely according to the specific database dialect
-#[allow(dead_code)]
+/// Kutip identifier sesuai dialek. Quote luar yang sudah ada (mis. `` `a` ``)
+/// dilepas dulu agar tidak dikutip dua kali; escaping lewat
+/// [`crate::schema_objects::sql::quote_ident`].
 pub fn quote_identifier(col: &str, db_type: &models::enums::DatabaseType) -> String {
     let clean = col.trim();
-    match db_type {
-        models::enums::DatabaseType::MySQL => {
-            let unquoted = clean.trim_matches('`');
-            let escaped = unquoted.replace('`', "``");
-            format!("`{}`", escaped)
-        }
-        models::enums::DatabaseType::MsSQL => {
-            let unbracketed = clean.trim_start_matches('[').trim_end_matches(']');
-            let escaped = unbracketed.replace(']', "]]");
-            format!("[{}]", escaped)
-        }
-        models::enums::DatabaseType::PostgreSQL | models::enums::DatabaseType::SQLite => {
-            let unquoted = clean.trim_matches('"');
-            let escaped = unquoted.replace('"', "\"\"");
-            format!("\"{}\"", escaped)
-        }
-        _ => {
-            let escaped = clean.replace('"', "\"\"");
-            format!("\"{}\"", escaped)
-        }
-    }
+    let unquoted = match db_type {
+        models::enums::DatabaseType::MySQL => clean.trim_matches('`'),
+        models::enums::DatabaseType::MsSQL => clean.trim_start_matches('[').trim_end_matches(']'),
+        _ => clean.trim_matches('"'),
+    };
+    crate::schema_objects::sql::quote_ident(db_type, unquoted)
 }
 
 /// Parses a user-entered filter value string into a typed `SqlValue`

@@ -41,6 +41,8 @@ pub struct PlatformUiState {
     pub pending_run: Option<PendingLinkRun>,
     /// Tanda environment eksplisit per id koneksi (tabel `connection_environment`).
     pub connection_envs: HashMap<i64, Environment>,
+    /// Mode keamanan eksekusi eksplisit per id koneksi (tabel `connection_safety`).
+    pub connection_safety: HashMap<i64, crate::connection_safety::SafetyMode>,
     last_slow_tick: Option<Instant>,
     known_signature: Vec<(i64, String)>,
     #[cfg(target_os = "macos")]
@@ -342,6 +344,58 @@ impl Tabular {
             Ok(map) => self.platform_ui.connection_envs = map,
             Err(e) => log::warn!("[ENV] cannot load connection environments: {e}"),
         }
+        match rt.block_on(crate::connection_safety::load_all(&pool)) {
+            Ok(map) => self.platform_ui.connection_safety = map,
+            Err(e) => {
+                // Gagal baca: jangan diam-diam turun ke mode yang lebih longgar.
+                log::error!("[SAFETY] cannot load connection safety modes: {e}");
+                self.toasts.error(format!(
+                    "Could not load the safety mode of your connections ({e}). Read-only connections may run writes; check before running changes."
+                ));
+            }
+        }
+    }
+
+    /// Mode keamanan efektif (pilihan eksplisit, atau default dari environment).
+    pub(crate) fn connection_safety_mode(
+        &self,
+        conn_id: i64,
+    ) -> crate::connection_safety::SafetyMode {
+        crate::connection_safety::effective(
+            self.platform_ui.connection_safety.get(&conn_id).copied(),
+            self.connection_environment_by_id(conn_id),
+        )
+    }
+
+    pub(crate) fn set_connection_safety_mode(
+        &mut self,
+        conn_id: i64,
+        mode: Option<crate::connection_safety::SafetyMode>,
+    ) {
+        let Some(pool) = self.db_pool.clone() else {
+            self.toasts
+                .error("Could not change the safety mode: the local database is not available.");
+            return;
+        };
+        let rt = self.get_runtime();
+        match rt.block_on(crate::connection_safety::set(&pool, conn_id, mode)) {
+            Ok(()) => {
+                match mode {
+                    Some(m) => {
+                        self.platform_ui.connection_safety.insert(conn_id, m);
+                    }
+                    None => {
+                        self.platform_ui.connection_safety.remove(&conn_id);
+                    }
+                }
+                let effective = self.connection_safety_mode(conn_id);
+                self.toasts
+                    .info(format!("Safety mode: {}", effective.label()));
+            }
+            Err(e) => self
+                .toasts
+                .error(format!("Could not save the safety mode: {e}")),
+        }
     }
 
     /// Environment efektif (tanda eksplisit, atau tebakan dari nama).
@@ -376,6 +430,8 @@ impl Tabular {
         let rt = self.get_runtime();
         if let Err(e) = rt.block_on(crate::connection_env::set(&pool, conn_id, env)) {
             log::warn!("[ENV] cannot save environment for connection {conn_id}: {e}");
+            self.toasts
+                .error(format!("Could not save the environment label: {e}"));
         }
     }
 

@@ -660,6 +660,11 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
     let mut start_restore_requested = false;
     let mut cancel_requested = false;
     let mut close_dialog = false;
+    let mut restore_typed_ok = false;
+    let restore_read_only = tabular.restore_state.as_ref().is_some_and(|state| {
+        tabular.connection_safety_mode(state.connection_id)
+            == crate::connection_safety::SafetyMode::ReadOnly
+    });
 
     if let Some(state) = &mut tabular.restore_state {
         if let Some(tracker) = &state.tracker {
@@ -816,6 +821,12 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                                         .small(),
                                     );
                                 });
+                                ui.add_space(4.0);
+                                restore_typed_ok = crate::window_egui::style::type_to_confirm(
+                                    ui,
+                                    "restore_database",
+                                    &state.target_database_name,
+                                );
                             });
                         });
                 }
@@ -841,7 +852,15 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                             state.cancel_token = None;
                         }
                     } else {
-                        let can_start = state.source_file.is_some();
+                        // Restore menulis ke database target: wajib ketik namanya,
+                        // dan tidak pernah di koneksi read-only.
+                        let can_start = state.source_file.is_some() && restore_typed_ok && !restore_read_only;
+                        if restore_read_only {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 70, 70),
+                                "This connection is read-only.",
+                            );
+                        }
                         let start_btn = ui.add_enabled(
                             can_start,
                             egui::Button::new(
@@ -861,6 +880,9 @@ pub fn render_restore_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
 
     if close_dialog {
         open = false;
+    }
+    if !open || start_restore_requested {
+        crate::window_egui::style::clear_type_to_confirm(ctx, "restore_database");
     }
     tabular.show_restore_dialog = open;
 

@@ -35,11 +35,19 @@ pub struct SessionHandle {
     /// Backend pid / connection id koneksi sesi (PostgreSQL, MySQL) supaya
     /// Cancel bisa menghentikan statement yang sedang berjalan di server.
     pub backend_pid: std::sync::Arc<std::sync::Mutex<Option<i64>>>,
+    /// Status transaksi yang sebenarnya di koneksi sesi, ditulis oleh task sesi
+    /// setiap selesai memproses perintah (BEGIN gagal, timeout, COMMIT, dst.).
+    pub tx_open: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionHandle {
     pub fn backend_pid(&self) -> Option<i64> {
         *super::pool::lock_or_recover(&self.backend_pid)
+    }
+
+    /// True bila sesi sedang memegang transaksi terbuka.
+    pub fn tx_open(&self) -> bool {
+        self.tx_open.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -130,6 +138,7 @@ pub fn spawn_session(
     };
 
     let backend_pid = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let tx_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let handle = runtime.spawn(run_session(
         pool,
         connection_type,
@@ -141,6 +150,7 @@ pub fn spawn_session(
         result_sender,
         tabular.result_wake_hook(),
         backend_pid.clone(),
+        tx_flag.clone(),
     ));
 
     Some(SessionHandle {
@@ -148,6 +158,7 @@ pub fn spawn_session(
         sender: tx,
         abort: handle.abort_handle(),
         backend_pid,
+        tx_open: tx_flag,
     })
 }
 
@@ -162,6 +173,7 @@ async fn run_session(
     result_sender: std::sync::mpsc::Sender<QueryResultMessage>,
     wake: Option<super::types::ResultWakeHook>,
     backend_pid: std::sync::Arc<std::sync::Mutex<Option<i64>>>,
+    tx_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     // Setiap hasil juga membangunkan UI (lihat `ResultWakeHook`).
     let send = |message: QueryResultMessage| {
@@ -179,7 +191,13 @@ async fn run_session(
     // Statement yang masih antre dilewati sampai COMMIT/ROLLBACK.
     let mut tx_aborted = false;
 
-    while let Some(command) = rx.recv().await {
+    loop {
+        // Pantulkan status transaksi setelah perintah sebelumnya selesai
+        // (semua `continue` di bawah kembali ke sini).
+        tx_flag.store(tx_open, std::sync::atomic::Ordering::Release);
+        let Some(command) = rx.recv().await else {
+            break;
+        };
         match command {
             SessionCommand::Execute { job_id, sql } => {
                 // Acquire lazily so connect errors land on a real job id.
@@ -395,6 +413,7 @@ async fn run_session(
             }
         }
     }
+    tx_flag.store(false, std::sync::atomic::Ordering::Release);
     debug!("session task for connection {} ended", connection_id);
 }
 

@@ -2162,11 +2162,13 @@ const DB_CHECK_MAX_TABLES: usize = 40;
 const DB_CHECK_MAX_COLUMNS: usize = 24;
 
 fn quote_ident(kind: &str, name: &str) -> String {
-    match kind {
-        "MySQL" => format!("`{}`", name.replace('`', "``")),
-        "MsSQL" => format!("[{}]", name.replace(']', "]]")),
-        _ => format!("\"{}\"", name.replace('"', "\"\"")),
-    }
+    use crate::models::enums::DatabaseType;
+    let db = match kind {
+        "MySQL" => DatabaseType::MySQL,
+        "MsSQL" => DatabaseType::MsSQL,
+        _ => DatabaseType::PostgreSQL,
+    };
+    crate::schema_objects::sql::quote_ident(&db, name)
 }
 
 /// `schema.table` → identifier berkutip per bagian.

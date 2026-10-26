@@ -24,6 +24,7 @@ pub mod cache_data;
 pub mod config;
 pub mod connection;
 pub mod connection_env;
+pub mod connection_safety;
 pub mod curl_import;
 pub mod data_table;
 pub mod data_transfer;

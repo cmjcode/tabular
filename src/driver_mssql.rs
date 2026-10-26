@@ -923,14 +923,25 @@ pub(crate) fn take_cancel_handle(job_id: u64) -> Option<mssql_client::cancel::Ca
     crate::connection::pool::lock_or_recover(&CANCEL_HANDLES).remove(&job_id)
 }
 
+/// Bentuk keluaran [`execute_bounded`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundedMode {
+    /// Semua result set digabung menjadi satu.
+    Merged,
+    /// Tiap result set dikembalikan terpisah.
+    Split,
+    /// Batch tanpa result set: kembalikan jumlah baris yang terkena.
+    Count,
+}
+
 async fn execute_bounded(
     pool: &mssql_driver_pool::Pool,
     query: &str,
     max_rows: usize,
     timeout: Option<std::time::Duration>,
-    split: bool,
+    mode: BoundedMode,
     job_id: Option<u64>,
-) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
+) -> Result<(Vec<MssqlResultSet>, Option<u64>), MssqlExecError> {
     let mut conn = pool
         .get()
         .await
@@ -944,12 +955,18 @@ async fn execute_bounded(
     }));
 
     let run = async {
-        if split {
-            run_query_multi_limited(client, query, max_rows).await
-        } else {
-            run_query_limited(client, query, max_rows)
+        match mode {
+            BoundedMode::Split => run_query_multi_limited(client, query, max_rows)
                 .await
-                .map(|set| vec![set])
+                .map(|sets| (sets, None)),
+            BoundedMode::Merged => run_query_limited(client, query, max_rows)
+                .await
+                .map(|set| (vec![set], None)),
+            BoundedMode::Count => client
+                .execute(query, &[])
+                .await
+                .map(|affected| (Vec::new(), Some(affected)))
+                .map_err(|e| e.to_string()),
         }
     };
     let Some(limit) = timeout else {
@@ -979,8 +996,29 @@ pub(crate) async fn execute_query_bounded(
     timeout: Option<std::time::Duration>,
     job_id: Option<u64>,
 ) -> Result<MssqlResultSet, MssqlExecError> {
-    let mut sets = execute_bounded(pool.as_ref(), query, max_rows, timeout, false, job_id).await?;
+    let (mut sets, _) = execute_bounded(
+        pool.as_ref(),
+        query,
+        max_rows,
+        timeout,
+        BoundedMode::Merged,
+        job_id,
+    )
+    .await?;
     Ok(sets.pop().unwrap_or_default())
+}
+
+/// Jalankan batch yang hanya mengubah data (tanpa SELECT) dan kembalikan
+/// jumlah baris yang terkena, dengan batas waktu dan cancel yang sama.
+pub(crate) async fn execute_write_bounded(
+    pool: std::sync::Arc<mssql_driver_pool::Pool>,
+    query: &str,
+    timeout: Option<std::time::Duration>,
+    job_id: Option<u64>,
+) -> Result<u64, MssqlExecError> {
+    let (_, affected) =
+        execute_bounded(pool.as_ref(), query, 0, timeout, BoundedMode::Count, job_id).await?;
+    Ok(affected.unwrap_or(0))
 }
 
 /// Jalankan batch lewat pool dengan batas baris per result set dan batas waktu;
@@ -992,7 +1030,16 @@ pub(crate) async fn execute_query_multi_bounded(
     timeout: Option<std::time::Duration>,
     job_id: Option<u64>,
 ) -> Result<Vec<MssqlResultSet>, MssqlExecError> {
-    execute_bounded(pool.as_ref(), query, max_rows, timeout, true, job_id).await
+    execute_bounded(
+        pool.as_ref(),
+        query,
+        max_rows,
+        timeout,
+        BoundedMode::Split,
+        job_id,
+    )
+    .await
+    .map(|(sets, _)| sets)
 }
 
 /// Jalankan batch lewat pool dan kembalikan semua result set secara terpisah.

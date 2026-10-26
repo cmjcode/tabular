@@ -755,52 +755,76 @@ pub fn add_auto_limit_if_needed(query: &str, db_type: &models::enums::DatabaseTy
 /// comments (`/* … */`), and PostgreSQL dollar-quoted strings (`$$…$$`, `$tag$…$tag$`).
 /// Comments stay part of their statement's text.
 pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut chars = sql.chars().peekable();
+    split_sql_spans(sql, hash_is_comment)
+        .into_iter()
+        .map(|span| sql[span.body].to_string())
+        .collect()
+}
+
+/// Posisi satu statement di dalam skrip, dalam byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlSpan {
+    /// Dari akhir statement sebelumnya (setelah `;`) sampai dan termasuk `;`
+    /// statement ini (atau akhir teks). Memuat spasi dan komentar di depannya.
+    pub raw: std::ops::Range<usize>,
+    /// Teks statement tanpa spasi di tepi dan tanpa `;` penutup.
+    pub body: std::ops::Range<usize>,
+}
+
+/// Satu segmen mentah di antara `;` level teratas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlSegment {
+    /// Dari setelah `;` sebelumnya sampai dan termasuk `;` segmen ini (atau
+    /// akhir teks). Segmen-segmen menutupi seluruh teks tanpa celah.
+    pub raw: std::ops::Range<usize>,
+    /// Akhir isi segmen sebelum `;` penutup.
+    pub body_end: usize,
+}
+
+/// Satu-satunya lexer pemecah statement di aplikasi; pemecah lain (editor,
+/// `query_tools`, safety guard) memakai fungsi ini. Mengembalikan semua segmen,
+/// termasuk yang kosong (`;;`) atau hanya komentar, sehingga gabungannya sama
+/// dengan teks masukan.
+pub fn split_sql_segments(sql: &str, hash_is_comment: bool) -> Vec<SqlSegment> {
+    let mut spans = Vec::new();
+    let mut seg_start = 0usize;
+    let mut chars = sql.char_indices().peekable();
     let mut inside_quote: Option<char> = None;
     let mut inside_dollar_tag: Option<String> = None;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
 
-    while let Some(c) = chars.next() {
+    while let Some((i, c)) = chars.next() {
+        let after = i + c.len_utf8();
         if in_line_comment {
-            current.push(c);
             if c == '\n' {
                 in_line_comment = false;
             }
             continue;
         }
         if in_block_comment {
-            current.push(c);
-            if c == '*' && chars.peek() == Some(&'/') {
-                current.push(chars.next().unwrap());
+            if c == '*' && chars.peek().map(|&(_, n)| n) == Some('/') {
+                chars.next();
                 in_block_comment = false;
             }
             continue;
         }
         if let Some(ref tag) = inside_dollar_tag {
-            current.push(c);
-            if c == '$' {
-                // Check if the closing tag matches
-                let tag_len = tag.len();
-                if current.len() >= tag_len && current.ends_with(tag) {
-                    inside_dollar_tag = None;
-                }
+            // Teks sejak awal segmen memuat tag pembuka; penutup cocok bila
+            // segmen berakhir dengan tag yang sama.
+            if c == '$' && sql[seg_start..after].ends_with(tag.as_str()) {
+                inside_dollar_tag = None;
             }
             continue;
         }
         if let Some(q) = inside_quote {
-            current.push(c);
             if c == '\\' {
-                // MySQL-style escape: next char is literal (incl. \' and \\)
-                if let Some(n) = chars.next() {
-                    current.push(n);
-                }
+                // Escape gaya MySQL: karakter berikutnya literal (termasuk \' dan \\).
+                chars.next();
             } else if c == q {
-                if chars.peek() == Some(&q) {
-                    // Doubled quote ('' / "" / ``) stays inside the literal
-                    current.push(chars.next().unwrap());
+                if chars.peek().map(|&(_, n)| n) == Some(q) {
+                    // Quote ganda ('' / "" / ``) tetap di dalam literal.
+                    chars.next();
                 } else {
                     inside_quote = None;
                 }
@@ -808,17 +832,13 @@ pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
             continue;
         }
         match c {
-            '\'' | '"' | '`' => {
-                inside_quote = Some(c);
-                current.push(c);
-            }
+            '\'' | '"' | '`' => inside_quote = Some(c),
             '$' if !hash_is_comment => {
-                // Potential PostgreSQL dollar-quoting tag: $$ or $tag$
-                current.push(c);
+                // Kemungkinan dollar-quote PostgreSQL: $$ atau $tag$.
                 let mut tag = String::from("$");
                 let mut peek_chars = chars.clone();
                 let mut is_tag = false;
-                while let Some(&next_c) = peek_chars.peek() {
+                while let Some(&(_, next_c)) = peek_chars.peek() {
                     if next_c == '$' {
                         tag.push('$');
                         is_tag = true;
@@ -831,41 +851,60 @@ pub fn split_sql_statements(sql: &str, hash_is_comment: bool) -> Vec<String> {
                     }
                 }
                 if is_tag {
-                    // Consume the rest of the tag from chars
                     for _ in 1..tag.len() {
-                        let consumed = chars.next().unwrap();
-                        current.push(consumed);
+                        chars.next();
                     }
                     inside_dollar_tag = Some(tag);
                 }
             }
-            '-' if chars.peek() == Some(&'-') => {
-                current.push(c);
-                current.push(chars.next().unwrap());
+            '-' if chars.peek().map(|&(_, n)| n) == Some('-') => {
+                chars.next();
                 in_line_comment = true;
             }
-            '#' if hash_is_comment => {
-                current.push(c);
-                in_line_comment = true;
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                current.push(c);
-                current.push(chars.next().unwrap());
+            '#' if hash_is_comment => in_line_comment = true,
+            '/' if chars.peek().map(|&(_, n)| n) == Some('*') => {
+                chars.next();
                 in_block_comment = true;
             }
             ';' => {
-                if !current.trim().is_empty() {
-                    statements.push(current.trim().to_string());
-                }
-                current.clear();
+                spans.push(SqlSegment {
+                    raw: seg_start..after,
+                    body_end: i,
+                });
+                seg_start = after;
             }
-            _ => current.push(c),
+            _ => {}
         }
     }
-    if !current.trim().is_empty() {
-        statements.push(current.trim().to_string());
+    if seg_start < sql.len() {
+        spans.push(SqlSegment {
+            raw: seg_start..sql.len(),
+            body_end: sql.len(),
+        });
     }
-    statements
+    spans
+}
+
+/// Statement non-kosong dari [`split_sql_segments`]; aturannya sama dengan
+/// [`split_sql_statements`].
+pub fn split_sql_spans(sql: &str, hash_is_comment: bool) -> Vec<SqlSpan> {
+    split_sql_segments(sql, hash_is_comment)
+        .into_iter()
+        .filter_map(|seg| {
+            let start = seg.raw.start;
+            let segment = &sql[start..seg.body_end];
+            let trimmed_start = segment.trim_start();
+            if trimmed_start.is_empty() {
+                return None;
+            }
+            let lead = segment.len() - trimmed_start.len();
+            let body_len = trimmed_start.trim_end().len();
+            Some(SqlSpan {
+                raw: seg.raw,
+                body: start + lead..start + lead + body_len,
+            })
+        })
+        .collect()
 }
 
 /// Lewati spasi, komentar baris `-- …` / `# …`, dan komentar blok `/* … */` di

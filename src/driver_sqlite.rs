@@ -136,17 +136,37 @@ pub(crate) fn convert_sqlite_rows_to_table_data(
                 }
                 // SQLite NUMERIC/DECIMAL (stored as TEXT, INTEGER, or REAL)
                 "NUMERIC" | "DECIMAL" => {
-                    // Try as number first, then string
-                    if let Ok(Some(val)) = row.try_get::<Option<f64>, _>(col_idx) {
-                        val.to_string()
-                    } else if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_idx) {
-                        val.to_string()
-                    } else if let Ok(Some(val)) = row.try_get::<Option<String>, _>(col_idx) {
-                        val
-                    } else if let Ok(None) = row.try_get::<Option<String>, _>(col_idx) {
-                        crate::models::structs::NULL_CELL.to_string()
-                    } else {
-                        format!("Error reading NUMERIC from column {}", column_name)
+                    // Decode sesuai storage class nilai sebenarnya. INTEGER besar
+                    // (> 2^53) yang dibaca lewat f64 berubah nilainya, lalu WHERE
+                    // simpan grid tidak cocok atau nilai ditulis balik salah.
+                    use sqlx::ValueRef;
+                    let storage = row
+                        .try_get_raw(col_idx)
+                        .map(|raw| {
+                            if raw.is_null() {
+                                "NULL".to_string()
+                            } else {
+                                raw.type_info().name().to_ascii_uppercase()
+                            }
+                        })
+                        .unwrap_or_default();
+                    match storage.as_str() {
+                        "NULL" => crate::models::structs::NULL_CELL.to_string(),
+                        "INTEGER" => row
+                            .try_get::<i64, _>(col_idx)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|_| {
+                                format!("Error reading NUMERIC from column {}", column_name)
+                            }),
+                        "REAL" => row
+                            .try_get::<f64, _>(col_idx)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|_| {
+                                format!("Error reading NUMERIC from column {}", column_name)
+                            }),
+                        _ => row.try_get::<String, _>(col_idx).unwrap_or_else(|_| {
+                            format!("Error reading NUMERIC from column {}", column_name)
+                        }),
                     }
                 }
                 // Boolean type (stored as INTEGER 0/1)
@@ -375,5 +395,41 @@ pub(crate) async fn list_sqlite_tables(
             debug!("Error querying SQLite {} from database: {}", table_type, e);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn numeric_columns_keep_exact_values() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (n NUMERIC)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // INTEGER di atas 2^53 dulu dibaca lewat f64 dan berubah nilainya;
+        // teks non-angka tetap TEXT.
+        for v in ["9007199254740993", "'n/a'", "1.5", "NULL"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO t VALUES ({v})")))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let rows = sqlx::query("SELECT n FROM t")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let data = convert_sqlite_rows_to_table_data(rows);
+        let values: Vec<&str> = data.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(values[0], "9007199254740993");
+        assert_eq!(values[1], "n/a");
+        assert_eq!(values[2], "1.5");
+        assert_eq!(values[3], crate::models::structs::NULL_CELL);
     }
 }

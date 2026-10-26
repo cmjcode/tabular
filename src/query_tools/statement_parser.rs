@@ -9,143 +9,24 @@ pub struct SqlStatementSpan {
 
 /// Splits SQL string into discrete statements respecting comments and quoted literals.
 pub fn split_statements(sql: &str) -> Vec<SqlStatementSpan> {
-    let mut statements = Vec::new();
-    let chars: Vec<(usize, char)> = sql.char_indices().collect();
-    let len = chars.len();
-
-    if len == 0 {
-        return statements;
-    }
-
-    let mut stmt_start_char_idx = 0;
-    let mut i = 0;
-
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-
-    while i < len {
-        let (byte_idx, ch) = chars[i];
-        let next_ch = if i + 1 < len {
-            Some(chars[i + 1].1)
-        } else {
-            None
-        };
-
-        if in_single_quote {
-            if ch == '\'' {
-                if next_ch == Some('\'') {
-                    // Escaped single quote: ''
-                    i += 2;
-                    continue;
-                } else {
-                    in_single_quote = false;
-                }
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double_quote {
-            if ch == '"' {
-                if next_ch == Some('"') {
-                    i += 2;
-                    continue;
-                } else {
-                    in_double_quote = false;
-                }
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_block_comment {
-            if ch == '*' && next_ch == Some('/') {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        // Check for starting comments
-        if ch == '-' && next_ch == Some('-') {
-            in_line_comment = true;
-            i += 2;
-            continue;
-        }
-
-        if ch == '/' && next_ch == Some('*') {
-            in_block_comment = true;
-            i += 2;
-            continue;
-        }
-
-        if ch == '\'' {
-            in_single_quote = true;
-            i += 1;
-            continue;
-        }
-
-        if ch == '"' {
-            in_double_quote = true;
-            i += 1;
-            continue;
-        }
-
-        if ch == ';' {
-            let start_byte = chars[stmt_start_char_idx].0;
-            let end_byte = byte_idx + ch.len_utf8();
-            let raw_text = &sql[start_byte..end_byte];
-            let trimmed = raw_text.trim();
-
-            if !trimmed.is_empty() {
-                let start_line = sql[..start_byte].chars().filter(|&c| c == '\n').count() + 1;
-                let end_line = sql[..end_byte].chars().filter(|&c| c == '\n').count() + 1;
-
-                statements.push(SqlStatementSpan {
-                    text: trimmed.to_string(),
-                    range: start_byte..end_byte,
-                    line_range: (start_line, end_line),
-                });
-            }
-
-            stmt_start_char_idx = i + 1;
-        }
-
-        i += 1;
-    }
-
-    // Trailing statement without trailing semicolon
-    if stmt_start_char_idx < len {
-        let start_byte = chars[stmt_start_char_idx].0;
-        let end_byte = sql.len();
-        let raw_text = &sql[start_byte..end_byte];
-        let trimmed = raw_text.trim();
-
-        if !trimmed.is_empty() {
-            let start_line = sql[..start_byte].chars().filter(|&c| c == '\n').count() + 1;
-            let end_line = sql[..end_byte].chars().filter(|&c| c == '\n').count() + 1;
-
-            statements.push(SqlStatementSpan {
-                text: trimmed.to_string(),
-                range: start_byte..end_byte,
+    // Memakai lexer bersama agar editor, eksekusi, dan safety guard selalu
+    // memecah skrip dengan cara yang sama.
+    // Segmen yang hanya berisi `;` atau komentar tetap dikembalikan supaya
+    // tidak ada teks di luar rentang mana pun.
+    crate::connection::sql::split_sql_segments(sql, false)
+        .into_iter()
+        .filter(|seg| !sql[seg.raw.clone()].trim().is_empty())
+        .map(|seg| {
+            let range = seg.raw;
+            let start_line = sql[..range.start].matches('\n').count() + 1;
+            let end_line = sql[..range.end].matches('\n').count() + 1;
+            SqlStatementSpan {
+                text: sql[range.clone()].trim().to_string(),
+                range,
                 line_range: (start_line, end_line),
-            });
-        }
-    }
-
-    statements
+            }
+        })
+        .collect()
 }
 
 /// Finds the SQL statement span containing or closest to the given cursor position.
@@ -181,6 +62,18 @@ pub fn find_statement_at_cursor(sql: &str, cursor_pos: usize) -> Option<SqlState
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shares_lexer_with_execution_for_dollar_quotes_and_backticks() {
+        // Dulu pemecah ini tidak mengenal dollar-quote dan backtick sehingga
+        // "statement di kursor" berbeda dengan yang dieksekusi.
+        let sql = "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; $$ LANGUAGE sql;\nSELECT `a;b` FROM t;";
+        let stmts = split_statements(sql);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].text.ends_with("LANGUAGE sql;"));
+        assert_eq!(stmts[1].text, "SELECT `a;b` FROM t;");
+        assert_eq!(stmts[1].line_range, (1, 2));
+    }
 
     #[test]
     fn test_split_simple_statements() {

@@ -2668,6 +2668,48 @@ async fn execute_mssql_query_job(
         ));
     }
 
+    // Batch yang seluruhnya write (UPDATE/INSERT/DELETE/MERGE) dijalankan lewat
+    // `execute` supaya jumlah baris yang terkena bisa ditampilkan; stream
+    // multi-result driver tidak mengeksposnya.
+    let all_writes = {
+        let stmts =
+            crate::agent::classify::classify_query(&models::enums::DatabaseType::MsSQL, &query_str);
+        !stmts.is_empty()
+            && stmts
+                .iter()
+                .all(|(_, kind)| *kind == crate::agent::classify::StatementKind::Write)
+            && stmts.iter().all(|(stmt, _)| {
+                // OUTPUT/SELECT di dalam DML dan prosedur (EXEC) bisa
+                // mengembalikan baris; biarkan lewat jalur biasa.
+                let upper = stmt.to_ascii_uppercase();
+                let first = upper.split_whitespace().next().unwrap_or("");
+                matches!(first, "UPDATE" | "INSERT" | "DELETE" | "MERGE")
+                    && !upper.contains("OUTPUT")
+                    && !upper.contains("SELECT")
+            })
+    };
+    if all_writes {
+        return match driver_mssql::execute_write_bounded(
+            config.clone(),
+            &query_str,
+            options.query_timeout,
+            Some(options.job_id),
+        )
+        .await
+        {
+            Ok(affected) => Ok(QueryJobOutput {
+                headers: Vec::new(),
+                rows: Vec::new(),
+                ast_debug_sql: None,
+                ast_headers: None,
+                column_metadata: None,
+                affected_rows: Some(affected),
+                truncated: false,
+            }),
+            Err(e) => Err(mssql_execution_error(e)),
+        };
+    }
+
     // Sama seperti engine lain: berhenti di `max_rows`, tandai terpotong, dan
     // hormati batas waktu query (versi lama tidak punya keduanya di jalur ini).
     match driver_mssql::execute_query_bounded(

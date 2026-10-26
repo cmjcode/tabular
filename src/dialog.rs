@@ -2757,7 +2757,12 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
         .show(ctx, |ui| {
             window_egui::style::render_modal_header(
                 ui,
-                egui::RichText::new("⚠️ Unsafe Statement").color(window_egui::style::theme_danger(ctx)),
+                egui::RichText::new(if tabular.unsafe_dml_type.is_empty() {
+                    "Confirm statement".to_string()
+                } else {
+                    tabular.unsafe_dml_type.clone()
+                })
+                .color(window_egui::style::theme_danger(ctx)),
                 &mut close,
             );
             ui.add_space(12.0);
@@ -2765,21 +2770,10 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
             window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new(format!(
-                        "This {} statement has NO WHERE clause!",
-                        tabular.unsafe_dml_type
-                    ))
-                    .color(window_egui::style::theme_danger(ctx))
-                    .strong()
-                    .size(14.0),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Running it will change or delete EVERY row in the target table. Are you sure you want to continue?",
-                    )
-                    .size(12.0)
-                    .weak(),
+                    egui::RichText::new(&tabular.unsafe_dml_reason)
+                        .color(window_egui::style::theme_danger(ctx))
+                        .strong()
+                        .size(14.0),
                 );
                 ui.add_space(10.0);
 
@@ -2789,7 +2783,10 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     } else {
                         egui::Color32::from_rgb(240, 242, 246)
                     })
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.noninteractive.bg_stroke.color,
+                    ))
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
@@ -2814,6 +2811,9 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     if ui.add(run_btn).clicked() {
                         confirm_clicked = true;
                     }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
                 });
             });
         });
@@ -2824,6 +2824,64 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
         tabular.show_unsafe_dml_dialog = false;
         let query = tabular.unsafe_dml_query.clone();
         editor::execute_query_bypass_checks(tabular, query);
+    }
+}
+
+/// Konfirmasi menutup tab yang masih memegang transaksi manual terbuka.
+pub(crate) fn render_close_tx_tab_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    let Some(tab_id) = tabular.pending_close_tx_tab else {
+        return;
+    };
+    let Some(title) = tabular
+        .query_tabs
+        .iter()
+        .find(|t| t.id == tab_id)
+        .map(|t| t.title.clone())
+    else {
+        tabular.pending_close_tx_tab = None;
+        return;
+    };
+    window_egui::style::render_modal_backdrop(ctx, "close_tx_tab_dialog", true);
+    let mut close = false;
+    let mut confirm = false;
+    egui::Window::new("close_tx_tab_dialog_window")
+        .id(egui::Id::new("close_tx_tab_dialog_window"))
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(440.0)
+        .frame(window_egui::style::modal_window_frame(ctx))
+        .show(ctx, |ui| {
+            window_egui::style::render_modal_header(ui, "Uncommitted transaction", &mut close);
+            ui.add_space(8.0);
+            ui.label(format!(
+                "\"{title}\" has an open transaction. Closing the tab rolls back every change made since BEGIN."
+            ));
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn = egui::Button::new(
+                    egui::RichText::new("Roll Back and Close")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(window_egui::style::theme_danger(ctx));
+                if ui.add(btn).clicked() {
+                    confirm = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if confirm {
+        tabular.pending_close_tx_tab = None;
+        tabular.confirmed_close_tx_tab = Some(tab_id);
+        if let Some(index) = tabular.query_tabs.iter().position(|t| t.id == tab_id) {
+            editor::close_tab(tabular, index);
+        }
+    } else if close {
+        tabular.pending_close_tx_tab = None;
     }
 }
 

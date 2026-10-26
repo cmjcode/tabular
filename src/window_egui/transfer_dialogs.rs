@@ -165,6 +165,7 @@ impl Tabular {
         let Some(mut dialog) = self.transfer_ui.transfer.take() else {
             return;
         };
+        let mut clear_confirmed = false;
         dialog.source.sync_tables(self, ctx);
         if let Some(wanted) = dialog.preselect.clone()
             && !dialog.source.loading()
@@ -327,6 +328,13 @@ impl Tabular {
                                 ui,
                                 "Existing rows in every selected target table will be removed.",
                             );
+                            let phrase = if dialog.target.database.trim().is_empty() {
+                                "DELETE".to_string()
+                            } else {
+                                dialog.target.database.trim().to_string()
+                            };
+                            clear_confirmed =
+                                style::type_to_confirm(ui, "transfer_clear_target", &phrase);
                         }
                         ui.checkbox(
                             &mut dialog.continue_on_error,
@@ -405,8 +413,15 @@ impl Tabular {
                         } else {
                             "Start Transfer"
                         };
+                        let target_read_only = dialog.target.conn_id.is_some_and(|id| {
+                            self.connection_safety_mode(id)
+                                == crate::connection_safety::SafetyMode::ReadOnly
+                        });
+                        let allowed = problem.is_none()
+                            && (!dialog.clear_target || clear_confirmed)
+                            && !target_read_only;
                         if ui
-                            .add_enabled(problem.is_none(), style::btn_primary_ctx(ctx, label))
+                            .add_enabled(allowed, style::btn_primary_ctx(ctx, label))
                             .clicked()
                         {
                             start = true;
@@ -416,6 +431,8 @@ impl Tabular {
                         }
                         if let Some(problem) = &problem {
                             muted_label(ui, problem.clone());
+                        } else if target_read_only {
+                            muted_label(ui, "The target connection is read-only.".to_string());
                         }
                     }
                 });
@@ -428,6 +445,7 @@ impl Tabular {
             cancel.store(true, Ordering::Relaxed);
         }
         if start {
+            style::clear_type_to_confirm(ctx, "transfer_clear_target");
             self.start_table_transfer(ctx, &mut dialog);
         }
         // Dialog tidak ditutup selama transfer berjalan: progresnya hanya ada di sini.

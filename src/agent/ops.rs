@@ -165,11 +165,7 @@ pub struct RunningQuery {
 
 /// Kutip identifier sesuai dialek. `schema.table` dikutip per bagian.
 pub fn quote_ident(db: &DatabaseType, name: &str) -> String {
-    let quote_one = |part: &str| match db {
-        DatabaseType::MySQL => format!("`{}`", part.replace('`', "``")),
-        DatabaseType::MsSQL => format!("[{}]", part.replace(']', "]]")),
-        _ => format!("\"{}\"", part.replace('"', "\"\"")),
-    };
+    let quote_one = |part: &str| crate::schema_objects::sql::quote_ident(db, part);
     match name.split_once('.') {
         Some((schema, table))
             if matches!(db, DatabaseType::PostgreSQL | DatabaseType::MsSQL)

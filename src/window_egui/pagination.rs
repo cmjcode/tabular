@@ -387,9 +387,5 @@ impl super::Tabular {
 
 /// Quote identifier kolom sesuai dialek untuk klausa ORDER BY paginasi.
 fn quote_ident_for(db_type: &models::enums::DatabaseType, name: &str) -> String {
-    match db_type {
-        models::enums::DatabaseType::MySQL => format!("`{}`", name.replace('`', "``")),
-        models::enums::DatabaseType::MsSQL => format!("[{}]", name.replace(']', "]]")),
-        _ => format!("\"{}\"", name.replace('"', "\"\"")),
-    }
+    crate::schema_objects::sql::quote_ident(db_type, name)
 }

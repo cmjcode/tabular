@@ -66,7 +66,7 @@ pub trait SpreadsheetOperations {
         target_table_for_update: Option<&str>,
     ) -> Option<String>;
 
-    fn spreadsheet_generate_sql(&self) -> Option<String>;
+    fn spreadsheet_generate_sql(&self) -> Result<String, String>;
 
     fn spreadsheet_row_where_all_columns(
         &self,
@@ -405,77 +405,18 @@ pub trait SpreadsheetOperations {
         conn: &crate::models::structs::ConnectionConfig,
         ident: &str,
     ) -> String {
-        match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL => format!("`{}`", ident),
-            crate::models::enums::DatabaseType::PostgreSQL => format!("\"{}\"", ident),
-            crate::models::enums::DatabaseType::MsSQL => format!("[{}]", ident),
-            crate::models::enums::DatabaseType::SQLite => format!("\"{}\"", ident),
-            _ => ident.to_string(),
-        }
+        // Karakter quote di dalam nama di-escape (mis. kolom `a"b`).
+        crate::schema_objects::sql::quote_ident(&conn.connection_type, ident)
     }
 
-    // Quote a possibly schema-qualified table identifier appropriately per-DB.
-    // Examples:
-    // - MySQL: schema.table -> `schema`.`table`
-    // - PostgreSQL: schema.table -> "schema"."table"
-    // - MsSQL: schema.table -> [schema].[table]
-    // - SQLite: table -> "table" (no schemas)
     fn spreadsheet_quote_table_ident(
         &self,
         conn: &crate::models::structs::ConnectionConfig,
         ident: &str,
     ) -> String {
-        // If identifier already appears quoted for the target DB, return as-is
-        let already_mysql = ident.contains('`');
-        let already_pg_sqlite = ident.contains('"');
-        let already_mssql = ident.contains('[') && ident.contains(']');
-
-        match conn.connection_type {
-            crate::models::enums::DatabaseType::MySQL => {
-                if already_mysql {
-                    return ident.to_string();
-                }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("`{}`", p))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("`{}`", ident)
-                }
-            }
-            crate::models::enums::DatabaseType::PostgreSQL
-            | crate::models::enums::DatabaseType::SQLite => {
-                if already_pg_sqlite {
-                    return ident.to_string();
-                }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("\"{}\"", p))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("\"{}\"", ident)
-                }
-            }
-            crate::models::enums::DatabaseType::MsSQL => {
-                if already_mssql {
-                    return ident.to_string();
-                }
-                if ident.contains('.') {
-                    ident
-                        .split('.')
-                        .map(|p| format!("[{}]", p.trim_matches(['[', ']'])))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                } else {
-                    format!("[{}]", ident.trim_matches(['[', ']']))
-                }
-            }
-            _ => ident.to_string(),
-        }
+        // `schema.table` dikutip per bagian; nama yang sudah berkutip (dari
+        // tree, mis. `[dbo].[t]`) dibiarkan.
+        crate::schema_objects::sql::quote_qualified(&conn.connection_type, ident)
     }
 
     fn spreadsheet_quote_value(
@@ -786,6 +727,41 @@ impl SpreadsheetOperations for Tabular {
         )
         .contains(&row)
         {
+            return;
+        }
+        // Simpan grid membuat SQL; hasil MongoDB/Redis tidak bisa disimpan begitu.
+        let non_sql = self
+            .current_connection_id
+            .and_then(|id| self.connections.iter().find(|c| c.id == Some(id)))
+            .is_some_and(|c| {
+                matches!(
+                    c.connection_type,
+                    crate::models::enums::DatabaseType::MongoDB
+                        | crate::models::enums::DatabaseType::Redis
+                )
+            });
+        if non_sql {
+            self.toasts.info(
+                "Editing results in the grid is only available for SQL databases. Use a query to change MongoDB or Redis data.",
+            );
+            return;
+        }
+        // Kolom biner tampil sebagai teks; mengeditnya akan menulis teks itu,
+        // bukan byte aslinya.
+        let binary_col = self
+            .current_column_metadata
+            .as_ref()
+            .and_then(|m| m.get(col))
+            .is_some_and(|m| crate::data_table::grid_model::is_binary_type(&m.type_name))
+            || self
+                .get_current_table_data()
+                .get(row)
+                .and_then(|r| r.get(col))
+                .is_some_and(|v| crate::data_table::grid_model::is_blob_placeholder(v));
+        if binary_col {
+            self.toasts.info(
+                "Binary columns cannot be edited in the grid. Use an UPDATE statement with a hex literal instead.",
+            );
             return;
         }
         if let Some(val) = self
@@ -1110,6 +1086,18 @@ impl SpreadsheetOperations for Tabular {
                     }
                 }
 
+                // Nilai biner tampil sebagai teks (`0x..`, `<BLOB n bytes>`) dan
+                // tidak bisa dibandingkan dengan kolom aslinya.
+                let col_is_binary = metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get(i))
+                    .is_some_and(|m| crate::data_table::grid_model::is_binary_type(&m.type_name))
+                    || row_data
+                        .get(i)
+                        .is_some_and(|v| crate::data_table::grid_model::is_blob_placeholder(v));
+                if col_is_binary && primary_keys.is_empty() {
+                    continue;
+                }
                 if (primary_keys.is_empty()
                     || primary_keys
                         .iter()
@@ -1137,21 +1125,10 @@ impl SpreadsheetOperations for Tabular {
             }
         }
 
+        // Tidak ada tebakan "kolom pertama yang namanya mengandung id": kolom
+        // seperti `user_id` tidak unik dan bisa mengenai baris lain. Tanpa kunci
+        // yang bisa dipakai, pemanggil menolak simpan.
         if where_parts.is_empty() {
-            // Second fallback logic (implicit ID detection from old code)
-            if primary_keys.is_empty()
-                && let (Some(first_header), Some(first_value)) = (headers.first(), row_data.first())
-            {
-                let lower = first_header.to_lowercase();
-                if lower.contains("id") || lower.contains("recid") || lower == "pk" {
-                    let clause = if crate::data_table::grid_model::is_null_cell(first_value) {
-                        format!("{} IS NULL", qt(first_header))
-                    } else {
-                        format!("{} = {}", qt(first_header), qv(first_value))
-                    };
-                    return Some(clause);
-                }
-            }
             None
         } else {
             Some(where_parts.join(" AND "))
@@ -1240,19 +1217,16 @@ impl SpreadsheetOperations for Tabular {
         crate::data_table::grid_model::quote_literal(&conn.connection_type, v)
     }
 
-    fn spreadsheet_generate_sql(&self) -> Option<String> {
-        let statements = self.spreadsheet_generate_statements();
+    fn spreadsheet_generate_sql(&self) -> Result<String, String> {
+        let statements = self.spreadsheet_generate_statements()?;
         if statements.is_empty() {
-            None
-        } else {
-            Some(
-                statements
-                    .into_iter()
-                    .map(|s| s.sql)
-                    .collect::<Vec<_>>()
-                    .join(";\n"),
-            )
+            return Err("There is nothing to save.".to_string());
         }
+        Ok(statements
+            .into_iter()
+            .map(|s| s.sql)
+            .collect::<Vec<_>>()
+            .join(";\n"))
     }
 
     fn spreadsheet_save_changes(&mut self) {
@@ -1270,14 +1244,31 @@ impl SpreadsheetOperations for Tabular {
             return;
         }
 
+        // Pertahanan kedua setelah request_save_review: read-only tidak menulis.
+        if let Some(conn_id) = self.get_current_connection_id()
+            && self.connection_safety_mode(conn_id)
+                == crate::connection_safety::SafetyMode::ReadOnly
+        {
+            self.toasts
+                .error("This connection is read-only, so grid changes cannot be saved.");
+            return;
+        }
+
         // Ensure primary key columns are available before generating SQL.
         self.spreadsheet_ensure_primary_keys();
 
-        let statements = self.spreadsheet_generate_statements();
-        if statements.is_empty() {
-            debug!("Failed to generate SQL");
-            return;
-        }
+        let statements = match self.spreadsheet_generate_statements() {
+            Ok(statements) if !statements.is_empty() => statements,
+            Ok(_) => {
+                self.toasts.info("No pending changes to save");
+                return;
+            }
+            Err(msg) => {
+                // Edit tetap di antrean; tidak ada yang ditulis.
+                self.toasts.error(format!("Nothing was saved: {msg}"));
+                return;
+            }
+        };
         if self.get_current_connection_id().is_none() {
             debug!("No current connection ID");
             return;
@@ -1302,6 +1293,15 @@ impl SpreadsheetOperations for Tabular {
     }
 }
 
+/// Pesan untuk baris yang tidak bisa diidentifikasi secara unik.
+fn no_key_error(table: &str, row_index: usize) -> String {
+    format!(
+        "Row {} of \"{}\" cannot be identified: the table has no primary key and the row has no comparable columns. Use an UPDATE/DELETE statement instead.",
+        row_index + 1,
+        table
+    )
+}
+
 impl Tabular {
     /// Isi `primary_key_columns` sebelum SQL simpan dibuat. Di mode browse
     /// `current_column_metadata` kosong, jadi PK diambil dari cache lalu,
@@ -1312,14 +1312,19 @@ impl Tabular {
     /// berubah, juga pada tabel tanpa primary key. `expected_rows` = 1 untuk
     /// UPDATE/DELETE: eksekusi transaksional membatalkan semuanya bila sebuah
     /// statement mengenai 0 atau lebih dari 1 baris.
+    ///
+    /// Mengembalikan `Err` dengan pesan untuk user bila ada edit yang tidak bisa
+    /// diubah menjadi SQL yang aman (tabel/kunci tidak diketahui, kolom biner).
+    /// Tidak ada edit yang dilewati diam-diam: edit yang dilewati akan ikut
+    /// dibuang dari antrean saat simpan sukses, padahal tidak pernah ditulis.
     pub(crate) fn spreadsheet_generate_statements(
         &self,
-    ) -> Vec<crate::connection::atomic::TransactionalStatement> {
+    ) -> Result<Vec<crate::connection::atomic::TransactionalStatement>, String> {
         use crate::connection::atomic::TransactionalStatement;
         use crate::models::structs::CellEditOperation;
 
         let Some(conn_id) = self.get_current_connection_id() else {
-            return Vec::new();
+            return Err("No active connection for this result.".to_string());
         };
         let Some(conn) = self
             .get_connections()
@@ -1327,7 +1332,14 @@ impl Tabular {
             .find(|c| c.id == Some(conn_id))
             .cloned()
         else {
-            return Vec::new();
+            return Err("The connection for this result no longer exists.".to_string());
+        };
+        let is_binary_col = |col_index: usize, header: &str| -> Option<String> {
+            let meta_binary = self
+                .get_current_column_metadata()
+                .and_then(|m| m.get(col_index))
+                .is_some_and(|m| crate::data_table::grid_model::is_binary_type(&m.type_name));
+            meta_binary.then(|| header.to_string())
         };
         let table = self.spreadsheet_extract_table_name();
         let qt = |s: &str| self.spreadsheet_quote_ident(&conn, s);
@@ -1418,8 +1430,10 @@ impl Tabular {
                         .or_else(|| current_rows.get(*row_index))
                         .or_else(|| all_rows.get(*row_index))
                     else {
-                        debug!("[GRID] Missing row data at index {}", row_index);
-                        continue;
+                        return Err(format!(
+                            "Row {} is no longer loaded; reload the table and edit it again.",
+                            row_index + 1
+                        ));
                     };
                     let overrides = row_overrides.get(row_index);
 
@@ -1427,21 +1441,28 @@ impl Tabular {
                     let mut per_table: Vec<(String, Vec<String>)> = Vec::new();
                     for (col_index, new_value) in &set_cols {
                         let col_meta = metadata.and_then(|m| m.get(*col_index));
+                        let header = headers
+                            .get(*col_index)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", col_index + 1));
+                        if let Some(name) = is_binary_col(*col_index, &header) {
+                            return Err(format!(
+                                "Column \"{name}\" is binary and cannot be edited in the grid; use an UPDATE statement instead."
+                            ));
+                        }
                         let Some(table_name) = col_meta
                             .and_then(|m| m.table_name.clone())
                             .or_else(|| table.clone())
                         else {
-                            debug!(
-                                "[GRID] Unable to determine table name for update at col {}",
-                                col_index
-                            );
-                            continue;
+                            return Err(format!(
+                                "Could not tell which table column \"{header}\" belongs to, so it cannot be saved."
+                            ));
                         };
                         let Some(col) = col_meta
                             .and_then(|m| m.original_name.clone())
                             .or_else(|| headers.get(*col_index).cloned())
                         else {
-                            continue;
+                            return Err(format!("Column #{} is unknown.", col_index + 1));
                         };
                         let assignment = format!("{} = {}", qt(&col), qv(new_value));
                         match per_table.iter_mut().find(|(t, _)| *t == table_name) {
@@ -1458,8 +1479,7 @@ impl Tabular {
                             overrides,
                             Some(&table_name),
                         ) else {
-                            debug!("[GRID] Unable to build WHERE clause for row {}", row_index);
-                            continue;
+                            return Err(no_key_error(&table_name, *row_index));
                         };
                         stmts.push(TransactionalStatement {
                             sql: format!(
@@ -1484,6 +1504,22 @@ impl Tabular {
                     // Kolom bernilai DEFAULT dihilangkan dari INSERT sehingga
                     // default/auto-increment server berlaku (juga di SQLite yang
                     // tidak mengenal DEFAULT di VALUES).
+                    // Kolom biner hanya boleh kosong/NULL/DEFAULT: nilai tampilan
+                    // (`0x..`, `<BLOB n bytes>`, mis. dari Duplicate Row) bukan byte asli.
+                    for (i, h) in headers.iter().enumerate() {
+                        let v = latest.get(i).map(String::as_str).unwrap_or("");
+                        let writes_value = !v.is_empty()
+                            && !crate::data_table::grid_model::is_null_cell(v)
+                            && !crate::data_table::grid_model::is_raw_default(v);
+                        if writes_value
+                            && (is_binary_col(i, h).is_some()
+                                || crate::data_table::grid_model::is_blob_placeholder(v))
+                        {
+                            return Err(format!(
+                                "Column \"{h}\" is binary and cannot be filled from the grid; leave it empty or use an INSERT statement."
+                            ));
+                        }
+                    }
                     let (cols, vals): (Vec<String>, Vec<String>) = headers
                         .iter()
                         .enumerate()
@@ -1494,8 +1530,9 @@ impl Tabular {
                         })
                         .unzip();
                     let Some(table_for_insert) = table.as_ref() else {
-                        debug!("[GRID] Skipping insert: no table identified");
-                        continue;
+                        return Err(
+                            "Could not tell which table the new row belongs to.".to_string()
+                        );
                     };
                     let sql = if cols.is_empty() {
                         match conn.connection_type {
@@ -1524,18 +1561,15 @@ impl Tabular {
                         continue;
                     }
                     let overrides = row_overrides.get(row_index);
+                    let Some(table_for_delete) = table.as_ref() else {
+                        return Err(
+                            "Could not tell which table the deleted row belongs to.".to_string()
+                        );
+                    };
                     let Some(where_clause) = self.spreadsheet_build_where_clause(
                         &conn, values, headers, pk_columns, overrides, None,
                     ) else {
-                        debug!(
-                            "[GRID] Unable to build DELETE WHERE clause for row {}",
-                            row_index
-                        );
-                        continue;
-                    };
-                    let Some(table_for_delete) = table.as_ref() else {
-                        debug!("[GRID] Skipping delete: no table identified");
-                        continue;
+                        return Err(no_key_error(table_for_delete, *row_index));
                     };
                     stmts.push(TransactionalStatement {
                         sql: format!(
@@ -1548,7 +1582,7 @@ impl Tabular {
                 }
             }
         }
-        stmts
+        Ok(stmts)
     }
 
     pub(crate) fn spreadsheet_ensure_primary_keys(&mut self) {

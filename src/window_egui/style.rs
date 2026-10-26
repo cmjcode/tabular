@@ -1100,6 +1100,33 @@ pub fn modal_card_frame(ctx: &egui::Context) -> egui::Frame {
         .inner_margin(egui::Margin::same(14))
 }
 
+/// Kotak "ketik nama untuk konfirmasi" untuk operasi yang menimpa atau
+/// menghapus data. Teks yang diketik disimpan di memori egui per `id_salt`
+/// sehingga dialog tidak perlu field state sendiri. Mengembalikan `true` bila
+/// teks persis sama dengan `expected`.
+pub fn type_to_confirm(ui: &mut egui::Ui, id_salt: &str, expected: &str) -> bool {
+    let id = egui::Id::new(("type_to_confirm", id_salt));
+    let mut typed: String = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
+    ui.label(
+        egui::RichText::new(format!("Type \"{expected}\" to confirm:"))
+            .small()
+            .strong(),
+    );
+    ui.add(
+        egui::TextEdit::singleline(&mut typed)
+            .hint_text(expected)
+            .desired_width(f32::INFINITY),
+    );
+    let matches = typed.trim() == expected;
+    ui.ctx().data_mut(|d| d.insert_temp(id, typed));
+    matches
+}
+
+/// Kosongkan teks [`type_to_confirm`] saat dialog ditutup.
+pub fn clear_type_to_confirm(ctx: &egui::Context, id_salt: &str) {
+    ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new(("type_to_confirm", id_salt))));
+}
+
 /// Render header standar modal: Judul di sisi kiri dan tombol 'X' (Esc) di sisi kanan.
 pub fn render_modal_header(
     ui: &mut egui::Ui,

@@ -265,6 +265,16 @@ pub(crate) fn open_user_manager_tab(
 }
 
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
+    // Transaksi manual yang masih terbuka akan di-rollback saat tab ditutup;
+    // minta konfirmasi dulu kecuali sudah dikonfirmasi lewat dialog.
+    if let Some(tab) = tabular.query_tabs.get(tab_index)
+        && tab.tx_active
+        && tabular.confirmed_close_tx_tab != Some(tab.id)
+    {
+        tabular.pending_close_tx_tab = Some(tab.id);
+        return;
+    }
+    tabular.confirmed_close_tx_tab = None;
     tabular.dragged_tab_index = None;
     // Catat tab asal job yang baru dimulai sebelum daftar tab berubah.
     tabular.sync_job_tabs();
@@ -5561,8 +5571,7 @@ fn ai_send_message(tabular: &mut window_egui::Tabular) {
     use crate::models::structs::{AiChatMessage, AiChatRole};
 
     let text = tabular.ai_input.trim().to_string();
-    if text.is_empty() || tabular.ai_stream_receiver.is_some() || tabular.ai_context_job.is_some()
-    {
+    if text.is_empty() || tabular.ai_stream_receiver.is_some() || tabular.ai_context_job.is_some() {
         return;
     }
     let target = tabular.effective_chat_target();
@@ -9922,16 +9931,25 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         return;
     }
 
-    // Safety Guard: Check for unsafe UPDATE or DELETE without WHERE clause
-    if !tabular.show_unsafe_dml_dialog
-        && let Some(kind) = is_unsafe_dml_query(&query)
-    {
-        tabular.show_unsafe_dml_dialog = true;
-        tabular.unsafe_dml_query = query;
-        tabular.unsafe_dml_type = kind.to_string();
-        tabular.query_execution_in_progress = false;
-        tabular.extend_query_icon_hold();
-        return;
+    // Guard eksekusi: semua statement (bukan hanya yang pertama) dinilai dengan
+    // aturan yang sama seperti agent MCP, sesuai mode keamanan koneksi.
+    if !tabular.show_unsafe_dml_dialog {
+        match assess_query_for_active_tab(tabular, &query) {
+            crate::connection_safety::Verdict::Allow => {}
+            crate::connection_safety::Verdict::Confirm { title, reason } => {
+                tabular.show_unsafe_dml_dialog = true;
+                tabular.unsafe_dml_query = query;
+                tabular.unsafe_dml_type = title;
+                tabular.unsafe_dml_reason = reason;
+                tabular.query_execution_in_progress = false;
+                tabular.extend_query_icon_hold();
+                return;
+            }
+            crate::connection_safety::Verdict::Block { reason } => {
+                block_query(tabular, reason);
+                return;
+            }
+        }
     }
 
     // Parameter Prompt: Check if query contains parameter placeholders
@@ -9950,9 +9968,49 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
     execute_query_bypass_checks(tabular, query);
 }
 
+/// Nilai query terhadap mode keamanan koneksi tab aktif.
+pub(crate) fn assess_query_for_active_tab(
+    tabular: &window_egui::Tabular,
+    query: &str,
+) -> crate::connection_safety::Verdict {
+    let Some(conn_id) = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)
+    else {
+        return crate::connection_safety::Verdict::Allow;
+    };
+    let Some(db_type) = tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(conn_id))
+        .map(|c| c.connection_type.clone())
+    else {
+        return crate::connection_safety::Verdict::Allow;
+    };
+    crate::connection_safety::assess(&db_type, query, tabular.connection_safety_mode(conn_id))
+}
+
+/// Tolak query (mode read-only) dan tampilkan alasannya di panel pesan.
+fn block_query(tabular: &mut window_egui::Tabular, reason: String) {
+    tabular.query_execution_in_progress = false;
+    tabular.extend_query_icon_hold();
+    tabular.query_message = reason.clone();
+    tabular.query_message_is_error = true;
+    tabular.show_message_panel = true;
+    tabular.toasts.error(reason);
+}
+
 pub(crate) fn execute_query_bypass_checks(tabular: &mut window_egui::Tabular, query: String) {
     let query = query.trim().to_string();
     if query.is_empty() {
+        return;
+    }
+    // Konfirmasi boleh dilewati di sini, tetapi read-only tidak pernah.
+    if let crate::connection_safety::Verdict::Block { reason } =
+        assess_query_for_active_tab(tabular, &query)
+    {
+        block_query(tabular, reason);
         return;
     }
 
@@ -10770,129 +10828,12 @@ pub(crate) fn extract_statement_at_cursor_from_text(text: &str, cursor_pos: usiz
 }
 
 pub(crate) fn split_sql_statements_with_spans(text: &str) -> Vec<(usize, usize, &str)> {
-    let mut result = Vec::new();
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut start = 0;
-    let mut i = 0;
-
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_backtick = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-
-    while i < len {
-        let b = bytes[i];
-        let next_b = if i + 1 < len {
-            Some(bytes[i + 1])
-        } else {
-            None
-        };
-
-        if in_line_comment {
-            if b == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_block_comment {
-            if b == b'*' && next_b == Some(b'/') {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_single_quote {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            } else if b == b'\'' {
-                if next_b == Some(b'\'') {
-                    i += 2;
-                    continue;
-                }
-                in_single_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double_quote {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            } else if b == b'"' {
-                in_double_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_backtick {
-            if b == b'`' {
-                in_backtick = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'-' && next_b == Some(b'-') {
-            in_line_comment = true;
-            i += 2;
-            continue;
-        }
-        if b == b'#' {
-            in_line_comment = true;
-            i += 1;
-            continue;
-        }
-        if b == b'/' && next_b == Some(b'*') {
-            in_block_comment = true;
-            i += 2;
-            continue;
-        }
-
-        if b == b'\'' {
-            in_single_quote = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            in_double_quote = true;
-            i += 1;
-            continue;
-        }
-        if b == b'`' {
-            in_backtick = true;
-            i += 1;
-            continue;
-        }
-
-        if b == b';' {
-            let stmt = &text[start..=i];
-            if !stmt.trim().is_empty() {
-                result.push((start, i + 1, stmt));
-            }
-            start = i + 1;
-        }
-
-        i += 1;
-    }
-
-    if start < len {
-        let stmt = &text[start..len];
-        if !stmt.trim().is_empty() {
-            result.push((start, len, stmt));
-        }
-    }
-
-    result
+    // Lexer bersama; `#` diperlakukan sebagai komentar seperti sebelumnya.
+    crate::connection::sql::split_sql_segments(text, true)
+        .into_iter()
+        .filter(|seg| !text[seg.raw.clone()].trim().is_empty())
+        .map(|seg| (seg.raw.start, seg.raw.end, &text[seg.raw]))
+        .collect()
 }
 
 pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
@@ -11061,29 +11002,6 @@ pub(crate) fn substitute_query_parameters(query: &str, params: &[(String, String
         }
     }
     result
-}
-
-pub(crate) fn is_unsafe_dml_query(sql: &str) -> Option<&'static str> {
-    let clean_sql = split_sql_statements_with_spans(sql);
-    let stmt = clean_sql.first().map(|(_, _, s)| *s).unwrap_or(sql);
-    let trimmed = stmt.trim();
-    let upper = trimmed.to_ascii_uppercase();
-
-    if upper.starts_with("DELETE") {
-        if !upper
-            .split_whitespace()
-            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
-        {
-            return Some("DELETE");
-        }
-    } else if upper.starts_with("UPDATE")
-        && !upper
-            .split_whitespace()
-            .any(|w| w == "WHERE" || w.starts_with("WHERE;"))
-    {
-        return Some("UPDATE");
-    }
-    None
 }
 
 pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path: &str) {
@@ -11293,20 +11211,6 @@ mod tests {
                 "$1".to_string(),
                 "? (Param 3)".to_string()
             ]
-        );
-    }
-
-    #[test]
-    fn test_is_unsafe_dml_query() {
-        assert_eq!(is_unsafe_dml_query("DELETE FROM users;"), Some("DELETE"));
-        assert_eq!(
-            is_unsafe_dml_query("UPDATE users SET status = 'inactive';"),
-            Some("UPDATE")
-        );
-        assert_eq!(is_unsafe_dml_query("DELETE FROM users WHERE id = 1;"), None);
-        assert_eq!(
-            is_unsafe_dml_query("UPDATE users SET status = 'a' WHERE id = 1;"),
-            None
         );
     }
 

@@ -774,6 +774,21 @@ impl super::Tabular {
     /// ini, sama dengan yang dicap `prepare_query_job`) dan buang catatan job
     /// yang sudah selesai. Dipanggil tiap frame serta sebelum tab aktif
     /// berganti atau tab ditutup.
+    /// Selaraskan `tx_active` tiap tab dengan status transaksi sebenarnya di
+    /// koneksi sesi (BEGIN gagal, timeout, sesi mati). Selama ada job berjalan
+    /// nilai optimistis `true` dari editor dipertahankan.
+    pub fn sync_tab_tx_state(&mut self) {
+        let idle = self.jobs.active.is_empty();
+        for tab in &mut self.query_tabs {
+            let open = tab.session.as_ref().is_some_and(|s| s.tx_open());
+            if idle {
+                tab.tx_active = open;
+            } else {
+                tab.tx_active |= open;
+            }
+        }
+    }
+
     pub fn sync_job_tabs(&mut self) {
         if self.jobs.active.is_empty() {
             self.jobs.tab_of.clear();

@@ -117,6 +117,38 @@ pub fn new_uuid_v4() -> String {
     )
 }
 
+/// True untuk tipe kolom biner/bit. Grid menampilkan nilai seperti ini sebagai
+/// teks (`0x..`, `<BLOB n bytes>`, `0b..`); menulis teks itu balik akan
+/// menyimpan string, bukan byte aslinya, jadi kolom ini tidak boleh diedit
+/// dan tidak dipakai di WHERE.
+pub fn is_binary_type(type_name: &str) -> bool {
+    let t = type_name.trim().to_ascii_uppercase();
+    // Buang argumen panjang, mis. `VARBINARY(16)` atau `BIT(1)`.
+    let base = t.split(['(', ' ']).next().unwrap_or("");
+    matches!(
+        base,
+        "BLOB"
+            | "TINYBLOB"
+            | "MEDIUMBLOB"
+            | "LONGBLOB"
+            | "BINARY"
+            | "VARBINARY"
+            | "BYTEA"
+            | "IMAGE"
+            | "BIT"
+            | "VARBIT"
+            | "GEOMETRY"
+            | "POINT"
+            | "LINESTRING"
+            | "POLYGON"
+    )
+}
+
+/// Placeholder yang dipakai driver SQLite untuk nilai BLOB (`<BLOB 12 bytes>`).
+pub fn is_blob_placeholder(value: &str) -> bool {
+    value.starts_with("<BLOB ") && value.ends_with(" bytes>")
+}
+
 /// Quote literal string sesuai dialek. Teks `NULL` (tampilan sel NULL di grid)
 /// menjadi SQL `NULL`; string kosong tetap `''`, bukan NULL, supaya
 /// mengosongkan sel tidak diam-diam menulis NULL dan `WHERE kolom = ''`
@@ -921,6 +953,38 @@ pub fn summarize_ops(ops: &[CellEditOperation]) -> OpSummary {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn binary_types_are_detected_case_insensitively_with_length() {
+        for t in [
+            "blob",
+            "VARBINARY(16)",
+            "bytea",
+            "BIT(1)",
+            "image",
+            "LongBlob",
+        ] {
+            assert!(is_binary_type(t), "{t}");
+        }
+        for t in [
+            "VARCHAR(10)",
+            "INTEGER",
+            "text",
+            "BIGINT",
+            "bitmap_index",
+            "JSON",
+        ] {
+            assert!(!is_binary_type(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn blob_placeholder_matches_only_driver_format() {
+        assert!(is_blob_placeholder("<BLOB 12 bytes>"));
+        assert!(!is_blob_placeholder("BLOB 12 bytes"));
+        assert!(!is_blob_placeholder("<BLOB"));
+    }
+
     use super::*;
 
     fn s(v: &[&str]) -> Vec<String> {

@@ -810,12 +810,19 @@ pub(crate) fn request_save_review(t: &mut Tabular) {
         t.toasts.error("No active connection for this result");
         return;
     };
-    t.spreadsheet_ensure_primary_keys();
-    let Some(sql) = t.spreadsheet_generate_sql() else {
+    if t.connection_safety_mode(connection_id) == crate::connection_safety::SafetyMode::ReadOnly {
         t.toasts.error(
-            "Could not build SQL for the pending changes (table name or key columns unknown).",
+            "This connection is read-only, so grid changes cannot be saved. Change it under the connection's Safety menu.",
         );
         return;
+    }
+    t.spreadsheet_ensure_primary_keys();
+    let sql = match t.spreadsheet_generate_sql() {
+        Ok(sql) => sql,
+        Err(msg) => {
+            t.toasts.error(format!("Cannot save these changes: {msg}"));
+            return;
+        }
     };
     if t.grid_ext.skip_review {
         commit_pending_changes(t);

@@ -914,6 +914,7 @@ impl Tabular {
         // Petakan job ke tab asalnya dan batalkan job milik tab yang sudah
         // ditutup sebelum hasilnya diproses.
         self.sync_job_tabs();
+        self.sync_tab_tx_state();
         self.cancel_jobs_of_closed_tabs();
         while let Ok(message) = self.query_result_receiver.try_recv() {
             self.handle_query_result_message(message);
@@ -5829,6 +5830,7 @@ impl App for Tabular {
         dialog::render_csv_import_dialog(self, ctx);
         dialog::render_parameter_dialog(self, ctx);
         dialog::render_unsafe_dml_dialog(self, ctx);
+        dialog::render_close_tx_tab_dialog(self, ctx);
         crate::data_table::render_cell_inspector(self, ctx);
         crate::data_table::grid_ui::render_grid_windows(self, ctx);
         sidebar_query::render_create_folder_dialog(self, ctx);

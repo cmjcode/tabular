@@ -89,44 +89,83 @@ macro_rules! run_sqlx_transaction {
     }};
 }
 
+/// Transaksi MsSQL memakai BEGIN/COMMIT manual pada koneksi pool. Bila waktu
+/// habis atau ROLLBACK gagal, koneksi di-detach (ditutup, server me-rollback)
+/// alih-alih dikembalikan ke pool dengan transaksi yang masih terbuka; pemakai
+/// berikutnya bisa mewarisi lalu tanpa sengaja meng-COMMIT-nya.
 async fn run_mssql_transaction(
     pool: &mssql_driver_pool::Pool,
     statements: &[TransactionalStatement],
+    timeout: Option<Duration>,
 ) -> Result<u64, QueryExecutionError> {
     let mut conn = pool.get().await.map_err(|e| {
         QueryExecutionError::Connection(format!("SQL Server connection error: {}", e))
     })?;
-    let client = conn.client_mut().ok_or_else(|| {
-        QueryExecutionError::Connection("MsSQL pooled connection unavailable".to_string())
-    })?;
-    client
-        .simple_query("BEGIN TRANSACTION")
-        .await
-        .map_err(|e| QueryExecutionError::Message(format!("BEGIN TRANSACTION failed: {}", e)))?;
-    let mut total: u64 = 0;
-    for (index, statement) in statements.iter().enumerate() {
-        let outcome = match client.execute(&statement.sql, &[]).await {
-            Ok(affected) => check_expected(index, statement, affected).map(|_| affected),
-            Err(e) => Err(statement_failed(index, &statement.sql, e)),
-        };
-        match outcome {
-            Ok(affected) => total += affected,
-            Err(e) => {
-                if let Err(rollback_err) = client.simple_query("ROLLBACK").await {
-                    log::warn!(
-                        "[GRID] ROLLBACK gagal setelah error simpan: {}",
-                        rollback_err
-                    );
+    // `Err((error, connection_is_clean))`.
+    let body = async {
+        let client = conn.client_mut().ok_or_else(|| {
+            (
+                QueryExecutionError::Connection("MsSQL pooled connection unavailable".to_string()),
+                true,
+            )
+        })?;
+        client
+            .simple_query("BEGIN TRANSACTION")
+            .await
+            .map_err(|e| {
+                (
+                    QueryExecutionError::Message(format!("BEGIN TRANSACTION failed: {}", e)),
+                    false,
+                )
+            })?;
+        let mut total: u64 = 0;
+        for (index, statement) in statements.iter().enumerate() {
+            let outcome = match client.execute(&statement.sql, &[]).await {
+                Ok(affected) => check_expected(index, statement, affected).map(|_| affected),
+                Err(e) => Err(statement_failed(index, &statement.sql, e)),
+            };
+            match outcome {
+                Ok(affected) => total += affected,
+                Err(e) => {
+                    let clean = match client.simple_query("ROLLBACK").await {
+                        Ok(_) => true,
+                        Err(rollback_err) => {
+                            log::warn!(
+                                "[GRID] ROLLBACK gagal setelah error simpan: {}",
+                                rollback_err
+                            );
+                            false
+                        }
+                    };
+                    return Err((e, clean));
                 }
-                return Err(e);
             }
         }
+        client.simple_query("COMMIT").await.map_err(|e| {
+            (
+                QueryExecutionError::Message(format!("COMMIT failed: {}", e)),
+                false,
+            )
+        })?;
+        Ok(total)
+    };
+    let outcome = match timeout {
+        Some(limit) => match tokio::time::timeout(limit, body).await {
+            Ok(result) => result,
+            Err(_) => Err((QueryExecutionError::Timeout, false)),
+        },
+        None => body.await,
+    };
+    match outcome {
+        Ok(total) => Ok(total),
+        Err((error, clean)) => {
+            if !clean {
+                log::warn!("[GRID] MsSQL connection discarded after an unfinished transaction");
+                drop(conn.detach());
+            }
+            Err(error)
+        }
     }
-    client
-        .simple_query("COMMIT")
-        .await
-        .map_err(|e| QueryExecutionError::Message(format!("COMMIT failed: {}", e)))?;
-    Ok(total)
 }
 
 /// Jalankan `statements` dalam satu transaksi di `pool`; mengembalikan total
@@ -138,12 +177,15 @@ pub async fn execute_in_transaction(
     statements: &[TransactionalStatement],
     timeout: Option<Duration>,
 ) -> Result<u64, QueryExecutionError> {
+    // MsSQL menangani timeout sendiri supaya koneksinya bisa dibuang.
+    if let DatabasePool::MsSQL(p) = pool {
+        return run_mssql_transaction(p, statements, timeout).await;
+    }
     let run = async {
         match pool {
             DatabasePool::MySQL(p) => run_sqlx_transaction!(p, statements, "MySQL"),
             DatabasePool::PostgreSQL(p) => run_sqlx_transaction!(p, statements, "PostgreSQL"),
             DatabasePool::SQLite(p) => run_sqlx_transaction!(p, statements, "SQLite"),
-            DatabasePool::MsSQL(p) => run_mssql_transaction(p, statements).await,
             _ => Err(QueryExecutionError::Message(
                 "Transactional save is not supported for this connection type".to_string(),
             )),

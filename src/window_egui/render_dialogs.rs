@@ -1984,6 +1984,9 @@ impl super::Tabular {
             crate::window_egui::style::render_modal_backdrop(ctx, "modal_drop_database", true);
 
             let title = format!("Drop Database '{}'?", pending.database_name);
+            let mut typed_ok = false;
+            let read_only = self.connection_safety_mode(pending.connection_id)
+                == crate::connection_safety::SafetyMode::ReadOnly;
 
             egui::Window::new(&title)
                 .title_bar(false)
@@ -2021,19 +2024,32 @@ impl super::Tabular {
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new("Command to execute:").small().strong());
                         ui.code(&pending.drop_statement);
+                        ui.add_space(8.0);
+                        typed_ok = super::style::type_to_confirm(
+                            ui,
+                            "drop_database",
+                            &pending.database_name,
+                        );
                     });
+                    if read_only {
+                        ui.add_space(6.0);
+                        ui.colored_label(
+                            super::style::theme_danger(ctx),
+                            "This connection is read-only. Change its Safety mode to drop databases.",
+                        );
+                    }
 
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let drop_btn = egui::Button::new(
-                                egui::RichText::new("🗑 Drop Database")
+                                egui::RichText::new("Drop Database")
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
                             .fill(super::style::theme_danger(ctx));
 
-                            if ui.add(drop_btn).clicked() {
+                            if ui.add_enabled(typed_ok && !read_only, drop_btn).clicked() {
                                 confirm_drop = true;
                                 close_dialog = true;
                             }
@@ -2056,6 +2072,9 @@ impl super::Tabular {
             }
             if close_dialog {
                 self.pending_drop_database = None;
+            }
+            if confirm_drop || close_dialog {
+                super::style::clear_type_to_confirm(ctx, "drop_database");
             }
         }
     }

@@ -214,43 +214,8 @@ fn strip_sql_comments(sql: &str) -> String {
 }
 
 fn split_statements_ignore_quotes(sql: &str) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_backtick = false;
-
-    for c in sql.chars() {
-        match c {
-            '\'' if !in_double_quote && !in_backtick => {
-                in_single_quote = !in_single_quote;
-                current.push(c);
-            }
-            '"' if !in_single_quote && !in_backtick => {
-                in_double_quote = !in_double_quote;
-                current.push(c);
-            }
-            '`' if !in_single_quote && !in_double_quote => {
-                in_backtick = !in_backtick;
-                current.push(c);
-            }
-            ';' if !in_single_quote && !in_double_quote && !in_backtick => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    statements.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => current.push(c),
-        }
-    }
-
-    let trimmed = current.trim().to_string();
-    if !trimmed.is_empty() {
-        statements.push(trimmed);
-    }
-
-    statements
+    // Lexer bersama: sadar quote, komentar, dan dollar-quote.
+    crate::connection::sql::split_sql_statements(sql, false)
 }
 
 #[cfg(test)]

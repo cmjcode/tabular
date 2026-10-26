@@ -2033,6 +2033,35 @@ impl super::Tabular {
                 crate::connection_env::Environment::parse(&key),
             );
         }
+        // Mode keamanan dari menu konteks koneksi.
+        let safety_request: Option<(i64, String)> = ui
+            .ctx()
+            .data(|d| d.get_temp(egui::Id::new(SAFETY_REQUEST_ID)));
+        if let Some((conn_id, key)) = safety_request {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<(i64, String)>(egui::Id::new(SAFETY_REQUEST_ID));
+            });
+            self.set_connection_safety_mode(
+                conn_id,
+                crate::connection_safety::SafetyMode::parse(&key),
+            );
+        }
+        let safety_snapshot: std::collections::HashMap<i64, (&'static str, bool)> = self
+            .connections
+            .iter()
+            .filter_map(|c| c.id)
+            .map(|id| {
+                (
+                    id,
+                    (
+                        self.connection_safety_mode(id).key(),
+                        self.platform_ui.connection_safety.contains_key(&id),
+                    ),
+                )
+            })
+            .collect();
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(SAFETY_SNAPSHOT_ID), safety_snapshot));
         let env_snapshot: std::collections::HashMap<i64, &'static str> = self
             .platform_ui
             .connection_envs
@@ -2911,6 +2940,7 @@ impl super::Tabular {
                         // M10: tandai environment koneksi (warna tab/toolbar).
                         if let Some(conn_id) = node.connection_id {
                             render_environment_menu(ui, conn_id);
+                            render_safety_menu(ui, conn_id);
                         }
                         // Add Replication option for MySQL
                         if let Some(conn_id) = node.connection_id
@@ -4773,6 +4803,47 @@ impl super::Tabular {
 
 const ENV_REQUEST_ID: &str = "conn_set_environment";
 const ENV_SNAPSHOT_ID: &str = "conn_environment_snapshot";
+const SAFETY_REQUEST_ID: &str = "conn_set_safety_mode";
+const SAFETY_SNAPSHOT_ID: &str = "conn_safety_snapshot";
+
+/// Submenu "Safety" di menu konteks koneksi: Standard / Confirm all writes /
+/// Read-only, atau kembali ke default (Production = Confirm all writes).
+fn render_safety_menu(ui: &mut egui::Ui, conn_id: i64) {
+    use crate::connection_safety::SafetyMode;
+    use egui_icons::icons::ICON_SHIELD;
+
+    let current: Option<(&'static str, bool)> = ui.ctx().data(|d| {
+        d.get_temp::<std::collections::HashMap<i64, (&'static str, bool)>>(egui::Id::new(
+            SAFETY_SNAPSHOT_ID,
+        ))
+        .and_then(|m| m.get(&conn_id).copied())
+    });
+    let (current_key, explicit) = current.unwrap_or(("standard", false));
+    ui.menu_button(format!("{} Safety", ICON_SHIELD.codepoint), |ui| {
+        let mut choice: Option<String> = None;
+        if ui
+            .radio(!explicit, "Default")
+            .on_hover_text("Standard, or Confirm all writes for Production connections")
+            .clicked()
+        {
+            choice = Some(String::new());
+        }
+        for mode in SafetyMode::ALL {
+            if ui
+                .radio(explicit && current_key == mode.key(), mode.label())
+                .on_hover_text(mode.description())
+                .clicked()
+            {
+                choice = Some(mode.key().to_string());
+            }
+        }
+        if let Some(key) = choice {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(SAFETY_REQUEST_ID), (conn_id, key)));
+            ui.close();
+        }
+    });
+}
 
 /// Submenu "Environment" di menu konteks koneksi. Pilihan dikirim lewat data
 /// temp egui karena renderer pohon tidak memegang `&mut Tabular`.

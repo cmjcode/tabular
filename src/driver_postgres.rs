@@ -454,6 +454,31 @@ pub(crate) async fn list_postgres_tables_with_comments(
     }
 }
 
+/// Literal array PostgreSQL (`{a,"b c",NULL}`) yang bisa ditulis balik apa adanya:
+/// elemen NULL menjadi `NULL` (bukan sentinel sel), elemen yang mengandung
+/// karakter khusus dikutip dan di-escape.
+pub(crate) fn pg_array_literal(items: &[Option<String>]) -> String {
+    let parts: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            None => "NULL".to_string(),
+            Some(text) => {
+                let needs_quotes = text.is_empty()
+                    || text.eq_ignore_ascii_case("null")
+                    || text
+                        .chars()
+                        .any(|c| matches!(c, ',' | '{' | '}' | '"' | '\\') || c.is_whitespace());
+                if needs_quotes {
+                    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+                } else {
+                    text.clone()
+                }
+            }
+        })
+        .collect();
+    format!("{{{}}}", parts.join(","))
+}
+
 /// Mengubah satu nilai PostgreSQL menjadi teks tampilan.
 ///
 /// sqlx mengecek kompatibilitas tipe secara ketat (kolom `INT4` tidak bisa dibaca
@@ -472,16 +497,12 @@ fn pg_value_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> String {
     fn show_array<T: ToString>(v: Result<Option<Vec<Option<T>>>, sqlx::Error>) -> Option<String> {
         v.ok().map(|o| match o {
             None => crate::models::structs::NULL_CELL.to_string(),
-            Some(items) => format!(
-                "{{{}}}",
+            Some(items) => pg_array_literal(
                 items
                     .iter()
-                    .map(|i| i
-                        .as_ref()
-                        .map(|x| x.to_string())
-                        .unwrap_or_else(|| crate::models::structs::NULL_CELL.to_string()))
+                    .map(|i| i.as_ref().map(|x| x.to_string()))
                     .collect::<Vec<_>>()
-                    .join(",")
+                    .as_slice(),
             ),
         })
     }
@@ -672,5 +693,27 @@ pub async fn drop_database(
                 Err(format!("PostgreSQL drop database error: {}", err))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pg_array_literal_writes_null_and_quotes_special_elements() {
+        let items = vec![
+            Some("1".to_string()),
+            None,
+            Some("a,b".to_string()),
+            Some("say \"hi\"".to_string()),
+            Some("NULL".to_string()),
+            Some(String::new()),
+        ];
+        assert_eq!(
+            pg_array_literal(&items),
+            r#"{1,NULL,"a,b","say \"hi\"","NULL",""}"#
+        );
+        assert!(!pg_array_literal(&items).contains('\0'));
     }
 }

@@ -309,6 +309,12 @@ pub struct Tabular {
     pub show_unsafe_dml_dialog: bool,
     pub unsafe_dml_query: String,
     pub unsafe_dml_type: String,
+    /// Kalimat penjelasan untuk dialog konfirmasi (dari `connection_safety::assess`).
+    pub unsafe_dml_reason: String,
+    /// Id tab yang ditutup saat transaksi manualnya masih terbuka; menunggu konfirmasi.
+    pub pending_close_tx_tab: Option<usize>,
+    /// Id tab yang sudah dikonfirmasi untuk ditutup (rollback) oleh dialog di atas.
+    pub confirmed_close_tx_tab: Option<usize>,
     // Error message display
     pub error_message: String,
     pub show_error_message: bool,
