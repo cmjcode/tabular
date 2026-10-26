@@ -241,3 +241,57 @@ jobs:
             || gh release view "$RELEASE_TAG" >/dev/null
         fi
         find dist -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
+
+  # ─── Publish ke AUR (Arch User Repository) ─────────────────────────────────
+  # Memperbarui dan mempublikasikan metadata paket Arch Linux (tabular & tabular-bin)
+  aur:
+    needs: release
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ env.RELEASE_TAG }}
+
+    - name: Install tooling
+      run: |
+        pacman -Sy --noconfirm --needed git openssh rsync python
+
+    - name: Check AUR SSH Key
+      id: check-key
+      env:
+        AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      run: |
+        if [ -z "${AUR_KEY}" ]; then
+          echo "AUR_SSH_PRIVATE_KEY secret is not configured. Skipping AUR publish."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Configure SSH for AUR
+      if: steps.check-key.outputs.skip != 'true'
+      env:
+        AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh
+        printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -t rsa -p 22 aur.archlinux.org >> ~/.ssh/known_hosts
+
+    - name: Update AUR packages via update-aur.sh
+      if: steps.check-key.outputs.skip != 'true'
+      env:
+        GIT_AUTHOR_NAME: Tabular CI
+        GIT_AUTHOR_EMAIL: support@tabular.id
+      run: |
+        set -euo pipefail
+        git config --global user.name "${GIT_AUTHOR_NAME}"
+        git config --global user.email "${GIT_AUTHOR_EMAIL}"
+        git config --global --add safe.directory '*'
+        chmod +x ./scripts/update-aur.sh
+        ./scripts/update-aur.sh all
+
