@@ -608,7 +608,7 @@ impl SpreadsheetOperations for Tabular {
             let result: Result<Vec<String>, String> = if let Some(ref rt) = self.runtime {
                 rt.block_on(fut)
             } else {
-                tokio::runtime::Runtime::new().ok()?.block_on(fut)
+                crate::runtime::shared()?.block_on(fut)
             };
 
             match result {

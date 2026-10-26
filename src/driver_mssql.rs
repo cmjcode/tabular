@@ -659,7 +659,18 @@ pub(crate) fn fetch_objects_from_mssql_connection(
             crate::models::enums::DatabasePool::MsSQL(p) => p,
             _ => return None,
         };
+        list_mssql_objects(&pool, database_name, object_type).await
+    })
+}
 
+/// Daftar procedure/function/trigger MsSQL lewat pool yang sudah ada. Aman
+/// dipanggil dari task async (tanpa `&mut Tabular`).
+pub(crate) async fn list_mssql_objects(
+    pool: &mssql_driver_pool::Pool,
+    database_name: &str,
+    object_type: &str,
+) -> Option<Vec<String>> {
+    {
         let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {
@@ -741,7 +752,7 @@ pub(crate) fn fetch_objects_from_mssql_connection(
             }
         }
         Some(items)
-    })
+    }
 }
 
 /// Execute a query using the shared connection pool (mssql-driver-pool)

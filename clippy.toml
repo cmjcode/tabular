@@ -1,0 +1,8 @@
+# Satu runtime tokio per proses: pakai crate::runtime::{shared, block_on, spawn}.
+# Titik masuk CLI dan test yang memang butuh runtime sendiri memakai
+# #[allow(clippy::disallowed_methods)] dengan alasannya.
+disallowed-methods = [
+    { path = "tokio::runtime::Runtime::new", reason = "use crate::runtime::shared()/block_on() instead of creating a runtime" },
+    { path = "tokio::runtime::Builder::new_current_thread", reason = "use crate::runtime::shared()/block_on() instead of creating a runtime" },
+    { path = "tokio::runtime::Builder::new_multi_thread", reason = "use crate::runtime::shared()/block_on() instead of creating a runtime" },
+]

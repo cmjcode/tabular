@@ -757,12 +757,9 @@ impl super::Tabular {
             // These methods take `&self`, so `get_runtime()` is unavailable.
             let rt = match self.runtime.clone() {
                 Some(rt) => rt,
-                None => match tokio::runtime::Runtime::new() {
-                    Ok(rt) => std::sync::Arc::new(rt),
-                    Err(e) => {
-                        debug!("Failed to create runtime for cache clear: {}", e);
-                        return;
-                    }
+                None => match crate::runtime::shared() {
+                    Some(rt) => rt,
+                    None => return,
                 },
             };
 
@@ -830,12 +827,9 @@ impl super::Tabular {
             // These methods take `&self`, so `get_runtime()` is unavailable.
             let rt = match self.runtime.clone() {
                 Some(rt) => rt,
-                None => match tokio::runtime::Runtime::new() {
-                    Ok(rt) => std::sync::Arc::new(rt),
-                    Err(e) => {
-                        debug!("Failed to create runtime for cache clear: {}", e);
-                        return;
-                    }
+                None => match crate::runtime::shared() {
+                    Some(rt) => rt,
+                    None => return,
                 },
             };
 
@@ -1053,12 +1047,9 @@ impl super::Tabular {
             let db = database_name.to_string();
             let rt = match self.runtime.clone() {
                 Some(rt) => rt,
-                None => match tokio::runtime::Runtime::new() {
-                    Ok(rt) => std::sync::Arc::new(rt),
-                    Err(e) => {
-                        debug!("Failed to create runtime for cache clear: {}", e);
-                        return;
-                    }
+                None => match crate::runtime::shared() {
+                    Some(rt) => rt,
+                    None => return,
                 },
             };
 

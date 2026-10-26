@@ -119,18 +119,13 @@ impl super::Tabular {
     // End: Spreadsheet helpers
     pub fn get_runtime(&mut self) -> Arc<tokio::runtime::Runtime> {
         if self.runtime.is_none() {
-            // Multi-threaded runtime so we can run blocking DB IO without freezing UI thread completely
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .worker_threads(4)
-                .thread_name("tabular-rt")
-                .build()
-                .expect(
-                    "Tabular could not start its async runtime (the OS refused to create worker \
+            // Runtime bersama proses (lihat `crate::runtime`).
+            let rt = crate::runtime::shared().expect(
+                "Tabular could not start its async runtime (the OS refused to create worker \
                      threads). Close other applications or raise the process/thread limit \
                      (ulimit -u) and start Tabular again",
-                );
-            self.runtime = Some(Arc::new(rt));
+            );
+            self.runtime = Some(rt);
             debug!("🌐 Global runtime initialized");
         }
         self.runtime.as_ref().unwrap().clone()
@@ -212,13 +207,8 @@ impl super::Tabular {
 
         // Create shared runtime for all database operations
         crate::log_startup_step("creating shared Tokio runtime");
-        let runtime = match tokio::runtime::Runtime::new() {
-            Ok(rt) => Some(Arc::new(rt)),
-            Err(e) => {
-                error!("Failed to create runtime: {}", e);
-                None
-            }
-        };
+        // Satu runtime untuk seluruh proses (lihat `crate::runtime`).
+        let runtime = crate::runtime::shared();
 
         let config_store = None;
         crate::log_startup_step("loading sync account from secrets");
@@ -252,6 +242,7 @@ impl super::Tabular {
             selected_database_sub_menu: "Connections".to_string(),
             selected_collab_sub_menu: "Teams".to_string(),
             items_tree: Vec::new(),
+            folder_fetch_state: Default::default(),
             queries_tree: Vec::new(),
             history_tree: Vec::new(),
             history_items: Vec::new(),
@@ -1139,7 +1130,7 @@ impl super::Tabular {
                             debug!("[FETCH-DB] FetchDatabases id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let dbs_opt =
                                     rt.block_on(connection::fetch_databases_background_task(
@@ -1222,7 +1213,7 @@ impl super::Tabular {
                         spawn_named_task("fetch-redis-keys", &result_sender, on_panic, Some(job), move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     if database_name == driver_redis::REDIS_CLUSTER_KEYSPACE {
@@ -1314,7 +1305,7 @@ impl super::Tabular {
                         spawn_named_task("fetch-redis-browser", &result_sender, on_panic, Some(job), move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let Some(rt) = rt_opt {
                                 let state = rt.block_on(async {
                                     let redis_manager = {
@@ -1404,7 +1395,7 @@ impl super::Tabular {
                         spawn_named_task("search-redis-keys", &result_sender, on_panic, None, move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let Some(rt) = rt_opt {
                                 let keys = rt.block_on(async {
                                     let redis_manager = {
@@ -1464,7 +1455,7 @@ impl super::Tabular {
                         spawn_named_task("refresh-connection", &result_sender, on_panic, Some(job), move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             debug!(
                                 "[AUTO-SYNC] bg RefreshConnection id={} STARTED cache_pool_present={}",
                                 connection_id,
@@ -1515,7 +1506,7 @@ impl super::Tabular {
                             debug!("[POOL] EnsureConnectionPool id={} STARTED", connection_id);
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 let res = rt.block_on(async {
                                     crate::connection::create_connection_pool_by_id(
@@ -1594,7 +1585,7 @@ impl super::Tabular {
                         spawn_named_task("fetch-table-structure", &result_sender, on_panic, Some(job), move || {
                             let cache_pool_thread = get_cache_pool(&shared_db_pool_thread);
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             if let (Some(pool), Some(rt)) = (&cache_pool_thread, &rt_opt) {
                                 debug!(
                                     "[WORKER] FetchTableStructure conn={} db='{}' tbl='{}' started",
@@ -1701,7 +1692,7 @@ impl super::Tabular {
                         });
                         spawn_named_task("check-updates", &result_sender, on_panic, None, move || {
                             let rt_opt = shared_runtime_thread
-                                .or_else(|| tokio::runtime::Runtime::new().ok().map(Arc::new));
+                                .or_else(crate::runtime::shared);
                             // Perform update check on shared runtime (if required by async API)
                             let result = if let Some(rt) = rt_opt {
                                 rt.block_on(crate::self_update::check_for_updates())

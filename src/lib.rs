@@ -6,6 +6,9 @@
     clippy::too_many_arguments,
     clippy::type_complexity
 )]
+// Test boleh membangun runtime tokio sendiri (isolasi per test); kode aplikasi
+// memakai `crate::runtime` (lihat clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 use eframe::egui;
 
@@ -129,6 +132,7 @@ pub mod sample_data;
 pub mod schema_objects;
 pub mod search_match;
 pub mod persist_notice;
+pub mod runtime;
 pub mod secrets;
 pub mod self_update;
 pub mod server_metrics;

@@ -984,11 +984,8 @@ fn spawn_db_check(
 ) -> mpsc::Receiver<Vec<DbResidueCheck>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let checks = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt.block_on(async {
+        let checks = match crate::runtime::shared() {
+            Some(rt) => rt.block_on(async {
                 match crate::agent::core::open_cache_pool().await {
                     Ok(pool) => {
                         let session = crate::agent::core::HeadlessSession::new(pool);
@@ -1000,8 +997,8 @@ fn spawn_db_check(
                     }
                 }
             }),
-            Err(e) => {
-                log::warn!("[INTEGRATION_TEST] db check runtime failed: {e}");
+            None => {
+                log::warn!("[INTEGRATION_TEST] db check runtime unavailable");
                 Vec::new()
             }
         };

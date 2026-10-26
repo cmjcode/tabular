@@ -222,18 +222,10 @@ pub fn default_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-/// Kirim satu request dari thread biasa (membuat runtime tokio sendiri).
+/// Kirim satu request dari thread biasa, di runtime bersama proses.
 pub fn send_blocking(spec: RequestSpec) -> HttpClientResponse {
-    match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt.block_on(async move { send(&default_client(), spec).await }),
-        Err(e) => {
-            log::error!("[HTTP] failed to start tokio runtime: {e}");
-            failed(format!("Could not start HTTP runtime: {e}"), 0)
-        }
-    }
+    crate::runtime::block_on(async move { send(&default_client(), spec).await })
+        .unwrap_or_else(|| failed("Could not start HTTP runtime".to_string(), 0))
 }
 
 #[cfg(test)]

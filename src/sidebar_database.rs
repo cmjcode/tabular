@@ -1636,15 +1636,9 @@ pub(crate) fn initialize_database_background() -> Option<DatabaseInitResult> {
         return None;
     }
 
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            error!("Failed to create runtime for background db init: {}", e);
-            return None;
-        }
+    let Some(rt) = crate::runtime::shared() else {
+        error!("Failed to get the shared runtime for background db init");
+        return None;
     };
 
     let data_dir = directory::get_data_dir();
@@ -3741,7 +3735,7 @@ pub fn get_table_group_config_sync(
                 database_name,
             ))
         })
-    } else if let Ok(rt) = tokio::runtime::Runtime::new() {
+    } else if let Some(rt) = crate::runtime::shared() {
         rt.block_on(get_table_group_config_async(
             pool,
             connection_id,

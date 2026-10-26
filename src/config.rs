@@ -875,6 +875,7 @@ pub fn preferences_from_kv<'a>(
     prefs
 }
 
+#[derive(Clone)]
 pub struct ConfigStore {
     pub pool: Option<Pool<Sqlite>>,
     use_json_fallback: bool,

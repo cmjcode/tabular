@@ -451,9 +451,7 @@ fn active_schema_name(t: &Tabular) -> Option<String> {
 fn block_on<F: std::future::Future>(t: &Tabular, fut: F) -> Option<F::Output> {
     match t.runtime.clone() {
         Some(rt) => Some(rt.block_on(fut)),
-        None => tokio::runtime::Runtime::new()
-            .ok()
-            .map(|rt| rt.block_on(fut)),
+        None => crate::runtime::shared().map(|rt| rt.block_on(fut)),
     }
 }
 

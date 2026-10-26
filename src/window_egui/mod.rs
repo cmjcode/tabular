@@ -43,6 +43,7 @@ pub mod git_sidebar;
 pub mod git_view;
 pub mod init;
 pub mod notifications;
+mod folder_fetch_jobs;
 mod persist_notices;
 pub mod pagination;
 pub mod platform_ui;
@@ -181,6 +182,8 @@ pub struct Tabular {
     // Sub-tab within the "Collaborations" menu: "Teams" | "Collaboration"
     pub selected_collab_sub_menu: String,
     pub items_tree: Vec<models::structs::TreeNode>,
+    /// Pengambilan isi folder sidebar yang berjalan di latar.
+    pub(crate) folder_fetch_state: folder_fetch_jobs::FolderFetchState,
     pub queries_tree: Vec<models::structs::TreeNode>,
     pub history_tree: Vec<models::structs::TreeNode>,
     pub history_items: Vec<models::structs::HistoryItem>, // Actual history data

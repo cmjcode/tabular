@@ -24,15 +24,11 @@ where
     if let Some(rt) = tabular.runtime.as_ref() {
         return rt.block_on(fut);
     }
-    match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt.block_on(fut),
-        Err(e) => {
-            log::warn!("[CACHE] cannot create a runtime for cache lookup: {}", e);
-            Err(sqlx::Error::Io(e))
-        }
+    match crate::runtime::shared() {
+        Some(rt) => rt.block_on(fut),
+        None => Err(sqlx::Error::Io(std::io::Error::other(
+            "the shared runtime is not available",
+        ))),
     }
 }
 

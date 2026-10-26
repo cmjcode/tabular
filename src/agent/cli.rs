@@ -147,6 +147,8 @@ fn run_connections(rest: &[String]) -> Result<(), String> {
         ));
     }
     init_headless_data_dir();
+    // Titik masuk CLI: proses terpisah dari GUI, runtime sendiri.
+    #[allow(clippy::disallowed_methods)]
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -231,6 +233,8 @@ fn run_mcp(rest: &[String]) -> Result<(), String> {
 
     // Stack worker 8 MB (bawaan 2 MB): rantai future eksekusi query (driver,
     // SSH tunnel, profiler) dalam dan besar di build debug.
+    // Titik masuk `tabular mcp`: butuh stack worker besar, jadi runtime sendiri.
+    #[allow(clippy::disallowed_methods)]
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(8 * 1024 * 1024)

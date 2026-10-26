@@ -255,9 +255,8 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
 pub(crate) fn test_database_connection(
     connection: &models::structs::ConnectionConfig,
 ) -> (bool, String) {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return (false, format!("Failed to prepare the runtime: {}", e)),
+    let Some(rt) = crate::runtime::shared() else {
+        return (false, "Failed to prepare the runtime".to_string());
     };
 
     rt.block_on(async {

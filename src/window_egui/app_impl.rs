@@ -915,6 +915,7 @@ impl Tabular {
         // ditutup sebelum hasilnya diproses.
         self.sync_job_tabs();
         self.sync_tab_tx_state();
+        self.poll_folder_fetches();
         self.cancel_jobs_of_closed_tabs();
         while let Ok(message) = self.query_result_receiver.try_recv() {
             self.handle_query_result_message(message);
@@ -4443,11 +4444,15 @@ impl Tabular {
         }
     }
 
-    /// Persist preferences immediately when `prefs_dirty` is set.
-    /// Extracted from the former `try_save_prefs` closure in `update()`.
+    /// Simpan preferensi bila `prefs_dirty`, di latar (UI tidak menunggu disk).
     pub(crate) fn try_save_prefs(&mut self) {
+        self.persist_prefs(false);
+    }
+
+    /// `blocking = true` hanya saat keluar aplikasi: proses berakhir setelah ini.
+    fn persist_prefs(&mut self, blocking: bool) {
         if self.prefs_dirty {
-            if let (Some(store), Some(rt)) = (self.config_store.as_ref(), self.runtime.as_ref()) {
+            if let (Some(store), Some(rt)) = (self.config_store.clone(), self.runtime.clone()) {
                 let prefs = crate::config::AppPreferences {
                     theme: self.app_theme,
                     link_editor_theme: self.link_editor_theme,
@@ -4502,16 +4507,35 @@ impl Tabular {
                     notify_long_queries: self.notify_long_queries,
                     notify_threshold_secs: self.notify_threshold_secs,
                 };
-                match rt.block_on(store.save(&prefs)) {
-                    Ok(()) => log::debug!(
-                        "Preferences saved successfully to: {}",
-                        crate::config::get_data_dir().display()
-                    ),
-                    // Sekali per sesi: flush berjalan otomatis setiap perubahan.
-                    Err(e) => self.toasts.error_once(
-                        "prefs-save",
-                        format!("Settings could not be saved and will be lost on restart: {e}"),
-                    ),
+                // Simpan beruntun: tulis yang lebih lama dilewati bila sudah ada
+                // permintaan yang lebih baru, sehingga urutan selesai task tidak
+                // bisa menimpa preferensi baru dengan yang lama.
+                static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                static WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+                let seq = LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let to_save = prefs.clone();
+                let write = async move {
+                    let _guard = WRITE_LOCK.lock().await;
+                    if LATEST.load(std::sync::atomic::Ordering::SeqCst) != seq {
+                        return;
+                    }
+                    match store.save(&to_save).await {
+                        Ok(()) => log::debug!(
+                            "Preferences saved successfully to: {}",
+                            crate::config::get_data_dir().display()
+                        ),
+                        // Sekali per sesi: flush berjalan otomatis setiap perubahan.
+                        Err(e) => crate::persist_notice::report(
+                            "prefs-save",
+                            crate::persist_notice::Level::Error,
+                            format!("Settings could not be saved and will be lost on restart: {e}"),
+                        ),
+                    }
+                };
+                if blocking {
+                    rt.block_on(write);
+                } else {
+                    rt.spawn(write);
                 }
                 self.last_saved_prefs = Some(prefs);
                 self.prefs_dirty = false;
@@ -5897,7 +5921,20 @@ impl App for Tabular {
         visuals.window_fill.to_normalized_gamma_f32()
     }
 
+    // Fitur `glow` (renderer cadangan desktop) menambah parameter GL di trait.
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.on_exit_impl();
+    }
+
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     fn on_exit(&mut self) {
+        self.on_exit_impl();
+    }
+}
+
+impl Tabular {
+    fn on_exit_impl(&mut self) {
         // Simpan sesi terakhir (jaring pengaman jika close_requested terlewat,
         // misalnya saat OS mematikan aplikasi).
         crate::session_restore::save_now(self, None);
@@ -5905,7 +5942,7 @@ impl App for Tabular {
         if self.prefs_save_due.take().is_some() {
             self.prefs_dirty = true;
         }
-        self.try_save_prefs();
+        self.persist_prefs(true);
         // Unwind connects that are still mid-handshake so their SSH child
         // processes are killed rather than orphaned when the app goes away.
         crate::connection::cancel_all_connection_attempts(self);
@@ -5917,9 +5954,9 @@ impl App for Tabular {
         }
         self.platform_on_exit();
     }
-} // end impl App for Tabular
+}
 
-async fn wait_for_connection_pool(
+pub(crate) async fn wait_for_connection_pool(
     direct_pool: Option<models::enums::DatabasePool>,
     shared_pools: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<i64, models::enums::DatabasePool>>,

@@ -7,7 +7,8 @@ pub(crate) fn fetch_view_definition(
     database_name: Option<&str>,
     view_name: &str,
 ) -> Option<String> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime bersama; sebelumnya runtime baru dibuat setiap panggilan.
+    let rt = crate::runtime::shared()?;
 
     let connection_clone = connection.clone();
     let db_name = database_name
@@ -334,7 +335,8 @@ pub(crate) fn fetch_procedure_definition(
     database_name: Option<&str>,
     procedure_name: &str,
 ) -> Option<String> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime bersama; sebelumnya runtime baru dibuat setiap panggilan.
+    let rt = crate::runtime::shared()?;
 
     let connection_clone = connection.clone();
     let db_name = database_name
@@ -601,7 +603,8 @@ pub(crate) fn fetch_table_definition(
     database_name: Option<&str>,
     table_name: &str,
 ) -> Option<String> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime bersama; sebelumnya runtime baru dibuat setiap panggilan.
+    let rt = crate::runtime::shared()?;
 
     let connection_clone = connection.clone();
     let db_name = database_name

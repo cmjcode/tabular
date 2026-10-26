@@ -260,16 +260,12 @@ impl super::Tabular {
                 std::thread::spawn(move || {
                     log::debug!("🔄 Background update thread running");
 
-                    let rt = match tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                    {
-                        Ok(rt) => rt,
-                        Err(e) => {
-                            log::error!("❌ Failed to create update runtime: {}", e);
-                            let _ = tx.send(UpdateStage::Failed(e.to_string()));
-                            return;
-                        }
+                    let Some(rt) = crate::runtime::shared() else {
+                        log::error!("Failed to get the shared runtime for the update");
+                        let _ = tx.send(UpdateStage::Failed(
+                            "the background runtime is not available".to_string(),
+                        ));
+                        return;
                     };
 
                     let tx_cb = tx.clone();

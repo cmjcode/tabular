@@ -51,6 +51,8 @@ pub struct AgentAccessState {
     last_check: Option<Instant>,
     /// Id permintaan yang sudah memicu notifikasi.
     notified: Vec<i64>,
+    /// Pembacaan antrean yang sedang berjalan di latar (UI tidak menunggu DB).
+    pending_rx: Option<std::sync::mpsc::Receiver<Result<Vec<ApprovalRequest>, String>>>,
     confirm_forget: Option<String>,
     confirm_clear: bool,
 }
@@ -145,6 +147,7 @@ impl Tabular {
         if (woke || !self.agent_access.pending.is_empty()) && due {
             self.refresh_pending_approvals(ctx);
         }
+        self.apply_pending_approvals(ctx);
         if !self.agent_access.pending.is_empty() {
             // Permintaan bisa kedaluwarsa di sisi MCP; tetap diperiksa.
             ctx.request_repaint_after(WATCH_EVERY);
@@ -155,13 +158,44 @@ impl Tabular {
         }
     }
 
+    /// Mulai membaca antrean persetujuan di latar. `connections.db` bisa sedang
+    /// dikunci `tabular mcp`; membacanya di thread UI membuat frame tersendat
+    /// sampai `busy_timeout`.
     fn refresh_pending_approvals(&mut self, ctx: &egui::Context) {
+        if self.agent_access.pending_rx.is_some() {
+            return;
+        }
         self.agent_access.last_check = Some(Instant::now());
         let Some(pool) = self.db_pool.clone() else {
             return;
         };
-        let rt = self.get_runtime();
-        match rt.block_on(access::pending_approvals(&pool)) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let started = crate::runtime::spawn(async move {
+            let result = access::pending_approvals(&pool)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        if started {
+            self.agent_access.pending_rx = Some(rx);
+        }
+    }
+
+    fn apply_pending_approvals(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.agent_access.pending_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("approval check stopped".to_string())
+            }
+        };
+        self.agent_access.pending_rx = None;
+        match result {
             Ok(list) => {
                 let focused = ctx.input(|i| i.focused);
                 for req in &list {

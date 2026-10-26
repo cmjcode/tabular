@@ -167,19 +167,71 @@ fn snapshot(tabular: &Tabular, window: Option<WindowGeometry>) -> SessionSnapsho
     }
 }
 
+/// Sidik sesi langsung dari state, tanpa menyalin isi tab: salinan snapshot
+/// Sidik dari snapshot yang sudah jadi (dipakai test serialisasi).
+#[cfg(test)]
 fn fingerprint(snapshot: &SessionSnapshot) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     snapshot.active_index.hash(&mut hasher);
+    let mut tabs_hasher = std::collections::hash_map::DefaultHasher::new();
     for tab in &snapshot.tabs {
-        tab.title.hash(&mut hasher);
-        tab.content.hash(&mut hasher);
-        tab.file_path.hash(&mut hasher);
-        tab.connection_id.hash(&mut hasher);
-        tab.database_name.hash(&mut hasher);
-        tab.is_pinned.hash(&mut hasher);
-        tab.is_modified.hash(&mut hasher);
+        tab.title.hash(&mut tabs_hasher);
+        tab.content.hash(&mut tabs_hasher);
+        tab.file_path.hash(&mut tabs_hasher);
+        tab.connection_id.hash(&mut tabs_hasher);
+        tab.database_name.hash(&mut tabs_hasher);
+        tab.is_pinned.hash(&mut tabs_hasher);
+        tab.is_modified.hash(&mut tabs_hasher);
     }
+    tabs_hasher.finish().hash(&mut hasher);
     if let Some(w) = snapshot.window {
+        (w.width as i32, w.height as i32, w.maximized).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+/// (bisa puluhan MB untuk banyak tab besar) hanya dibuat bila ada perubahan.
+fn live_fingerprint(tabular: &Tabular, window: Option<WindowGeometry>) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut active_index = 0usize;
+    let mut count = 0usize;
+    let mut tabs_hasher = std::collections::hash_map::DefaultHasher::new();
+    for (index, tab) in tabular.query_tabs.iter().enumerate() {
+        if let Some(viewer) = &tab.file_viewer_state {
+            if index == tabular.active_tab_index {
+                active_index = count;
+            }
+            count += 1;
+            tab.title.hash(&mut tabs_hasher);
+            "".hash(&mut tabs_hasher);
+            Some(viewer.path.to_string_lossy().to_string()).hash(&mut tabs_hasher);
+            None::<i64>.hash(&mut tabs_hasher);
+            None::<String>.hash(&mut tabs_hasher);
+            tab.is_pinned.hash(&mut tabs_hasher);
+            false.hash(&mut tabs_hasher);
+            continue;
+        }
+        if !is_plain_query_tab(tab) {
+            continue;
+        }
+        let content = current_content(tabular, index);
+        if content.len() > MAX_TAB_CONTENT_BYTES {
+            continue;
+        }
+        if index == tabular.active_tab_index {
+            active_index = count;
+        }
+        count += 1;
+        tab.title.hash(&mut tabs_hasher);
+        content.hash(&mut tabs_hasher);
+        tab.file_path.hash(&mut tabs_hasher);
+        tab.connection_id.hash(&mut tabs_hasher);
+        tab.database_name.hash(&mut tabs_hasher);
+        tab.is_pinned.hash(&mut tabs_hasher);
+        tab_has_unsaved_changes(tabular, index).hash(&mut tabs_hasher);
+    }
+    active_index.hash(&mut hasher);
+    tabs_hasher.finish().hash(&mut hasher);
+    if let Some(w) = window {
         (w.width as i32, w.height as i32, w.maximized).hash(&mut hasher);
     }
     hasher.finish()
@@ -239,11 +291,12 @@ pub fn tick(tabular: &mut Tabular, ctx: &egui::Context) {
         return;
     }
     tabular.session_last_check = Some(now);
-    let snap = snapshot(tabular, window_geometry(ctx));
-    let fp = fingerprint(&snap);
+    let window = window_geometry(ctx);
+    let fp = live_fingerprint(tabular, window);
     if tabular.session_last_fingerprint == Some(fp) {
         return;
     }
+    let snap = snapshot(tabular, window);
     if let Ok(json) = serde_json::to_string(&snap) {
         let _ = writer().send(json);
         tabular.session_last_fingerprint = Some(fp);
@@ -586,7 +639,9 @@ pub fn handle_close_request(tabular: &mut Tabular, ctx: &egui::Context) {
     let open_transactions = tabular.query_tabs.iter().any(|t| t.tx_active);
     let unsaved_without_restore = !tabular.restore_session
         && (0..tabular.query_tabs.len()).any(|i| tab_has_unsaved_changes(tabular, i));
-    if open_transactions || unsaved_without_restore {
+    // Query atau simpan grid yang masih berjalan dibatalkan saat keluar.
+    let running_jobs = !tabular.jobs.active.is_empty();
+    if open_transactions || unsaved_without_restore || running_jobs {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         tabular.show_quit_confirm = true;
     } else {
@@ -607,6 +662,12 @@ pub fn render_quit_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
         .collect();
     let unsaved = !tabular.restore_session
         && (0..tabular.query_tabs.len()).any(|i| tab_has_unsaved_changes(tabular, i));
+    let running: Vec<String> = tabular
+        .jobs
+        .active
+        .values()
+        .map(|job| job.query_preview.clone())
+        .collect();
 
     let mut quit = false;
     let mut cancel = false;
@@ -634,6 +695,18 @@ pub fn render_quit_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     }
                     ui.add_space(6.0);
                 }
+                if !running.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "These are still running and will be cancelled (a grid save in progress is rolled back):",
+                        )
+                        .strong(),
+                    );
+                    for preview in running.iter().take(5) {
+                        ui.label(egui::RichText::new(format!("• {preview}")).monospace());
+                    }
+                    ui.add_space(6.0);
+                }
                 if unsaved {
                     ui.label("Some tabs have unsaved changes and session restore is turned off, so they will be lost.");
                 }
@@ -648,6 +721,9 @@ pub fn render_quit_dialog(tabular: &mut Tabular, ctx: &egui::Context) {
                     .fill(crate::window_egui::style::theme_danger(ctx));
                     if ui.add(quit_btn).clicked() {
                         quit = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
                     }
                 });
             });

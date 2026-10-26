@@ -9,7 +9,8 @@ pub(crate) fn fetch_columns_from_database(
     table_name: &str,
     connection: &models::structs::ConnectionConfig,
 ) -> Option<Vec<(String, String)>> {
-    let rt = tokio::runtime::Runtime::new().ok()?;
+    // Runtime bersama; sebelumnya runtime baru dibuat setiap panggilan.
+    let rt = crate::runtime::shared()?;
 
     let connection_clone = connection.clone();
     let database_name = database_name.to_string();

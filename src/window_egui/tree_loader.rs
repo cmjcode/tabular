@@ -1236,7 +1236,20 @@ impl super::Tabular {
                         return;
                     }
 
-                    // Fallback to live fetch
+                    // Fallback to live fetch, di latar.
+                    let status = self.folder_fetch(
+                        connection_id,
+                        &database_name,
+                        table_type,
+                        folder_type.clone(),
+                        super::folder_fetch_jobs::FolderFetchPlan::MongoCollections,
+                        force_live_fetch,
+                    );
+                    if let Some(children) = Self::folder_fetch_children(status) {
+                        node.children = children;
+                        node.is_loaded = true;
+                        return;
+                    }
                     if let Some(cols) =
                         crate::driver_mongodb::fetch_collections_from_mongodb_connection(
                             self,
@@ -1437,6 +1450,21 @@ impl super::Tabular {
                 return;
             }
 
+            // Ambil di latar; UI tidak menunggu database.
+            let status = self.folder_fetch(
+                connection_id,
+                database_name,
+                table_type,
+                folder_type.clone(),
+                super::folder_fetch_jobs::FolderFetchPlan::MySql {
+                    with_comments: true,
+                },
+                force_live_fetch,
+            );
+            if let Some(children) = Self::folder_fetch_children(status) {
+                node.children = children;
+                return;
+            }
             if let Some(real_items) = driver_mysql::fetch_tables_with_comments_from_mysql_connection(
                 self,
                 connection_id,
@@ -1512,7 +1540,21 @@ impl super::Tabular {
             return;
         }
 
-        // If cache is empty, fetch from actual database
+        // If cache is empty, fetch from actual database (di latar).
+        let status = self.folder_fetch(
+            connection_id,
+            database_name,
+            table_type,
+            folder_type.clone(),
+            super::folder_fetch_jobs::FolderFetchPlan::MySql {
+                with_comments: false,
+            },
+            force_live_fetch,
+        );
+        if let Some(children) = Self::folder_fetch_children(status) {
+            node.children = children;
+            return;
+        }
         if let Some(real_items) = driver_mysql::fetch_tables_from_mysql_connection(
             self,
             connection_id,
@@ -1661,6 +1703,20 @@ impl super::Tabular {
                 return;
             }
 
+            let status = self.folder_fetch(
+                connection_id,
+                database_name,
+                table_type,
+                folder_type.clone(),
+                super::folder_fetch_jobs::FolderFetchPlan::Postgres {
+                    with_comments: true,
+                },
+                force_live_fetch,
+            );
+            if let Some(children) = Self::folder_fetch_children(status) {
+                node.children = children;
+                return;
+            }
             if let Some(real_items) =
                 crate::driver_postgres::fetch_tables_with_comments_from_postgres_connection(
                     self,
@@ -1718,7 +1774,27 @@ impl super::Tabular {
             return;
         }
 
-        // Fallback to live fetch
+        // Fallback to live fetch, di latar.
+        let plan = match object_kind {
+            Some(kind) => super::folder_fetch_jobs::FolderFetchPlan::PostgresSql(
+                crate::schema_objects::catalog::pg_list_objects_sql(kind),
+            ),
+            None => super::folder_fetch_jobs::FolderFetchPlan::Postgres {
+                with_comments: false,
+            },
+        };
+        let status = self.folder_fetch(
+            connection_id,
+            database_name,
+            table_type,
+            folder_type.clone(),
+            plan,
+            force_live_fetch,
+        );
+        if let Some(children) = Self::folder_fetch_children(status) {
+            node.children = children;
+            return;
+        }
         let live_items = match object_kind {
             Some(kind) => {
                 let database = database_name.clone();
@@ -2001,6 +2077,27 @@ impl super::Tabular {
             return;
         }
 
+        let plan = match kind {
+            "table" | "view" => Some(super::folder_fetch_jobs::FolderFetchPlan::MsSqlTables),
+            "procedure" | "function" | "trigger" => {
+                Some(super::folder_fetch_jobs::FolderFetchPlan::MsSqlObjects)
+            }
+            _ => None,
+        };
+        if let Some(plan) = plan {
+            let status = self.folder_fetch(
+                connection_id,
+                database_name,
+                kind,
+                folder_type.clone(),
+                plan,
+                force_live_fetch,
+            );
+            if let Some(children) = Self::folder_fetch_children(status) {
+                node.children = children;
+                return;
+            }
+        }
         let fetched = match kind {
             "table" | "view" => crate::driver_mssql::fetch_tables_from_mssql_connection(
                 self,

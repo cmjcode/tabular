@@ -383,6 +383,8 @@ fn db_check(
     tables: &[String],
     run_id: &str,
 ) -> Result<Vec<http_tests::DbResidueCheck>, String> {
+    // Titik masuk CLI `tabular test`: proses terpisah dari GUI.
+    #[allow(clippy::disallowed_methods)]
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
