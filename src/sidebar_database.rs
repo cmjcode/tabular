@@ -2683,18 +2683,6 @@ fn initialize_database_impl(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn initialize_sample_data(tabular: &mut window_egui::Tabular) {
-    // Initialize with connections as root nodes
-    refresh_connections_tree(tabular);
-
-    // Don't add sample queries - let load_queries_from_directory handle the real structure
-    // self.queries_tree will be populated by load_queries_from_directory()
-
-    // Initialize empty history tree (will be loaded from database)
-    //  self.refresh_history_tree();
-}
-
 pub(crate) fn refresh_connections_tree(tabular: &mut window_egui::Tabular) {
     // Save current expansion states before rebuilding
     let expansion_states = save_tree_expansion_states(&tabular.items_tree);

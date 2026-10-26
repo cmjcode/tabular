@@ -19,28 +19,6 @@ impl super::Tabular {
         self.show_directory_picker = false;
     }
 
-    // Handle SQLite file/folder picker for new connection dialog
-    #[allow(dead_code)]
-    pub(crate) fn handle_sqlite_path_picker(&mut self) {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        self.sqlite_path_picker_result = Some(receiver);
-
-        let default_dir = if !self.data_directory.is_empty() {
-            self.data_directory.clone()
-        } else {
-            crate::config::get_data_dir().to_string_lossy().to_string()
-        };
-
-        std::thread::spawn(move || {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Choose SQLite File / Folder")
-                .set_directory(&default_dir)
-                .pick_folder()
-            {
-                let _ = sender.send(path.to_string_lossy().to_string());
-            }
-        });
-    }
     pub(crate) fn handle_save_directory_picker(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
         self.save_directory_picker_result = Some(receiver);

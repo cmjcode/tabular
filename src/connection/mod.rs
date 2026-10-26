@@ -13,6 +13,8 @@
 pub mod atomic;
 pub mod crud;
 pub mod execute;
+#[cfg(test)]
+mod live_db_tests;
 pub mod metadata;
 pub mod pool;
 pub mod session;

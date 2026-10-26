@@ -1402,6 +1402,27 @@ pub fn execute_quick_open_item(tabular: &mut Tabular, item: &QuickOpenItem) {
                 .cloned();
 
             if let Some(conn) = conn_opt {
+                // Source diambil async (tanpa memblokir UI) bila engine didukung.
+                if let Some(ctx) = tabular.egui_ctx.clone()
+                    && crate::schema_objects::catalog::routine_source_query(
+                        &conn.connection_type,
+                        crate::schema_objects::catalog::RoutineKind::Procedure,
+                        &proc_name,
+                    )
+                    .is_some()
+                {
+                    crate::window_egui::schema_actions::queue_action(
+                        &ctx,
+                        crate::window_egui::schema_actions::SchemaAction::ViewSource {
+                            conn_id,
+                            database: db_name.clone(),
+                            kind: crate::schema_objects::catalog::RoutineKind::Procedure,
+                            name: proc_name.clone(),
+                            export: false,
+                        },
+                    );
+                    return;
+                }
                 let definition_opt = crate::connection::fetch_procedure_definition(
                     &conn,
                     db_name.as_deref(),

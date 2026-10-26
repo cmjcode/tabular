@@ -833,45 +833,6 @@ pub(crate) fn import_and_open_sql_file(
     Ok(file_path_str)
 }
 
-/// Import query dari memori / bytes ke direktori queries dan buka di tab editor.
-#[allow(dead_code)]
-pub(crate) fn import_and_open_sql_bytes(
-    tabular: &mut window_egui::Tabular,
-    raw_name: &str,
-    bytes: &[u8],
-    target_subfolder: Option<&str>,
-) -> Result<String, String> {
-    let query_dir = directory::get_query_dir();
-    let target_dir = match target_subfolder {
-        Some(sub) if !sub.trim().is_empty() => {
-            let trimmed = sub.trim().trim_start_matches('/').trim_start_matches('\\');
-            query_dir.join(trimmed)
-        }
-        _ => query_dir.clone(),
-    };
-
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("Failed to create target directory: {}", e))?;
-
-    let clean_name = if !raw_name.ends_with(".sql") && !raw_name.ends_with(".SQL") {
-        format!("{}.sql", raw_name)
-    } else {
-        raw_name.to_string()
-    };
-
-    let target_file_path = resolve_target_file_path(&target_dir, &clean_name, bytes);
-    std::fs::write(&target_file_path, bytes)
-        .map_err(|e| format!("Failed to save query file: {}", e))?;
-
-    load_queries_from_directory(tabular);
-    tabular.needs_refresh = true;
-
-    let file_path_str = target_file_path.to_string_lossy().to_string();
-    open_query_file(tabular, &file_path_str)?;
-
-    Ok(file_path_str)
-}
-
 /// Buka dialog pemilihan file .sql untuk di-import ke queries dan dibuka.
 pub(crate) fn prompt_open_sql_file(
     tabular: &mut window_egui::Tabular,

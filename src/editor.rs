@@ -8319,29 +8319,6 @@ pub(crate) fn perform_replace_all(tabular: &mut window_egui::Tabular) {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn find_next(tabular: &mut window_egui::Tabular) {
-    if !tabular.advanced_editor.find_text.is_empty() {
-        let matches = get_search_matches(
-            &tabular.editor.text,
-            &tabular.advanced_editor.find_text,
-            tabular.advanced_editor.case_sensitive,
-            tabular.advanced_editor.whole_word,
-            tabular.advanced_editor.use_regex,
-            tabular.advanced_editor.in_selection,
-            tabular.advanced_editor.selection_range,
-        )
-        .unwrap_or_default();
-        if !matches.is_empty() {
-            let next_idx = (tabular.advanced_editor.current_match_index + 1) % matches.len();
-            tabular.advanced_editor.current_match_index = next_idx;
-            tabular.cursor_position = matches[next_idx].end;
-            tabular.selection_start = matches[next_idx].start;
-            tabular.selection_end = matches[next_idx].end;
-        }
-    }
-}
-
 fn render_toggle_button(
     ui: &mut egui::Ui,
     is_active: &mut bool,
@@ -8673,67 +8650,6 @@ pub(crate) fn render_find_replace_floating_panel(
     if replace_all_requested {
         perform_replace_all(tabular);
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn open_command_palette(tabular: &mut window_egui::Tabular) {
-    crate::quick_open::open_quick_open(tabular);
-}
-
-#[allow(dead_code)]
-pub(crate) fn open_legacy_command_palette(tabular: &mut window_egui::Tabular) {
-    tabular.show_command_palette = true;
-    tabular.command_palette_input.clear();
-    tabular.show_theme_selector = false;
-    tabular.command_palette_selected_index = 0;
-
-    // Initialize command palette items with shortcut hints
-    let mut items = vec![
-        "Query: Run                    ⌘ Enter".to_string(),
-        "Query: Format SQL             ⌘ Shift+F".to_string(),
-        "Query: Explain                ⌘ Shift+E".to_string(),
-        "Query: New Tab                ⌘T".to_string(),
-        "Query: Close Tab              ⌘W".to_string(),
-        "Query: Save Tab               ⌘S".to_string(),
-        "Query: Open SQL File...          ⌘O".to_string(),
-        "Editor: Go to Definition      F12".to_string(),
-        "Editor: Rename Symbol         F2".to_string(),
-        "Editor: Toggle Find & Replace ⌘F".to_string(),
-        "Editor: Toggle Word Wrap".to_string(),
-        "Editor: Toggle Line Numbers".to_string(),
-        "Data: Export CSV".to_string(),
-        "Data: Export JSON".to_string(),
-        "Data: Export SQL Inserts".to_string(),
-        "Data: Export Markdown".to_string(),
-        "Data: Import CSV".to_string(),
-        "Data: Export with Options".to_string(),
-        "Data: Open Data File".to_string(),
-        "Data: Transfer Tables".to_string(),
-        "Data: Compare Data".to_string(),
-        "Data: Export Database Objects".to_string(),
-        "Data: Decrypt Exported File".to_string(),
-        "Transaction: Begin / Toggle   ⌘ Shift+T".to_string(),
-        "Transaction: Commit".to_string(),
-        "Transaction: Rollback".to_string(),
-        "View: Refresh                 ⌘R".to_string(),
-        "Preferences: Color Theme".to_string(),
-        "Preferences: Settings         ⌘,".to_string(),
-    ];
-
-    // Helper to collect tables and views from items_tree
-    fn collect_table_nodes(nodes: &[models::structs::TreeNode], out: &mut Vec<String>) {
-        for node in nodes {
-            if node.node_type == models::enums::NodeType::Table {
-                out.push(format!("Table: {}                    ↵ Open", node.name));
-            } else if node.node_type == models::enums::NodeType::View {
-                out.push(format!("View: {}                    ↵ Open", node.name));
-            }
-            collect_table_nodes(&node.children, out);
-        }
-    }
-    collect_table_nodes(&tabular.items_tree, &mut items);
-
-    tabular.command_palette_items = items;
 }
 
 pub(crate) fn navigate_command_palette(tabular: &mut window_egui::Tabular, direction: i32) {

@@ -366,6 +366,10 @@ mod tests {
         let b = log::page_for_paths(r, &["b.txt".to_string()], 1).expect("log b");
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].subject, "only b");
-        assert!(log::page_for_paths(r, &[], 10).expect("no paths").is_empty());
+        assert!(
+            log::page_for_paths(r, &[], 10)
+                .expect("no paths")
+                .is_empty()
+        );
     }
 }

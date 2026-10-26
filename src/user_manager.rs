@@ -3473,15 +3473,6 @@ fn render_badge(ui: &mut egui::Ui, text: &str, fill: egui::Color32) {
         });
 }
 
-#[allow(dead_code)]
-fn render_bool_badge(ui: &mut egui::Ui, val: bool) {
-    if val {
-        render_badge(ui, "YES", egui::Color32::from_rgb(30, 120, 60));
-    } else {
-        render_badge(ui, "NO", egui::Color32::from_rgb(90, 90, 90));
-    }
-}
-
 /// Helper: check if an object privilege entry is visible under given database & search filters.
 pub fn is_object_entry_visible_with_queries(
     entry: &ObjectPrivilegeEntry,

@@ -623,6 +623,13 @@ impl SqliteBackupEngine {
         let dest_c_str = CString::new(temp_dest.to_string_lossy().as_bytes())
             .map_err(|e| format!("Invalid dest path: {}", e))?;
 
+        // API online-backup SQLite (`sqlite3_backup_*`) tidak tersedia di sqlx,
+        // jadi dipanggil langsung lewat libsqlite3-sys (SQLite yang sama).
+        // SAFETY: kedua handle hanya dipakai di thread ini dan di blok ini;
+        // setiap jalur keluar (error, cancel, selesai) memanggil
+        // `sqlite3_backup_finish` sebelum `sqlite3_close` untuk kedua handle,
+        // dan string C (`src_c_str`, `dest_c_str`, `c"main"`) hidup lebih lama
+        // dari semua pemanggilan yang memakainya.
         unsafe {
             let mut p_src: *mut libsqlite3_sys::sqlite3 = std::ptr::null_mut();
             let mut p_dest: *mut libsqlite3_sys::sqlite3 = std::ptr::null_mut();
@@ -894,10 +901,14 @@ impl SqliteBackupEngine {
         res
     }
 
+    /// # Safety
+    /// `db` harus null atau handle SQLite yang masih terbuka.
     unsafe fn get_sqlite_errmsg(db: *mut libsqlite3_sys::sqlite3) -> String {
         if db.is_null() {
             return "Null SQLite handle".to_string();
         }
+        // SAFETY: `db` adalah handle terbuka (syarat pemanggil); pointer pesan
+        // milik SQLite dan disalin sebelum handle dipakai lagi.
         unsafe {
             let msg_ptr = libsqlite3_sys::sqlite3_errmsg(db);
             if msg_ptr.is_null() {

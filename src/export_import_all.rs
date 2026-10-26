@@ -521,7 +521,7 @@ pub fn inspect_archive(archive_path: &Path) -> Result<ExportAllManifest, ExportI
     for i in 0..archive.len() {
         let entry = archive.by_index(i)?;
         if entry.enclosed_name().is_none() {
-            return Err(ExportImportError::ZipSlip(entry.name().to_string()));
+            return Err(ExportImportError::ZipSlip(entry.name()?.to_string()));
         }
     }
 
@@ -538,7 +538,7 @@ pub fn inspect_archive(archive_path: &Path) -> Result<ExportAllManifest, ExportI
     let mut counts = ExportCounts::default();
     for i in 0..archive.len() {
         let entry = archive.by_index(i)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.to_string();
         if name.starts_with("connections/connections.json") {
             // Count connections from JSON content
             let mut c = Vec::new();
@@ -663,7 +663,7 @@ pub fn import_all_data(
             }
         };
         if entry.enclosed_name().is_none() {
-            let name = entry.name().to_string();
+            let name = entry.name()?.to_string();
             log::debug!(
                 "[RESTORE] ❌ Potential zip slip detected on entry: '{}'",
                 name
@@ -1085,7 +1085,7 @@ pub fn import_all_data(
                     return Err(ExportImportError::Zip(e));
                 }
             };
-            let name = entry.name().to_string();
+            let name = entry.name()?.to_string();
 
             if let Some(rel) = name.strip_prefix("queries/") {
                 if rel.is_empty() {
@@ -1182,7 +1182,7 @@ pub fn import_all_data(
                     return Err(ExportImportError::Zip(e));
                 }
             };
-            let name = entry.name().to_string();
+            let name = entry.name()?.to_string();
 
             if let Some(rel) = name.strip_prefix("http_collections/") {
                 if rel.is_empty() {

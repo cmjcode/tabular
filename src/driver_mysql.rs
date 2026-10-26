@@ -429,7 +429,6 @@ pub(crate) fn convert_mysql_rows_to_table_data(
     table_data
 }
 
-#[allow(dead_code)]
 pub(crate) async fn fetch_mysql_data(
     connection_id: i64,
     pool: &MySqlPool,
@@ -1044,25 +1043,6 @@ pub(crate) async fn fetch_mysql_columns(
     }
 
     Ok(columns_map)
-}
-
-// Check if the connection is a replica (slave)
-#[allow(dead_code)]
-pub(crate) async fn check_replication_status(pool: &sqlx::MySqlPool) -> bool {
-    // Check if SHOW REPLICA STATUS returns any rows
-    let result = sqlx::query("SHOW REPLICA STATUS")
-        .fetch_optional(pool)
-        .await;
-
-    match result {
-        Ok(Some(_)) => true,
-        Ok(None) => {
-            // Fallback to SHOW SLAVE STATUS for older versions
-            let result_slave = sqlx::query("SHOW SLAVE STATUS").fetch_optional(pool).await;
-            matches!(result_slave, Ok(Some(_)))
-        }
-        Err(_) => false,
-    }
 }
 
 // Helper to execute query with fallback for legacy syntax (REPLICA vs SLAVE)

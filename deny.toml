@@ -1,7 +1,6 @@
 # Konfigurasi cargo-deny (https://embarkstudios.github.io/cargo-deny/).
-# Dijalankan CI sebagai `cargo deny check advisories bans sources`. Job-nya
-# masih `continue-on-error` (lihat .github/workflows/rust.yml) sampai daftar
-# crate ganda di bawah selesai ditriase.
+# Dijalankan CI sebagai `cargo deny check advisories bans sources` dan wajib
+# lolos. Versi crate ganda masih "warn" (lihat [bans]).
 
 [graph]
 all-features = true
@@ -10,8 +9,18 @@ all-features = true
 version = 2
 # Crate yang ditarik (yanked) dilaporkan, belum menggagalkan.
 yanked = "warn"
-# Advisory yang sudah ditinjau dan diterima; sertakan alasannya.
-ignore = []
+# Advisory yang sudah ditinjau dan diterima; sertakan alasannya. Semuanya
+# berstatus "unmaintained" (bukan kerentanan) pada dependensi transitif tanpa
+# pengganti; tinjau ulang saat crate induknya naik versi.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste: proc-macro, via image/rav1e and walkers; no runtime input" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: via egui/epaint and resvg font rendering; only bundled fonts are parsed" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz: via resvg/usvg SVG text shaping; no maintained replacement in resvg 0.45" },
+    { id = "RUSTSEC-2026-0215", reason = "smallstr: transitive, small-string container; no replacement upstream yet" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: via keyring's Linux Secret Service backend (zbus)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: via keyring's Linux Secret Service backend (zbus)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: via keyring's Linux Secret Service backend (zbus)" },
+]
 
 [bans]
 # Versi ganda belum ditriase: bson 2 + 3 (mongodb memakai bson 2 kecuali fitur

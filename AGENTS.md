@@ -5,7 +5,7 @@ This file is read by Claude Code, Codex, Cursor and similar tools. Keep it short
 ## What this is
 
 Tabular is a native desktop SQL/NoSQL client in Rust (`eframe`/`egui`), single crate, about
-115k lines. Drivers: PostgreSQL, MySQL, SQLite, SQL Server, Redis, MongoDB. It also ships an
+320k lines. Drivers: PostgreSQL, MySQL, SQLite, SQL Server, Redis, MongoDB. It also ships an
 MCP server for agents (`tabular mcp`, see `docs/MCP.md`).
 
 ## Commands
@@ -14,13 +14,16 @@ MCP server for agents (`tabular mcp`, see `docs/MCP.md`).
 cargo check                                     # fast compile check
 cargo clippy --all-targets -- -D warnings       # CI gate, must be clean
 cargo clippy --all-targets --features collab -- -D warnings
+cargo fmt --all --check                         # CI gate (whole tree is formatted)
 cargo test                                      # unit + integration tests
 cargo test --lib agent::                        # only the agent / MCP layer
 cargo run -- mcp --print-config                 # MCP config snippet
 ```
 
-CI runs on ubuntu, macos and windows (`.github/workflows/rust.yml`). `cargo fmt` is not yet
-enforced on the whole tree; format only the files you touch.
+CI runs on ubuntu, macos and windows (`.github/workflows/rust.yml`), plus `cargo audit`,
+`cargo deny` and a `drivers` job that runs `src/connection/live_db_tests.rs` against real
+PostgreSQL and MySQL services (set `TABULAR_TEST_PG_URL` / `TABULAR_TEST_MYSQL_URL` to run them
+locally). Windows failures do not block yet.
 
 ## Layout
 
@@ -32,7 +35,10 @@ enforced on the whole tree; format only the files you touch.
 | Connections & execution | `src/connection/` | `pool.rs` builds pools (SSH/TLS), `execute.rs` runs `QueryJob`s |
 | Drivers | `src/driver_*.rs` | Per-database metadata fetching |
 | Local cache | `connections.db` (SQLite) via `src/sidebar_database.rs`, `src/cache_data.rs` | Tables: `connections`, `table_cache`, `column_cache`, `foreign_key_cache`, `query_history` |
-| Secrets | `src/secrets.rs` | OS keychain, encrypted-file fallback |
+| Secrets | `src/secrets.rs` | OS keychain, encrypted-file fallback; failures queue a `SecretNotice` the UI shows |
+| Runtime | `src/runtime.rs` | The one tokio runtime: `shared()`, `block_on()` (safe from any context), `spawn()` |
+| Execution safety | `src/connection_safety.rs` | Per-connection Safety mode (Standard / Confirm all writes / Read-only); `assess()` uses the agent classifier |
+| Menu bar | `src/window_egui/app_menu.rs` | Menu bar entries map to command-palette keys run by `editor::execute_command` |
 | AI assistant (in-app) | `src/ai_assistant.rs`, `src/vector_index.rs`, `src/window_egui/ai_context_jobs.rs` | Local feature-hash embeddings via sqlite-vec. Each chat turn adds a context bundle (FKs/indexes, API endpoints, business processes, notes, code + git, past queries) built in a background thread by `agent::context`; see `docs/MCP.md` "Context sent with each question", ADR 0008 |
 | Agent / MCP layer | `src/agent/` | Headless; must never depend on `window_egui`. `context.rs` = `table_context` tool and the chat context bundle |
 | Sync / collab | `src/sync/` | E2E encrypted vault; `collab` feature is optional |
@@ -59,6 +65,20 @@ enforced on the whole tree; format only the files you touch.
 - Lints allowed globally: `collapsible_if`, `too_many_arguments`, `type_complexity`. Everything
   else must pass `clippy -D warnings`.
 - Never serialize `ConnectionConfig` towards an agent or a network peer; it carries secrets.
+- Never report a failed write as success: no in-memory fallback for a save that failed. Use a
+  toast (`toasts.error`, `error_once`) or, from headless/background code,
+  `persist_notice::report`.
+- One tokio runtime per process: `crate::runtime`. `clippy.toml` forbids `Runtime::new` and
+  runtime builders outside the CLI entry points and tests.
+- No network or database call from a render path: start a background job and render a
+  placeholder (pattern: `window_egui/folder_fetch_jobs.rs`, `query_jobs.rs`).
+- SQL statement splitting goes through `connection::sql::split_sql_segments`/`split_sql_spans`;
+  identifier quoting through `schema_objects::sql::{quote_ident, quote_qualified}`.
+- Destructive confirmations use `style::confirm_dialog`; overwrites of a whole database use
+  `style::type_to_confirm`. New SQL execution paths must respect `connection_safety::assess`.
+- UI strings stay English (`tests/ui_english_strings.rs`); use `egui_icons::icons::ICON_*`, not
+  emoji, for icons (`tests/ui_glyph_coverage.rs`). New user-facing features get a menu bar entry
+  (and so a palette command).
 
 ## Things that bite
 

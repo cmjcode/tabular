@@ -380,99 +380,6 @@ pub(crate) fn get_tables_with_comments_from_cache(
     }
 }
 
-/// Like `get_tables_from_cache` but NOT scoped to a database — returns every
-/// cached table/view of `table_type` for the connection across all databases.
-/// Used as an autocomplete fallback when the active editor tab isn't pinned to a
-/// specific database (so `database_name` is empty or doesn't match the cache).
-#[allow(dead_code)]
-pub(crate) fn get_tables_for_connection_any_db(
-    tabular: &Tabular,
-    connection_id: i64,
-    table_type: &str,
-) -> Option<Vec<String>> {
-    let pool = tabular.db_pool.as_ref()?.clone();
-    let fut = async {
-        sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT table_name FROM table_cache WHERE connection_id = ? AND table_type = ? ORDER BY table_name",
-        )
-        .bind(connection_id)
-        .bind(table_type)
-        .fetch_all(pool.as_ref())
-        .await
-    };
-    let result = block_on_cache(tabular, fut);
-    result
-        .ok()
-        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
-}
-
-/// Resolve which database a cached table belongs to (first match). Used so the
-/// autocomplete can lazily fetch a table's columns with the right database when
-/// the editor tab isn't pinned to one.
-#[allow(dead_code)]
-pub(crate) fn get_table_database_from_cache(
-    tabular: &Tabular,
-    connection_id: i64,
-    table_name: &str,
-) -> Option<String> {
-    let pool = tabular.db_pool.as_ref()?.clone();
-    let fut = async {
-        sqlx::query_as::<_, (String,)>(
-            "SELECT database_name FROM table_cache WHERE connection_id = ? AND table_name = ? COLLATE NOCASE LIMIT 1",
-        )
-        .bind(connection_id)
-        .bind(table_name)
-        .fetch_optional(pool.as_ref())
-        .await
-    };
-    let result = block_on_cache(tabular, fut);
-    result.ok().flatten().map(|(d,)| d)
-}
-
-/// Every cached table/view name across ALL connections and databases. Last-ditch
-/// autocomplete fallback when neither the tab's connection nor the database can
-/// be resolved but `table_cache` does hold data.
-#[allow(dead_code)]
-pub(crate) fn get_all_cached_tables_global(tabular: &Tabular) -> Option<Vec<String>> {
-    let pool = tabular.db_pool.as_ref()?.clone();
-    let fut = async {
-        sqlx::query_as::<_, (String,)>(
-            "SELECT DISTINCT table_name FROM table_cache WHERE table_type IN ('table','view') ORDER BY table_name",
-        )
-        .fetch_all(pool.as_ref())
-        .await
-    };
-    let result = block_on_cache(tabular, fut);
-    result
-        .ok()
-        .map(|rows| rows.into_iter().map(|(n,)| n).collect())
-}
-
-/// Like `get_columns_from_cache` but NOT scoped to a database. Returns the first
-/// cached column set found for `table_name` under the connection (any database).
-#[allow(dead_code)]
-pub(crate) fn get_columns_for_connection_any_db(
-    tabular: &Tabular,
-    connection_id: i64,
-    table_name: &str,
-) -> Option<Vec<(String, String)>> {
-    let pool = tabular.db_pool.as_ref()?.clone();
-    let fut = async {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT column_name, data_type FROM column_cache WHERE connection_id = ? AND table_name = ? COLLATE NOCASE ORDER BY ordinal_position",
-        )
-        .bind(connection_id)
-        .bind(table_name)
-        .fetch_all(pool.as_ref())
-        .await
-    };
-    let result = block_on_cache(tabular, fut);
-    match result {
-        Ok(rows) if !rows.is_empty() => Some(rows),
-        _ => None,
-    }
-}
-
 pub(crate) fn get_databases_from_cache(
     tabular: &mut window_egui::Tabular,
     connection_id: i64,
@@ -1064,34 +971,6 @@ pub(crate) fn get_primary_keys_from_cache(
                 debug!("❌ Error retrieving PRIMARY KEY from cache: {}", e);
                 None
             }
-        }
-    } else {
-        None
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn get_indexed_columns_from_cache(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-    database_name: &str,
-    table_name: &str,
-) -> Option<Vec<String>> {
-    if let Some(ref pool) = tabular.db_pool {
-        let pool_clone = pool.clone();
-        let fut = async {
-            sqlx::query_as::<_, (String,)>("SELECT DISTINCT column_name FROM column_cache WHERE connection_id = ? AND database_name = ? AND table_name = ? AND is_indexed = 1 ORDER BY column_name")
-              .bind(connection_id)
-              .bind(database_name)
-              .bind(table_name)
-              .fetch_all(pool_clone.as_ref())
-              .await
-        };
-        let result = block_on_cache(tabular, fut);
-
-        match result {
-            Ok(rows) => Some(rows.into_iter().map(|(name,)| name).collect()),
-            Err(_) => None,
         }
     } else {
         None

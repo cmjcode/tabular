@@ -414,7 +414,6 @@ impl TreeNode {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_children(name: String, node_type: NodeType, children: Vec<TreeNode>) -> Self {
         Self {
             name,

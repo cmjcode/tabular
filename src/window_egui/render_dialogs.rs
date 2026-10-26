@@ -532,7 +532,7 @@ impl super::Tabular {
                 if let Some(state) = &mut self.replication_dialog {
                     crate::window_egui::style::modal_card_frame(ui.ctx()).show(ui, |ui| {
                         ui.label("Select the Master connection to replicate from:");
-                        
+
                         let current_source = state.source_connection_id;
                         let current_name = source_candidates.iter()
                             .find(|(id, _)| *id == current_source)
@@ -550,7 +550,7 @@ impl super::Tabular {
                                     }
                                 }
                             });
-                            
+
                         ui.add_space(8.0);
                         ui.label("Replication User (Optional - leave empty to use connection default):");
                         super::style::render_text_field(
@@ -559,7 +559,7 @@ impl super::Tabular {
                             f32::INFINITY,
                             None,
                         );
-                        
+
                         ui.add_space(8.0);
                         ui.label("Replication Password (Optional):");
                         super::style::render_text_field(
@@ -574,9 +574,9 @@ impl super::Tabular {
                             ui.label(egui::RichText::new(err).color(super::style::theme_danger(ui.ctx())));
                         }
                     });
-                    
+
                     ui.add_space(8.0);
-                    
+
                     ui.horizontal(|ui| {
                         let can_start = state.source_connection_id.is_some() && !state.is_executing;
                         if ui.add_enabled(can_start, egui::Button::new("Init & Start Replication")).clicked() {
@@ -594,7 +594,7 @@ impl super::Tabular {
                             }
                         }
                     });
-                    
+
                     if state.is_executing {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -745,14 +745,14 @@ impl super::Tabular {
                                     .size(20.0)
                                     .color(text_color)
                             );
-                            
+
                             ui.spacing_mut().item_spacing.x = 8.0;
-                            
+
                             // Sync display buffer with actual message if they differ
                             if self.query_message_display_buffer != self.query_message {
                                 self.query_message_display_buffer = self.query_message.clone();
                             }
-                            
+
                             // Use TextEdit with persistent buffer for selection state
                             // Use absolute ID so we can check focus in copy handler
                             let message_text_id = egui::Id::new("tabular_message_text_edit_widget");
@@ -764,18 +764,18 @@ impl super::Tabular {
                                 .frame(egui::Frame::NONE)
                                 .interactive(true)
                                 .show(ui);
-                            
+
                             // Request focus when clicked to ensure CMD+C works
                             if output.response.clicked() {
                                 output.response.request_focus();
                             }
-                            
+
                             // Manual copy handling for CMD+C in message TextEdit
                             if output.response.has_focus() {
                                 ui.input(|i| {
                                     let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
                                     let key_combo = (i.modifiers.mac_cmd || i.modifiers.ctrl) && i.key_pressed(egui::Key::C);
-                                    
+
                                     if copy_event || key_combo {
                                         // Get cursor range to find selected text
                                         if let Some(state) = egui::TextEdit::load_state(ui.ctx(), message_text_id)
@@ -783,7 +783,7 @@ impl super::Tabular {
                                             let start = cursor_range.primary.index.0;
                                             let end = cursor_range.secondary.index.0;
                                             let (min, max) = if start < end { (start, end) } else { (end, start) };
-                                            
+
                                             if min < max && max <= self.query_message_display_buffer.len() {
                                                 let selected_text = &self.query_message_display_buffer[min..max];
                                                 ui.ctx().copy_text(selected_text.to_string());
@@ -793,7 +793,7 @@ impl super::Tabular {
                                     }
                                 });
                             }
-                            
+
                             // Context menu on right-click
                             output.response.context_menu(|ui| {
                                 if ui.button("📋 Copy Text").clicked() {

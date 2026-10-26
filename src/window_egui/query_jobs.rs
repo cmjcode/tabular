@@ -777,6 +777,29 @@ impl super::Tabular {
     /// Selaraskan `tx_active` tiap tab dengan status transaksi sebenarnya di
     /// koneksi sesi (BEGIN gagal, timeout, sesi mati). Selama ada job berjalan
     /// nilai optimistis `true` dari editor dipertahankan.
+    /// Terapkan DDL view yang selesai diambil di latar ke tab asalnya.
+    pub fn poll_view_ddl(&mut self) {
+        let Some((tab_id, rx)) = &self.pending_view_ddl else {
+            return;
+        };
+        let ddl = match rx.try_recv() {
+            Ok(ddl) => ddl,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                "-- Unable to fetch view definition".to_string()
+            }
+        };
+        let tab_id = *tab_id;
+        self.pending_view_ddl = None;
+        let is_active = self.query_tabs.get(self.active_tab_index).map(|t| t.id) == Some(tab_id);
+        if let Some(tab) = self.query_tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.object_ddl = Some(ddl.clone());
+        }
+        if is_active {
+            self.current_object_ddl = Some(ddl);
+        }
+    }
+
     pub fn sync_tab_tx_state(&mut self) {
         let idle = self.jobs.active.is_empty();
         for tab in &mut self.query_tabs {

@@ -107,6 +107,7 @@ pub mod os_notify;
 pub mod outside_mcp;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod outside_mcp_client;
+pub mod persist_notice;
 #[cfg(target_os = "ios")]
 pub mod platform_ios;
 #[cfg(target_os = "macos")]
@@ -127,12 +128,11 @@ pub mod repo_links;
 pub mod repo_scan;
 pub mod repo_setup;
 pub mod result_chart;
+pub mod runtime;
 pub mod safety_guard;
 pub mod sample_data;
 pub mod schema_objects;
 pub mod search_match;
-pub mod persist_notice;
-pub mod runtime;
 pub mod secrets;
 pub mod self_update;
 pub mod server_metrics;

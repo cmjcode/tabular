@@ -73,7 +73,6 @@ egui_plot = "0.37"
 walkers = "0.60"
 # Date type consumed by egui_extras' DatePickerButton (chrono elsewhere).
 jiff = "0.2"
-colorful = "0.3.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # JSON Schema untuk `outputSchema` tool MCP. Tipe hasil agent ikut dikompilasi di
@@ -84,9 +83,9 @@ dirs = "7.0.0"
 regex = "1.13"
 unicode-segmentation = "1.13"
 csv = "1.4"
-rust_xlsxwriter = "0.99"      # Pure-Rust xlsx writer (no libclang/C toolchain)
+rust_xlsxwriter = "0.101"     # Pure-Rust xlsx writer (no libclang/C toolchain)
 # Import/Data Files (H1/H4): pembaca XLSX murni Rust.
-calamine = "0.36"
+calamine = "0.37"
 # Parquet native (H1/H2) lewat API record/kolom, tanpa fitur `arrow` supaya
 # Arrow/DataFusion tidak ikut ditarik.
 parquet = { version = "60", default-features = false, features = [
@@ -126,7 +125,7 @@ reqwest = { version = "0.13", features = [
 semver = "1.0"
 flate2 = "1.1"
 tar = "0.4"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 tree-sitter = { version = "0.27.1", optional = true }
 tree-sitter-sequel = { version = "0.3.11", optional = true }

@@ -1641,7 +1641,11 @@ fn render_files(t: &mut Tabular, ui: &mut egui::Ui, key: &str) {
             if !query.trim().is_empty() {
                 let hits = crate::git::files::filter(&files, &query);
                 if hits.is_empty() {
-                    ui.label(egui::RichText::new("No files match").size(11.5).color(muted(ui)));
+                    ui.label(
+                        egui::RichText::new("No files match")
+                            .size(11.5)
+                            .color(muted(ui)),
+                    );
                 }
                 for p in &hits {
                     let resp = git_view::file_row(ui, p, "", muted(ui), false);
@@ -1726,7 +1730,13 @@ fn file_tree_rows(
 }
 
 /// Satu baris pohon: chevron (folder), ikon, lalu nama.
-fn tree_row(ui: &mut egui::Ui, indent: f32, chevron: &str, icon: &str, label: &str) -> egui::Response {
+fn tree_row(
+    ui: &mut egui::Ui,
+    indent: f32,
+    chevron: &str,
+    icon: &str,
+    label: &str,
+) -> egui::Response {
     let h = 22.0;
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());

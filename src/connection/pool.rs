@@ -15,10 +15,6 @@ use std::time::Duration;
 /// `pending_connection_pools` until the app restarts.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// DNS budget. Name resolution has no timeout of its own and can hang for ~30s
-/// against an unresponsive resolver.
-const DNS_TIMEOUT: Duration = Duration::from_secs(3);
-
 /// Ceiling for a single driver handshake, matching the pre-existing MongoDB value.
 pub(crate) const DRIVER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -121,174 +117,6 @@ async fn wait_for_cancel(flag: Arc<AtomicBool>) {
     while !flag.load(Ordering::SeqCst) {
         tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
     }
-}
-
-/// Host/port that a reachability probe should target: the SSH endpoint when
-/// tunnelling, otherwise the database endpoint. `Ok(None)` means the probe does
-/// not apply (SQLite, or a loopback host that is always reachable).
-fn reachability_target(
-    connection: &models::structs::ConnectionConfig,
-) -> Result<Option<(String, String)>, String> {
-    if connection.connection_type == models::enums::DatabaseType::SQLite {
-        return Ok(None);
-    }
-
-    let (host, port_str) = if connection.ssh_enabled {
-        let h = connection.ssh_host.trim();
-        let p = if connection.ssh_port.trim().is_empty() {
-            "22"
-        } else {
-            connection.ssh_port.trim()
-        };
-        if h.is_empty() {
-            return Err("SSH host must not be empty".to_string());
-        }
-        (h, p)
-    } else {
-        let h = connection.host.trim();
-        let p = if connection.port.trim().is_empty() {
-            "3306"
-        } else {
-            connection.port.trim()
-        };
-        if h.is_empty() {
-            return Err("Database host must not be empty".to_string());
-        }
-        (h, p)
-    };
-
-    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-        return Ok(None);
-    }
-
-    Ok(Some((host.to_string(), port_str.to_string())))
-}
-
-fn unreachable_error(host: &str, port_str: &str) -> String {
-    format!(
-        "Cannot reach host [{}:{}]: network unreachable (host offline).",
-        host, port_str
-    )
-}
-
-/// `ToSocketAddrs` cannot be interrupted, so resolve on a detached thread and
-/// abandon the answer once the budget expires.
-fn resolve_addrs_blocking(
-    addr: &str,
-    budget: Duration,
-) -> Result<Vec<std::net::SocketAddr>, String> {
-    use std::net::ToSocketAddrs;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let owned = addr.to_string();
-    std::thread::spawn(move || {
-        let resolved = owned
-            .to_socket_addrs()
-            .map(|addrs| addrs.collect::<Vec<_>>())
-            .map_err(|e| e.to_string());
-        let _ = tx.send(resolved);
-    });
-
-    match rx.recv_timeout(budget) {
-        Ok(Ok(addrs)) => Ok(addrs),
-        Ok(Err(e)) => Err(format!("Network is not connected ({})", e)),
-        Err(_) => Err(format!(
-            "DNS did not respond within {} seconds",
-            budget.as_secs()
-        )),
-    }
-}
-
-/// Check TCP reachability to host & port before attempting database driver connection.
-/// Fails fast (within timeout_ms) if laptop has no network or host is unreachable.
-///
-/// Blocking variant, for callers that are genuinely synchronous. Async callers
-/// must use [`check_host_reachability_async`] — this one cannot be cancelled by
-/// `tokio::time::timeout` and would block a runtime worker thread.
-#[allow(dead_code)]
-pub(crate) fn check_host_reachability(
-    connection: &models::structs::ConnectionConfig,
-    timeout_ms: u64,
-) -> Result<(), String> {
-    use std::net::TcpStream;
-
-    let Some((host, port_str)) = reachability_target(connection)? else {
-        return Ok(());
-    };
-
-    let addr_str = format!("{}:{}", host, port_str);
-    let socket_addrs = resolve_addrs_blocking(&addr_str, DNS_TIMEOUT)
-        .map_err(|e| format!("Cannot resolve host '{}': {}", host, e))?;
-
-    if socket_addrs.is_empty() {
-        return Err(format!("Host '{}' is not valid", host));
-    }
-
-    // The budget covers the whole probe, not each address: a host with several
-    // A-records used to multiply the wait by the number of addresses.
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    for addr in socket_addrs {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        if TcpStream::connect_timeout(&addr, remaining).is_ok() {
-            return Ok(());
-        }
-    }
-
-    Err(unreachable_error(&host, &port_str))
-}
-
-/// Async reachability probe. Every step yields, so an enclosing
-/// `tokio::time::timeout` (or a task abort) can actually cancel it.
-#[allow(dead_code)]
-pub(crate) async fn check_host_reachability_async(
-    connection: &models::structs::ConnectionConfig,
-    timeout_ms: u64,
-) -> Result<(), String> {
-    let Some((host, port_str)) = reachability_target(connection)? else {
-        return Ok(());
-    };
-
-    let addr_str = format!("{}:{}", host, port_str);
-    let socket_addrs =
-        match tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host(addr_str)).await {
-            Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
-            Ok(Err(e)) => {
-                return Err(format!(
-                    "Cannot resolve host '{}': network is not connected ({})",
-                    host, e
-                ));
-            }
-            Err(_) => {
-                return Err(format!(
-                    "Cannot resolve host '{}': DNS did not respond within {} seconds",
-                    host,
-                    DNS_TIMEOUT.as_secs()
-                ));
-            }
-        };
-
-    if socket_addrs.is_empty() {
-        return Err(format!("Host '{}' is not valid", host));
-    }
-
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    for addr in socket_addrs {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        if let Ok(Ok(stream)) =
-            tokio::time::timeout(remaining, tokio::net::TcpStream::connect(addr)).await
-        {
-            drop(stream);
-            return Ok(());
-        }
-    }
-
-    Err(unreachable_error(&host, &port_str))
 }
 
 /// Resolve the actual host/port to connect to, accounting for SSH tunnels.
@@ -1239,7 +1067,6 @@ fn pool_uses_ssh_tunnel(tabular: &Tabular, connection_id: i64) -> bool {
 }
 
 /// Create a database pool (legacy / refresh path). Delegates to create_connection_pool_for_config.
-#[allow(dead_code)]
 pub(crate) async fn create_database_pool(
     connection: &models::structs::ConnectionConfig,
 ) -> Option<models::enums::DatabasePool> {
@@ -1804,45 +1631,6 @@ pub(crate) async fn pool_if_connected_or_start(
     None
 }
 
-/// Retry-based pool retrieval. Waits between retries if pool is being created.
-#[allow(dead_code)]
-pub(crate) async fn get_or_create_connection_pool_with_retry(
-    tabular: &mut Tabular,
-    connection_id: i64,
-    max_retries: u32,
-) -> Option<models::enums::DatabasePool> {
-    for attempt in 0..=max_retries {
-        if let Some(cached_pool) = tabular.connection_pools.get(&connection_id) {
-            debug!(
-                "✅ Using cached connection pool for connection {}",
-                connection_id
-            );
-            return Some(cached_pool.clone());
-        }
-
-        if !tabular.pending_connection_pools.contains(&connection_id) {
-            return get_or_create_connection_pool(tabular, connection_id).await;
-        }
-
-        if attempt < max_retries {
-            debug!(
-                "⏳ Waiting for connection pool creation (attempt {}/{})",
-                attempt + 1,
-                max_retries + 1
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(500 + attempt as u64 * 200)).await;
-        } else {
-            debug!(
-                "⏰ Max retries reached for connection pool {}",
-                connection_id
-            );
-            break;
-        }
-    }
-
-    None
-}
-
 /// Remove and clean up a connection pool (local cache, shared cache, SSH tunnels).
 pub(crate) fn cleanup_connection_pool(tabular: &mut Tabular, connection_id: i64) {
     debug!(
@@ -1922,95 +1710,6 @@ mod tests {
             connection_type,
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn sqlite_needs_no_reachability_probe() {
-        let mut c = conn(DatabaseType::SQLite);
-        c.host = "/tmp/some.db".to_string();
-        assert_eq!(reachability_target(&c).unwrap(), None);
-    }
-
-    #[test]
-    fn loopback_hosts_need_no_reachability_probe() {
-        for host in ["localhost", "127.0.0.1", "::1"] {
-            let mut c = conn(DatabaseType::MySQL);
-            c.host = host.to_string();
-            assert_eq!(reachability_target(&c).unwrap(), None, "host {host}");
-        }
-    }
-
-    #[test]
-    fn direct_connection_probes_database_endpoint() {
-        let mut c = conn(DatabaseType::PostgreSQL);
-        c.host = "db.example.com".to_string();
-        c.port = "5432".to_string();
-        assert_eq!(
-            reachability_target(&c).unwrap(),
-            Some(("db.example.com".to_string(), "5432".to_string()))
-        );
-    }
-
-    #[test]
-    fn ssh_connection_probes_the_ssh_endpoint_not_the_database() {
-        let mut c = conn(DatabaseType::MySQL);
-        c.host = "db.internal".to_string();
-        c.port = "3306".to_string();
-        c.ssh_enabled = true;
-        c.ssh_host = "bastion.example.com".to_string();
-        c.ssh_port = "2222".to_string();
-        assert_eq!(
-            reachability_target(&c).unwrap(),
-            Some(("bastion.example.com".to_string(), "2222".to_string()))
-        );
-    }
-
-    #[test]
-    fn blank_ports_fall_back_to_defaults() {
-        let mut direct = conn(DatabaseType::MySQL);
-        direct.host = "db.example.com".to_string();
-        direct.port = "  ".to_string();
-        assert_eq!(
-            reachability_target(&direct).unwrap(),
-            Some(("db.example.com".to_string(), "3306".to_string()))
-        );
-
-        let mut tunnelled = conn(DatabaseType::MySQL);
-        tunnelled.host = "db.internal".to_string();
-        tunnelled.ssh_enabled = true;
-        tunnelled.ssh_host = "bastion.example.com".to_string();
-        tunnelled.ssh_port = String::new();
-        assert_eq!(
-            reachability_target(&tunnelled).unwrap(),
-            Some(("bastion.example.com".to_string(), "22".to_string()))
-        );
-    }
-
-    #[test]
-    fn empty_hosts_are_rejected() {
-        let mut direct = conn(DatabaseType::MySQL);
-        direct.host = String::new();
-        assert!(reachability_target(&direct).is_err());
-
-        let mut tunnelled = conn(DatabaseType::MySQL);
-        tunnelled.host = "db.internal".to_string();
-        tunnelled.ssh_enabled = true;
-        tunnelled.ssh_host = "   ".to_string();
-        assert!(reachability_target(&tunnelled).is_err());
-    }
-
-    #[test]
-    fn dns_resolution_gives_up_once_the_budget_expires() {
-        // RFC 6761 reserves .invalid, so this never resolves. The point is that
-        // the call returns rather than hanging the way `to_socket_addrs` could.
-        let started = std::time::Instant::now();
-        let result = resolve_addrs_blocking("nonexistent.invalid:3306", Duration::from_millis(300));
-        assert!(result.is_err());
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "resolution should be bounded, took {:?}",
-            started.elapsed()
-        );
     }
 
     // Ids are namespaced per test: CANCEL_FLAGS is process-global and tests

@@ -643,10 +643,20 @@ impl super::Tabular {
                 .find(|c| c.id == Some(conn_id))
                 .cloned()
             {
-                let Some(script) =
+                // Source diambil async bila engine didukung `ViewSource` (MySQL,
+                // PostgreSQL, SQL Server); jalur blocking hanya cadangan.
+                let async_supported = crate::schema_objects::catalog::routine_source_query(
+                    &conn.connection_type,
+                    crate::schema_objects::catalog::RoutineKind::Procedure,
+                    &proc_name,
+                )
+                .is_some();
+                let script = if async_supported {
+                    None
+                } else {
                     connection::fetch_procedure_definition(&conn, db_name.as_deref(), &proc_name)
-                else {
-                    // Engine tanpa jalur sinkron (mis. PostgreSQL): ambil source secara async.
+                };
+                let Some(script) = script else {
                     super::schema_actions::queue_action(
                         ui.ctx(),
                         super::schema_actions::SchemaAction::ViewSource {
@@ -1682,19 +1692,33 @@ impl super::Tabular {
                 };
 
                 if is_view {
-                    let ddl = connection::fetch_view_definition(
-                        &conn,
-                        database_name.as_deref(),
-                        &table_name,
-                    )
-                    .unwrap_or_else(|| {
-                        format!("-- Unable to fetch view definition for {}", table_name)
-                    });
-                    self.current_object_ddl = Some(ddl.clone());
+                    // DDL view diambil di thread latar (koneksi sekali pakai bisa
+                    // lambat); panel menampilkan placeholder sampai hasil tiba.
+                    let placeholder = format!("-- Loading definition of {table_name}…");
+                    self.current_object_ddl = Some(placeholder.clone());
+                    let tab_id = self.query_tabs.get(self.active_tab_index).map(|t| t.id);
                     if let Some(active_tab) = self.query_tabs.get_mut(self.active_tab_index) {
-                        active_tab.object_ddl = Some(ddl);
+                        active_tab.object_ddl = Some(placeholder);
                     }
                     self.table_bottom_view = models::structs::TableBottomView::Query;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let conn_for_job = conn.clone();
+                    let db_for_job = database_name.clone();
+                    let view_name = table_name.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let ddl = connection::fetch_view_definition(
+                            &conn_for_job,
+                            db_for_job.as_deref(),
+                            &view_name,
+                        )
+                        .unwrap_or_else(|| {
+                            format!("-- Unable to fetch view definition for {view_name}")
+                        });
+                        let _ = tx.send(ddl);
+                        ctx.request_repaint();
+                    });
+                    self.pending_view_ddl = tab_id.map(|id| (id, rx));
                 }
             }
 

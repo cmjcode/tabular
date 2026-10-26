@@ -618,7 +618,6 @@ async fn recover_corrupt_cache(cache_pool: &SqlitePool) -> bool {
     all_ok
 }
 
-#[allow(dead_code)]
 pub(crate) async fn refresh_connection_background_async(
     connection_id: i64,
     db_pool: &Option<Arc<SqlitePool>>,

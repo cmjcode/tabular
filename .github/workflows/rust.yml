@@ -14,11 +14,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Format belum diterapkan ke seluruh kode lama; job ini informatif sampai
-  # repo diformat sekali dengan `cargo fmt` (lalu hapus continue-on-error).
+  # Seluruh tree sudah diformat; format wajib lolos.
   fmt:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -49,6 +47,40 @@ jobs:
       - name: Tests
         run: cargo test
 
+  # Tes terhadap PostgreSQL dan MySQL sungguhan (src/connection/live_db_tests.rs):
+  # simpan grid atomik dan daftar tabel sidebar. Tanpa env, tes ini lulus kosong.
+  drivers:
+    name: live database tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tabular
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tabular
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      TABULAR_TEST_PG_URL: postgres://postgres:postgres@127.0.0.1:5432/tabular
+      TABULAR_TEST_MYSQL_URL: mysql://root:root@127.0.0.1:3306/tabular
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Live database tests
+        run: cargo test --lib connection::live_db_tests -- --test-threads=1
+
   # Advisory keamanan (RustSec) diperiksa di setiap PR, bukan hanya oleh cron
   # bulanan di dependency-audit.yml.
   audit:
@@ -62,13 +94,11 @@ jobs:
       - name: Check for known security advisories
         run: cargo audit
 
-  # Advisory, crate terlarang/ganda, dan sumber dependensi menurut deny.toml.
-  # Belum memblokir merge: daftar crate ganda (bson, base64, rustls provider)
-  # masih perlu ditriase. Hapus continue-on-error setelah itu.
+  # Advisory, crate terlarang, dan sumber dependensi menurut deny.toml. Versi
+  # ganda hanya peringatan (lihat [bans] di deny.toml).
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2

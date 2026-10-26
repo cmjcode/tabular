@@ -916,6 +916,7 @@ impl Tabular {
         self.sync_job_tabs();
         self.sync_tab_tx_state();
         self.poll_folder_fetches();
+        self.poll_view_ddl();
         self.cancel_jobs_of_closed_tabs();
         while let Ok(message) = self.query_result_receiver.try_recv() {
             self.handle_query_result_message(message);
@@ -3248,14 +3249,14 @@ impl Tabular {
                             }
                             rendered_redis_browser = true;
                         }
-                    
+
                         if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                             && let Some(diagram_state) = &mut tab.diagram_state {
                                if let Some(action) = crate::diagram_view::render_diagram(ui, diagram_state) {
                                    diagram_action = Some((action, tab.connection_id, tab.database_name.clone(), diagram_state.clone()));
                                }
                                rendered_diagram = true;
-                           
+
                                // Tab subset (`scoped_to`) tidak pernah disimpan:
                                // isinya akan menimpa layout diagram database.
                                // Auto save mati: perubahan hanya ditandai belum
@@ -3276,7 +3277,7 @@ impl Tabular {
                                    }
                                }
                             }
-                    
+
                         if let Some((conn_id_opt, db_name_opt, state)) = diagram_to_save
                              && let Some(cid) = conn_id_opt {
                                  let db = db_name_opt.unwrap_or_else(|| "default".to_string());
@@ -3529,7 +3530,7 @@ impl Tabular {
                                 }
                             }
                         }
-                    
+
                         if let Some((conn_id_opt, db_type_opt, db_name, schema_name)) = user_mgr_conn_info
                             && let Some(action) = user_mgr_action
                         {
@@ -3788,7 +3789,7 @@ impl Tabular {
                             }
                         }
                     }
-                    
+
                         // Tab Git: diff file, detail commit, atau merge request.
                         if self
                             .query_tabs
@@ -3834,7 +3835,7 @@ impl Tabular {
                         if !rendered_diagram && !rendered_http && !rendered_redis_browser && !rendered_dba_monitor && !rendered_user_manager && !rendered_git && !rendered_compare {
                             self.render_query_editor_with_split(ui, "regular_query");
                         }
-                    
+
                         // Unified bottom-right dock (renders tab buttons and expanded lint details in a single card)
                         self.render_bottom_right_dock(ui.ctx(), rendered_http, rendered_redis_browser);
                     }
@@ -5019,7 +5020,7 @@ impl App for Tabular {
             let copy_event = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
             let key_c_pressed = i.key_pressed(egui::Key::C);
             let cmd_held = i.modifiers.mac_cmd || i.modifiers.ctrl;
-            
+
             if copy_event || (cmd_held && key_c_pressed) {
                 // Only handle copy for table/structure based on recent click flag
                 // If table_recently_clicked=false, user is in editor, so let editor handle copy

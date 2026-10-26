@@ -16,18 +16,20 @@ pub mod ai_fix;
 pub mod ai_history_ui;
 pub mod ai_mcp_ui;
 pub mod app_impl;
+pub(crate) mod app_menu;
 pub mod background_dock;
 pub mod background_tasks;
 pub mod connection_mgr;
-pub mod db_jobs;
 pub mod db_context_bar;
+pub mod db_jobs;
 pub mod device_profile;
 pub mod diagram;
 pub mod diagram_db_sync;
 pub mod diagram_flow_jobs;
+pub(crate) mod diagram_merge_dialog;
 pub mod file_viewer_jobs;
 pub mod file_viewer_ui;
-pub(crate) mod diagram_merge_dialog;
+mod folder_fetch_jobs;
 pub mod git_avatar;
 pub mod git_diff_view;
 pub(crate) mod git_graph_dialogs;
@@ -42,11 +44,13 @@ pub mod git_review_view;
 pub mod git_sidebar;
 pub mod git_view;
 pub mod init;
+pub mod integration_test_jobs;
+pub mod integration_test_ui;
+pub mod multi_compare_jobs;
+pub mod multi_compare_ui;
 pub mod notifications;
-pub(crate) mod app_menu;
-mod folder_fetch_jobs;
-mod persist_notices;
 pub mod pagination;
+mod persist_notices;
 pub mod platform_ui;
 pub(crate) mod plugin_connection_form;
 pub(crate) mod plugin_tree;
@@ -56,10 +60,6 @@ pub mod query_insight;
 pub mod query_jobs;
 pub mod query_stats_ui;
 pub mod render_dialogs;
-pub mod integration_test_jobs;
-pub mod integration_test_ui;
-pub mod multi_compare_jobs;
-pub mod multi_compare_ui;
 pub mod repo_setup_jobs;
 pub mod schema_actions;
 pub mod schema_menus;
@@ -319,6 +319,8 @@ pub struct Tabular {
     pub pending_close_tx_tab: Option<usize>,
     /// Id tab yang sudah dikonfirmasi untuk ditutup (rollback) oleh dialog di atas.
     pub confirmed_close_tx_tab: Option<usize>,
+    /// DDL view yang sedang diambil di latar: (id tab, hasil).
+    pub pending_view_ddl: Option<(usize, std::sync::mpsc::Receiver<String>)>,
     // Error message display
     pub error_message: String,
     pub show_error_message: bool,

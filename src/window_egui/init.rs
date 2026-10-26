@@ -334,6 +334,7 @@ impl super::Tabular {
             unsafe_dml_reason: String::new(),
             pending_close_tx_tab: None,
             confirmed_close_tx_tab: None,
+            pending_view_ddl: None,
             error_message: String::new(),
             show_error_message: false,
             advanced_editor: models::structs::AdvancedEditor::default(),

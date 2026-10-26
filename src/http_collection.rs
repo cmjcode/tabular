@@ -797,134 +797,100 @@ pub struct YaakImportResult {
 /// Uses a blocking SQLite connection (via `rusqlite`-style raw reads through
 /// `libsqlite3-sys`). Wraps `sqlite_import_inner` which does the actual work.
 pub fn import_from_yaak(db_path: &std::path::Path) -> Result<YaakImportResult, String> {
-    // We use raw sqlite3 via the bundled libsqlite3-sys crate.
-    // Opening read-only to avoid locking conflicts with a running Yaak instance.
+    // Dibuka read-only agar tidak bentrok dengan Yaak yang sedang berjalan.
     import_yaak_sqlite(db_path)
 }
 
 // ─── SQLite helpers (no async needed; runs on calling thread) ─────────────────
 
-/// Raw type-safe wrapper around a sqlite3 connection using libsqlite3-sys.
-/// This avoids pulling in rusqlite as a new dep — we can drive the C API
-/// directly because libsqlite3-sys is already in the tree (bundled).
+/// Pembaca SQLite read-only untuk database Yaak, lewat sqlx yang sudah dipakai
+/// seluruh aplikasi. Menggantikan pembungkus FFI `libsqlite3-sys` mentah
+/// (13 blok `unsafe`, `Stmt` tanpa ikatan lifetime ke koneksinya, dan handle
+/// yang tidak ditutup saat open gagal).
 mod sqlite_raw {
-    use libsqlite3_sys as ffi;
-    use std::ffi::{CStr, CString};
-    use std::os::raw::{c_char, c_int};
+    use sqlx::{Row, TypeInfo, ValueRef};
+    use std::os::raw::c_int;
     use std::path::Path;
 
-    pub struct Conn(*mut ffi::sqlite3);
-    pub struct Stmt(*mut ffi::sqlite3_stmt);
+    pub struct Conn(sqlx::SqlitePool);
 
-    unsafe impl Send for Conn {}
-    unsafe impl Send for Stmt {}
+    /// Satu baris hasil, semua kolom sudah diubah ke teks seperti
+    /// `sqlite3_column_text` (angka menjadi teks, NULL menjadi kosong).
+    pub struct Stmt(Vec<Option<String>>);
 
     impl Conn {
         pub fn open_readonly(path: &Path) -> Result<Self, String> {
-            let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
-            let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
-            let mut db: *mut ffi::sqlite3 = std::ptr::null_mut();
-            let rc = unsafe {
-                ffi::sqlite3_open_v2(
-                    c_path.as_ptr(),
-                    &mut db,
-                    ffi::SQLITE_OPEN_READONLY | ffi::SQLITE_OPEN_NOMUTEX,
-                    std::ptr::null(),
-                )
-            };
-            if rc != ffi::SQLITE_OK as c_int {
-                return Err(format!(
-                    "Cannot open Yaak DB ({}): {}",
-                    rc,
-                    sqlite_errmsg(db)
-                ));
-            }
-            Ok(Conn(db))
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true)
+                .create_if_missing(false);
+            let pool = crate::runtime::block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(options),
+            )
+            .ok_or("the background runtime is not available")?
+            .map_err(|e| format!("Cannot open Yaak DB: {e}"))?;
+            Ok(Conn(pool))
         }
 
-        pub fn prepare(&self, sql: &str) -> Result<Stmt, String> {
-            let c_sql = CString::new(sql).map_err(|e| e.to_string())?;
-            let mut stmt: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
-            let rc = unsafe {
-                ffi::sqlite3_prepare_v2(self.0, c_sql.as_ptr(), -1, &mut stmt, std::ptr::null_mut())
-            };
-            if rc != ffi::SQLITE_OK as c_int {
-                return Err(format!("prepare failed ({})", rc));
-            }
-            Ok(Stmt(stmt))
-        }
-
-        /// Execute a query and call `row_fn` for each row.
-        /// `row_fn` receives the Stmt and the column count.
+        /// Jalankan query dan panggil `row_fn` untuk setiap baris beserta
+        /// jumlah kolomnya.
         pub fn query<F>(&self, sql: &str, mut row_fn: F) -> Result<(), String>
         where
             F: FnMut(&Stmt, c_int),
         {
-            let stmt = self.prepare(sql)?;
-            loop {
-                let rc = unsafe { ffi::sqlite3_step(stmt.0) };
-                match rc {
-                    r if r == ffi::SQLITE_ROW as c_int => {
-                        let ncols = unsafe { ffi::sqlite3_column_count(stmt.0) };
-                        row_fn(&stmt, ncols);
-                    }
-                    r if r == ffi::SQLITE_DONE as c_int => break,
-                    r => return Err(format!("step failed ({})", r)),
-                }
+            let rows = crate::runtime::block_on(
+                sqlx::query(sqlx::AssertSqlSafe(sql.to_string())).fetch_all(&self.0),
+            )
+            .ok_or("the background runtime is not available")?
+            .map_err(|e| format!("query failed: {e}"))?;
+            for row in rows {
+                let values: Vec<Option<String>> = (0..row.columns().len())
+                    .map(|i| cell_text(&row, i))
+                    .collect();
+                let ncols = values.len() as c_int;
+                row_fn(&Stmt(values), ncols);
             }
             Ok(())
         }
     }
 
-    impl Drop for Conn {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                unsafe { ffi::sqlite3_close(self.0) };
-            }
+    fn cell_text(row: &sqlx::sqlite::SqliteRow, idx: usize) -> Option<String> {
+        let raw = row.try_get_raw(idx).ok()?;
+        if raw.is_null() {
+            return None;
         }
-    }
-
-    impl Drop for Stmt {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                unsafe { ffi::sqlite3_finalize(self.0) };
-            }
+        match raw.type_info().name() {
+            "INTEGER" => row.try_get::<i64, _>(idx).ok().map(|v| v.to_string()),
+            "REAL" => row.try_get::<f64, _>(idx).ok().map(|v| v.to_string()),
+            "BLOB" => row
+                .try_get::<Vec<u8>, _>(idx)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned()),
+            _ => row.try_get::<String, _>(idx).ok(),
         }
     }
 
     impl Stmt {
         pub fn col_text(&self, idx: c_int) -> String {
-            let ptr = unsafe { ffi::sqlite3_column_text(self.0, idx) };
-            if ptr.is_null() {
-                return String::new();
-            }
-            unsafe { CStr::from_ptr(ptr as *const c_char) }
-                .to_string_lossy()
-                .into_owned()
+            self.col_text_opt(idx).unwrap_or_default()
         }
 
         pub fn col_text_opt(&self, idx: c_int) -> Option<String> {
-            let t = self.col_text(idx);
-            if t.is_empty() { None } else { Some(t) }
-        }
-
-        #[allow(dead_code)]
-        pub fn col_type(&self, idx: c_int) -> c_int {
-            unsafe { ffi::sqlite3_column_type(self.0, idx) }
+            usize::try_from(idx)
+                .ok()
+                .and_then(|i| self.0.get(i).cloned().flatten())
+                .filter(|t| !t.is_empty())
         }
     }
 
-    fn sqlite_errmsg(db: *mut ffi::sqlite3) -> String {
-        if db.is_null() {
-            return "null db".to_string();
+    impl Drop for Conn {
+        fn drop(&mut self) {
+            // Tutup pool di latar; drop tidak boleh memblokir.
+            let pool = self.0.clone();
+            crate::runtime::spawn(async move { pool.close().await });
         }
-        let ptr = unsafe { ffi::sqlite3_errmsg(db) };
-        if ptr.is_null() {
-            return String::new();
-        }
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
     }
 }
 
@@ -1938,6 +1904,49 @@ fn parse_postman_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imports_workspaces_folders_and_requests_from_a_yaak_database() {
+        let dir = std::env::temp_dir().join(format!("tabular_yaak_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let setup = async {
+            let opts = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true);
+            let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+            for sql in [
+                "CREATE TABLE workspaces (id TEXT, name TEXT, deleted_at TEXT)",
+                "CREATE TABLE environments (id TEXT, workspace_id TEXT, name TEXT, variables TEXT, deleted_at TEXT)",
+                "CREATE TABLE folders (id TEXT, workspace_id TEXT, folder_id TEXT, name TEXT, sort_priority INTEGER, deleted_at TEXT)",
+                "CREATE TABLE http_requests (id TEXT, workspace_id TEXT, name TEXT, url TEXT, method TEXT, body_type TEXT, body TEXT, headers TEXT, url_parameters TEXT, authentication_type TEXT, authentication TEXT, folder_id TEXT, description TEXT, sort_priority INTEGER, deleted_at TEXT)",
+                "INSERT INTO workspaces VALUES ('wk_1', 'Shop API', NULL), ('wk_gone', 'Deleted', '2026-01-01')",
+                "INSERT INTO environments VALUES ('ev_1', 'wk_1', 'Dev', '[]', NULL)",
+                "INSERT INTO folders VALUES ('fl_1', 'wk_1', NULL, 'Orders', 1, NULL)",
+                "INSERT INTO http_requests VALUES ('rq_1', 'wk_1', 'List orders', 'https://api.example.com/orders', 'GET', NULL, '{}', '[]', '[]', NULL, '{}', 'fl_1', NULL, 2, NULL)",
+            ] {
+                sqlx::query(sql).execute(&pool).await.unwrap();
+            }
+            pool.close().await;
+        };
+        crate::runtime::block_on(setup).unwrap();
+
+        let result = import_yaak_sqlite(&path).expect("import");
+        assert_eq!(result.total_requests, 1);
+        assert_eq!(result.workspaces.len(), 1, "deleted workspaces are skipped");
+        let ws = &result.workspaces[0];
+        assert_eq!(ws.name, "Shop API");
+        let all_requests: Vec<&SavedRequest> = ws
+            .folders
+            .iter()
+            .flat_map(|f| f.requests.iter())
+            .chain(ws.requests.iter())
+            .collect();
+        assert_eq!(all_requests.len(), 1);
+        assert_eq!(all_requests[0].url, "https://api.example.com/orders");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_import_postman_collection_v21() {

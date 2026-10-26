@@ -1140,7 +1140,11 @@ impl ChatPromptParts {
     /// editor (kosong bila tidak ada konteks tambahan).
     pub fn join(&self, extra: &str) -> (String, String) {
         let mut user = String::with_capacity(
-            self.user_prefix.len() + extra.len() + self.editor_context.len() + self.request.len() + 32,
+            self.user_prefix.len()
+                + extra.len()
+                + self.editor_context.len()
+                + self.request.len()
+                + 32,
         );
         user.push_str(&self.user_prefix);
         if !extra.trim().is_empty() {

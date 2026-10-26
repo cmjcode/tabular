@@ -295,7 +295,10 @@ fn decompress(
                 if entry.is_dir() {
                     continue;
                 }
-                let entry_name = entry.name().to_ascii_lowercase();
+                let entry_name = entry
+                    .name()
+                    .map_err(|e| ReadError::Parse(e.to_string()))?
+                    .to_ascii_lowercase();
                 if kind_from_extension(&entry_name).is_some() {
                     chosen = Some(i);
                     break;
@@ -307,7 +310,10 @@ fn decompress(
             let entry = archive
                 .by_index(index)
                 .map_err(|e| ReadError::Parse(e.to_string()))?;
-            let inner = entry.name().to_ascii_lowercase();
+            let inner = entry
+                .name()
+                .map_err(|e| ReadError::Parse(e.to_string()))?
+                .to_ascii_lowercase();
             // Ukuran di header bisa dipalsukan, jadi pembacaan tetap dibatasi.
             if entry.size() > cap {
                 return Err(ReadError::TooLarge(cap));

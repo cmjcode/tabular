@@ -516,128 +516,6 @@ pub(crate) fn fetch_redis_browser_preview(
     Ok(preview)
 }
 
-#[allow(dead_code)]
-pub(crate) fn load_redis_browser_state(
-    tabular: &mut window_egui::Tabular,
-    connection_id: i64,
-) -> models::structs::RedisBrowserState {
-    let connection = match tabular
-        .connections
-        .iter()
-        .find(|candidate| candidate.id == Some(connection_id))
-        .cloned()
-    {
-        Some(connection) => connection,
-        None => {
-            return models::structs::RedisBrowserState {
-                last_error: Some(format!("Redis connection {} not found", connection_id)),
-                ..Default::default()
-            };
-        }
-    };
-
-    // Pool yang dibuat di sini di-cache di `tabular`; ia harus hidup di runtime
-    // aplikasi. Di runtime sekali pakai, task latar `ConnectionManager` mati
-    // begitu runtime di-drop dan pool yang ter-cache menjadi rusak.
-    let runtime = tabular.get_runtime();
-
-    let result = runtime.block_on(async {
-        let pool = connection::get_or_create_connection_pool(tabular, connection_id)
-            .await
-            .ok_or_else(|| format!("Failed to get Redis pool for connection {}", connection_id))?;
-
-        match pool {
-            models::enums::DatabasePool::Redis(redis_manager) => {
-                load_redis_browser_state_from_connection(&connection, redis_manager.as_ref()).await
-            }
-            _ => Err(format!("Connection {} is not a Redis pool", connection_id)),
-        }
-    });
-
-    match result {
-        Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster)) => {
-            let key_count = key_pairs.len();
-            models::structs::RedisBrowserState {
-                available_keyspaces,
-                keyspace_label: keyspace_label.clone(),
-                keys: key_pairs
-                    .into_iter()
-                    .map(
-                        |(key_name, key_type)| models::structs::RedisBrowserKeyEntry {
-                            key_name,
-                            key_type,
-                            ttl_label: if is_cluster {
-                                "Cluster".to_string()
-                            } else {
-                                keyspace_label.clone()
-                            },
-                            size_label: "-".to_string(),
-                        },
-                    )
-                    .collect(),
-                status_text: if is_cluster {
-                    format!(
-                        "Redis Cluster keyspace · {} keys loaded · metadata loads on selection",
-                        key_count
-                    )
-                } else {
-                    format!("{} · {} keys loaded", keyspace_label, key_count)
-                },
-                ..Default::default()
-            }
-        }
-        Err(error) => models::structs::RedisBrowserState {
-            last_error: Some(error),
-            ..Default::default()
-        },
-    }
-}
-
-pub(crate) async fn load_redis_browser_state_from_connection(
-    connection: &models::structs::ConnectionConfig,
-    redis_manager: &ConnectionManager,
-) -> Result<(Vec<String>, String, Vec<(String, String)>, bool), String> {
-    let mut detect_conn = redis_manager.clone();
-    let is_cluster = detect_cluster_mode(&mut detect_conn).await;
-    let available_keyspaces = if is_cluster {
-        vec![REDIS_CLUSTER_KEYSPACE.to_string()]
-    } else {
-        let mut keyspaces = Vec::new();
-        let max_databases = match redis::cmd("CONFIG")
-            .arg("GET")
-            .arg("databases")
-            .query_async::<Vec<String>>(&mut detect_conn)
-            .await
-        {
-            Ok(config_result) if config_result.len() >= 2 => {
-                config_result[1].parse::<i32>().unwrap_or(16)
-            }
-            _ => 16,
-        };
-        for db_num in 0..max_databases {
-            keyspaces.push(format!("db{}", db_num));
-        }
-        keyspaces
-    };
-    let keyspace_label = if is_cluster {
-        REDIS_CLUSTER_KEYSPACE.to_string()
-    } else {
-        default_redis_keyspace(connection)
-    };
-
-    let key_pairs = if is_cluster {
-        fetch_cluster_key_names(connection, redis_manager, 500)
-            .await
-            .into_iter()
-            .map(|key_name| (key_name, "unknown".to_string()))
-            .collect()
-    } else {
-        fetch_standalone_keys_with_types(connection, &keyspace_label, 500).await
-    };
-
-    Ok((available_keyspaces, keyspace_label, key_pairs, is_cluster))
-}
-
 pub(crate) async fn load_redis_browser_state_for_keyspace(
     connection: &models::structs::ConnectionConfig,
     redis_manager: &ConnectionManager,
@@ -1401,7 +1279,6 @@ async fn detect_cluster_mode(conn: &mut ConnectionManager) -> bool {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) async fn fetch_redis_data(
     connection_id: i64,
     redis_manager: &ConnectionManager,

@@ -1252,7 +1252,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                         }
                                                                         changed
                                                                     });
-                                                                
+
                                                                 if combo.inner.unwrap_or(false) {
                                                                     edit_text = current_val;
                                                                 }
@@ -1280,7 +1280,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                     let mut dt_val = chrono::NaiveDateTime::parse_from_str(&edit_text, "%Y-%m-%d %H:%M:%S")
                                                                         .or_else(|_| chrono::NaiveDateTime::parse_from_str(&edit_text, "%Y-%m-%d %H:%M:%S%.f"))
                                                                         .unwrap_or_else(|_| chrono::Local::now().naive_local());
-                                                                    
+
                                                                     let mut date_part = dt_val.date();
                                                                     // Bridge to jiff just for the picker; chrono stays the source of truth
                                                                     let mut jiff_date: jiff::civil::Date = date_part.to_string().parse()
@@ -1302,7 +1302,7 @@ pub(crate) fn render_table_data(tabular: &mut window_egui::Tabular, ui: &mut egu
                                                                     let mut h = dt_val.hour();
                                                                     let mut m = dt_val.minute();
                                                                     let mut s = dt_val.second();
-                                                                    
+
                                                                     let dh = ui.add(egui::DragValue::new(&mut h).range(0..=23).suffix("h"));
                                                                     let dm = ui.add(egui::DragValue::new(&mut m).range(0..=59).suffix("m"));
                                                                     let ds = ui.add(egui::DragValue::new(&mut s).range(0..=59).suffix("s"));

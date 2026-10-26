@@ -288,3 +288,35 @@ Deprecate/plugin — `flexurio_import.rs`. Under-tested — `sync/` (9,6k baris 
 - Tes integrasi driver untuk 5 engine jaringan hijau di CI; `continue-on-error` = 0.
 - Semua fitur utama dapat dicapai dari menu bar dan palette; nol string Bahasa Indonesia di UI; nol
   emoji sebagai ikon.
+
+---
+
+## 9. Status implementasi (2026-10-26)
+
+Dikerjakan per gelombang, satu commit per gelombang di `main`.
+
+| Gelombang | Commit | Hasil |
+|---|---|---|
+| 1 — tidak ada yang hilang diam-diam | `7380879` | S1–S12 selesai. Tambahan: restore `connections.db` korup tidak lagi menulis password plaintext dan kolom SSL/jump host tidak hilang. |
+| 2 — tidak ada baris salah | `b513cee` | D1–D14 selesai; D15 sebagian (grid MongoDB/Redis dinonaktifkan; `NO_BACKSLASH_ESCAPES` MySQL belum diverifikasi). Tambahan: generator SQL grid menolak, tidak lagi melewati edit diam-diam. Mode Safety per koneksi (`connection_safety.rs`). Satu lexer statement SQL. |
+| 3 — tidak pernah beku | `0cffefc` + gelombang 5 | C1, C3 (polling approval), C4, C6, C7, C8 selesai; C2: runtime per panggilan dihapus dan klik view/procedure kini async (gelombang 5). C10 ternyata sudah ada sebelumnya (`init.rs`). |
+| 4 — mudah dipahami | `06a8c65` | U1–U3, U5–U14 selesai; U4 sebagian (Workspace→Collection, Remove→Delete). |
+| 5 — struktur & CI | commit gelombang 5 | fmt CI wajib lolos (tree diformat), `cargo deny` wajib lolos, job `drivers` (PostgreSQL + MySQL), advisory keamanan diperbaiki (rustls, rustls-webpki, webpki-roots/certs, ctutils, zip 9 via calamine 0.37 / rust_xlsxwriter 0.101), ~1.100 baris kode mati dihapus, FFI SQLite mentah di `http_collection.rs` diganti sqlx, SAFETY untuk FFI backup, `colorful` dihapus, file IDE pribadi dilepas dari git, AGENTS.md diperbarui. |
+
+Belum dikerjakan (disengaja, perlu keputusan atau terlalu berisiko dikerjakan paralel dengan
+agent lain yang sedang mengubah repo):
+
+- Memecah `Tabular` (575 field), memecah 7 fungsi >1000 baris, memindah `diagram_*`/`http_*`/
+  `editor*` ke subdirektori, workspace multi-crate. Ini refactor besar yang menyentuh hampir
+  semua file UI; sebaiknya dikerjakan bertahap di branch tersendiri saat tidak ada pekerjaan
+  paralel.
+- C3 sisa: `cache_data::block_on_cache` (17 pembacaan cache dari UI) masih sinkron; C5 init
+  DB fallback di `update()`; lint CI "nol `block_on` di render" belum bisa dipasang karena masih
+  ada pemakaian lama.
+- Komentar SAFETY untuk 39 blok `unsafe` objc2 (platform macOS/iOS).
+- Job Windows CI masih `continue-on-error` (belum diverifikasi di mesin Windows).
+- Emoji lain yang ter-render benar (tercakup NotoEmoji) masih dipakai di label; hanya glyph yang
+  terbukti kotak yang diganti.
+- `flexurio_import.rs` → plugin; dokumen `*_PLAN.md` dibiarkan (keputusan pemilik).
+- D12 ternyata sebagian keliru: SQLite menyimpan desimal presisi tinggi sebagai REAL, bukan
+  TEXT; yang diperbaiki adalah INTEGER > 2^53 yang dulu dibaca lewat f64.
