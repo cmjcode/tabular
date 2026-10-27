@@ -40,7 +40,7 @@ resvg = { version = "0.45", default-features = false, features = ["text", "syste
 # File viewer: render PDF pure-Rust (tanpa toolchain C), di balik fitur `pdf`.
 hayro = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-sqlx = { version = "0.9", features = [
+sqlx = { version = "0.9", default-features = false, features = [
        "runtime-tokio",
        "tls-native-tls",
        "sqlite",
@@ -48,6 +48,7 @@ sqlx = { version = "0.9", features = [
        "postgres",
        "chrono",
        "rust_decimal",
+       "json",
 ] }
 # Force bundled SQLite to avoid missing runtime symbols (e.g., sqlite3_db_config) in
 # Arch build chroot; ensures libsqlite3-sys builds its own recent SQLite.
