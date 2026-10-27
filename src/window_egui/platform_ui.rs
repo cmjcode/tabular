@@ -56,6 +56,8 @@ pub struct PlatformUiState {
     /// Layout sempit aktif (M11) dan status panel sebelum disembunyikan.
     compact_layout: bool,
     panels_before_compact: Option<(bool, bool)>,
+    /// Path font kode yang sedang terpasang di egui ("" = Hack bawaan).
+    applied_code_font: String,
 }
 
 /// Di bawah lebar ini (pt) panel samping disembunyikan otomatis: iPad Slide
@@ -69,6 +71,34 @@ pub fn compact_transition(was_compact: bool, width: f32) -> Option<bool> {
 }
 
 impl Tabular {
+    /// Pasang font kode pilihan pengguna bila berubah sejak frame terakhir.
+    /// File font hanya dibaca saat pilihan berubah; frame biasa cukup
+    /// membandingkan dua string.
+    fn apply_code_font(&mut self, ctx: &egui::Context) {
+        let wanted = &self.advanced_editor.font_path;
+        if *wanted == self.platform_ui.applied_code_font {
+            return;
+        }
+        let font = if wanted.is_empty() {
+            None
+        } else {
+            match crate::code_font::load(wanted) {
+                Ok(data) => Some((wanted.as_str(), data)),
+                Err(e) => {
+                    log::warn!("[FONT] {e}");
+                    self.toasts.error_once(
+                        &format!("code-font:{wanted}"),
+                        format!("{e}. Using the built-in font."),
+                    );
+                    None
+                }
+            }
+        };
+        let defs = ctx.fonts(|f| crate::code_font::with_code_font(f.definitions(), font));
+        ctx.set_fonts(defs);
+        self.platform_ui.applied_code_font = wanted.clone();
+    }
+
     /// Dipanggil sekali per frame dari `App::ui`.
     pub(crate) fn platform_tick(&mut self, ctx: &egui::Context) {
         if !self.platform_ui.started {
@@ -79,6 +109,7 @@ impl Tabular {
             self.reload_connection_envs();
         }
         crate::i18n::install_fonts(ctx);
+        self.apply_code_font(ctx);
 
         let mut incoming = std::mem::take(&mut self.platform_ui.deferred);
         incoming.extend(deeplink::drain_incoming());

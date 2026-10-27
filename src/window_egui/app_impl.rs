@@ -4391,6 +4391,7 @@ impl Tabular {
                         _ => "GITHUB_DARK".into(),
                     },
                     font_size: self.advanced_editor.font_size,
+                    editor_font_path: self.advanced_editor.font_path.clone(),
                     word_wrap: self.advanced_editor.word_wrap,
                     data_directory: if self.data_directory
                         != crate::config::get_data_dir().to_string_lossy()

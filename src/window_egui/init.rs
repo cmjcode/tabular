@@ -55,6 +55,7 @@ impl super::Tabular {
             _ => crate::models::structs::EditorColorTheme::GithubDark,
         };
         self.advanced_editor.font_size = prefs.font_size;
+        self.advanced_editor.font_path = prefs.editor_font_path.clone();
         self.advanced_editor.word_wrap = prefs.word_wrap;
         if let Some(dir) = prefs.data_directory.clone() {
             self.data_directory = dir;

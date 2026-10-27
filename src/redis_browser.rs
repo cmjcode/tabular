@@ -101,6 +101,8 @@ fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
         dark,
         &mut cache,
     );
+    // Highlighter tidak menyetel font; samakan dengan gutter (monospace 12pt).
+    crate::syntax_ts::apply_font(&mut job, &egui::FontId::monospace(12.0));
     job.wrap.max_width = f32::INFINITY;
 
     egui::Frame::new()
@@ -128,7 +130,7 @@ fn render_json_preview(ui: &mut egui::Ui, json_text: &str) {
                                                 line_number,
                                                 width = line_count.to_string().len()
                                             ))
-                                            .monospace()
+                                            .family(egui::FontFamily::Monospace)
                                             .size(12.0)
                                             .color(gutter_text),
                                         );

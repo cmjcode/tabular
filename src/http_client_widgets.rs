@@ -256,9 +256,7 @@ impl<'a> egui::cache::ComputerMut<HighlightKey<'a>, egui::text::LayoutJob> for H
                     dark,
                 );
                 // Highlighter editor tidak menyetel font; samakan dengan gutter.
-                for section in &mut j.sections {
-                    section.format.font_id = font_id.clone();
-                }
+                crate::syntax_ts::apply_font(&mut j, &font_id);
                 j
             }
             Syntax::Plain => {

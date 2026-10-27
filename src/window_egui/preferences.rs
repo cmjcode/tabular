@@ -954,6 +954,21 @@ impl Tabular {
         });
 
         section(ui, "Text", |ui| {
+            row(
+                ui,
+                "Font",
+                Some("Used by the SQL editor and other code views."),
+                |ui| self.render_code_font_picker(ui),
+            );
+            ui.add_space(4.0);
+            // Pratinjau memakai family Monospace (bukan `.monospace()`, yang
+            // dimatikan oleh `override_font_id` global).
+            ui.label(
+                egui::RichText::new("SELECT id, total FROM orders o  -- 0O 1lI {}[]")
+                    .family(egui::FontFamily::Monospace)
+                    .size(self.advanced_editor.font_size),
+            );
+            divider(ui);
             row(ui, "Font size", Some("Between 8 and 32 points."), |ui| {
                 let mut fs = self.advanced_editor.font_size as i32;
                 if ui
@@ -983,6 +998,50 @@ impl Tabular {
                 self.save_prefs_now();
             }
         });
+    }
+
+    /// Dropdown font kode + tombol pilih file. Perubahan langsung disimpan;
+    /// font dipasang ke egui oleh `apply_code_font` pada frame berikutnya.
+    fn render_code_font_picker(&mut self, ui: &mut egui::Ui) {
+        let current = self.advanced_editor.font_path.clone();
+        let mut chosen = current.clone();
+        let installed = crate::code_font::installed_fonts();
+        let is_custom = !current.is_empty()
+            && !installed
+                .iter()
+                .any(|f| f.path.to_string_lossy() == current);
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("pref_editor_font")
+                .selected_text(crate::code_font::label_for(&current))
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, String::new(), "Hack (built-in)");
+                    for font in installed {
+                        let path = font.path.to_string_lossy().to_string();
+                        ui.selectable_value(&mut chosen, path, &font.label);
+                    }
+                    if is_custom {
+                        ui.selectable_value(
+                            &mut chosen,
+                            current.clone(),
+                            crate::code_font::label_for(&current),
+                        );
+                    }
+                });
+            if ui.add(style::btn_secondary("Choose file…")).clicked()
+                && let Some(path) = crate::rfd::FileDialog::new()
+                    .set_title("Choose a font file")
+                    .add_filter("Fonts", &["ttf", "otf", "ttc"])
+                    .pick_file()
+            {
+                chosen = path.to_string_lossy().to_string();
+            }
+        });
+        if chosen != current {
+            self.advanced_editor.font_path = chosen;
+            self.save_prefs_now();
+            ui.ctx().request_repaint();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────

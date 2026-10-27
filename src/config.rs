@@ -590,6 +590,9 @@ pub struct AppPreferences {
     pub link_editor_theme: bool,
     pub editor_theme: String,
     pub font_size: f32,
+    /// Path file font kode pilihan pengguna; kosong = Hack bawaan.
+    #[serde(default)]
+    pub editor_font_path: String,
     pub word_wrap: bool,
     pub data_directory: Option<String>,
     pub auto_check_updates: bool,
@@ -701,6 +704,7 @@ impl Default for AppPreferences {
             link_editor_theme: true,
             editor_theme: "GITHUB_DARK".into(),
             font_size: 14.0,
+            editor_font_path: String::new(),
             word_wrap: true,
             data_directory: None,
             auto_check_updates: true,
@@ -760,6 +764,7 @@ pub(crate) fn apply_kv_pair(
         "link_editor_theme" => prefs.link_editor_theme = v == "1",
         "editor_theme" => prefs.editor_theme = v.to_string(),
         "font_size" => prefs.font_size = v.parse().unwrap_or(14.0),
+        "editor_font_path" => prefs.editor_font_path = v.to_string(),
         "word_wrap" => prefs.word_wrap = v == "1",
         "data_directory" => {
             prefs.data_directory = if v.is_empty() {
@@ -975,6 +980,7 @@ impl ConfigStore {
                 link_editor_theme: true,
                 editor_theme: "GITHUB_DARK".into(),
                 font_size: 14.0,
+                editor_font_path: String::new(),
                 word_wrap: true,
                 data_directory: None,
                 auto_check_updates: true,
@@ -1125,7 +1131,7 @@ impl ConfigStore {
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
             let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
-            let entries: [(&str, &str); 34] = [
+            let entries: [(&str, &str); 35] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1134,6 +1140,7 @@ impl ConfigStore {
                 ),
                 ("editor_theme", prefs.editor_theme.as_str()),
                 ("font_size", &font_size_string),
+                ("editor_font_path", prefs.editor_font_path.as_str()),
                 ("word_wrap", if prefs.word_wrap { "1" } else { "0" }),
                 (
                     "data_directory",
