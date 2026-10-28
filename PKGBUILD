@@ -1,5 +1,5 @@
 pkgname=tabular
-pkgver=1.8.2
+pkgver=1.8.3
 pkgrel=1
 pkgdesc="SQL and NoSQL database client"
 arch=('x86_64' 'aarch64')
@@ -24,6 +24,7 @@ build() {
     export CARGO_TARGET_DIR="$srcdir/target"
     # Link system sqlite3 for proc-macros to prevent undefined symbol errors in rustc
     export RUSTFLAGS="-C link-arg=-Wl,--no-as-needed -C link-arg=-lsqlite3"
+    export CARGO_HOST_RUSTFLAGS="-C link-arg=-Wl,--no-as-needed -C link-arg=-lsqlite3"
     cargo build --release --frozen
 }
 

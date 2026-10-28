@@ -41,6 +41,14 @@
   <content_rating type="oars-1.1" />
   
   <releases>
+    <release version="1.8.3" date="2026-10-27">
+      <description>
+        <p>Tabular v1.8.3 release with stability, performance, and UI enhancements.</p>
+        <ul>
+          <li>Performance improvements and bug fixes</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.8.2" date="2026-10-26">
       <description>
         <p>Tabular v1.8.2 release with stability, performance, and UI enhancements.</p>

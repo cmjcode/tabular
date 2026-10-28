@@ -4,11 +4,11 @@ set -euo pipefail
 # ==============================================================================
 # Update AUR packaging metadata and push it to the external AUR repository.
 # Usage:
-#   scripts/update-aur.sh [tabular|tabular-bin|all]
+#   scripts/update-aur.sh [all|tabular|tabular-bin]
 #
 # Environment variables:
-#   TARGET_REPO        Override destination repo directory (for single package)
-#   AUR_REPO_URL       Override AUR remote git URL
+#   TARGET_REPO        Override destination repo directory (or parent directory for 'all')
+#   AUR_REPO_URL       Override AUR remote git URL (for single package)
 #   PKGVER             Override pkgver (defaults to version from Cargo.toml)
 #   PKGREL             Override pkgrel (default: 1)
 #   GIT_AUTHOR_NAME    Override git author name (default: Tabular CI or existing)
@@ -16,7 +16,7 @@ set -euo pipefail
 # ==============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_PKG="${1:-tabular}"
+TARGET_PKG="${1:-all}"
 
 # Extract version from Cargo.toml using Python's tomllib with fallback to grep/sed
 get_cargo_version() {
@@ -88,22 +88,36 @@ update_single_package() {
       ;;
     *)
       echo "Unknown package variant: ${package}" >&2
-      echo "Usage: $0 [tabular|tabular-bin|all]" >&2
+      echo "Usage: $0 [all|tabular|tabular-bin]" >&2
       exit 1
       ;;
   esac
 
+  echo ""
+  echo "============================================================"
+  echo " Processing AUR package: ${package}"
+  echo "============================================================"
+
   # Determine target repository directory
-  local target_repo="${TARGET_REPO:-}"
-  if [[ -z "${target_repo}" ]]; then
-    if [[ -d "${default_target_repo}" ]]; then
-      target_repo="${default_target_repo}"
+  local target_repo=""
+  if [[ -n "${TARGET_REPO:-}" ]]; then
+    if [[ "${TARGET_PKG}" == "all" ]]; then
+      target_repo="${TARGET_REPO}/${package}"
     else
-      target_repo="${ROOT_DIR}/dist/aur/${package}"
+      target_repo="${TARGET_REPO}"
     fi
+  elif [[ -d "${default_target_repo}" ]]; then
+    target_repo="${default_target_repo}"
+  else
+    target_repo="${ROOT_DIR}/dist/aur/${package}"
   fi
 
-  local aur_url="${AUR_REPO_URL:-ssh://aur@aur.archlinux.org/${package}.git}"
+  local aur_url=""
+  if [[ -n "${AUR_REPO_URL:-}" && "${TARGET_PKG}" != "all" ]]; then
+    aur_url="${AUR_REPO_URL}"
+  else
+    aur_url="ssh://aur@aur.archlinux.org/${package}.git"
+  fi
 
   # If target repo is not a git repo, clone it
   if [[ ! -d "${target_repo}/.git" ]]; then
@@ -112,6 +126,12 @@ update_single_package() {
     if ! git clone "${aur_url}" "${target_repo}"; then
       echo "Warning: Could not clone from ${aur_url}." >&2
     fi
+  else
+    echo "Syncing latest changes for ${package} in ${target_repo}..."
+    (
+      cd "${target_repo}"
+      git pull --ff-only origin master 2>/dev/null || git pull --ff-only 2>/dev/null || true
+    )
   fi
 
   echo "Updating PKGBUILD (${package}) to version ${VERSION}-${REL}..."
@@ -172,9 +192,10 @@ case "${TARGET_PKG}" in
     ;;
   *)
     echo "Unknown package variant: ${TARGET_PKG}" >&2
-    echo "Usage: $0 [tabular|tabular-bin|all]" >&2
+    echo "Usage: $0 [all|tabular|tabular-bin]" >&2
     exit 1
     ;;
 esac
 
+echo ""
 echo "AUR packaging update complete."
