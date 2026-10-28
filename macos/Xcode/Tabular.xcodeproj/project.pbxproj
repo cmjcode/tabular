@@ -175,7 +175,7 @@
 				CODE_SIGN_ENTITLEMENTS = TabularApp/Tabular.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1083;
+				CURRENT_PROJECT_VERSION = 1086;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TabularApp/Info.plist;
@@ -186,7 +186,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.8.3;
+				MARKETING_VERSION = 1.8.6;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -202,7 +202,7 @@
 				CODE_SIGN_ENTITLEMENTS = TabularApp/Tabular.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1083;
+				CURRENT_PROJECT_VERSION = 1086;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TabularApp/Info.plist;
@@ -213,7 +213,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.8.3;
+				MARKETING_VERSION = 1.8.6;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
