@@ -1004,6 +1004,31 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
             "F2",
         ),
         (
+            "Editor: Next Problem",
+            "Move to the next error or warning in the query",
+            "F8",
+        ),
+        (
+            "Editor: Previous Problem",
+            "Move to the previous error or warning in the query",
+            "",
+        ),
+        (
+            "Editor: Quick Fix",
+            "Apply the suggested fix at the cursor",
+            "",
+        ),
+        (
+            "Editor: Show Problems",
+            "List the errors and warnings found in the query",
+            "",
+        ),
+        (
+            "Editor: Toggle Live Error Checking",
+            "Turn error checking while typing on or off",
+            "",
+        ),
+        (
             "Editor: Toggle Find & Replace",
             "Open search and replace toolbar",
             "⌘F",
@@ -2236,6 +2261,9 @@ fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
         "Query: Open SQL File..." => Action::OpenFile,
         "Editor: Go to Definition" => Action::GoToDefinition,
         "Editor: Rename Symbol" => Action::RenameSymbol,
+        "Editor: Next Problem" => Action::NextProblem,
+        "Editor: Previous Problem" => Action::PrevProblem,
+        "Editor: Quick Fix" => Action::QuickFix,
         "Editor: Toggle Find & Replace" => Action::FindReplace,
         "Transaction: Begin / Toggle" => Action::ToggleTransactionMode,
         "View: Refresh" => Action::Refresh,

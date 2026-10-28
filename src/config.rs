@@ -647,6 +647,13 @@ pub struct AppPreferences {
     /// teks editor ke provider AI.
     #[serde(default)]
     pub ai_inline_suggestions: bool,
+    /// Tandai kesalahan query di editor saat mengetik.
+    #[serde(default = "default_true")]
+    pub live_diagnostics: bool,
+    /// Kapan statement divalidasi di server saat mengetik: `off`,
+    /// `non_production` (default), atau `always`.
+    #[serde(default)]
+    pub diagnostics_server_validation: String,
     #[serde(default = "default_redis_browser_auto_refresh_seconds")]
     pub redis_browser_auto_refresh_seconds: u32,
     #[serde(default)]
@@ -726,6 +733,8 @@ impl Default for AppPreferences {
             ai_context_git: true,
             ai_context_history: true,
             ai_inline_suggestions: false,
+            live_diagnostics: true,
+            diagnostics_server_validation: String::new(),
             redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
             sync_server_url: Some("https://api.tabular.id".to_string()),
             query_timeout_secs: 0,
@@ -824,6 +833,8 @@ pub(crate) fn apply_kv_pair(
         "ai_context_git" => prefs.ai_context_git = v == "1",
         "ai_context_history" => prefs.ai_context_history = v == "1",
         "ai_inline_suggestions" => prefs.ai_inline_suggestions = v == "1",
+        "live_diagnostics" => prefs.live_diagnostics = v == "1",
+        "diagnostics_server_validation" => prefs.diagnostics_server_validation = v.to_string(),
         "redis_browser_auto_refresh_seconds" => {
             prefs.redis_browser_auto_refresh_seconds = v
                 .parse()
@@ -1002,6 +1013,8 @@ impl ConfigStore {
                 ai_context_git: true,
                 ai_context_history: true,
                 ai_inline_suggestions: false,
+                live_diagnostics: true,
+                diagnostics_server_validation: String::new(),
                 redis_browser_auto_refresh_seconds: default_redis_browser_auto_refresh_seconds(),
                 sync_server_url: Some("https://api.tabular.id".to_string()),
                 ui_mode: UiModePreference::Auto,
@@ -1131,7 +1144,7 @@ impl ConfigStore {
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
             let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
-            let entries: [(&str, &str); 35] = [
+            let entries: [(&str, &str); 37] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1212,6 +1225,14 @@ impl ConfigStore {
                     } else {
                         "0"
                     },
+                ),
+                (
+                    "live_diagnostics",
+                    if prefs.live_diagnostics { "1" } else { "0" },
+                ),
+                (
+                    "diagnostics_server_validation",
+                    prefs.diagnostics_server_validation.as_str(),
                 ),
                 (
                     "redis_browser_auto_refresh_seconds",

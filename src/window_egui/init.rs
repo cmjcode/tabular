@@ -79,6 +79,10 @@ impl super::Tabular {
         self.ai_provider = prefs.ai_provider;
         self.ai_base_url = prefs.ai_base_url.clone();
         self.ai_inline_suggestions = prefs.ai_inline_suggestions;
+        self.live_diagnostics = prefs.live_diagnostics;
+        self.diagnostics_server_mode = super::diagnostics_jobs::ServerValidationMode::parse(
+            &prefs.diagnostics_server_validation,
+        );
         self.ai_settings_api_key_input = prefs.ai_api_key.clone();
         self.ai_settings_model_input = if prefs.ai_model.is_empty() {
             prefs.ai_provider.default_model().to_string()
@@ -295,6 +299,10 @@ impl super::Tabular {
             server_metrics_receiver,
             jobs: Default::default(),
             last_error_location: None,
+            last_error_message: None,
+            diagnostics: Default::default(),
+            live_diagnostics: true,
+            diagnostics_server_mode: Default::default(),
             keymap: crate::keymap::Keymap::load(),
             show_shortcuts_window: false,
             shortcuts_filter: String::new(),

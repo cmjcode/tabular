@@ -998,6 +998,44 @@ impl Tabular {
                 self.save_prefs_now();
             }
         });
+
+        section(ui, "Error checking", |ui| {
+            if toggle_row(
+                ui,
+                &mut self.live_diagnostics,
+                "Check queries while typing",
+                Some(
+                    "Underline syntax errors, unknown tables and columns, ambiguous columns and \
+                     other mistakes before you run the query. Uses the cached schema of the connection.",
+                ),
+            ) {
+                self.save_prefs_now();
+            }
+            divider(ui);
+            row(
+                ui,
+                "Confirm with the server",
+                Some(
+                    "Prepares each statement on the server without running it, so the server's own \
+                     error is shown in place. Only idle pool connections are used.",
+                ),
+                |ui| {
+                    let current = self.diagnostics_server_mode;
+                    let mut chosen = current;
+                    egui::ComboBox::from_id_salt("pref_diagnostics_server")
+                        .selected_text(chosen.label())
+                        .show_ui(ui, |ui| {
+                            for mode in super::diagnostics_jobs::ServerValidationMode::ALL {
+                                ui.selectable_value(&mut chosen, mode, mode.label());
+                            }
+                        });
+                    if chosen != current {
+                        self.diagnostics_server_mode = chosen;
+                        self.save_prefs_now();
+                    }
+                },
+            );
+        });
     }
 
     /// Dropdown font kode + tombol pilih file. Perubahan langsung disimpan;

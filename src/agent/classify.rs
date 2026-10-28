@@ -381,7 +381,7 @@ fn classify_from(keywords: &[Keyword], start_idx: usize) -> StatementKind {
 }
 
 /// Perintah Redis yang tidak mengubah data maupun konfigurasi server.
-const REDIS_READ_COMMANDS: &[&str] = &[
+pub(crate) const REDIS_READ_COMMANDS: &[&str] = &[
     "GET",
     "MGET",
     "GETRANGE",

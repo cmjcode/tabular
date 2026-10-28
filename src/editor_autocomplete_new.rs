@@ -157,6 +157,14 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
     }
 
     // 3. Lazy background warm from SQLite table_cache (non-blocking)
+    spawn_table_warm(app, cid, db);
+
+    None
+}
+
+/// Muat daftar tabel/view koneksi dari `table_cache` di background; hasilnya
+/// masuk `autocomplete_tables_mem` lewat `AutocompleteWarmResult::Tables`.
+fn spawn_table_warm(app: &Tabular, cid: i64, db: &str) {
     if let (Some(rt), Some(db_pool)) = (app.runtime.clone(), app.db_pool.clone()) {
         let warm_tx = app.autocomplete_warm_sender.clone();
         let db_name = db.to_string();
@@ -189,8 +197,6 @@ fn get_cached_tables(app: &Tabular, cid: i64, db: &str) -> Option<Vec<String>> {
             }
         });
     }
-
-    None
 }
 
 pub(crate) fn get_all_tables(app: &Tabular) -> Vec<String> {
@@ -751,6 +757,7 @@ fn advice_to_lint(a: IndexAdvice) -> query_tools::LintMessage {
         span: a.span,
         hint: a.hint,
         fix: a.ddl,
+        ..Default::default()
     }
 }
 
@@ -1826,6 +1833,90 @@ fn render_hint_footer(ui: &mut egui::Ui, h: &IndexAdvice, font: &egui::FontId) {
 pub fn trigger_manual(app: &mut Tabular) {
     drain_warm_results(app);
     refresh(app, true, true);
+}
+
+/// Skema untuk diagnostik live (`query_diagnostics`), hanya dari cache
+/// in-memory autocomplete. Tabel/kolom yang belum ada dimuat di background
+/// (pola sama dengan completion); hasilnya terpakai pada analisis berikutnya.
+/// `want_columns`: tabel yang kolomnya dibutuhkan analisis sebelumnya.
+pub(crate) fn diagnostics_snapshot(
+    app: &mut Tabular,
+    want_columns: &[String],
+    requested_tables: &mut HashSet<(i64, String)>,
+) -> crate::query_diagnostics::SchemaSnapshot {
+    use crate::models::enums::DatabaseType;
+    let (cid, db) = active_connection(app);
+    let Some(cid) = cid else {
+        return Default::default();
+    };
+    // Hanya daftar dari `table_cache` (tabel + view) yang dipercaya; fallback
+    // sidebar tree bisa belum memuat folder Views sehingga view sah dianggap
+    // tidak ada.
+    let key = (cid, db.clone());
+    let tables = app
+        .autocomplete_tables_mem
+        .get(&key)
+        .filter(|t| !t.is_empty())
+        .cloned();
+    if tables.is_none() && requested_tables.insert(key) {
+        spawn_table_warm(app, cid, &db);
+    }
+    for t in want_columns.iter().take(24) {
+        let _ = get_cached_columns(app, cid, &db, t);
+    }
+    let columns: HashMap<String, Vec<String>> = app
+        .autocomplete_cols_mem
+        .iter()
+        .filter(|((c, d, _), cols)| *c == cid && *d == db && !cols.is_empty())
+        .map(|((_, _, t), cols)| (t.clone(), cols.clone()))
+        .collect();
+    let tab_schema = app
+        .query_tabs
+        .get(app.active_tab_index)
+        .and_then(|t| t.schema_name.clone())
+        .filter(|s| !s.trim().is_empty());
+    let conn = app.connections.iter().find(|c| c.id == Some(cid));
+    let mut default_schemas: Vec<String> = match conn.map(|c| &c.connection_type) {
+        Some(DatabaseType::PostgreSQL) => vec!["public".into()],
+        Some(DatabaseType::MsSQL) => vec!["dbo".into()],
+        Some(DatabaseType::SQLite) => vec!["main".into(), "temp".into()],
+        _ => Vec::new(),
+    };
+    default_schemas.extend(tab_schema);
+    if !db.is_empty() {
+        default_schemas.push(db.clone());
+    }
+    if let Some(c) = conn
+        && !c.database.trim().is_empty()
+    {
+        default_schemas.push(c.database.trim().to_string());
+    }
+    crate::query_diagnostics::SchemaSnapshot {
+        tables,
+        columns,
+        default_schemas,
+        collections: None,
+    }
+}
+
+/// Sidik jari skema yang sudah ada di memori untuk koneksi/database aktif
+/// (jumlah tabel, jumlah tabel berkolom). Berubah saat cache selesai dimuat,
+/// sehingga diagnostik tahu kapan perlu menganalisis ulang.
+pub(crate) fn diagnostics_schema_fingerprint(app: &Tabular) -> (usize, usize) {
+    let (cid, db) = active_connection(app);
+    let Some(cid) = cid else {
+        return (0, 0);
+    };
+    let tables = app
+        .autocomplete_tables_mem
+        .get(&(cid, db.clone()))
+        .map_or(0, Vec::len);
+    let cols = app
+        .autocomplete_cols_mem
+        .iter()
+        .filter(|((c, d, _), v)| *c == cid && *d == db && !v.is_empty())
+        .count();
+    (tables, cols)
 }
 
 #[cfg(test)]

@@ -23,6 +23,8 @@ pub mod connection_mgr;
 pub mod db_context_bar;
 pub mod db_jobs;
 pub mod device_profile;
+pub mod diagnostics_jobs;
+pub mod diagnostics_ui;
 pub mod diagram;
 pub mod diagram_db_sync;
 pub mod diagram_flow_jobs;
@@ -260,6 +262,15 @@ pub struct Tabular {
     pub shortcuts_filter: String,
     /// Lokasi error query terakhir: (id tab, lokasi). Dipakai tombol "Go to error".
     pub last_error_location: Option<(usize, crate::connection::types::ErrorLocation)>,
+    /// Pesan error eksekusi terakhir (pasangan `last_error_location`), untuk
+    /// penanda di editor.
+    pub last_error_message: Option<String>,
+    /// Diagnostik live Query Editor (lihat `diagnostics_jobs`).
+    pub diagnostics: diagnostics_jobs::DiagnosticsState,
+    /// Preferensi: tandai kesalahan query saat mengetik.
+    pub live_diagnostics: bool,
+    /// Preferensi: kapan statement divalidasi di server saat mengetik.
+    pub diagnostics_server_mode: diagnostics_jobs::ServerValidationMode,
     /// State semua job query yang sedang berjalan (lihat QueryJobsState).
     pub jobs: QueryJobsState,
     // Background refresh status tracking

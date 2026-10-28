@@ -7,14 +7,15 @@ pub use text_actions::{duplicate_lines, move_lines, toggle_line_comments};
 use sqlformat::{FormatOptions, Indent};
 use std::ops::Range;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LintSeverity {
+    #[default]
     Info,
     Warning,
     Error,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LintMessage {
     pub severity: LintSeverity,
     pub message: String,
@@ -22,6 +23,11 @@ pub struct LintMessage {
     pub hint: Option<String>,
     /// SQL perbaikan siap salin (mis. `CREATE INDEX ...`).
     pub fix: Option<String>,
+    /// Jenis kesalahan diagnostik live (`None` untuk lint lama).
+    pub code: Option<crate::query_diagnostics::DiagCode>,
+    pub source: crate::query_diagnostics::DiagSource,
+    /// Pengganti teks `span` untuk quick fix, terbaik dulu.
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +235,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             span: Some(idx..idx + "SELECT *".len()),
             hint: Some("Enumerate the columns you actually need.".to_string()),
             fix: None,
+            ..Default::default()
         });
     }
 
@@ -240,6 +247,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             span: None,
             hint: Some("Add a WHERE clause or run inside a transaction.".to_string()),
             fix: None,
+            ..Default::default()
         });
     }
     if upper.starts_with("UPDATE") && !upper.contains("WHERE") {
@@ -249,6 +257,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             span: None,
             hint: Some("Add a WHERE clause to scope the update.".to_string()),
             fix: None,
+            ..Default::default()
         });
     }
     if upper.contains("DROP TABLE")
@@ -261,6 +270,7 @@ pub fn lint_sql(sql: &str) -> Vec<LintMessage> {
             span: Some(idx..idx + "DROP TABLE".len()),
             hint: Some("Consider DROP TABLE IF EXISTS ...".to_string()),
             fix: None,
+            ..Default::default()
         });
     }
 

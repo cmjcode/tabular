@@ -4422,6 +4422,8 @@ impl Tabular {
                     ai_context_git: self.ai_context_git,
                     ai_context_history: self.ai_context_history,
                     ai_inline_suggestions: self.ai_inline_suggestions,
+                    live_diagnostics: self.live_diagnostics,
+                    diagnostics_server_validation: self.diagnostics_server_mode.key().to_string(),
                     redis_browser_auto_refresh_seconds: self
                         .redis_browser_auto_refresh_default_seconds
                         .max(1),
@@ -5071,6 +5073,15 @@ impl App for Tabular {
             }
             if !overlay_open && consume(ctx, &self.keymap, Action::RenameSymbol) {
                 editor::begin_rename_symbol(self);
+            }
+            if !overlay_open && consume(ctx, &self.keymap, Action::NextProblem) {
+                super::diagnostics_jobs::goto_problem(self, true);
+            }
+            if !overlay_open && consume(ctx, &self.keymap, Action::PrevProblem) {
+                super::diagnostics_jobs::goto_problem(self, false);
+            }
+            if !overlay_open && consume(ctx, &self.keymap, Action::QuickFix) {
+                super::diagnostics_jobs::quick_fix_at_cursor(self);
             }
             if consume(ctx, &self.keymap, Action::Refresh) {
                 match self.table_bottom_view {

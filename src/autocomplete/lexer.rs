@@ -5,7 +5,7 @@
 //! Offset `start`/`end` adalah offset byte ke teks asli.
 
 /// Dialek SQL — hanya memengaruhi aturan quoting dan beberapa daftar fungsi.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Dialect {
     #[default]
     Generic,

@@ -1311,6 +1311,8 @@ fn slice_on_char_boundaries(
 }
 
 pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mut egui::Ui) {
+    // Diagnostik live: debounce + job background, tanpa I/O di frame ini.
+    window_egui::diagnostics_jobs::tick(tabular, ui.ctx());
     let mut request_scroll_to_cursor = false;
     let mut inserted_newline_this_frame = false;
     let editor_id = editor_widget_id(tabular);
@@ -3462,6 +3464,32 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
 
     // Right-click Context Menu on SQL Editor
     response.context_menu(|ui| {
+        // Quick fix untuk diagnostik di kursor.
+        let pos = tabular.cursor_position;
+        let fixes: Vec<(crate::query_tools::LintMessage, String)> = tabular
+            .diagnostics
+            .items
+            .iter()
+            .filter(|m| m.span.as_ref().is_some_and(|r| r.start <= pos && pos <= r.end))
+            .flat_map(|m| m.suggestions.iter().take(3).map(move |s| (m.clone(), s.clone())))
+            .collect();
+        if !fixes.is_empty() {
+            for (item, suggestion) in fixes {
+                let label = if suggestion.is_empty() {
+                    "Quick fix: remove".to_string()
+                } else {
+                    format!("Quick fix: use {suggestion}")
+                };
+                if ui
+                    .button(format!("{} {label}", egui_icons::icons::ICON_LIGHTBULB.codepoint))
+                    .clicked()
+                {
+                    window_egui::diagnostics_jobs::apply_quick_fix(tabular, &item, &suggestion);
+                    ui.close();
+                }
+            }
+            ui.separator();
+        }
         if ui
             .button(format!("🔍 Go to DDL / Structure ({})", tabular.keymap.label(crate::keymap::Action::GoToDefinition)))
             .clicked()
@@ -3854,6 +3882,29 @@ pub(crate) fn render_advanced_editor(tabular: &mut window_egui::Tabular, ui: &mu
                 }
             }
         }
+    }
+
+    // Penanda diagnostik live (garis bergelombang, gutter, tooltip, Problems).
+    {
+        let gutter = if tabular.advanced_editor.show_line_numbers {
+            ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("gutter_rect")))
+                .map(|g| {
+                    egui::Rect::from_min_size(g.min, egui::vec2(g.width(), response.rect.height()))
+                })
+        } else {
+            None
+        };
+        window_egui::diagnostics_ui::paint(
+            tabular,
+            ui,
+            &galley,
+            galley_pos,
+            text_clip_rect,
+            &response,
+            gutter,
+        );
+        let visible = ui.clip_rect().intersect(response.rect);
+        window_egui::diagnostics_ui::render_problems(tabular, ui, visible);
     }
 
     // Paint find & replace match highlights on buffer
@@ -9041,6 +9092,28 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         }
         "Editor: Rename Symbol" => {
             begin_rename_symbol(tabular);
+        }
+        "Editor: Next Problem" => {
+            window_egui::diagnostics_jobs::goto_problem(tabular, true);
+        }
+        "Editor: Previous Problem" => {
+            window_egui::diagnostics_jobs::goto_problem(tabular, false);
+        }
+        "Editor: Quick Fix" => {
+            window_egui::diagnostics_jobs::quick_fix_at_cursor(tabular);
+        }
+        "Editor: Show Problems" => {
+            tabular.diagnostics.panel_open = true;
+        }
+        "Editor: Toggle Live Error Checking" => {
+            tabular.live_diagnostics = !tabular.live_diagnostics;
+            tabular.prefs_dirty = true;
+            tabular.try_save_prefs();
+            tabular.toasts.info(if tabular.live_diagnostics {
+                "Error checking while typing is on."
+            } else {
+                "Error checking while typing is off."
+            });
         }
         "Editor: Toggle Find & Replace" => {
             tabular.advanced_editor.show_find_replace = !tabular.advanced_editor.show_find_replace;

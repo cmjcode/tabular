@@ -107,9 +107,29 @@ impl super::Tabular {
 
         // Simpan lokasi error untuk tombol "Go to error"; hapus saat query sukses.
         let active_tab_id = self.query_tabs.get(self.active_tab_index).map(|t| t.id);
-        match (&message.error_location, active_tab_id) {
+        // Driver tanpa posisi (SQLite, MsSQL) tetap mendapat lokasi: statement
+        // yang dijalankan plus nomor baris bila pesan MsSQL menyebutnya; penanda
+        // di editor mencari nama objek dari pesan error di statement itu.
+        let fallback_location = (!message.success && !message.query.trim().is_empty()).then(|| {
+            crate::connection::types::ErrorLocation {
+                statement: message.query.trim().to_string(),
+                char_offset: None,
+                line: message
+                    .error
+                    .as_deref()
+                    .and_then(crate::query_diagnostics::locate::mssql_error_line),
+            }
+        });
+        match (
+            message
+                .error_location
+                .as_ref()
+                .or(fallback_location.as_ref()),
+            active_tab_id,
+        ) {
             (Some(location), Some(tab_id)) if !message.success => {
                 self.last_error_location = Some((tab_id, location.clone()));
+                self.last_error_message = message.error.clone();
             }
             (_, Some(tab_id))
                 if message.success
@@ -119,6 +139,7 @@ impl super::Tabular {
                         .is_some_and(|(id, _)| *id == tab_id) =>
             {
                 self.last_error_location = None;
+                self.last_error_message = None;
             }
             _ => {}
         }
@@ -410,6 +431,10 @@ impl super::Tabular {
         let active_id = self.query_tabs.get(self.active_tab_index)?.id;
         if *tab_id != active_id {
             return None;
+        }
+        // Penanda diagnostik lebih presisi (token yang disebut pesan error).
+        if let Some(span) = &self.diagnostics.execution_span {
+            return Some(span.start);
         }
         connection::sql::locate_error_in_text(&self.editor.text, location)
     }

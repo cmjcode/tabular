@@ -189,3 +189,102 @@ async fn mysql_grid_save_and_table_listing() {
         .await
         .unwrap();
 }
+
+/// Validasi diagnostik: statement valid diterima, kolom salah ditandai di
+/// token yang benar, dan DELETE yang divalidasi tidak menghapus apa pun.
+async fn assert_validation_never_executes(
+    pool: &DatabasePool,
+    run: impl AsyncFn(&str) -> Vec<String>,
+    table: &str,
+    target: &crate::connection::validate::ValidationTarget,
+) {
+    use crate::connection::validate::{ValidationOutcome, validate_statement};
+    use crate::query_diagnostics::ServerVerdict;
+
+    let ok = validate_statement(pool, target, &format!("SELECT id, name FROM {table}")).await;
+    assert_eq!(ok, ValidationOutcome::Verdict(ServerVerdict::Valid));
+
+    let bad = format!("SELECT id, nmae FROM {table}");
+    let ValidationOutcome::Verdict(ServerVerdict::Invalid(items)) =
+        validate_statement(pool, target, &bad).await
+    else {
+        panic!("an unknown column must be reported");
+    };
+    assert_eq!(&bad[items[0].span.clone().unwrap()], "nmae", "{items:?}");
+
+    let delete = validate_statement(pool, target, &format!("DELETE FROM {table}")).await;
+    assert_eq!(delete, ValidationOutcome::Verdict(ServerVerdict::Valid));
+    assert_eq!(
+        run(&format!("SELECT name FROM {table} WHERE id = 2")).await,
+        vec!["b".to_string()],
+        "validating a DELETE must not delete anything"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_and_mysql_validation_prepares_without_running() {
+    if let Some(url) = env_url("TABULAR_TEST_PG_URL") {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(url.as_str())
+            .await
+            .expect("connect to TABULAR_TEST_PG_URL");
+        let table = temp_table("pgv");
+        for sql in [
+            format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY, name VARCHAR(50))"),
+            format!("INSERT INTO {table} VALUES (1, 'a'), (2, 'b')"),
+        ] {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+        let reader = pg.clone();
+        let run = async move |sql: &str| -> Vec<String> {
+            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.to_string()))
+                .fetch_all(&reader)
+                .await
+                .unwrap()
+        };
+        let pool = DatabasePool::PostgreSQL(Arc::new(pg.clone()));
+        assert_validation_never_executes(&pool, run, &table, &Default::default()).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+            .execute(&pg)
+            .await
+            .unwrap();
+    }
+    if let Some(url) = env_url("TABULAR_TEST_MYSQL_URL") {
+        let my = sqlx::mysql::MySqlPoolOptions::new()
+            .max_connections(2)
+            .connect(url.as_str())
+            .await
+            .expect("connect to TABULAR_TEST_MYSQL_URL");
+        let table = temp_table("myv");
+        for sql in [
+            format!("CREATE TABLE {table} (id INTEGER PRIMARY KEY, name VARCHAR(50))"),
+            format!("INSERT INTO {table} VALUES (1, 'a'), (2, 'b')"),
+        ] {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                .execute(&my)
+                .await
+                .unwrap();
+        }
+        let reader = my.clone();
+        let run = async move |sql: &str| -> Vec<String> {
+            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.to_string()))
+                .fetch_all(&reader)
+                .await
+                .unwrap()
+        };
+        let pool = DatabasePool::MySQL(Arc::new(my.clone()));
+        let target = crate::connection::validate::ValidationTarget {
+            database: Some(url.path().trim_start_matches('/').to_string()),
+            schema: None,
+        };
+        assert_validation_never_executes(&pool, run, &table, &target).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+            .execute(&my)
+            .await
+            .unwrap();
+    }
+}

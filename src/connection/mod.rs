@@ -22,6 +22,7 @@ pub mod sql;
 pub mod timing;
 pub mod types;
 pub mod ui;
+pub mod validate;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 // Keep the same API surface that the rest of the crate expects.
