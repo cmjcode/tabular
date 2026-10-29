@@ -297,7 +297,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1088;
+				CURRENT_PROJECT_VERSION = 1089;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
@@ -306,7 +306,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.8;
+				MARKETING_VERSION = 1.8.9;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
@@ -325,7 +325,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "apple/ios/Tabular-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1088;
+				CURRENT_PROJECT_VERSION = 1089;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = apple/ios/Info.plist;
@@ -334,7 +334,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.8;
+				MARKETING_VERSION = 1.8.9;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = iphoneos;
@@ -355,7 +355,7 @@
 				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1088;
+				CURRENT_PROJECT_VERSION = 1089;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -365,7 +365,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.8.8;
+				MARKETING_VERSION = 1.8.9;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
@@ -380,7 +380,7 @@
 				CODE_SIGN_ENTITLEMENTS = apple/macos/Tabular.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1088;
+				CURRENT_PROJECT_VERSION = 1089;
 				DEVELOPMENT_TEAM = YD4J5Z6A4G;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -390,7 +390,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.8.8;
+				MARKETING_VERSION = 1.8.9;
 				PRODUCT_BUNDLE_IDENTIFIER = id.tabular.database;
 				PRODUCT_NAME = Tabular;
 				SDKROOT = macosx;
