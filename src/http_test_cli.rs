@@ -403,7 +403,7 @@ fn db_check(
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|c| project.owns_connection_folder(c.folder.as_deref()))
+            .filter(|c| project.owns_connection_entry(&c.name, c.folder.as_deref()))
             .map(|c| http_tests::DbCheckTarget {
                 connection_id: c.id,
                 connection_name: c.name,

@@ -115,7 +115,7 @@ impl HeadlessSession {
         let visible = self.list_connections_for(client).await?;
         let connections: Vec<ProjectConnectionInfo> = visible
             .iter()
-            .filter(|c| p.owns_connection_folder(c.summary.folder.as_deref()))
+            .filter(|c| p.owns_connection_entry(&c.summary.name, c.summary.folder.as_deref()))
             .map(|c| ProjectConnectionInfo {
                 id: c.summary.id,
                 name: c.summary.name.clone(),

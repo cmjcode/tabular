@@ -65,6 +65,7 @@ pub struct ProjectDialog {
     pub memory: Vec<MemoryEntry>,
     pub error: Option<String>,
     pub confirm_delete: bool,
+    pub selected_link_conn: Option<String>,
 }
 
 // ─── Akses state ──────────────────────────────────────────────────────────────
@@ -99,8 +100,14 @@ pub fn active(t: &Tabular) -> Option<&Project> {
     t.projects.list.iter().find(|p| p.id == id)
 }
 
-/// Project pemilik koneksi `conn`.
+/// Project pemilik koneksi `conn`. Bila koneksi dipakai oleh beberapa
+/// project, utamakan project yang sedang aktif di switcher.
 pub fn project_for_connection<'a>(t: &'a Tabular, conn: &ConnectionConfig) -> Option<&'a Project> {
+    if let Some(act) = active(t) {
+        if act.owns_connection(conn) {
+            return Some(act);
+        }
+    }
     t.projects.list.iter().find(|p| p.owns_connection(conn))
 }
 
@@ -292,7 +299,22 @@ fn filter_project(t: &Tabular) -> Option<&Project> {
     }
 }
 
+fn node_has_project_connection(node: &TreeNode, t: &Tabular, p: &Project) -> bool {
+    if let Some(conn_id) = node.connection_id {
+        if let Some(conn) = t.connections.iter().find(|c| c.id == Some(conn_id)) {
+            if p.owns_connection(conn) {
+                return true;
+            }
+        }
+    }
+    node.children
+        .iter()
+        .any(|child| node_has_project_connection(child, t, p))
+}
+
 /// Split tree koneksi untuk filter project (tanpa filter: semua tampil).
+/// Root folder project utama dan root folder yang memuat koneksi milik project
+/// (termasuk koneksi yang di-link) tetap ditampilkan.
 pub fn split_connection_roots(
     t: &Tabular,
     tree: Vec<TreeNode>,
@@ -305,7 +327,9 @@ pub fn split_connection_roots(
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            split_roots(tree, |n| n.name == root)
+            split_roots(tree, |n| {
+                n.name == root || node_has_project_connection(n, t, p)
+            })
         }
         None => (tree, Vec::new()),
     }
@@ -569,6 +593,7 @@ pub fn open_create_dialog(t: &mut Tabular, adopt: Option<(&str, &str)>) {
         memory: Vec::new(),
         error: None,
         confirm_delete: false,
+        selected_link_conn: None,
     });
 }
 
@@ -613,6 +638,7 @@ pub fn open_edit_dialog(t: &mut Tabular, id: &str) {
         new_env_name: String::new(),
         error: None,
         confirm_delete: false,
+        selected_link_conn: None,
     });
 }
 
@@ -698,9 +724,16 @@ pub fn render_dialog(t: &mut Tabular, ctx: &egui::Context) {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.add_enabled_ui(!read_only || dlg.tab == DialogTab::Memory, |ui| match dlg.tab {
-                        DialogTab::General => render_general_tab(ui, &mut dlg, ws_name.as_deref()),
+                        DialogTab::General => {
+                            render_general_tab(ui, &mut dlg, ws_name.as_deref(), &t.connections)
+                        }
                         DialogTab::Environments => {
-                            render_environments_tab(ui, &mut dlg, &member_connections)
+                            render_environments_tab(
+                                ui,
+                                &mut dlg,
+                                &member_connections,
+                                &t.connections,
+                            )
                         }
                         DialogTab::Memory => {
                             if let Some(name) = render_memory_tab(ui, &dlg.memory, read_only) {
@@ -774,7 +807,12 @@ pub fn render_dialog(t: &mut Tabular, ctx: &egui::Context) {
     }
 }
 
-fn render_general_tab(ui: &mut egui::Ui, dlg: &mut ProjectDialog, ws_name: Option<&str>) {
+fn render_general_tab(
+    ui: &mut egui::Ui,
+    dlg: &mut ProjectDialog,
+    ws_name: Option<&str>,
+    all_connections: &[ConnectionConfig],
+) {
     let is_edit = matches!(dlg.mode, DialogMode::Edit(_));
     style::render_modal_card(ui, Some("Project"), None, |ui| {
         egui::Grid::new("project_general_grid")
@@ -844,21 +882,127 @@ fn render_general_tab(ui: &mut egui::Ui, dlg: &mut ProjectDialog, ws_name: Optio
             },
         );
     }
+    ui.add_space(8.0);
+
+    style::render_modal_card(
+        ui,
+        Some("Linked connections"),
+        Some(
+            "Share connections from other folders or projects with this project (e.g. shared databases).",
+        ),
+        |ui| {
+            let mut unlink_name = None;
+            if dlg.draft.linked_connections.is_empty() {
+                ui.label(
+                    egui::RichText::new("No external connections linked yet.")
+                        .color(ui.visuals().weak_text_color()),
+                );
+            } else {
+                for name in &dlg.draft.linked_connections {
+                    ui.horizontal(|ui| {
+                        ui.label(name);
+                        if let Some(conn) = all_connections.iter().find(|c| &c.name == name) {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "({})",
+                                    conn.connection_type.as_db_str()
+                                ))
+                                .color(ui.visuals().weak_text_color()),
+                            );
+                            if let Some(f) = &conn.folder {
+                                ui.label(
+                                    egui::RichText::new(format!("[{}]", f))
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                            }
+                        }
+                        if ui
+                            .add(egui::Button::new(icons::ICON_DELETE.rich_text()).frame(false))
+                            .on_hover_text("Unlink connection")
+                            .clicked()
+                        {
+                            unlink_name = Some(name.clone());
+                        }
+                    });
+                }
+            }
+            if let Some(name) = unlink_name {
+                dlg.draft.linked_connections.retain(|n| n != &name);
+                for env in &mut dlg.draft.environments {
+                    env.connections.retain(|n| n != &name);
+                }
+            }
+
+            let available: Vec<&ConnectionConfig> = all_connections
+                .iter()
+                .filter(|c| {
+                    !dlg.draft.owns_connection_folder(c.folder.as_deref())
+                        && !dlg.draft.linked_connections.contains(&c.name)
+                })
+                .collect();
+
+            if !available.is_empty() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let selected_text = dlg
+                        .selected_link_conn
+                        .as_deref()
+                        .unwrap_or("Select connection to link…");
+                    egui::ComboBox::from_id_salt("general_link_conn_combobox")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            for c in &available {
+                                let folder_info = c.folder.as_deref().unwrap_or("Default");
+                                let label = format!(
+                                    "{} ({} - {})",
+                                    c.name,
+                                    c.connection_type.as_db_str(),
+                                    folder_info
+                                );
+                                if ui
+                                    .selectable_label(
+                                        dlg.selected_link_conn.as_deref() == Some(&c.name),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    dlg.selected_link_conn = Some(c.name.clone());
+                                }
+                            }
+                        });
+                    let can_add = dlg.selected_link_conn.is_some();
+                    if ui
+                        .add_enabled(
+                            can_add,
+                            style::btn_secondary(format!("{}  Link", icons::ICON_ADD.codepoint)),
+                        )
+                        .clicked()
+                    {
+                        if let Some(target) = dlg.selected_link_conn.take() {
+                            if !dlg.draft.linked_connections.contains(&target) {
+                                dlg.draft.linked_connections.push(target);
+                            }
+                        }
+                    }
+                });
+            }
+        },
+    );
 }
 
 fn render_environments_tab(
     ui: &mut egui::Ui,
     dlg: &mut ProjectDialog,
     member_connections: &[ConnectionConfig],
+    all_connections: &[ConnectionConfig],
 ) {
-    let envs = &mut dlg.draft.environments;
-    if dlg.selected_env >= envs.len() {
-        dlg.selected_env = envs.len().saturating_sub(1);
+    if dlg.selected_env >= dlg.draft.environments.len() {
+        dlg.selected_env = dlg.draft.environments.len().saturating_sub(1);
     }
     let mut remove_env: Option<usize> = None;
 
     ui.horizontal_wrapped(|ui| {
-        for (i, env) in envs.iter().enumerate() {
+        for (i, env) in dlg.draft.environments.iter().enumerate() {
             let color = env
                 .environment()
                 .map(Environment::color)
@@ -874,179 +1018,267 @@ fn render_environments_tab(
                 .desired_width(130.0),
         );
         let name = dlg.new_env_name.trim().to_string();
-        let can_add = !name.is_empty() && !envs.iter().any(|e| e.name.eq_ignore_ascii_case(&name));
+        let can_add = !name.is_empty()
+            && !dlg
+                .draft
+                .environments
+                .iter()
+                .any(|e| e.name.eq_ignore_ascii_case(&name));
         if ui
             .add_enabled(can_add, egui::Button::new(icons::ICON_ADD.rich_text()))
             .on_hover_text("Add environment")
             .clicked()
         {
             let kind = crate::connection_env::detect_from_name(&name);
-            envs.push(ProjectEnv::new(&name, kind));
-            dlg.selected_env = envs.len() - 1;
+            dlg.draft.environments.push(ProjectEnv::new(&name, kind));
+            dlg.selected_env = dlg.draft.environments.len() - 1;
             dlg.new_env_name.clear();
         }
     });
     ui.add_space(8.0);
 
+    let conn_folder = dlg.draft.connection_folder.clone();
+    let linked_conns = dlg.draft.linked_connections.clone();
     let selected = dlg.selected_env;
-    let env_count = envs.len();
-    let Some(env) = envs.get_mut(selected) else {
+    let env_count = dlg.draft.environments.len();
+    let mut new_link_target = None;
+
+    let has_env = selected < env_count;
+    if !has_env {
         ui.label("Add an environment to start.");
         return;
-    };
+    }
 
-    style::render_modal_card(ui, Some("Environment"), None, |ui| {
-        egui::Grid::new("project_env_grid")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut env.name).desired_width(200.0));
-                ui.end_row();
-                ui.label("Type");
-                let current = env
-                    .kind
-                    .as_deref()
-                    .and_then(Environment::parse)
-                    .map(|k| k.label())
-                    .unwrap_or("Auto (from name)");
-                egui::ComboBox::from_id_salt("project_env_kind")
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(env.kind.is_none(), "Auto (from name)")
-                            .clicked()
-                        {
-                            env.kind = None;
-                        }
-                        for k in Environment::ALL {
-                            let text = egui::RichText::new(k.label()).color(k.color());
+    {
+        let env = &mut dlg.draft.environments[selected];
+
+        style::render_modal_card(ui, Some("Environment"), None, |ui| {
+            egui::Grid::new("project_env_grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.add(egui::TextEdit::singleline(&mut env.name).desired_width(200.0));
+                    ui.end_row();
+                    ui.label("Type");
+                    let current = env
+                        .kind
+                        .as_deref()
+                        .and_then(Environment::parse)
+                        .map(|k| k.label())
+                        .unwrap_or("Auto (from name)");
+                    egui::ComboBox::from_id_salt("project_env_kind")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
                             if ui
-                                .selectable_label(env.kind.as_deref() == Some(k.key()), text)
+                                .selectable_label(env.kind.is_none(), "Auto (from name)")
                                 .clicked()
                             {
-                                env.kind = Some(k.key().to_string());
+                                env.kind = None;
+                            }
+                            for k in Environment::ALL {
+                                let text = egui::RichText::new(k.label()).color(k.color());
+                                if ui
+                                    .selectable_label(env.kind.as_deref() == Some(k.key()), text)
+                                    .clicked()
+                                {
+                                    env.kind = Some(k.key().to_string());
+                                }
+                            }
+                        });
+                    ui.end_row();
+                });
+            if env_count > 1 && ui.add(style::btn_secondary("Remove environment")).clicked() {
+                remove_env = Some(selected);
+            }
+        });
+        ui.add_space(8.0);
+
+        style::render_modal_card(
+            ui,
+            Some("Variables (.env)"),
+            Some(
+                "Use {{KEY}} in SQL and HTTP requests. Secret values stay in this computer's keychain and are never shared; SQL only uses non-secret values.",
+            ),
+            |ui| {
+                let mut remove_var: Option<usize> = None;
+                // Baris biasa dengan ukuran tetap: Grid memotong lebar TextEdit.
+                const KEY_W: f32 = 170.0;
+                const ROW_H: f32 = 22.0;
+                let value_w = (ui.available_width() - KEY_W - 90.0).max(160.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [KEY_W, 14.0],
+                        egui::Label::new(egui::RichText::new("Key").small().strong()),
+                    );
+                    ui.add_sized(
+                        [value_w, 14.0],
+                        egui::Label::new(egui::RichText::new("Value").small().strong()),
+                    );
+                    ui.label(egui::RichText::new("Secret").small().strong());
+                });
+                for (i, v) in env.variables.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [KEY_W, ROW_H],
+                            egui::TextEdit::singleline(&mut v.key)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text("KEY"),
+                        );
+                        if v.secret {
+                            let val = v.pending_secret.get_or_insert_with(String::new);
+                            ui.add_sized(
+                                [value_w, ROW_H],
+                                egui::TextEdit::singleline(val).password(true),
+                            );
+                        } else {
+                            ui.add_sized(
+                                [value_w, ROW_H],
+                                egui::TextEdit::singleline(&mut v.value)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                        }
+                        let was_secret = v.secret;
+                        ui.checkbox(&mut v.secret, "")
+                            .on_hover_text("Keep the value in this computer's keychain");
+                        if v.secret != was_secret {
+                            if v.secret {
+                                v.pending_secret = Some(std::mem::take(&mut v.value));
+                            } else {
+                                v.value = v.pending_secret.take().unwrap_or_default();
+                            }
+                        }
+                        if ui
+                            .add(egui::Button::new(icons::ICON_DELETE.rich_text()).frame(false))
+                            .on_hover_text("Remove variable")
+                            .clicked()
+                        {
+                            remove_var = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove_var {
+                    env.variables.remove(i);
+                }
+                if ui
+                    .add(style::btn_secondary(format!(
+                        "{}  Variable",
+                        icons::ICON_ADD.codepoint
+                    )))
+                    .clicked()
+                {
+                    env.variables.push(EnvVar::default());
+                }
+            },
+        );
+        ui.add_space(8.0);
+
+        style::render_modal_card(
+            ui,
+            Some("Connections"),
+            Some(
+                "Connections used by this environment (including linked connections). Switching environment moves the active query tab to the matching connection.",
+            ),
+            |ui| {
+                if member_connections.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No connections in the project yet.")
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                for c in member_connections {
+                    let mut on = env.connections.contains(&c.name);
+                    let is_linked = !c
+                        .folder
+                        .as_deref()
+                        .is_some_and(|f| project::path_in(f, &conn_folder));
+                    let label = if is_linked {
+                        format!(
+                            "{}  ({}) [Linked: {}]",
+                            c.name,
+                            c.connection_type.as_db_str(),
+                            c.folder.as_deref().unwrap_or("Default")
+                        )
+                    } else {
+                        format!("{}  ({})", c.name, c.connection_type.as_db_str())
+                    };
+                    if ui.checkbox(&mut on, label).changed() {
+                        if on {
+                            env.connections.push(c.name.clone());
+                        } else {
+                            env.connections.retain(|n| n != &c.name);
+                        }
+                    }
+                }
+
+                let available: Vec<&ConnectionConfig> = all_connections
+                    .iter()
+                    .filter(|c| {
+                        !c.folder
+                            .as_deref()
+                            .is_some_and(|f| project::path_in(f, &conn_folder))
+                            && !linked_conns.contains(&c.name)
+                    })
+                    .collect();
+
+                if !available.is_empty() {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let selected_text = dlg
+                            .selected_link_conn
+                            .as_deref()
+                            .unwrap_or("Link other connection…");
+                        egui::ComboBox::from_id_salt("env_link_conn_combobox")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for c in &available {
+                                    let folder_info = c.folder.as_deref().unwrap_or("Default");
+                                    let label = format!(
+                                        "{} ({} - {})",
+                                        c.name,
+                                        c.connection_type.as_db_str(),
+                                        folder_info
+                                    );
+                                    if ui
+                                        .selectable_label(
+                                            dlg.selected_link_conn.as_deref() == Some(&c.name),
+                                            label,
+                                        )
+                                        .clicked()
+                                    {
+                                        dlg.selected_link_conn = Some(c.name.clone());
+                                    }
+                                }
+                            });
+                        let can_add = dlg.selected_link_conn.is_some();
+                        if ui
+                            .add_enabled(
+                                can_add,
+                                style::btn_secondary(format!(
+                                    "{}  Link to Environment",
+                                    icons::ICON_ADD.codepoint
+                                )),
+                            )
+                            .clicked()
+                        {
+                            if let Some(target) = dlg.selected_link_conn.take() {
+                                new_link_target = Some(target.clone());
+                                if !env.connections.contains(&target) {
+                                    env.connections.push(target);
+                                }
                             }
                         }
                     });
-                ui.end_row();
-            });
-        if env_count > 1 && ui.add(style::btn_secondary("Remove environment")).clicked() {
-            remove_env = Some(selected);
-        }
-    });
-    ui.add_space(8.0);
-
-    style::render_modal_card(
-        ui,
-        Some("Variables (.env)"),
-        Some(
-            "Use {{KEY}} in SQL and HTTP requests. Secret values stay in this computer's keychain and are never shared; SQL only uses non-secret values.",
-        ),
-        |ui| {
-            let mut remove_var: Option<usize> = None;
-            // Baris biasa dengan ukuran tetap: Grid memotong lebar TextEdit.
-            const KEY_W: f32 = 170.0;
-            const ROW_H: f32 = 22.0;
-            let value_w = (ui.available_width() - KEY_W - 90.0).max(160.0);
-            ui.horizontal(|ui| {
-                ui.add_sized(
-                    [KEY_W, 14.0],
-                    egui::Label::new(egui::RichText::new("Key").small().strong()),
-                );
-                ui.add_sized(
-                    [value_w, 14.0],
-                    egui::Label::new(egui::RichText::new("Value").small().strong()),
-                );
-                ui.label(egui::RichText::new("Secret").small().strong());
-            });
-            for (i, v) in env.variables.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [KEY_W, ROW_H],
-                        egui::TextEdit::singleline(&mut v.key)
-                            .font(egui::TextStyle::Monospace)
-                            .hint_text("KEY"),
-                    );
-                    if v.secret {
-                        let val = v.pending_secret.get_or_insert_with(String::new);
-                        ui.add_sized(
-                            [value_w, ROW_H],
-                            egui::TextEdit::singleline(val).password(true),
-                        );
-                    } else {
-                        ui.add_sized(
-                            [value_w, ROW_H],
-                            egui::TextEdit::singleline(&mut v.value)
-                                .font(egui::TextStyle::Monospace),
-                        );
-                    }
-                    let was_secret = v.secret;
-                    ui.checkbox(&mut v.secret, "")
-                        .on_hover_text("Keep the value in this computer's keychain");
-                    if v.secret != was_secret {
-                        if v.secret {
-                            v.pending_secret = Some(std::mem::take(&mut v.value));
-                        } else {
-                            v.value = v.pending_secret.take().unwrap_or_default();
-                        }
-                    }
-                    if ui
-                        .add(egui::Button::new(icons::ICON_DELETE.rich_text()).frame(false))
-                        .on_hover_text("Remove variable")
-                        .clicked()
-                    {
-                        remove_var = Some(i);
-                    }
-                });
-            }
-            if let Some(i) = remove_var {
-                env.variables.remove(i);
-            }
-            if ui
-                .add(style::btn_secondary(format!(
-                    "{}  Variable",
-                    icons::ICON_ADD.codepoint
-                )))
-                .clicked()
-            {
-                env.variables.push(EnvVar::default());
-            }
-        },
-    );
-    ui.add_space(8.0);
-
-    style::render_modal_card(
-        ui,
-        Some("Connections"),
-        Some(
-            "Connections in the project folder that this environment uses. Switching environment moves the active query tab to the matching connection.",
-        ),
-        |ui| {
-            if member_connections.is_empty() {
-                ui.label(
-                    egui::RichText::new("No connections in the project folder yet.")
-                        .color(ui.visuals().weak_text_color()),
-                );
-            }
-            for c in member_connections {
-                let mut on = env.connections.contains(&c.name);
-                if ui
-                    .checkbox(
-                        &mut on,
-                        format!("{}  ({})", c.name, c.connection_type.as_db_str()),
-                    )
-                    .changed()
-                {
-                    if on {
-                        env.connections.push(c.name.clone());
-                    } else {
-                        env.connections.retain(|n| n != &c.name);
-                    }
                 }
-            }
-        },
-    );
+            },
+        );
+    }
+
+    if let Some(target) = new_link_target {
+        if !dlg.draft.linked_connections.contains(&target) {
+            dlg.draft.linked_connections.push(target);
+        }
+    }
 
     if let Some(i) = remove_env {
         let removed = dlg.draft.environments.remove(i);

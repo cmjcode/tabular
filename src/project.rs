@@ -121,6 +121,9 @@ pub struct Project {
     /// Workspace HTTP milik project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_workspace_id: Option<String>,
+    /// Daftar nama koneksi dari luar folder project yang dihubungkan ke project ini.
+    #[serde(default)]
+    pub linked_connections: Vec<String>,
     #[serde(default)]
     pub environments: Vec<ProjectEnv>,
     /// Nama environment aktif.
@@ -159,6 +162,7 @@ impl Project {
             name,
             description: String::new(),
             http_workspace_id: None,
+            linked_connections: Vec::new(),
             active_env: environments.first().map(|e| e.name.clone()),
             environments,
             repo_url: None,
@@ -206,8 +210,20 @@ impl Project {
         folder.is_some_and(|f| path_in(f, &self.connection_folder))
     }
 
+    /// Apakah koneksi dengan nama dan folder tertentu dimiliki oleh project ini
+    /// (baik melalui kesesuaian folder, terdaftar di `linked_connections`,
+    /// maupun dipetakan di salah satu environment).
+    pub fn owns_connection_entry(&self, name: &str, folder: Option<&str>) -> bool {
+        self.owns_connection_folder(folder)
+            || self.linked_connections.iter().any(|n| n == name)
+            || self
+                .environments
+                .iter()
+                .any(|env| env.connections.iter().any(|n| n == name))
+    }
+
     pub fn owns_connection(&self, conn: &ConnectionConfig) -> bool {
-        self.owns_connection_folder(conn.folder.as_deref())
+        self.owns_connection_entry(&conn.name, conn.folder.as_deref())
     }
 
     /// Path relatif terhadap direktori query (`Proj/sub/a.sql`) termasuk
@@ -746,6 +762,34 @@ mod tests {
         assert!(marks.contains(&(1, Environment::Development)));
         assert!(marks.contains(&(3, Environment::Production)));
         assert!(!marks.iter().any(|(id, _)| *id == 4));
+    }
+
+    #[test]
+    fn shared_connection_across_multiple_projects() {
+        // Kasus persis seperti koneksi 201 yang dipakai di foxlogger dan di adembro
+        let foxlogger_conn = conn(201, "koneksi-201", "foxlogger", DatabaseType::MySQL);
+        let conns = vec![foxlogger_conn.clone()];
+
+        let p_fox = Project::new("foxlogger");
+        let mut p_adembro = Project::new("adembro");
+
+        // foxlogger memilikinya lewat folder
+        assert!(p_fox.owns_connection(&foxlogger_conn));
+
+        // Sebelum di-link, adembro belum memilikinya
+        assert!(!p_adembro.owns_connection(&foxlogger_conn));
+
+        // Link koneksi-201 ke adembro
+        p_adembro.linked_connections.push("koneksi-201".into());
+
+        // Sekarang adembro juga memilikinya
+        assert!(p_adembro.owns_connection(&foxlogger_conn));
+        assert!(p_fox.owns_connection(&foxlogger_conn));
+
+        // Keduanya melihat koneksi-201 sebagai member_connections
+        assert_eq!(p_fox.member_connections(&conns).len(), 1);
+        assert_eq!(p_adembro.member_connections(&conns).len(), 1);
+        assert_eq!(p_adembro.member_connections(&conns)[0].id, Some(201));
     }
 
     #[test]
