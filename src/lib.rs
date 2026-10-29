@@ -30,6 +30,8 @@ pub mod connection;
 pub mod connection_env;
 pub mod connection_safety;
 pub mod curl_import;
+pub mod data_check_cli;
+pub mod data_checks;
 pub mod data_table;
 pub mod data_transfer;
 pub mod dba_monitor;
@@ -94,6 +96,7 @@ pub mod http_send;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod http_test_cli;
 pub mod http_test_codefix;
+pub mod http_test_db;
 pub mod http_test_report;
 pub mod http_test_validate;
 pub mod http_tests;

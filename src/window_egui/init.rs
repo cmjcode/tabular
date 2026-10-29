@@ -70,6 +70,7 @@ impl super::Tabular {
         self.notify_threshold_secs = prefs.notify_threshold_secs;
         self.restore_session = prefs.restore_session;
         self.show_system_objects = prefs.show_system_objects;
+        self.auto_hide_menu_bar = prefs.auto_hide_menu_bar;
         crate::schema_objects::set_show_system_objects(prefs.show_system_objects);
         self.redis_browser_auto_refresh_default_seconds =
             prefs.redis_browser_auto_refresh_seconds.max(1);
@@ -626,6 +627,8 @@ impl super::Tabular {
             custom_view_save_receiver: None,
             global_backspace_pressed: false,
             sidebar_visible: true,
+            auto_hide_menu_bar: fast_prefs.auto_hide_menu_bar,
+            menu_bar_revealed: false,
             show_add_replication_dialog: false,
             replication_dialog: None,
             replication_setup_receiver: None,

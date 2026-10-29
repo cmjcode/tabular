@@ -487,6 +487,56 @@ pub struct DeleteProjectMemoryArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListSuitesArgs {
+    /// Project name or id (from list_projects). Omit to list every suite.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RunSuiteArgs {
+    /// Suite id or name (from list_test_suites).
+    pub suite: String,
+    /// Project environment to run against (default: the active one).
+    #[serde(default)]
+    pub env: Option<String>,
+    /// Run only these groups; steps they depend on run too.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// Required to run against a Production environment; the user must still approve.
+    #[serde(default)]
+    pub allow_production: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetTestRunArgs {
+    /// Run id returned by run_test_suite.
+    pub run_id: String,
+    /// Suite id or name, to narrow the search.
+    #[serde(default)]
+    pub suite: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RunDataChecksArgs {
+    /// Project name or id (from list_projects).
+    pub project: String,
+    /// Project environment whose connections are checked (default: the active one).
+    #[serde(default)]
+    pub env: Option<String>,
+    /// Check ids or names to run; omit to run every enabled check.
+    #[serde(default)]
+    pub check_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SaveDataCheckArgs {
+    /// Project name or id (from list_projects).
+    pub project: String,
+    pub check: super::test_tools::DataCheckInput,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchNotesArgs {
     /// Keywords or a question, e.g. "trx_h status codes" or "how is churn defined".
     pub query: String,
@@ -1067,6 +1117,32 @@ impl TabularMcp {
             Ok(_) => Err("the user did not approve this statement; do not retry it".to_string()),
             Err(e) => Err(format!("approval was not given: {e}")),
         }
+    }
+
+    /// Persetujuan user untuk aksi yang bukan statement SQL (run suite,
+    /// simpan data check), lewat antrean persetujuan yang sama.
+    async fn approve_action(
+        &self,
+        peer: &Peer<RoleServer>,
+        target: &str,
+        reason: &str,
+        summary: &str,
+    ) -> Result<&'static str, String> {
+        let plan = WritePlan {
+            connection_id: 0,
+            connection_name: target.to_string(),
+            database: None,
+            level: AccessLevel::Ask,
+            sql: summary.to_string(),
+            statements: vec![PlannedStatement {
+                statement: summary.to_string(),
+                kind: super::classify::StatementKind::Write,
+                decision: "needs_approval",
+                reason: Some(reason.to_string()),
+            }],
+            decision: Decision::NeedsApproval(reason.to_string()),
+        };
+        self.obtain_approval(peer, &plan, reason).await
     }
 
     /// Jalur bersama `execute_statement` dan `cancel_query`.
@@ -1913,6 +1989,166 @@ impl TabularMcp {
     }
 
     #[tool(
+        title = "List test suites",
+        description = "List the integration test suites (ordered HTTP steps, database checks and concurrent bursts) of a project, with step counts, the last validation and the verdict of the last run.",
+        annotations(title = "List test suites", read_only_hint = true, open_world_hint = false),
+        output_schema = out::<super::test_tools::SuiteList>()
+    )]
+    async fn list_test_suites(
+        &self,
+        Parameters(p): Parameters<ListSuitesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.guard(
+            "list_test_suites",
+            None,
+            None,
+            self.session.list_test_suites(p.project.as_deref()),
+        )
+        .await
+    }
+
+    #[tool(
+        title = "Run test suite",
+        description = "Run an integration test suite against the API server of a project environment and return the verdict and a per-step summary; use get_test_run for full details. The run sends real requests that create data and then cleans it up. Development, Testing, Local and Staging environments run directly; Production needs allow_production=true and the user's approval in Tabular, and so does an environment without a kind. Database steps are read-only.",
+        annotations(title = "Run test suite", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = true),
+        output_schema = out::<super::test_tools::SuiteRunReport>()
+    )]
+    async fn run_test_suite(
+        &self,
+        Parameters(p): Parameters<RunSuiteArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = self.client_name();
+        let fut = async {
+            let prepared = self.session.prepare_suite_run(
+                &p.suite,
+                p.env.as_deref(),
+                p.groups.clone(),
+                p.allow_production,
+            )?;
+            if let Some(reason) = prepared.needs_approval.clone() {
+                let summary = format!(
+                    "Run integration test suite \"{}\" ({} steps) on environment {}. It sends real requests that create and delete data.",
+                    prepared.suite.name,
+                    prepared.suite.steps.len(),
+                    prepared.environment.as_deref().unwrap_or("(none)")
+                );
+                self.approve_action(
+                    &peer,
+                    &format!("Integration test: {}", prepared.suite.name),
+                    &reason,
+                    &summary,
+                )
+                .await
+                .map_err(AgentError::Refused)?;
+            }
+            // Selalu sampai selesai (termasuk cleanup), walau klien membatalkan.
+            let cancel = Arc::new(AtomicBool::new(false));
+            super::test_tools::on_thread(move || {
+                super::test_tools::execute_suite_run(prepared, &client, &cancel)
+            })
+            .await
+        };
+        self.guard_write("run_test_suite", None, fut).await
+    }
+
+    #[tool(
+        title = "Get test run",
+        description = "Details of one integration test run: for each step the request (secret headers redacted), what was sent, the response, the failed assertions, database rows for database steps and every response of a concurrent burst.",
+        annotations(title = "Get test run", read_only_hint = true, open_world_hint = false),
+        output_schema = out::<super::test_tools::TestRunDetail>()
+    )]
+    async fn get_test_run(
+        &self,
+        Parameters(p): Parameters<GetTestRunArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.guard(
+            "get_test_run",
+            None,
+            None,
+            self.session.get_test_run(&p.run_id, p.suite.as_deref()),
+        )
+        .await
+    }
+
+    #[tool(
+        title = "List data checks",
+        description = "List a project's data checks: read-only SELECTs that should return no rows (every row is evidence of broken data, e.g. duplicate receipts or a balance that differs from its transactions), with the status of the last run.",
+        annotations(title = "List data checks", read_only_hint = true, open_world_hint = false),
+        output_schema = out::<super::test_tools::DataCheckList>()
+    )]
+    async fn list_data_checks(
+        &self,
+        Parameters(p): Parameters<ProjectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.guard(
+            "list_data_checks",
+            None,
+            None,
+            self.session.list_data_checks(&p.project),
+        )
+        .await
+    }
+
+    #[tool(
+        title = "Run data checks",
+        description = "Run a project's data checks against the connections of an environment (Production is allowed: checks are read-only SELECTs with a row limit and timeout). Returns, per check, the number of violating rows, the trend since the last run and up to 20 sample rows. Same result as `tabular check run`.",
+        annotations(title = "Run data checks", read_only_hint = true, open_world_hint = false),
+        output_schema = out::<super::test_tools::DataCheckRunReport>()
+    )]
+    async fn run_data_checks(
+        &self,
+        Parameters(p): Parameters<RunDataChecksArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let client = self.client_name();
+        self.guard(
+            "run_data_checks",
+            None,
+            None,
+            self.session.run_data_checks(
+                &client,
+                &p.project,
+                p.env.as_deref(),
+                p.check_ids.clone(),
+            ),
+        )
+        .await
+    }
+
+    #[tool(
+        title = "Save data check",
+        description = "Add or replace a data check in a project: one SELECT returning the rows that violate a business rule (empty = healthy). The user approves it in Tabular before it is saved. Use table_context or describe_table first so the SQL matches the schema.",
+        annotations(title = "Save data check", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        output_schema = out::<super::test_tools::SavedDataCheck>()
+    )]
+    async fn save_data_check(
+        &self,
+        Parameters(p): Parameters<SaveDataCheckArgs>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let fut = async {
+            let (project, check) = self.session.prepare_data_check(&p.project, &p.check)?;
+            let summary = format!(
+                "Save data check \"{}\" ({}) in project {}:\n{}",
+                check.name,
+                check.severity.label(),
+                project.name,
+                check.sql
+            );
+            self.approve_action(
+                &peer,
+                &format!("Data check: {}", project.name),
+                "saving a data check",
+                &summary,
+            )
+            .await
+            .map_err(AgentError::Refused)?;
+            self.session.commit_data_check(&project, check)
+        };
+        self.guard_write("save_data_check", None, fut).await
+    }
+
+    #[tool(
         title = "Project context",
         description = "Describe one project: its environments with variable keys, non-secret values and the connection ids each environment uses, the active environment, its connections, saved query files, HTTP workspace, and the project memory (durable facts the team saved). Secret values are never returned.",
         annotations(title = "Project context", read_only_hint = true, open_world_hint = false),
@@ -2375,16 +2611,22 @@ mod tests {
                 "format_sql",
                 "get_agent_permissions",
                 "get_table_ddl",
+                "get_test_run",
                 "list_connections",
+                "list_data_checks",
                 "list_databases",
                 "list_projects",
                 "list_running_queries",
                 "list_tables",
+                "list_test_suites",
                 "project_context",
                 "read_note",
                 "refresh_schema_cache",
+                "run_data_checks",
                 "run_query",
+                "run_test_suite",
                 "sample_rows",
+                "save_data_check",
                 "save_note",
                 "save_project_memory",
                 "schema_diagram",
@@ -2420,6 +2662,8 @@ mod tests {
             "save_note",
             "save_project_memory",
             "delete_project_memory",
+            "run_test_suite",
+            "save_data_check",
         ];
         for tool in router.list_all() {
             let name = tool.name.as_ref();
@@ -2433,7 +2677,10 @@ mod tests {
                 Some(!writers.contains(&name)),
                 "{name} readOnlyHint"
             );
-            if matches!(name, "execute_statement" | "cancel_query") {
+            if matches!(
+                name,
+                "execute_statement" | "cancel_query" | "run_test_suite"
+            ) {
                 assert_eq!(ann.destructive_hint, Some(true), "{name} destructiveHint");
             }
             let schema = tool
@@ -2606,7 +2853,7 @@ mod tests {
 
         // tools/list
         let tools = client.list_all_tools().await.expect("tools/list");
-        assert_eq!(tools.len(), 30);
+        assert_eq!(tools.len(), 36);
         let tool = |name: &str| {
             tools
                 .iter()

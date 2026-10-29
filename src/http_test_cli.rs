@@ -19,8 +19,12 @@ OPTIONS for `run`:
   --env <name>           project environment to use (default: the active one)
   --report <file>        write a report; format from the extension (.html, .md, .json, .xml)
   --junit <file>         write a JUnit XML report for CI
-  --allow-production     allow running against a Production environment
+  --allow-production     allow running against a Production environment (also lets
+                         database steps read connections marked Production)
   --no-db-check          skip verifying the database for leftover test data
+
+Database steps (kind db_query) read the connection named by an environment variable
+such as db_main; values from {{variables}} are bound as parameters, never spliced.
 
 Exit code is 0 when the verdict is PASS or PASS WITH DEVIATIONS, 1 otherwise.
 ";
@@ -47,11 +51,11 @@ pub fn run(rest: &[String]) -> Result<(), String> {
     }
 }
 
-fn projects() -> Vec<Project> {
+pub(crate) fn projects() -> Vec<Project> {
     crate::project::load_all(&crate::config::get_data_dir())
 }
 
-fn find_project<'a>(all: &'a [Project], key: &str) -> Option<&'a Project> {
+pub(crate) fn find_project<'a>(all: &'a [Project], key: &str) -> Option<&'a Project> {
     let key = key.trim();
     all.iter()
         .find(|p| p.id == key)
@@ -192,7 +196,7 @@ fn find_suite(key: &str) -> Result<HttpTestSuite, String> {
 }
 
 /// Environment terpilih: (nama, variabel dengan secret, apakah Production).
-fn environment(
+pub(crate) fn environment(
     project: Option<&Project>,
     wanted: Option<&str>,
 ) -> Result<(Option<String>, HashMap<String, String>, bool), String> {
@@ -271,7 +275,8 @@ fn run_suite(rest: &[String]) -> Result<(), String> {
             known.join(", ")
         ));
     }
-    let scope = RunScope::groups(&suite, opts.groups.clone());
+    let mut scope = RunScope::groups(&suite, opts.groups.clone());
+    scope.allow_production = opts.allow_production;
     let mut suite = suite;
     http_tests::fill_test_credentials(&mut suite.variables);
     let vars = http_tests::initial_vars_with(&suite, &env_vars);
@@ -294,7 +299,6 @@ fn run_suite(rest: &[String]) -> Result<(), String> {
     let started = chrono::Utc::now();
     let cancel = AtomicBool::new(false);
     let abort = AtomicBool::new(false);
-    let send = crate::http_send::send_blocking;
     let mut cleanup_announced = false;
     let mut emit = |e: TestEvent| match e {
         TestEvent::StepFinished(r) => print_step(&r),
@@ -304,7 +308,7 @@ fn run_suite(rest: &[String]) -> Result<(), String> {
         }
         _ => {}
     };
-    let summary = http_tests::run_suite(&suite, &scope, vars, &send, &cancel, &abort, &mut emit);
+    let summary = http_tests::run_with_session(&suite, &scope, vars, &cancel, &abort, &mut emit);
     let mut run = TestRun::from_summary(&suite, &scope, run_id.clone(), started, summary);
     run.project_name = project.map(|p| p.name.clone());
     run.environment = env_name;

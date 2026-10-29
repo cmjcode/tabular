@@ -219,6 +219,39 @@ pub fn failing_steps(run: &TestRun) -> Vec<&StepResult> {
 }
 
 fn describe_step(step: &HttpTestStep) -> String {
+    if let (true, Some(db)) = (step.is_db(), &step.db) {
+        let mut o = format!(
+            "id={} name=\"{}\" phase={} kind=db_query connection_var={}{}\nsql:\n{}\n",
+            step.id,
+            step.name,
+            step.phase.label().to_ascii_lowercase(),
+            db.connection_var,
+            db.wait_until_ms
+                .map(|w| format!(" wait_until_ms={w}"))
+                .unwrap_or_default(),
+            db.sql.trim()
+        );
+        for e in &step.extract {
+            o.push_str(&format!("extract {} = {}\n", e.var, e.from));
+        }
+        for a in &step.assertions {
+            o.push_str(&format!("assert {}\n", a.describe()));
+        }
+        return o;
+    }
+    let mut o = describe_http_step(step);
+    if let Some(c) = step.concurrent() {
+        o.push_str(&format!(
+            "concurrency: {} requests at once x {} round(s), barrier {}\n",
+            c.count(),
+            c.rounds(),
+            c.barrier
+        ));
+    }
+    o
+}
+
+fn describe_http_step(step: &HttpTestStep) -> String {
     let r = &step.request;
     let mut o = format!(
         "id={} name=\"{}\" phase={} group=\"{}\"{}\n{} {}\n",
@@ -294,6 +327,12 @@ pub fn build_repair_prompts(
            secrets. Variables for test accounts may get example values in `variables`.\n\
          - If data must exist first (for example a parent record), you may add a new setup step \
            with a new id, its extract, and a cleanup step for it.\n\
+         - Database steps (`kind: db_query`) check data with one SELECT; fix the SQL (table or \
+           column names, joins) when it errors, but never relax the invariant it checks: a wrong \
+           balance or a duplicate row is a real bug. Return them as \
+           {\"id\":\"…\",\"kind\":\"db_query\",\"db\":{\"connection_var\":\"db_main\",\"sql\":\"SELECT …\"},\"assert\":[…]}.\n\
+         - Concurrent steps (`concurrency`) send the same request at once; a `count:status=2xx` \
+           failure there usually means a race condition in the API, which is a real bug.\n\
          Reply with ONLY one JSON object, no prose and no markdown fence:\n\
          {\"steps\":[{\"id\":\"s1\",\"name\":\"…\",\"phase\":\"setup|test|cleanup\",\"group\":\"…\",\
          \"cleanup_for\":\"…\",\"method\":\"POST\",\"url\":\"{{base_url_x}}/path\",\"headers\":{},\
@@ -358,10 +397,40 @@ pub fn build_repair_prompts(
         }
         user.push_str(&format!("\n## Step {}\n", step.id));
         user.push_str(&describe_step(step));
-        user.push_str(&format!("sent to: {} {}\n", r.method, r.url));
-        match &r.error {
-            Some(e) => user.push_str(&format!("result: no response ({e})\n")),
-            None => user.push_str(&format!("result: HTTP {}\n", r.status)),
+        match (&r.db, &r.error) {
+            (_, Some(e)) if step.is_db() => user.push_str(&format!("result: query failed ({e})\n")),
+            (Some(db), None) => {
+                user.push_str(&format!(
+                    "result: {} row(s) after {} attempt(s){}\ncolumns: {}\n",
+                    db.row_count,
+                    db.attempts,
+                    if db.timed_out {
+                        ", waited until timeout"
+                    } else {
+                        ""
+                    },
+                    db.columns.join(", ")
+                ));
+                for row in db.sample.iter().take(5) {
+                    user.push_str(&format!("row: {}\n", row.join(" | ")));
+                }
+            }
+            (_, Some(e)) => {
+                user.push_str(&format!("sent to: {} {}\n", r.method, r.url));
+                user.push_str(&format!("result: no response ({e})\n"));
+            }
+            (None, None) => {
+                user.push_str(&format!("sent to: {} {}\n", r.method, r.url));
+                user.push_str(&format!("result: HTTP {}\n", r.status));
+                if !r.instances.is_empty() {
+                    let statuses: Vec<String> = r
+                        .instances
+                        .iter()
+                        .map(|i| format!("r{}#{}={}", i.round, i.index, i.status))
+                        .collect();
+                    user.push_str(&format!("burst responses: {}\n", statuses.join(" ")));
+                }
+            }
         }
         for a in r.assertions.iter().filter(|a| !a.passed) {
             user.push_str(&format!(
@@ -403,6 +472,14 @@ pub fn build_repair_prompts(
 fn merge_step(keep: &HttpTestStep, mut next: HttpTestStep, raw: &Value) -> HttpTestStep {
     let has = |k: &str| raw.get(k).is_some();
     next.enabled = keep.enabled;
+    // Perbaikan parsial langkah DB (mis. hanya assertion) tetap langkah DB.
+    if keep.is_db() && !has("db") && !has("sql") && !has("kind") {
+        next.kind = keep.kind;
+        next.db = keep.db.clone();
+    }
+    if !has("concurrency") {
+        next.concurrency = keep.concurrency;
+    }
     if !has("phase") {
         next.phase = keep.phase;
     }
@@ -691,7 +768,6 @@ pub fn run_validation(
     };
     let scope = RunScope::default();
     let no_abort = AtomicBool::new(false);
-    let send = crate::http_send::send_blocking;
     let mut file_cache: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     let mut idx: u64 = 1;
     for round in 1..=hard_max {
@@ -705,7 +781,7 @@ pub fn run_validation(
         http_tests::preflight(&suite, &scope, &vars)?;
         let started = chrono::Utc::now();
         let summary =
-            http_tests::run_suite(&suite, &scope, vars, &send, cancel, &no_abort, &mut |_| {});
+            http_tests::run_with_session(&suite, &scope, vars, cancel, &no_abort, &mut |_| {});
         let mut run = TestRun::from_summary(&suite, &scope, run_id, started, summary);
         run.environment = environment.clone();
         let (passed, total) = counts(&run);

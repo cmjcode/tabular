@@ -1062,7 +1062,7 @@ impl HeadlessSession {
 
     /// Catat query agent ke history Tabular supaya user bisa mengaudit apa
     /// yang dijalankan agent. Kegagalan tidak menggagalkan query.
-    async fn record_history(&self, conn: &ConnectionConfig, sql: &str) {
+    pub(super) async fn record_history(&self, conn: &ConnectionConfig, sql: &str) {
         let Some(id) = conn.id else { return };
         let trimmed = sql.trim();
         if trimmed.is_empty() {

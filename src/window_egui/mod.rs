@@ -20,6 +20,7 @@ pub(crate) mod app_menu;
 pub mod background_dock;
 pub mod background_tasks;
 pub mod connection_mgr;
+pub mod data_health_ui;
 pub mod db_context_bar;
 pub mod db_jobs;
 pub mod device_profile;
@@ -732,6 +733,8 @@ pub struct Tabular {
 
     pub global_backspace_pressed: bool,
     pub sidebar_visible: bool,
+    pub auto_hide_menu_bar: bool,
+    pub menu_bar_revealed: bool,
 
     // Replication dialog state
     pub show_add_replication_dialog: bool,

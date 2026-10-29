@@ -4436,6 +4436,7 @@ impl Tabular {
                     ai_panel_width: self.ai_panel_width,
                     notify_long_queries: self.notify_long_queries,
                     notify_threshold_secs: self.notify_threshold_secs,
+                    auto_hide_menu_bar: self.auto_hide_menu_bar,
                 };
                 // Simpan beruntun: tulis yang lebih lama dilewati bila sudah ada
                 // permintaan yang lebih baru, sehingga urutan selesai task tidak
@@ -5841,6 +5842,7 @@ impl App for Tabular {
         crate::window_egui::repo_setup_jobs::tick(self, ctx);
         crate::window_egui::multi_compare_jobs::tick(self, ctx);
         crate::window_egui::integration_test_jobs::tick(self, ctx);
+        crate::window_egui::data_health_ui::render(self, ctx);
 
         self.render_query_insights(ctx);
         #[cfg(not(any(target_os = "ios", target_os = "android")))]

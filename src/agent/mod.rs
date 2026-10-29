@@ -21,6 +21,7 @@
 //! CLI disembunyikan dari pengaturan.
 
 pub mod access;
+pub mod bound_query;
 pub mod classify;
 pub mod context;
 pub mod core;
@@ -29,6 +30,7 @@ pub mod knowledge;
 pub mod live_edit;
 pub mod ops;
 pub mod projects;
+pub mod test_tools;
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub mod cli;

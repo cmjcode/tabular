@@ -679,6 +679,9 @@ pub struct AppPreferences {
     /// Ambang durasi (detik) untuk notifikasi OS.
     #[serde(default = "default_notify_threshold_secs")]
     pub notify_threshold_secs: u32,
+    /// Sembunyikan otomatis menu bar kecuali kursor berada di dekat tepi atas.
+    #[serde(default = "default_true")]
+    pub auto_hide_menu_bar: bool,
 }
 
 fn default_notify_threshold_secs() -> u32 {
@@ -744,6 +747,7 @@ impl Default for AppPreferences {
             ai_panel_width: default_ai_panel_width(),
             notify_long_queries: true,
             notify_threshold_secs: default_notify_threshold_secs(),
+            auto_hide_menu_bar: true,
         }
     }
 }
@@ -855,6 +859,7 @@ pub(crate) fn apply_kv_pair(
         "notify_threshold_secs" => {
             prefs.notify_threshold_secs = v.parse().unwrap_or(default_notify_threshold_secs())
         }
+        "auto_hide_menu_bar" => prefs.auto_hide_menu_bar = v != "0",
         "ai_panel_width" => {
             prefs.ai_panel_width = v
                 .parse()
@@ -1025,6 +1030,7 @@ impl ConfigStore {
                 ai_panel_width: default_ai_panel_width(),
                 notify_long_queries: true,
                 notify_threshold_secs: default_notify_threshold_secs(),
+                auto_hide_menu_bar: true,
             };
 
             // Set when a legacy plaintext AI key was migrated to the secret
@@ -1144,7 +1150,7 @@ impl ConfigStore {
             };
             let ai_panel_width_str = prefs.ai_panel_width.to_string();
             let notify_threshold_secs = prefs.notify_threshold_secs.to_string();
-            let entries: [(&str, &str); 37] = [
+            let entries: [(&str, &str); 38] = [
                 ("theme", prefs.theme.as_str()),
                 ("ui_mode", prefs.ui_mode.as_str()),
                 (
@@ -1258,6 +1264,10 @@ impl ConfigStore {
                     if prefs.notify_long_queries { "1" } else { "0" },
                 ),
                 ("notify_threshold_secs", &notify_threshold_secs),
+                (
+                    "auto_hide_menu_bar",
+                    if prefs.auto_hide_menu_bar { "1" } else { "0" },
+                ),
             ];
 
             let mut first_error: Option<String> = None;

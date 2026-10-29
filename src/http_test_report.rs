@@ -639,6 +639,8 @@ pub fn to_markdown(input: &ReportInput) -> String {
         );
     }
 
+    write_db_and_burst_sections(&mut o, run);
+
     let _ = writeln!(o, "\n## 6. Deviations and test data cleanup\n");
     if run.residue.is_empty() {
         let _ = writeln!(o, "No test data was left behind by the API steps.");
@@ -781,6 +783,114 @@ pub fn to_markdown(input: &ReportInput) -> String {
     o
 }
 
+/// Bukti langkah DB (SQL + parameter, jumlah baris, contoh, polling) dan
+/// langkah concurrent (tabel respons per instance).
+fn write_db_and_burst_sections(o: &mut String, run: &TestRun) {
+    let db_steps: Vec<&StepResult> = run.results.iter().filter(|r| r.db.is_some()).collect();
+    if !db_steps.is_empty() {
+        let _ = writeln!(o, "\n## 5a. Database steps\n");
+        for r in db_steps {
+            let Some(db) = &r.db else { continue };
+            let _ = writeln!(o, "### {} ({})\n", r.name, r.outcome().label());
+            let _ = writeln!(
+                o,
+                "- Connection: {}; rows: {}{}; queries run: {}{}",
+                if db.connection.is_empty() {
+                    "-"
+                } else {
+                    db.connection.as_str()
+                },
+                db.row_count,
+                if db.truncated { "+" } else { "" },
+                db.attempts,
+                if db.waited_ms > 0 {
+                    format!(
+                        " over {}{}",
+                        fmt_ms(db.waited_ms),
+                        if db.timed_out { " (timed out)" } else { "" }
+                    )
+                } else {
+                    String::new()
+                }
+            );
+            if !db.sql.is_empty() {
+                let one_line = db.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                let _ = writeln!(o, "- SQL: `{}`", one_line.replace('`', "'"));
+            }
+            if let Some(e) = &r.error {
+                let _ = writeln!(o, "- Error: {}", esc_md(e));
+            }
+            if !db.columns.is_empty() && !db.sample.is_empty() {
+                let _ = writeln!(o);
+                let head: Vec<String> = db.columns.iter().map(|c| esc_md(c)).collect();
+                let _ = writeln!(o, "| {} |", head.join(" | "));
+                let _ = writeln!(o, "|{}", "---|".repeat(db.columns.len()));
+                for row in &db.sample {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .map(|c| esc_md(&crate::repo_scan::truncate_chars(c, 60)))
+                        .collect();
+                    let _ = writeln!(o, "| {} |", cells.join(" | "));
+                }
+            }
+            let _ = writeln!(o);
+        }
+    }
+    let bursts: Vec<&StepResult> = run
+        .results
+        .iter()
+        .filter(|r| !r.instances.is_empty())
+        .collect();
+    if !bursts.is_empty() {
+        let _ = writeln!(o, "\n## 5b. Concurrent requests\n");
+        for r in bursts {
+            let ok = r
+                .instances
+                .iter()
+                .filter(|i| i.error.is_none() && (200..300).contains(&i.status))
+                .count();
+            let _ = writeln!(o, "### {} ({})\n", r.name, r.outcome().label());
+            let _ = writeln!(
+                o,
+                "- {} request(s), {} accepted (2xx)",
+                r.instances.len(),
+                ok
+            );
+            for a in &r.assertions {
+                let _ = writeln!(
+                    o,
+                    "- {} {}: actual {}",
+                    if a.passed { "Passed" } else { "Failed" },
+                    esc_md(&a.assertion.describe()),
+                    esc_md(a.actual.as_deref().unwrap_or("(missing)"))
+                );
+            }
+            let _ = writeln!(
+                o,
+                "\n| Round | # | Status | Time | Response |\n|---|---|---|---|---|"
+            );
+            for i in &r.instances {
+                let _ = writeln!(
+                    o,
+                    "| {} | {} | {} | {} | {} |",
+                    i.round,
+                    i.index,
+                    match &i.error {
+                        Some(_) => "Error".to_string(),
+                        None => i.status.to_string(),
+                    },
+                    fmt_ms(i.time_ms),
+                    esc_md(&crate::repo_scan::truncate_chars(
+                        i.error.as_deref().unwrap_or(&i.body_preview),
+                        80
+                    ))
+                );
+            }
+            let _ = writeln!(o);
+        }
+    }
+}
+
 /// Ringkasan detail satu langkah untuk tabel laporan.
 pub fn step_details_text(r: &StepResult) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -872,7 +982,9 @@ pub fn to_html(input: &ReportInput) -> String {
             body.push_str("</ul>");
             in_list = false;
         }
-        if let Some(h) = trimmed.strip_prefix("## ") {
+        if let Some(h) = trimmed.strip_prefix("### ") {
+            let _ = write!(body, "<h3>{}</h3>", esc_html(h));
+        } else if let Some(h) = trimmed.strip_prefix("## ") {
             let _ = write!(body, "<h2>{}</h2>", esc_html(h));
         } else if let Some(h) = trimmed.strip_prefix("# ") {
             let _ = write!(body, "<h1>{}</h1>", esc_html(h));

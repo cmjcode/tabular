@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::http_collection::{HttpFolder, SavedRequest};
 use crate::http_send::RequestSpec;
+pub use crate::http_test_db::{DbExecutor, DbQueryStep, QueryOutput, StepKind};
 use crate::models::structs::{HttpAuthType, HttpBodyType, HttpClientResponse, HttpMethod};
 
 // ─── Model ──────────────────────────────────────────────────────────────────
@@ -34,9 +35,25 @@ pub enum AssertOp {
     LessThan,
     GreaterThan,
     Matches,
+    /// Angka sama dalam toleransi: nilai `"100"` (toleransi 0.001) atau
+    /// `"100 +- 0.5"`. Untuk kolom decimal/float.
+    Approx,
 }
 
 impl AssertOp {
+    pub const ALL: [AssertOp; 10] = [
+        AssertOp::Equals,
+        AssertOp::NotEquals,
+        AssertOp::Contains,
+        AssertOp::NotContains,
+        AssertOp::Exists,
+        AssertOp::NotExists,
+        AssertOp::LessThan,
+        AssertOp::GreaterThan,
+        AssertOp::Matches,
+        AssertOp::Approx,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             AssertOp::Equals => "equals",
@@ -48,10 +65,11 @@ impl AssertOp {
             AssertOp::LessThan => "<",
             AssertOp::GreaterThan => ">",
             AssertOp::Matches => "matches",
+            AssertOp::Approx => "approx",
         }
     }
 
-    fn parse(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s
             .trim()
             .to_ascii_lowercase()
@@ -66,6 +84,7 @@ impl AssertOp {
             "less_than" | "lt" | "<" => AssertOp::LessThan,
             "greater_than" | "gt" | ">" => AssertOp::GreaterThan,
             "matches" | "regex" => AssertOp::Matches,
+            "approx" | "approximately" | "about" | "~" | "~=" | "close_to" => AssertOp::Approx,
             _ => AssertOp::Equals,
         }
     }
@@ -73,7 +92,9 @@ impl AssertOp {
 
 /// Pemeriksaan terhadap respons. `target`:
 /// `status`, `time_ms`, `body`, `header:<Nama>`, atau `json:<path>`
-/// (`$.data.items[0].id`).
+/// (`$.data.items[0].id`). Langkah DB: `row_count`, `scalar`,
+/// `cell:<baris>.<kolom>`, `column:<kolom>`. Langkah concurrent:
+/// `count:<target>=<nilai>`, `any:<target>`, `all:<target>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Assertion {
     pub target: String,
@@ -152,8 +173,19 @@ pub struct HttpTestStep {
     /// Catatan bebas (tujuan langkah, requirement yang diuji).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
-    /// Request dengan variabel `{{nama}}` (URL, header, body, auth).
+    /// Jenis langkah; suite lama tanpa field ini = HTTP.
+    #[serde(default, skip_serializing_if = "StepKind::is_http")]
+    pub kind: StepKind,
+    /// Request dengan variabel `{{nama}}` (URL, header, body, auth). Kosong
+    /// untuk langkah DB.
+    #[serde(default, skip_serializing_if = "request_is_blank")]
     pub request: SavedRequest,
+    /// Query baca untuk langkah `kind = db_query`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db: Option<DbQueryStep>,
+    /// Kirim request langkah ini beberapa kali serentak.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<Concurrency>,
     #[serde(default)]
     pub extract: Vec<Extract>,
     #[serde(default)]
@@ -167,6 +199,82 @@ pub struct HttpTestStep {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_one() -> u32 {
+    1
+}
+
+/// Request tanpa isi (langkah DB): tidak ditulis ke file suite.
+fn request_is_blank(r: &SavedRequest) -> bool {
+    r.url.trim().is_empty()
+        && r.body_text.is_empty()
+        && r.headers.is_empty()
+        && r.params.is_empty()
+        && r.form_data.is_empty()
+}
+
+/// Batas burst serentak (bukan load test).
+pub const MAX_CONCURRENCY: u32 = 50;
+pub const MAX_ROUNDS: u32 = 20;
+
+/// Kirim request langkah yang sama beberapa kali serentak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Concurrency {
+    /// Jumlah request serentak, 2..=50.
+    pub count: u32,
+    /// Semua thread menunggu di barrier lalu mengirim bersamaan (default
+    /// true). `false` = dikirim berurutan secepatnya.
+    #[serde(default = "default_true")]
+    pub barrier: bool,
+    /// Ulangi seluruh burst sekian kali untuk menangkap race yang jarang.
+    #[serde(default = "default_one")]
+    pub rounds: u32,
+}
+
+impl Default for Concurrency {
+    fn default() -> Self {
+        Self {
+            count: 5,
+            barrier: true,
+            rounds: 1,
+        }
+    }
+}
+
+impl Concurrency {
+    pub fn count(&self) -> usize {
+        self.count.clamp(2, MAX_CONCURRENCY) as usize
+    }
+
+    pub fn rounds(&self) -> usize {
+        self.rounds.clamp(1, MAX_ROUNDS) as usize
+    }
+}
+
+impl HttpTestStep {
+    pub fn is_db(&self) -> bool {
+        self.kind == StepKind::DbQuery
+    }
+
+    /// Langkah HTTP dengan burst serentak.
+    pub fn concurrent(&self) -> Option<Concurrency> {
+        self.concurrency.filter(|_| self.kind.is_http())
+    }
+
+    /// Label method untuk daftar dan laporan (`SQL` untuk langkah DB).
+    pub fn method_label(&self) -> &'static str {
+        if self.is_db() {
+            "SQL"
+        } else {
+            self.request.method.label()
+        }
+    }
+
+    /// Langkah HTTP yang (biasanya) mengubah data. Langkah DB selalu baca.
+    pub fn mutates(&self) -> bool {
+        self.kind.is_http() && is_mutating(&self.request.method)
+    }
 }
 
 fn sanitize_step_id(id: &str) -> String {
@@ -417,7 +525,7 @@ impl HttpTestSuite {
     pub fn mutating_steps(&self) -> usize {
         self.steps
             .iter()
-            .filter(|s| s.enabled && is_mutating(&s.request.method))
+            .filter(|s| s.enabled && s.mutates())
             .count()
     }
 }
@@ -766,8 +874,30 @@ pub fn evaluate(
     a: &Assertion,
     vars: &HashMap<String, String>,
 ) -> AssertResult {
-    let actual = read_target(resp, &a.target);
-    let expected = substitute(&a.value, vars);
+    evaluate_actual(read_target(resp, &a.target), a, vars)
+}
+
+/// Assertion atas hasil query langkah DB.
+pub fn evaluate_query(
+    out: &QueryOutput,
+    a: &Assertion,
+    vars: &HashMap<String, String>,
+) -> AssertResult {
+    evaluate_actual(
+        crate::http_test_db::read_query_target(out, &a.target),
+        a,
+        vars,
+    )
+}
+
+/// Bandingkan nilai aktual dengan assertion. Nilai harapan boleh berisi
+/// variabel dan aritmetika sederhana (`{{a}} + {{b}}`).
+pub fn evaluate_actual(
+    actual: Option<String>,
+    a: &Assertion,
+    vars: &HashMap<String, String>,
+) -> AssertResult {
+    let expected = crate::http_test_db::expected_value(&a.value, vars);
     let passed = match (a.op, actual.as_deref()) {
         (AssertOp::Exists, v) => v.is_some(),
         (AssertOp::NotExists, v) => v.is_none(),
@@ -789,6 +919,10 @@ pub fn evaluate(
             matches!((as_number(v), as_number(&expected)), (Some(x), Some(y)) if x > y)
         }
         (AssertOp::Matches, Some(v)) => regex::Regex::new(&expected).is_ok_and(|r| r.is_match(v)),
+        (AssertOp::Approx, Some(v)) => {
+            let (want, tol) = crate::http_test_db::split_tolerance(&expected);
+            matches!((as_number(v), as_number(&want)), (Some(x), Some(y)) if (x - y).abs() <= tol)
+        }
     };
     AssertResult {
         assertion: a.clone(),
@@ -802,27 +936,41 @@ pub fn evaluate(
 /// Variabel `{{x}}` yang dibaca langkah (request + nilai assertion).
 pub fn step_inputs(step: &HttpTestStep) -> Vec<String> {
     let r = &step.request;
-    let mut texts: Vec<&str> = vec![
-        &r.url,
-        &r.body_text,
-        &r.bearer_token,
-        &r.basic_user,
-        &r.basic_pass,
-        &r.api_key_name,
-        &r.api_key_value,
-    ];
-    for rows in [&r.params, &r.headers, &r.form_data] {
-        for (k, v, enabled) in rows {
-            if *enabled {
-                texts.push(k);
-                texts.push(v);
+    let mut texts: Vec<&str> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    if step.is_db() {
+        if let Some(db) = &step.db {
+            let var = db.connection_var.trim();
+            if !var.is_empty() {
+                out.push(var.to_string());
+            }
+            texts.push(&db.sql);
+            if let Some(d) = &db.database {
+                texts.push(d);
+            }
+        }
+    } else {
+        texts.extend([
+            r.url.as_str(),
+            &r.body_text,
+            &r.bearer_token,
+            &r.basic_user,
+            &r.basic_pass,
+            &r.api_key_name,
+            &r.api_key_value,
+        ]);
+        for rows in [&r.params, &r.headers, &r.form_data] {
+            for (k, v, enabled) in rows {
+                if *enabled {
+                    texts.push(k);
+                    texts.push(v);
+                }
             }
         }
     }
     for a in &step.assertions {
         texts.push(&a.value);
     }
-    let mut out: Vec<String> = Vec::new();
     for t in texts {
         for v in unresolved_vars(t) {
             if !out.contains(&v) {
@@ -907,10 +1055,7 @@ pub fn cleanup_target(suite: &HttpTestSuite, deps: &[StepDeps], idx: usize) -> O
         .depends_on
         .iter()
         .copied()
-        .filter(|&p| {
-            suite.steps[p].phase != StepPhase::Cleanup
-                && is_mutating(&suite.steps[p].request.method)
-        })
+        .filter(|&p| suite.steps[p].phase != StepPhase::Cleanup && suite.steps[p].mutates())
         .max()
 }
 
@@ -919,6 +1064,7 @@ pub fn cleanup_target(suite: &HttpTestSuite, deps: &[StepDeps], idx: usize) -> O
 /// atau session tidak dihitung sebagai pembuat data.
 pub fn creates_data(step: &HttpTestStep) -> bool {
     step.phase != StepPhase::Cleanup
+        && step.kind.is_http()
         && matches!(step.request.method, HttpMethod::POST | HttpMethod::PUT)
         && step
             .extract
@@ -1071,13 +1217,33 @@ pub fn lint(
                 message: "No assertions: the step passes on any response".into(),
             });
         }
-        if step.phase == StepPhase::Cleanup && !is_mutating(&step.request.method) {
+        if step.phase == StepPhase::Cleanup && step.kind.is_http() && !step.mutates() {
             out.push(LintIssue {
                 level: LintLevel::Warning,
                 step: Some(i),
                 message: format!(
                     "Cleanup step uses {} which normally does not remove data",
                     step.request.method.label()
+                ),
+            });
+        }
+        for message in step_kind_issues(step) {
+            out.push(LintIssue {
+                level: LintLevel::Error,
+                step: Some(i),
+                message,
+            });
+        }
+        if let Some(c) = step.concurrent()
+            && (c.count < 2 || c.count > MAX_CONCURRENCY || c.rounds > MAX_ROUNDS)
+        {
+            out.push(LintIssue {
+                level: LintLevel::Warning,
+                step: Some(i),
+                message: format!(
+                    "Concurrency is limited to 2..={MAX_CONCURRENCY} requests and {MAX_ROUNDS} rounds; it runs as {} x {}",
+                    c.count(),
+                    c.rounds()
                 ),
             });
         }
@@ -1133,6 +1299,68 @@ pub fn lint(
         )
     });
     out.dedup();
+    out
+}
+
+/// Target agregat langkah concurrent (`count:`, `any:`, `all:`).
+pub fn is_aggregate_target(target: &str) -> bool {
+    let t = target.trim();
+    t.starts_with("count:") || t.starts_with("any:") || t.starts_with("all:")
+}
+
+/// Kesalahan konfigurasi khusus langkah DB / concurrent.
+pub fn step_kind_issues(step: &HttpTestStep) -> Vec<String> {
+    let mut out = Vec::new();
+    if step.is_db() {
+        let Some(db) = &step.db else {
+            out.push("Database step has no query".into());
+            return out;
+        };
+        if db.connection_var.trim().is_empty() {
+            out.push("Database step needs a connection variable (e.g. db_main)".into());
+        }
+        if db.sql.trim().is_empty() {
+            out.push("Database step has an empty SQL query".into());
+        } else {
+            // Variabel diganti nilai contoh hanya untuk memeriksa bentuk SQL.
+            let dummy: HashMap<String, String> = unresolved_vars(&db.sql)
+                .into_iter()
+                .map(|v| (v, "1".to_string()))
+                .collect();
+            match crate::http_test_db::bind_vars(
+                &db.sql,
+                &dummy,
+                crate::http_test_db::Placeholder::Question,
+            ) {
+                Err(e) => out.push(e),
+                Ok(b) => {
+                    if let Err(e) = crate::agent::bound_query::ensure_select_only(
+                        &crate::models::enums::DatabaseType::MySQL,
+                        &b.sql,
+                    ) {
+                        out.push(e.to_string());
+                    }
+                }
+            }
+        }
+        for a in &step.assertions {
+            if !crate::http_test_db::is_query_target(&a.target) {
+                out.push(format!(
+                    "Target '{}' does not apply to a database step; use row_count, scalar, cell:<row>.<column> or column:<column>",
+                    a.target
+                ));
+            }
+        }
+    } else if step.concurrent().is_none() {
+        for a in &step.assertions {
+            if is_aggregate_target(&a.target) {
+                out.push(format!(
+                    "Target '{}' needs concurrency on this step",
+                    a.target
+                ));
+            }
+        }
+    }
     out
 }
 
@@ -1228,6 +1456,51 @@ pub struct StepResult {
     /// Jumlah percobaan ulang (hanya cleanup).
     #[serde(default)]
     pub retries: u8,
+    #[serde(default, skip_serializing_if = "StepKind::is_http")]
+    pub kind: StepKind,
+    /// Detail langkah DB (SQL, contoh baris, polling).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db: Option<DbStepInfo>,
+    /// Respons per request untuk langkah concurrent, urut waktu selesai.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<InstanceResult>,
+}
+
+/// Detail eksekusi langkah DB untuk laporan.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DbStepInfo {
+    pub connection: String,
+    /// SQL dengan placeholder dan daftar nilai parameter (rahasia disamarkan).
+    pub sql: String,
+    pub columns: Vec<String>,
+    /// Paling banyak [`crate::http_test_db::SAMPLE_ROWS`] baris.
+    pub sample: Vec<Vec<String>>,
+    pub row_count: usize,
+    #[serde(default)]
+    pub truncated: bool,
+    /// Berapa kali query dijalankan (polling `wait_until_ms`).
+    pub attempts: u32,
+    /// Lama menunggu sampai lulus/timeout.
+    #[serde(default)]
+    pub waited_ms: u128,
+    #[serde(default)]
+    pub timed_out: bool,
+}
+
+/// Satu respons dari burst concurrent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceResult {
+    /// Putaran (1-based).
+    pub round: u32,
+    /// Nomor request di dalam putaran (1-based).
+    pub index: u32,
+    pub status: u16,
+    pub time_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Potongan body (rahasia disamarkan).
+    #[serde(default)]
+    pub body_preview: String,
 }
 
 impl StepResult {
@@ -1260,6 +1533,18 @@ impl StepResult {
         self.executed() && (200..300).contains(&self.status)
     }
 
+    /// Server menerima minimal satu request burst (2xx).
+    pub fn created_count(&self) -> usize {
+        if self.instances.is_empty() {
+            usize::from(self.created())
+        } else {
+            self.instances
+                .iter()
+                .filter(|i| i.error.is_none() && (200..300).contains(&i.status))
+                .count()
+        }
+    }
+
     fn not_run(index: usize, step: &HttpTestStep, blocked: bool, note: String) -> Self {
         StepResult {
             index,
@@ -1267,8 +1552,16 @@ impl StepResult {
             name: step.name.clone(),
             group: step.group.clone(),
             phase: step.phase,
-            method: step.request.method.label().to_string(),
-            url: crate::http_ai::redact_url(&step.request.url),
+            kind: step.kind,
+            method: step.method_label().to_string(),
+            url: if step.is_db() {
+                step.db
+                    .as_ref()
+                    .map(|d| format!("{{{{{}}}}}", d.connection_var))
+                    .unwrap_or_default()
+            } else {
+                crate::http_ai::redact_url(&step.request.url)
+            },
             skipped: !blocked,
             blocked,
             note: Some(note),
@@ -1361,6 +1654,11 @@ pub fn redact_body(body: &str) -> String {
     }
 }
 
+/// Nama variabel/kunci yang nilainya rahasia (token, password, …).
+pub fn is_sensitive_var(name: &str) -> bool {
+    sensitive_var(name)
+}
+
 fn sensitive_var(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     crate::http_client_widgets::is_sensitive_key(name)
@@ -1446,6 +1744,392 @@ pub fn run_step(
         });
     }
     result
+}
+
+// ─── Langkah DB ─────────────────────────────────────────────────────────────
+
+/// Jalankan langkah DB: query baca, assertion atas hasilnya, dan polling
+/// sampai lulus bila `wait_until_ms` diisi. `cancel` menghentikan polling.
+pub fn run_db_step(
+    index: usize,
+    step: &HttpTestStep,
+    vars: &mut HashMap<String, String>,
+    db: Option<&dyn DbExecutor>,
+    cancel: &AtomicBool,
+) -> StepResult {
+    let mut result = StepResult::not_run(index, step, false, String::new());
+    result.skipped = false;
+    result.note = None;
+    let Some(cfg) = step.db.as_ref() else {
+        result.error = Some("Database step has no query".into());
+        return result;
+    };
+    let Some(db) = db else {
+        result.error = Some("Database steps cannot run here: no database access".into());
+        return result;
+    };
+    let connection = vars
+        .get(cfg.connection_var.trim())
+        .cloned()
+        .unwrap_or_default();
+    let req = crate::http_test_db::DbRequest {
+        connection,
+        database: cfg
+            .database
+            .as_deref()
+            .map(|d| substitute(d, vars))
+            .filter(|d| !d.trim().is_empty()),
+        sql: cfg.sql.clone(),
+        vars: vars.clone(),
+    };
+    let wait = cfg
+        .wait_until_ms
+        .unwrap_or(0)
+        .min(crate::http_test_db::MAX_WAIT_MS);
+    let poll = cfg.poll_ms.max(crate::http_test_db::MIN_POLL_MS);
+    let started = std::time::Instant::now();
+    let mut attempts = 0u32;
+    let (resp, assertions) = loop {
+        attempts += 1;
+        let resp = match db.query(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                result.error = Some(e);
+                result.time_ms = started.elapsed().as_millis();
+                result.db = Some(DbStepInfo {
+                    attempts,
+                    ..Default::default()
+                });
+                return result;
+            }
+        };
+        let assertions: Vec<AssertResult> = step
+            .assertions
+            .iter()
+            .map(|a| evaluate_query(&resp.output, a, vars))
+            .collect();
+        let all_ok = assertions.iter().all(|a| a.passed);
+        let elapsed = started.elapsed().as_millis() as u64;
+        if all_ok || wait == 0 || elapsed + poll > wait || cancel.load(Ordering::SeqCst) {
+            break (resp, assertions);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll));
+    };
+    let out = &resp.output;
+    result.time_ms = started.elapsed().as_millis();
+    result.url = resp.connection_name.clone();
+    result.assertions = assertions;
+    let all_ok = result.assertions.iter().all(|a| a.passed);
+    result.db = Some(DbStepInfo {
+        connection: resp.connection_name.clone(),
+        sql: resp.sql_display.clone(),
+        columns: out.columns.clone(),
+        sample: out
+            .rows
+            .iter()
+            .take(crate::http_test_db::SAMPLE_ROWS)
+            .cloned()
+            .collect(),
+        row_count: out.rows.len(),
+        truncated: out.truncated,
+        attempts,
+        waited_ms: if wait > 0 { result.time_ms } else { 0 },
+        timed_out: wait > 0 && !all_ok,
+    });
+    result.body_preview = format!("{} row(s)", out.rows.len());
+    for ex in &step.extract {
+        if ex.var.trim().is_empty() {
+            continue;
+        }
+        match crate::http_test_db::read_query_target(out, &ex.from) {
+            Some(v) => {
+                vars.insert(ex.var.clone(), v.clone());
+                result
+                    .extracted
+                    .push((ex.var.clone(), display_var_value(&ex.var, &v)));
+            }
+            None => result.assertions.push(AssertResult {
+                assertion: Assertion {
+                    target: ex.from.clone(),
+                    op: AssertOp::Exists,
+                    value: format!("(extract {{{{{}}}}})", ex.var),
+                },
+                passed: false,
+                actual: None,
+            }),
+        }
+    }
+    result
+}
+
+// ─── Langkah concurrent ─────────────────────────────────────────────────────
+
+/// Status cocok dengan pola `2xx`/`4xx` atau angka persis.
+fn status_matches(status: &str, pattern: &str) -> bool {
+    let p = pattern.trim().to_ascii_lowercase();
+    if p.len() == 3 && p.ends_with("xx") {
+        return status.trim().starts_with(&p[..1]);
+    }
+    status.trim() == p
+}
+
+/// Assertion atas kumpulan respons burst:
+/// - `count:<target>=<nilai>`: jumlah respons yang targetnya bernilai itu
+///   (`count:status=2xx`, `count:json:$.status=success`); tanpa `=` →
+///   jumlah respons yang memiliki target;
+/// - `any:<target>`: lulus bila minimal satu respons memenuhi;
+/// - `all:<target>` atau tanpa prefix: lulus bila semua memenuhi.
+pub fn evaluate_burst(
+    resps: &[&HttpClientResponse],
+    a: &Assertion,
+    vars: &HashMap<String, String>,
+) -> AssertResult {
+    let t = a.target.trim();
+    if let Some(cond) = t.strip_prefix("count:") {
+        let (target, want) = match cond.split_once('=') {
+            Some((tg, v)) => (tg.trim(), Some(substitute(v.trim(), vars))),
+            None => (cond.trim(), None),
+        };
+        let is_status = target.eq_ignore_ascii_case("status");
+        let n = resps
+            .iter()
+            .filter(|r| r.error.is_none())
+            .filter(|r| match (read_target(r, target), &want) {
+                (Some(v), Some(w)) if is_status => status_matches(&v, w),
+                (Some(v), Some(w)) => {
+                    v.trim() == w.trim()
+                        || matches!((as_number(&v), as_number(w)), (Some(x), Some(y)) if x == y)
+                }
+                (Some(_), None) => true,
+                (None, _) => false,
+            })
+            .count();
+        let mut r = evaluate_actual(Some(n.to_string()), a, vars);
+        r.assertion = a.clone();
+        return r;
+    }
+    let (any, inner) = match t.strip_prefix("any:") {
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix("all:").unwrap_or(t)),
+    };
+    let inner_assert = Assertion {
+        target: inner.trim().to_string(),
+        ..a.clone()
+    };
+    let each: Vec<AssertResult> = resps
+        .iter()
+        .map(|r| evaluate(r, &inner_assert, vars))
+        .collect();
+    let passed = if any {
+        each.iter().any(|r| r.passed)
+    } else {
+        !each.is_empty() && each.iter().all(|r| r.passed)
+    };
+    let pick = if any {
+        each.iter().find(|r| r.passed)
+    } else {
+        each.iter().find(|r| !r.passed)
+    };
+    let matching = each.iter().filter(|r| r.passed).count();
+    let actual = pick
+        .or(each.first())
+        .and_then(|r| r.actual.clone())
+        .map(|v| format!("{v} ({matching}/{} matched)", each.len()));
+    AssertResult {
+        assertion: a.clone(),
+        passed,
+        actual,
+    }
+}
+
+/// Kirim `count` salinan request. Dengan `parallel`, semua thread menunggu di
+/// barrier lalu mengirim bersamaan; tanpa itu (atau `barrier = false` tanpa
+/// pengirim paralel) dikirim berurutan. Hasil urut waktu selesai.
+fn send_burst(
+    spec: &RequestSpec,
+    count: usize,
+    barrier: bool,
+    send: &dyn Fn(RequestSpec) -> HttpClientResponse,
+    parallel: Option<&(dyn Fn(RequestSpec) -> HttpClientResponse + Sync)>,
+) -> Vec<(usize, HttpClientResponse)> {
+    let Some(par) = parallel else {
+        return (0..count).map(|k| (k, send(spec.clone()))).collect();
+    };
+    let gate = std::sync::Barrier::new(count);
+    let done: std::sync::Mutex<Vec<(usize, HttpClientResponse)>> =
+        std::sync::Mutex::new(Vec::with_capacity(count));
+    std::thread::scope(|s| {
+        for k in 0..count {
+            let (gate, done, spec) = (&gate, &done, spec.clone());
+            s.spawn(move || {
+                if barrier {
+                    gate.wait();
+                }
+                let resp = par(spec);
+                if let Ok(mut d) = done.lock() {
+                    d.push((k, resp));
+                }
+            });
+        }
+    });
+    done.into_inner().unwrap_or_default()
+}
+
+/// Jalankan langkah HTTP sebagai burst serentak `rounds` kali. Assertion
+/// dievaluasi per putaran; langkah lulus bila semua putaran lulus.
+/// `extract` dari respons sukses pertama; tiap respons sukses ke-n juga
+/// mengisi `{{var#n}}`.
+fn run_concurrent_step(
+    index: usize,
+    step: &HttpTestStep,
+    conc: Concurrency,
+    vars: &mut HashMap<String, String>,
+    io: &RunIo,
+    cancel: &AtomicBool,
+) -> (StepResult, Vec<HashMap<String, String>>) {
+    let req = resolve_request(&step.request, vars);
+    let spec = RequestSpec::from_saved(&req);
+    let url = spec.full_url();
+    let started = std::time::Instant::now();
+    let mut result = StepResult::not_run(index, step, false, String::new());
+    result.skipped = false;
+    result.note = None;
+    result.url = crate::http_ai::redact_url(&url);
+    result.unresolved = step_inputs(&HttpTestStep {
+        request: req.clone(),
+        ..Default::default()
+    });
+    let mut chosen: Option<Vec<AssertResult>> = None;
+    let mut successes: Vec<HttpClientResponse> = Vec::new();
+    let mut first_status: Option<u16> = None;
+    let mut all_errors = true;
+    for round in 0..conc.rounds() {
+        if round > 0 && cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        let burst = send_burst(&spec, conc.count(), conc.barrier, io.send, io.send_parallel);
+        for (k, r) in &burst {
+            result.instances.push(InstanceResult {
+                round: round as u32 + 1,
+                index: *k as u32 + 1,
+                status: r.status,
+                time_ms: r.time_ms,
+                error: r.error.clone(),
+                body_preview: crate::repo_scan::truncate_chars(&redact_body(&r.body), 300),
+            });
+            if r.error.is_none() {
+                all_errors = false;
+                first_status.get_or_insert(r.status);
+            }
+        }
+        let refs: Vec<&HttpClientResponse> = burst.iter().map(|(_, r)| r).collect();
+        let assertions: Vec<AssertResult> = step
+            .assertions
+            .iter()
+            .map(|a| {
+                let mut r = evaluate_burst(&refs, a, vars);
+                if conc.rounds() > 1 {
+                    r.actual = r.actual.map(|v| format!("{v}, round {}", round + 1));
+                }
+                r
+            })
+            .collect();
+        // Simpan putaran gagal pertama; bila semua lulus, putaran terakhir.
+        let failed = assertions.iter().any(|a| !a.passed);
+        if chosen.is_none() && (failed || round + 1 == conc.rounds()) {
+            chosen = Some(assertions);
+        }
+        for (_, r) in burst {
+            if r.error.is_none() && (200..300).contains(&r.status) {
+                successes.push(r);
+            }
+        }
+    }
+    result.assertions = chosen.unwrap_or_default();
+    result.time_ms = started.elapsed().as_millis();
+    result.status = successes
+        .first()
+        .map(|r| r.status)
+        .or(first_status)
+        .unwrap_or(0);
+    if all_errors {
+        result.error = result.instances.iter().find_map(|i| i.error.clone());
+        return (result, Vec::new());
+    }
+    if let Some(first) = successes.first() {
+        result.body_preview = crate::repo_scan::truncate_chars(&redact_body(&first.body), 2_000);
+        result.response_headers = redact_headers(&first.headers);
+    }
+    // Extract: respons sukses pertama → `var`, respons sukses ke-n → `var#n`.
+    let mut overlays: Vec<HashMap<String, String>> = Vec::new();
+    for (n, r) in successes.iter().enumerate() {
+        let mut overlay = HashMap::new();
+        for ex in step.extract.iter().filter(|e| !e.var.trim().is_empty()) {
+            if let Some(v) = read_target(r, &ex.from) {
+                if n == 0 {
+                    vars.insert(ex.var.clone(), v.clone());
+                    result
+                        .extracted
+                        .push((ex.var.clone(), display_var_value(&ex.var, &v)));
+                }
+                vars.insert(format!("{}#{}", ex.var, n + 1), v.clone());
+                overlay.insert(ex.var.clone(), v);
+            }
+        }
+        overlays.push(overlay);
+    }
+    for ex in step.extract.iter().filter(|e| !e.var.trim().is_empty()) {
+        if !vars.contains_key(&ex.var) {
+            result.assertions.push(AssertResult {
+                assertion: Assertion {
+                    target: ex.from.clone(),
+                    op: AssertOp::Exists,
+                    value: format!("(extract {{{{{}}}}})", ex.var),
+                },
+                passed: false,
+                actual: None,
+            });
+        }
+    }
+    (result, overlays)
+}
+
+/// Pengirim dan akses database untuk satu run.
+pub struct RunIo<'a> {
+    pub send: &'a dyn Fn(RequestSpec) -> HttpClientResponse,
+    /// Pengirim yang aman dipakai banyak thread untuk burst serentak. `None`
+    /// = burst dikirim berurutan.
+    pub send_parallel: Option<&'a (dyn Fn(RequestSpec) -> HttpClientResponse + Sync)>,
+    /// Akses database untuk langkah DB; `None` = langkah DB gagal (Error).
+    pub db: Option<&'a dyn DbExecutor>,
+}
+
+impl<'a> RunIo<'a> {
+    pub fn http(send: &'a dyn Fn(RequestSpec) -> HttpClientResponse) -> Self {
+        Self {
+            send,
+            send_parallel: None,
+            db: None,
+        }
+    }
+}
+
+/// Jalankan satu langkah sesuai jenisnya. Mengembalikan overlay variabel per
+/// instance untuk langkah concurrent (dipakai cleanup per instance).
+fn exec_step(
+    i: usize,
+    step: &HttpTestStep,
+    vars: &mut HashMap<String, String>,
+    io: &RunIo,
+    cancel: &AtomicBool,
+) -> (StepResult, Vec<HashMap<String, String>>) {
+    if step.is_db() {
+        return (run_db_step(i, step, vars, io.db, cancel), Vec::new());
+    }
+    if let Some(c) = step.concurrent() {
+        return run_concurrent_step(i, step, c, vars, io, cancel);
+    }
+    (run_step(i, step, vars, io.send), Vec::new())
 }
 
 /// Variabel awal satu run: variabel environment (`base`), ditimpa variabel
@@ -1544,6 +2228,8 @@ pub struct RunScope {
     pub include: Option<Vec<bool>>,
     /// Nama group yang dipilih (untuk laporan); kosong = semua.
     pub groups: Vec<String>,
+    /// Langkah DB boleh membaca koneksi bertanda Production.
+    pub allow_production: bool,
 }
 
 impl RunScope {
@@ -1554,7 +2240,17 @@ impl RunScope {
         Self {
             include: Some(select_for_groups(suite, &groups)),
             groups,
+            allow_production: false,
         }
+    }
+
+    /// Ada langkah DB aktif yang ikut run ini.
+    pub fn needs_db(&self, suite: &HttpTestSuite) -> bool {
+        suite
+            .steps
+            .iter()
+            .enumerate()
+            .any(|(i, s)| s.enabled && s.is_db() && self.includes(i))
     }
 
     pub fn includes(&self, i: usize) -> bool {
@@ -1576,13 +2272,29 @@ impl RunScope {
 pub fn run_suite(
     suite: &HttpTestSuite,
     scope: &RunScope,
-    mut vars: HashMap<String, String>,
+    vars: HashMap<String, String>,
     send: &dyn Fn(RequestSpec) -> HttpClientResponse,
     cancel: &AtomicBool,
     abort: &AtomicBool,
     emit: &mut dyn FnMut(TestEvent),
 ) -> RunSummary {
+    run_suite_with(suite, scope, vars, &RunIo::http(send), cancel, abort, emit)
+}
+
+/// Seperti [`run_suite`] dengan pengirim paralel (langkah concurrent) dan
+/// akses database (langkah DB).
+pub fn run_suite_with(
+    suite: &HttpTestSuite,
+    scope: &RunScope,
+    mut vars: HashMap<String, String>,
+    io: &RunIo,
+    cancel: &AtomicBool,
+    abort: &AtomicBool,
+    emit: &mut dyn FnMut(TestEvent),
+) -> RunSummary {
     let deps = dependencies(suite);
+    // Overlay variabel per instance sukses dari langkah concurrent.
+    let mut overlays: HashMap<usize, Vec<HashMap<String, String>>> = HashMap::new();
     let cookies = cookie_vars(suite);
     let order: Vec<usize> = suite
         .execution_order()
@@ -1627,7 +2339,12 @@ pub fn run_suite(
                 r
             } else {
                 emit(TestEvent::StepStarted(i));
-                run_step(i, &with_cookie_auth(step, &cookies), &mut vars, send)
+                let (r, ov) =
+                    exec_step(i, &with_cookie_auth(step, &cookies), &mut vars, io, cancel);
+                if ov.len() > 1 {
+                    overlays.insert(i, ov);
+                }
+                r
             }
         };
         if !r.skipped && !r.passed() && halt.is_none() {
@@ -1649,20 +2366,17 @@ pub fn run_suite(
 
     // Fase cleanup: selalu dijalankan kecuali abort.
     emit(TestEvent::CleanupStarted);
-    let any_mutation_ran = results.iter().flatten().any(|r| {
-        r.created()
-            && suite
-                .steps
-                .get(r.index)
-                .is_some_and(|s| is_mutating(&s.request.method))
-    });
+    let any_mutation_ran = results
+        .iter()
+        .flatten()
+        .any(|r| r.created() && suite.steps.get(r.index).is_some_and(HttpTestStep::mutates));
     let mut residue: Vec<Residue> = Vec::new();
     let residue_for = |t: usize, reason: String, results: &[Option<StepResult>]| -> Residue {
         let r = results[t].as_ref();
         Residue {
             step_index: t,
             step_name: suite.steps[t].name.clone(),
-            method: suite.steps[t].request.method.label().to_string(),
+            method: suite.steps[t].method_label().to_string(),
             url: r.map(|r| r.url.clone()).unwrap_or_default(),
             ids: r.map(|r| r.extracted.clone()).unwrap_or_default(),
             reason,
@@ -1728,13 +2442,57 @@ pub fn run_suite(
             } else {
                 emit(TestEvent::StepStarted(i));
                 let sent = with_cookie_auth(step, &cookies);
-                let mut r = run_step(i, &sent, &mut vars, send);
-                // Satu kali coba ulang untuk gangguan jaringan sesaat.
-                if r.error.is_some() && !abort.load(Ordering::SeqCst) {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    r = run_step(i, &sent, &mut vars, send);
-                    r.retries = 1;
-                }
+                // Target concurrent: cleanup dijalankan untuk setiap data yang
+                // dibuat burst (variabel extract diganti nilai instance ke-n).
+                let per_instance = target.and_then(|t| overlays.get(&t)).cloned();
+                let no_retry_cancel = AtomicBool::new(false);
+                let run_once = |vars: &mut HashMap<String, String>| {
+                    let mut r = exec_step(i, &sent, vars, io, &no_retry_cancel).0;
+                    // Satu kali coba ulang untuk gangguan jaringan sesaat.
+                    if r.error.is_some() && !abort.load(Ordering::SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        r = exec_step(i, &sent, vars, io, &no_retry_cancel).0;
+                        r.retries = 1;
+                    }
+                    r
+                };
+                let r = match per_instance {
+                    None => run_once(&mut vars),
+                    Some(list) => {
+                        let mut combined: Option<StepResult> = None;
+                        for (n, overlay) in list.iter().enumerate() {
+                            if abort.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let mut v = vars.clone();
+                            v.extend(overlay.clone());
+                            let one = run_once(&mut v);
+                            let ok = one.passed();
+                            let instance = InstanceResult {
+                                round: 1,
+                                index: n as u32 + 1,
+                                status: one.status,
+                                time_ms: one.time_ms,
+                                error: one.error.clone(),
+                                body_preview: crate::repo_scan::truncate_chars(
+                                    &one.body_preview,
+                                    300,
+                                ),
+                            };
+                            let c = combined.get_or_insert_with(|| one.clone());
+                            c.instances.push(instance);
+                            if !ok && c.passed() {
+                                // Simpan rincian kegagalan pertama.
+                                let keep = std::mem::take(&mut c.instances);
+                                *c = one;
+                                c.instances = keep;
+                            }
+                        }
+                        combined.unwrap_or_else(|| {
+                            StepResult::not_run(i, step, true, "Run aborted".into())
+                        })
+                    }
+                };
                 if !r.passed()
                     && let Some(t) = target
                 {
@@ -1781,6 +2539,101 @@ pub fn run_suite(
     }
 }
 
+/// Jalankan suite dengan pengirim HTTP nyata dan, bila ada langkah DB, sesi
+/// database headless (dibuka sekali per run). Dipakai GUI, CLI, validasi,
+/// dan MCP.
+pub fn run_with_session(
+    suite: &HttpTestSuite,
+    scope: &RunScope,
+    vars: HashMap<String, String>,
+    cancel: &AtomicBool,
+    abort: &AtomicBool,
+    emit: &mut dyn FnMut(TestEvent),
+) -> RunSummary {
+    run_with_session_as(suite, scope, vars, None, cancel, abort, emit)
+}
+
+/// Seperti [`run_with_session`]; `agent_client` = nama klien MCP sehingga
+/// koneksi yang diblokir untuk agent ditolak.
+pub fn run_with_session_as(
+    suite: &HttpTestSuite,
+    scope: &RunScope,
+    vars: HashMap<String, String>,
+    agent_client: Option<&str>,
+    cancel: &AtomicBool,
+    abort: &AtomicBool,
+    emit: &mut dyn FnMut(TestEvent),
+) -> RunSummary {
+    let send = crate::http_send::send_blocking;
+    let executor = if scope.needs_db(suite) {
+        match crate::http_test_db::SessionDbExecutor::open(scope.allow_production) {
+            Ok(e) => Some(match agent_client {
+                Some(c) => e.for_agent(c),
+                None => e,
+            }),
+            Err(e) => {
+                log::warn!("[HTTP_TESTS] database steps unavailable: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if scope.needs_db(suite) {
+        let checked = match &executor {
+            None => Err("Database steps need access to Tabular's saved connections, which could not be opened".to_string()),
+            Some(e) => db_preflight(suite, scope, &vars, e),
+        };
+        if let Err(e) = checked {
+            return preflight_failed(suite, scope, e);
+        }
+    }
+    let io = RunIo {
+        send: &send,
+        send_parallel: Some(&send),
+        db: executor.as_ref().map(|e| e as &dyn DbExecutor),
+    };
+    run_suite_with(suite, scope, vars, &io, cancel, abort, emit)
+}
+
+/// Koneksi yang dirujuk langkah DB ada, boleh dibaca (Production), dan bisa
+/// dijangkau (`SELECT 1`) sebelum langkah pertama dikirim.
+pub fn db_preflight(
+    suite: &HttpTestSuite,
+    scope: &RunScope,
+    vars: &HashMap<String, String>,
+    db: &dyn DbExecutor,
+) -> Result<(), String> {
+    let mut seen: Vec<String> = Vec::new();
+    for (i, step) in suite.steps.iter().enumerate() {
+        if !step.enabled || !step.is_db() || !scope.includes(i) {
+            continue;
+        }
+        let Some(cfg) = &step.db else { continue };
+        // Variabel yang belum ada ditandai Blocked di langkahnya sendiri.
+        let Some(value) = vars.get(cfg.connection_var.trim()) else {
+            continue;
+        };
+        if seen.contains(value) {
+            continue;
+        }
+        seen.push(value.clone());
+        let probe = crate::http_test_db::DbRequest {
+            connection: value.clone(),
+            database: None,
+            sql: "SELECT 1".into(),
+            vars: HashMap::new(),
+        };
+        db.query(&probe).map_err(|e| {
+            format!(
+                "Database for {{{{{}}}}} is not usable: {e}",
+                cfg.connection_var.trim()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Jalankan suite di thread background dengan variabel awal `vars`
 /// (lihat [`initial_vars_with`]).
 pub fn spawn_run(
@@ -1793,12 +2646,11 @@ pub fn spawn_run(
     let abort = Arc::new(AtomicBool::new(false));
     let (c, a) = (cancel.clone(), abort.clone());
     std::thread::spawn(move || {
-        let send = crate::http_send::send_blocking;
         let mut emit = |e: TestEvent| {
             let _ = tx.send(e);
         };
         let summary = match preflight(&suite, &scope, &vars) {
-            Ok(()) => run_suite(&suite, &scope, vars, &send, &c, &a, &mut emit),
+            Ok(()) => run_with_session(&suite, &scope, vars, &c, &a, &mut emit),
             Err(e) => preflight_failed(&suite, &scope, e),
         };
         let _ = tx.send(TestEvent::Finished(Box::new(summary)));
@@ -2472,6 +3324,20 @@ const TEST_RULES: &str = "Rules:\n\
   not_exists, less_than, greater_than or matches (regex). Every step needs at least one \
   assertion.\n\
 - `request_id` refers to the catalog id the step is based on, when there is one.\n\
+- Bugs where the HTTP response looks right but the data is wrong need two more tools:\n\
+  * Concurrent step: add `\"concurrency\":{\"count\":5,\"barrier\":true,\"rounds\":3}` to send \
+    the same request N times at once (double submit, race conditions; count 2..50). Its \
+    assertions run over all responses: `count:status=2xx` (also `count:status=409`, \
+    `count:json:$.status=success`), `any:<target>`, `all:<target>`; a plain target means all.\n\
+  * Database step: `{\"id\":\"s5\",\"name\":\"Balance updated\",\"phase\":\"test\",\
+    \"kind\":\"db_query\",\"db\":{\"connection_var\":\"db_main\",\"sql\":\"SELECT qty FROM \
+    stocks WHERE id = {{stock_id}}\",\"wait_until_ms\":5000},\"assert\":[{\"target\":\"scalar\",\
+    \"op\":\"approx\",\"value\":\"{{qty_before}} + {{qty_in}}\"}]}`. One SELECT only; \
+    `{{x}}` values are bound as parameters (do not quote them for numbers). Targets: \
+    `row_count`, `scalar`, `cell:<row>.<column>`, `column:<column>`; `extract` works the same. \
+    `wait_until_ms` polls until the assertions pass (async writes). Values may use simple \
+    arithmetic with variables. `connection_var` names a project environment variable holding \
+    the connection; add it to `variables` with an empty value.\n\
 - Never include real secrets.\n";
 
 const STEP_EXAMPLE: &str = "{\"id\":\"s2\",\"name\":\"Create purchase order\",\"phase\":\"test\",\
@@ -2536,10 +3402,20 @@ pub fn suite_outline(suite: &HttpTestSuite) -> String {
             } else {
                 format!(", group {}", s.group)
             },
-            s.request.method.label(),
-            s.request.url,
+            s.method_label(),
+            match (&s.db, s.is_db()) {
+                (Some(db), true) => format!(
+                    "{{{{{}}}}} {}",
+                    db.connection_var,
+                    db.sql.split_whitespace().collect::<Vec<_>>().join(" ")
+                ),
+                _ => s.request.url.clone(),
+            },
             s.name
         ));
+        if let Some(c) = s.concurrent() {
+            out.push_str(&format!(" (concurrent {} x {})", c.count(), c.rounds()));
+        }
         let outs = step_outputs(s);
         if !outs.is_empty() {
             out.push_str(&format!(" (extracts {})", outs.join(", ")));
@@ -2644,6 +3520,10 @@ fn parse_step(v: &Value, catalogs: &[FolderCatalog]) -> Option<HttpTestStep> {
             .trim()
             .to_string()
     };
+    if StepKind::parse(&s("kind")) == StepKind::DbQuery || v.get("db").is_some_and(Value::is_object)
+    {
+        return parse_db_step(v);
+    }
     let url = s("url");
     if url.is_empty() {
         return None;
@@ -2721,12 +3601,50 @@ fn parse_step(v: &Value, catalogs: &[FolderCatalog]) -> Option<HttpTestStep> {
         }
     }
     req.form_data = vec![(String::new(), String::new(), true)];
-    let extract = obj_pairs(v.get("extract"))
+    let phase = StepPhase::parse(&s("phase"));
+    Some(HttpTestStep {
+        id: sanitize_step_id(&s("id")),
+        name: if req.name.is_empty() {
+            format!("{} {}", req.method.label(), req.url)
+        } else {
+            req.name.clone()
+        },
+        phase,
+        group: s("group"),
+        cleanup_for: Some(sanitize_step_id(&s("cleanup_for")))
+            .filter(|x| !x.is_empty() && phase == StepPhase::Cleanup),
+        notes: s("notes"),
+        request: req,
+        extract: parse_extracts(v),
+        assertions: parse_assertions(v),
+        enabled: true,
+        request_id,
+        concurrency: parse_concurrency(v),
+        ..Default::default()
+    })
+}
+
+/// `extract` sebagai objek `{var: from}` atau array `[{var, from}]`.
+fn parse_extracts(v: &Value) -> Vec<Extract> {
+    if let Some(items) = v.get("extract").and_then(Value::as_array) {
+        return items
+            .iter()
+            .filter_map(|e| {
+                Some(Extract {
+                    var: e.get("var")?.as_str()?.trim().to_string(),
+                    from: e.get("from")?.as_str()?.trim().to_string(),
+                })
+            })
+            .collect();
+    }
+    obj_pairs(v.get("extract"))
         .into_iter()
         .map(|(var, from)| Extract { var, from })
-        .collect();
-    let assertions = v
-        .get("assert")
+        .collect()
+}
+
+fn parse_assertions(v: &Value) -> Vec<Assertion> {
+    v.get("assert")
         .or_else(|| v.get("assertions"))
         .and_then(Value::as_array)
         .map(|items| {
@@ -2742,25 +3660,65 @@ fn parse_step(v: &Value, catalogs: &[FolderCatalog]) -> Option<HttpTestStep> {
                 })
                 .collect()
         })
-        .unwrap_or_default();
-    let phase = StepPhase::parse(&s("phase"));
+        .unwrap_or_default()
+}
+
+fn parse_concurrency(v: &Value) -> Option<Concurrency> {
+    let c = v.get("concurrency")?;
+    let num = |k: &str| c.get(k).and_then(Value::as_u64).map(|n| n as u32);
+    let count = num("count").or_else(|| c.as_u64().map(|n| n as u32))?;
+    Some(Concurrency {
+        count: count.clamp(2, MAX_CONCURRENCY),
+        barrier: c.get("barrier").and_then(Value::as_bool).unwrap_or(true),
+        rounds: num("rounds").unwrap_or(1).clamp(1, MAX_ROUNDS),
+    })
+}
+
+/// Langkah DB dari jawaban AI: `{"kind":"db_query","db":{...}}`, atau
+/// `sql`/`connection_var` langsung di langkah.
+fn parse_db_step(v: &Value) -> Option<HttpTestStep> {
+    let s = |o: &Value, k: &str| {
+        o.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let db = v.get("db").unwrap_or(v);
+    let sql = s(db, "sql");
+    if sql.is_empty() {
+        return None;
+    }
+    let connection_var = Some(s(db, "connection_var"))
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "db_main".into());
+    let phase = StepPhase::parse(&s(v, "phase"));
+    let name = s(v, "name");
     Some(HttpTestStep {
-        id: sanitize_step_id(&s("id")),
-        name: if req.name.is_empty() {
-            format!("{} {}", req.method.label(), req.url)
+        id: sanitize_step_id(&s(v, "id")),
+        name: if name.is_empty() {
+            "Check database".into()
         } else {
-            req.name.clone()
+            name
         },
         phase,
-        group: s("group"),
-        cleanup_for: Some(sanitize_step_id(&s("cleanup_for")))
-            .filter(|x| !x.is_empty() && phase == StepPhase::Cleanup),
-        notes: s("notes"),
-        request: req,
-        extract,
-        assertions,
+        group: s(v, "group"),
+        notes: s(v, "notes"),
+        kind: StepKind::DbQuery,
+        db: Some(DbQueryStep {
+            connection_var: connection_var.trim_matches(['{', '}']).to_string(),
+            database: Some(s(db, "database")).filter(|d| !d.is_empty()),
+            sql,
+            wait_until_ms: db.get("wait_until_ms").and_then(Value::as_u64),
+            poll_ms: db
+                .get("poll_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(crate::http_test_db::default_poll_ms),
+        }),
+        extract: parse_extracts(v),
+        assertions: parse_assertions(v),
         enabled: true,
-        request_id,
+        ..Default::default()
     })
 }
 
@@ -3935,5 +4893,454 @@ mod tests {
         // Langkah tanpa auth (uji negatif) tidak mendapat cookie.
         let anon = with_cookie_auth(&negative, &cookies);
         assert!(anon.request.headers.is_empty());
+    }
+
+    // ── Langkah DB & concurrent ─────────────────────────────────────────
+
+    use crate::http_test_db::{DbRequest, DbResponse};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Executor palsu: mengembalikan hasil berurutan per panggilan.
+    struct FakeDb {
+        calls: AtomicUsize,
+        outputs: Vec<Result<QueryOutput, String>>,
+        seen: Mutex<Vec<DbRequest>>,
+    }
+
+    impl FakeDb {
+        fn new(outputs: Vec<Result<QueryOutput, String>>) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                outputs,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl DbExecutor for FakeDb {
+        fn query(&self, req: &DbRequest) -> Result<DbResponse, String> {
+            self.seen.lock().unwrap().push(req.clone());
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let out = self.outputs[n.min(self.outputs.len() - 1)].clone()?;
+            Ok(DbResponse {
+                connection_name: "staging db".into(),
+                sql_display: req.sql.clone(),
+                output: out,
+            })
+        }
+    }
+
+    fn scalar(v: &str) -> Result<QueryOutput, String> {
+        Ok(QueryOutput {
+            columns: vec!["qty_balance".into()],
+            rows: vec![vec![v.into()]],
+            ..Default::default()
+        })
+    }
+
+    fn db_step(sql: &str, wait: Option<u64>, assertions: Vec<Assertion>) -> HttpTestStep {
+        HttpTestStep {
+            id: "d1".into(),
+            name: "Balance".into(),
+            kind: StepKind::DbQuery,
+            db: Some(DbQueryStep {
+                connection_var: "db_main".into(),
+                sql: sql.into(),
+                wait_until_ms: wait,
+                poll_ms: 10,
+                ..Default::default()
+            }),
+            assertions,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn assertion(target: &str, op: AssertOp, value: &str) -> Assertion {
+        Assertion {
+            target: target.into(),
+            op,
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn db_step_polls_until_the_async_write_lands() {
+        let fake = FakeDb::new(vec![scalar("100"), scalar("100"), scalar("120")]);
+        let step = db_step(
+            "SELECT qty_balance FROM kandang_stocks WHERE id = {{id}}",
+            Some(2_000),
+            vec![assertion(
+                "scalar",
+                AssertOp::Approx,
+                "{{saldo_awal}} + {{qty_kirim}}",
+            )],
+        );
+        let mut v = vars(&[
+            ("db_main", "staging db"),
+            ("id", "1"),
+            ("saldo_awal", "100"),
+            ("qty_kirim", "20"),
+        ]);
+        let r = run_db_step(0, &step, &mut v, Some(&fake), &AtomicBool::new(false));
+        assert!(r.passed(), "{:?}", r.assertions);
+        let info = r.db.expect("db info");
+        assert_eq!(info.attempts, 3);
+        assert!(!info.timed_out);
+        assert_eq!(info.connection, "staging db");
+        // Executor menerima SQL mentah + variabel; pengikatan terjadi di sana.
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen[0].connection, "staging db");
+        assert!(seen[0].sql.contains("{{id}}"));
+    }
+
+    #[test]
+    fn db_step_times_out_and_fails() {
+        let fake = FakeDb::new(vec![scalar("100")]);
+        let step = db_step(
+            "SELECT 1",
+            Some(60),
+            vec![assertion("scalar", AssertOp::Equals, "120")],
+        );
+        let mut v = vars(&[("db_main", "x")]);
+        let r = run_db_step(0, &step, &mut v, Some(&fake), &AtomicBool::new(false));
+        assert_eq!(r.outcome(), StepOutcome::Failed);
+        let info = r.db.expect("db info");
+        assert!(info.timed_out);
+        assert!(info.attempts >= 2);
+    }
+
+    #[test]
+    fn db_step_extracts_and_reports_errors() {
+        let fake = FakeDb::new(vec![scalar("4750")]);
+        let mut step = db_step("SELECT 1", None, Vec::new());
+        step.extract = vec![Extract {
+            var: "saldo_awal".into(),
+            from: "scalar".into(),
+        }];
+        let mut v = vars(&[("db_main", "x")]);
+        let r = run_db_step(0, &step, &mut v, Some(&fake), &AtomicBool::new(false));
+        assert!(r.passed());
+        assert_eq!(v.get("saldo_awal").map(String::as_str), Some("4750"));
+
+        let failing = FakeDb::new(vec![Err("refused: only SELECT".into())]);
+        let r = run_db_step(0, &step, &mut v, Some(&failing), &AtomicBool::new(false));
+        assert_eq!(r.outcome(), StepOutcome::Error);
+        // Tanpa akses database langkah DB tidak lulus diam-diam.
+        let r = run_db_step(0, &step, &mut v, None, &AtomicBool::new(false));
+        assert_eq!(r.outcome(), StepOutcome::Error);
+    }
+
+    #[test]
+    fn missing_connection_variable_blocks_the_db_step() {
+        let suite = HttpTestSuite {
+            steps: vec![db_step(
+                "SELECT 1",
+                None,
+                vec![assertion("row_count", AssertOp::Equals, "1")],
+            )],
+            ..Default::default()
+        };
+        let fake = FakeDb::new(vec![scalar("1")]);
+        let send = |_s: RequestSpec| resp(200, "{}");
+        let io = RunIo {
+            send: &send,
+            send_parallel: None,
+            db: Some(&fake),
+        };
+        let (c, a) = (AtomicBool::new(false), AtomicBool::new(false));
+        let s = run_suite_with(
+            &suite,
+            &RunScope::default(),
+            initial_vars(&suite),
+            &io,
+            &c,
+            &a,
+            &mut |_| {},
+        );
+        assert_eq!(s.results[0].outcome(), StepOutcome::Blocked);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn burst_aggregates_count_any_all() {
+        let ok = resp(201, r#"{"status":"success","id":1}"#);
+        let dup = resp(
+            409,
+            r#"{"status":"error","message":"already been received"}"#,
+        );
+        let dup2 = resp(
+            409,
+            r#"{"status":"error","message":"already been received"}"#,
+        );
+        let all = vec![&ok, &dup, &dup2];
+        let v = HashMap::new();
+        let eval = |t: &str, op: AssertOp, val: &str| {
+            evaluate_burst(&all, &assertion(t, op, val), &v).passed
+        };
+        assert!(eval("count:status=2xx", AssertOp::Equals, "1"));
+        assert!(eval("count:status=409", AssertOp::Equals, "2"));
+        assert!(eval("count:status=4xx", AssertOp::Equals, "2"));
+        assert!(eval("count:json:$.status=success", AssertOp::Equals, "1"));
+        assert!(eval("count:json:$.id", AssertOp::Equals, "1"));
+        assert!(eval(
+            "any:json:$.message",
+            AssertOp::Contains,
+            "already been received"
+        ));
+        assert!(!eval("all:status", AssertOp::LessThan, "300"));
+        assert!(!eval("status", AssertOp::LessThan, "300"));
+        assert!(eval("all:status", AssertOp::LessThan, "500"));
+    }
+
+    #[test]
+    fn concurrent_step_sends_burst_through_barrier_and_detects_double_submit() {
+        let step = HttpTestStep {
+            id: "terima".into(),
+            name: "Receive the same delivery 5x".into(),
+            request: SavedRequest {
+                method: HttpMethod::POST,
+                url: "http://h/stock-ins".into(),
+                ..Default::default()
+            },
+            concurrency: Some(Concurrency {
+                count: 5,
+                barrier: true,
+                rounds: 3,
+            }),
+            extract: vec![Extract {
+                var: "stock_in_id".into(),
+                from: "json:$.id".into(),
+            }],
+            assertions: vec![assertion("count:status=2xx", AssertOp::Equals, "1")],
+            enabled: true,
+            ..Default::default()
+        };
+        let suite = HttpTestSuite {
+            steps: vec![step],
+            ..Default::default()
+        };
+        // Server bug: dua dari lima request lolos di putaran kedua.
+        let n = AtomicUsize::new(0);
+        let buggy = |_s: RequestSpec| {
+            let k = n.fetch_add(1, Ordering::SeqCst);
+            if k == 0 || k == 5 || k == 6 {
+                resp(201, &format!(r#"{{"id":{k}}}"#))
+            } else {
+                resp(409, r#"{"message":"already been received"}"#)
+            }
+        };
+        let io = RunIo {
+            send: &buggy,
+            send_parallel: Some(&buggy),
+            db: None,
+        };
+        let (c, a) = (AtomicBool::new(false), AtomicBool::new(false));
+        let s = run_suite_with(
+            &suite,
+            &RunScope::default(),
+            initial_vars(&suite),
+            &io,
+            &c,
+            &a,
+            &mut |_| {},
+        );
+        let r = &s.results[0];
+        assert_eq!(n.load(Ordering::SeqCst), 15);
+        assert_eq!(r.instances.len(), 15);
+        assert_eq!(r.outcome(), StepOutcome::Failed);
+        assert!(
+            r.assertions[0]
+                .actual
+                .as_deref()
+                .unwrap()
+                .contains("round 2")
+        );
+        assert_eq!(r.created_count(), 3);
+
+        // Server benar: tepat satu sukses per putaran.
+        let m = AtomicUsize::new(0);
+        let fixed = |_s: RequestSpec| {
+            if m.fetch_add(1, Ordering::SeqCst).is_multiple_of(5) {
+                resp(201, r#"{"id":1}"#)
+            } else {
+                resp(409, "{}")
+            }
+        };
+        let io = RunIo {
+            send: &fixed,
+            send_parallel: None,
+            db: None,
+        };
+        let s = run_suite_with(
+            &suite,
+            &RunScope::default(),
+            initial_vars(&suite),
+            &io,
+            &c,
+            &a,
+            &mut |_| {},
+        );
+        assert!(s.results[0].passed(), "{:?}", s.results[0].assertions);
+    }
+
+    #[test]
+    fn cleanup_runs_once_per_created_instance() {
+        let create = HttpTestStep {
+            id: "c".into(),
+            name: "Create".into(),
+            request: SavedRequest {
+                method: HttpMethod::POST,
+                url: "http://h/items".into(),
+                ..Default::default()
+            },
+            concurrency: Some(Concurrency {
+                count: 3,
+                barrier: false,
+                rounds: 1,
+            }),
+            extract: vec![Extract {
+                var: "item_id".into(),
+                from: "json:$.id".into(),
+            }],
+            assertions: vec![assertion("all:status", AssertOp::LessThan, "300")],
+            enabled: true,
+            ..Default::default()
+        };
+        let delete = HttpTestStep {
+            id: "d".into(),
+            name: "Delete".into(),
+            phase: StepPhase::Cleanup,
+            cleanup_for: Some("c".into()),
+            request: SavedRequest {
+                method: HttpMethod::DELETE,
+                url: "http://h/items/{{item_id}}".into(),
+                ..Default::default()
+            },
+            assertions: vec![assertion("status", AssertOp::Equals, "204")],
+            enabled: true,
+            ..Default::default()
+        };
+        let suite = HttpTestSuite {
+            steps: vec![create, delete],
+            ..Default::default()
+        };
+        let n = AtomicUsize::new(0);
+        let deleted = Mutex::new(Vec::new());
+        let send = |s: RequestSpec| {
+            if s.url.contains("/items/") {
+                deleted.lock().unwrap().push(s.url.clone());
+                resp(204, "")
+            } else {
+                let k = n.fetch_add(1, Ordering::SeqCst);
+                resp(201, &format!(r#"{{"id":"i{k}"}}"#))
+            }
+        };
+        let io = RunIo {
+            send: &send,
+            send_parallel: None,
+            db: None,
+        };
+        let (c, a) = (AtomicBool::new(false), AtomicBool::new(false));
+        let s = run_suite_with(
+            &suite,
+            &RunScope::default(),
+            initial_vars(&suite),
+            &io,
+            &c,
+            &a,
+            &mut |_| {},
+        );
+        let mut urls = deleted.lock().unwrap().clone();
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec![
+                "http://h/items/i0",
+                "http://h/items/i1",
+                "http://h/items/i2"
+            ]
+        );
+        let cleanup = s.results.iter().find(|r| r.step_id == "d").unwrap();
+        assert!(cleanup.passed());
+        assert_eq!(cleanup.instances.len(), 3);
+        assert!(s.residue.is_empty());
+    }
+
+    #[test]
+    fn old_suites_load_and_save_without_new_fields() {
+        let request = serde_json::to_value(SavedRequest {
+            id: "r1".into(),
+            url: "{{base}}/ping".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        // Bentuk file suite sebelum fitur DB/concurrent.
+        let json = serde_json::json!({"id": "suite_1", "name": "Old", "steps": [{
+            "id": "s1", "name": "Ping", "request": request,
+            "assertions": [{"target": "status", "op": "equals", "value": "200"}]}]});
+        let suite: HttpTestSuite = serde_json::from_value(json).expect("old suite");
+        assert_eq!(suite.steps[0].kind, StepKind::Http);
+        assert!(suite.steps[0].db.is_none() && suite.steps[0].concurrency.is_none());
+        let out = serde_json::to_string(&suite).unwrap();
+        assert!(!out.contains("\"kind\""));
+        assert!(!out.contains("\"db\""));
+        assert!(!out.contains("\"concurrency\""));
+        // Langkah DB tidak menulis request kosong.
+        let db = db_step("SELECT 1", None, Vec::new());
+        let out = serde_json::to_value(&db).unwrap();
+        assert!(out.get("request").is_none());
+        assert_eq!(out["kind"], "db_query");
+        let back: HttpTestStep = serde_json::from_value(out).unwrap();
+        assert!(back.is_db());
+    }
+
+    #[test]
+    fn lint_flags_db_and_aggregate_mistakes() {
+        let bad_sql = db_step(
+            "DELETE FROM t WHERE id = {{id}}",
+            None,
+            vec![assertion("status", AssertOp::Equals, "200")],
+        );
+        let issues = step_kind_issues(&bad_sql);
+        assert!(issues.iter().any(|m| m.contains("SELECT")), "{issues:?}");
+        assert!(issues.iter().any(|m| m.contains("does not apply")));
+        let aggregate_without_burst = HttpTestStep {
+            assertions: vec![assertion("count:status=2xx", AssertOp::Equals, "1")],
+            ..Default::default()
+        };
+        assert!(!step_kind_issues(&aggregate_without_burst).is_empty());
+        let ok = db_step(
+            "SELECT id FROM t WHERE code = '{{code}}'",
+            None,
+            vec![assertion("row_count", AssertOp::Equals, "0")],
+        );
+        assert!(step_kind_issues(&ok).is_empty());
+    }
+
+    #[test]
+    fn ai_reply_parses_db_and_concurrent_steps() {
+        let v: Value = serde_json::json!({
+            "id": "s5", "name": "Balance", "phase": "test", "kind": "db_query",
+            "db": {"connection_var": "{{db_main}}", "sql": "SELECT 1", "wait_until_ms": 5000},
+            "assert": [{"target": "scalar", "op": "approx", "value": "1"}],
+            "extract": [{"var": "a", "from": "scalar"}]
+        });
+        let s = parse_step_value(&v, &[]).expect("db step");
+        assert!(s.is_db());
+        let db = s.db.unwrap();
+        assert_eq!(db.connection_var, "db_main");
+        assert_eq!(db.wait_until_ms, Some(5000));
+        assert_eq!(s.assertions[0].op, AssertOp::Approx);
+        assert_eq!(s.extract[0].var, "a");
+        let v: Value = serde_json::json!({
+            "id": "s2", "name": "Dup", "method": "POST", "url": "{{base}}/x",
+            "concurrency": {"count": 500, "rounds": 3},
+            "assert": [{"target": "count:status=2xx", "op": "equals", "value": "1"}]
+        });
+        let s = parse_step_value(&v, &[]).expect("http step");
+        let c = s.concurrency.unwrap();
+        assert_eq!((c.count, c.rounds, c.barrier), (MAX_CONCURRENCY, 3, true));
     }
 }

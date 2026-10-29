@@ -82,13 +82,21 @@ installed `tabular` executable. The server speaks MCP over stdio; it opens no ne
 | `project_context` | One project: environments with variable keys, non-secret values and the connection ids each environment uses, its connections, saved query files, HTTP workspace and the project memory. Secret values are never returned, and connections blocked for this client are left out. |
 | `save_project_memory` | Save a durable fact in a project's memory. The same title replaces the entry. Secret values of the project are redacted automatically. Refused for projects shared with you read-only. |
 | `delete_project_memory` | Remove one memory entry from a project. |
+| `list_test_suites` | Integration test suites of a project: steps (with database and concurrent steps counted), groups, last validation and last verdict. |
+| `run_test_suite` | Run a suite against the API of a project environment and return the verdict, a per-step summary and the path of the HTML report. Development, Testing, Local and Staging run directly; Production needs `allow_production` and the user's approval in Tabular, as does an environment without a kind. Database steps are read-only and respect the connection's agent access. |
+| `get_test_run` | One run in detail: the request of each step (secret headers redacted), what was sent, the response, failed assertions, database rows and every response of a concurrent burst. |
+| `list_data_checks` | A project's data checks (queries that should return no rows) with the last status. |
+| `run_data_checks` | Run a project's data checks against an environment: rows that violate each rule, trend and up to 20 sample rows. Read-only, so allowed on Production. Same result as `tabular check run`. |
+| `save_data_check` | Add or replace a data check. The user approves it in Tabular before it is saved. |
 
 Every tool declares a `title`, behavior annotations and an `outputSchema`:
 
 - `readOnlyHint: true` on every tool except `execute_statement`, `cancel_query`,
-  `refresh_schema_cache`, `save_note`, `save_project_memory` and `delete_project_memory`.
-  `execute_statement`, `cancel_query`, `save_project_memory` and `delete_project_memory` are
-  also `destructiveHint: true`. All tools are `openWorldHint: false`. Clients can use these
+  `refresh_schema_cache`, `save_note`, `save_project_memory`, `delete_project_memory`,
+  `run_test_suite` and `save_data_check`.
+  `execute_statement`, `cancel_query`, `save_project_memory`, `delete_project_memory` and
+  `run_test_suite` are also `destructiveHint: true`. All tools are `openWorldHint: false`
+  except `run_test_suite`, which calls the project's API server. Clients can use these
   hints to skip confirmation prompts for read-only tools.
 - A successful call returns `structuredContent` that matches the tool's `outputSchema`, plus
   the same JSON as text. `structuredContent` is always a JSON object; lists are wrapped

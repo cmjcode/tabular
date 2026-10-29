@@ -840,6 +840,16 @@ impl Tabular {
                     ctx.request_repaint();
                 }
             });
+
+            ui.add_space(8.0);
+            if toggle_row(
+                ui,
+                &mut self.auto_hide_menu_bar,
+                "Auto-hide menu bar",
+                Some("Hide the top menu bar automatically; reveal by hovering top edge or pressing Alt."),
+            ) {
+                self.save_prefs_now();
+            }
         });
 
         self.render_pref_language(ui);

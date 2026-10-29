@@ -8,6 +8,7 @@
 //! - `tabular open <url>`          → buka deep link / DSN di instance GUI (M2).
 //! - `tabular connections [--json]`→ daftar koneksi tersimpan tanpa rahasia.
 //! - `tabular test list|run …`     → integration test HTTP (lihat `http_test_cli`).
+//! - `tabular check list|run|seed` → data check read-only (lihat `data_check_cli`).
 //! - `tabular tabular://...`       → sama dengan `open` (dipakai handler skema
 //!   URL di Linux/Windows).
 //! - `tabular --help` / `--version`.
@@ -28,6 +29,8 @@ USAGE:
   tabular connections [--json] list saved connections (never includes passwords)
   tabular test list            list integration test suites
   tabular test run <suite>     run a suite (add --group, --junit, --report; see `tabular test --help`)
+  tabular check run --project <p> [--env <e>]
+                               run the project's read-only data checks (see `tabular check --help`)
   tabular --version
   tabular --help
 
@@ -47,6 +50,10 @@ pub fn try_run_from_args() -> Option<Result<(), String>> {
         Some("test") => {
             init_headless_data_dir();
             Some(crate::http_test_cli::run(&args[1..]))
+        }
+        Some("check") => {
+            init_headless_data_dir();
+            Some(crate::data_check_cli::run(&args[1..]))
         }
         // Handler skema URL OS memanggil `tabular "tabular://..."`.
         Some(url) if url.to_ascii_lowercase().starts_with("tabular:") => run_open(Some(url)),

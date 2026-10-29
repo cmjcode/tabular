@@ -59,6 +59,7 @@ const MENUS: &[(&str, &[Entry])] = &[
         Item("Command Palette…", "View: Command Palette", Some(Action::QuickOpen)),
         Item("Toggle Sidebar", "View: Toggle Sidebar", None),
         Item("Toggle AI Assistant", "View: Toggle AI Assistant", Some(Action::ToggleAiPanel)),
+        Item("Toggle Auto-Hide Menu Bar", "View: Toggle Auto-Hide Menu Bar", None),
         Item("Query Insights", "Query: Insights (Most Run / Slowest)", None),
         Separator,
         Item("Refresh", "View: Refresh", Some(Action::Refresh)),
@@ -90,6 +91,7 @@ const MENUS: &[(&str, &[Entry])] = &[
     ("Project", &[
         Item("Database Diagram", "Project: Database Diagram", None),
         Item("Integration Tests", "Project: Integration Tests", None),
+        Item("Data Health", "Project: Data Health", None),
         Item("Set Up from Git Folder…", "Project: Set Up from Git Folder", None),
     ]),
     ("Tools", &[
@@ -145,6 +147,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
         "Open integration tests of the active project",
     ),
     (
+        "Project: Data Health",
+        "Run read-only data checks that find broken data in the active project",
+    ),
+    (
         "Project: Set Up from Git Folder",
         "Create connections and API folders from a repository",
     ),
@@ -161,6 +167,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     (
         "View: Toggle AI Assistant",
         "Show or hide the AI Assistant panel",
+    ),
+    (
+        "View: Toggle Auto-Hide Menu Bar",
+        "Automatically hide the top menu bar until hovered",
     ),
     ("Help: Documentation", "Open the Tabular documentation"),
     (
@@ -227,38 +237,142 @@ impl Tabular {
     /// Gambar menu bar. Dipanggil sekali per frame dari `ui()`.
     pub(crate) fn render_app_menu_bar(&mut self, root_ui: &mut egui::Ui) {
         let mut chosen: Option<&'static str> = None;
-        egui::Panel::top("app_menu_bar")
-            .resizable(false)
-            .show(root_ui, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
-                    for (title, entries) in MENUS {
-                        ui.menu_button(*title, |ui| {
-                            ui.set_min_width(220.0);
-                            for entry in entries.iter() {
-                                match entry {
-                                    Separator => {
-                                        ui.separator();
-                                    }
-                                    Item(label, command, shortcut) => {
-                                        let mut button = egui::Button::new(*label);
-                                        if let Some(action) = shortcut {
-                                            button =
-                                                button.shortcut_text(self.keymap.label(*action));
-                                        }
-                                        if ui.add(button).clicked() {
-                                            chosen = Some(command);
-                                            ui.close();
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
+        let mut toggle_auto_hide = false;
+
+        let ctx = root_ui.ctx().clone();
+
+        if !self.auto_hide_menu_bar {
+            egui::Panel::top("app_menu_bar")
+                .resizable(false)
+                .show(root_ui, |ui| {
+                    self.render_menu_bar_content(ui, &mut chosen, &mut toggle_auto_hide);
                 });
+        } else {
+            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+            let alt_pressed = ctx.input(|i| {
+                i.key_pressed(egui::Key::F10)
+                    || (i.modifiers.alt && !i.modifiers.command && !i.modifiers.shift)
             });
+            if alt_pressed {
+                self.menu_bar_revealed = !self.menu_bar_revealed;
+            }
+
+            let any_popup_open = egui::Popup::is_any_open(&ctx);
+            let in_trigger_zone = hover_pos.map_or(false, |p| p.y <= 6.0);
+            let in_menu_bar_zone = hover_pos.map_or(false, |p| p.y <= 36.0);
+
+            if in_trigger_zone {
+                self.menu_bar_revealed = true;
+            } else if self.menu_bar_revealed && !in_menu_bar_zone && !any_popup_open {
+                self.menu_bar_revealed = false;
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !any_popup_open {
+                self.menu_bar_revealed = false;
+            }
+
+            if self.menu_bar_revealed {
+                egui::Area::new(egui::Id::new("app_menu_bar_overlay"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(&ctx, |ui| {
+                        let screen_width = ctx.content_rect().width();
+                        let visuals = ui.visuals().clone();
+                        egui::Frame::new()
+                            .fill(visuals.panel_fill)
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                visuals.widgets.noninteractive.bg_stroke.color,
+                            ))
+                            .shadow(visuals.window_shadow)
+                            .inner_margin(egui::Margin::symmetric(8, 3))
+                            .show(ui, |ui| {
+                                ui.set_width(screen_width);
+                                self.render_menu_bar_content(
+                                    ui,
+                                    &mut chosen,
+                                    &mut toggle_auto_hide,
+                                );
+                            });
+                    });
+            }
+        }
+
+        if toggle_auto_hide {
+            self.auto_hide_menu_bar = !self.auto_hide_menu_bar;
+            self.prefs_dirty = true;
+            if self.auto_hide_menu_bar {
+                self.toasts.info(
+                    "Menu bar is now set to auto-hide. Move cursor to the top edge to reveal it.",
+                );
+            } else {
+                self.menu_bar_revealed = false;
+                self.toasts.info("Menu bar is now pinned.");
+            }
+        }
+
         if let Some(command) = chosen {
+            self.menu_bar_revealed = false;
             crate::editor::execute_command(self, command);
         }
+    }
+
+    /// Render isi baris menu beserta tombol pin/auto-hide di sebelah kanan.
+    fn render_menu_bar_content(
+        &self,
+        ui: &mut egui::Ui,
+        chosen: &mut Option<&'static str>,
+        toggle_auto_hide: &mut bool,
+    ) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            for (title, entries) in MENUS {
+                ui.menu_button(*title, |ui| {
+                    ui.set_min_width(220.0);
+                    for entry in entries.iter() {
+                        match entry {
+                            Separator => {
+                                ui.separator();
+                            }
+                            Item(label, command, shortcut) => {
+                                let mut button = egui::Button::new(*label);
+                                if let Some(action) = shortcut {
+                                    button = button.shortcut_text(self.keymap.label(*action));
+                                }
+                                if ui.add(button).clicked() {
+                                    *chosen = Some(command);
+                                    ui.close();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (icon, label, tooltip) = if self.auto_hide_menu_bar {
+                    (
+                        egui_icons::icons::ICON_PUSH_PIN.codepoint,
+                        "Pin Menu",
+                        "Auto-hide is enabled: click to keep menu bar pinned",
+                    )
+                } else {
+                    (
+                        egui_icons::icons::ICON_VISIBILITY_OFF.codepoint,
+                        "Auto-hide",
+                        "Menu bar is pinned: click to automatically hide it",
+                    )
+                };
+                let btn = egui::Button::new(
+                    egui::RichText::new(format!("{} {}", icon, label))
+                        .size(11.0)
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .frame(false);
+                if ui.add(btn).on_hover_text(tooltip).clicked() {
+                    *toggle_auto_hide = true;
+                }
+            });
+        });
     }
 }
 
@@ -329,6 +443,11 @@ pub(crate) fn run_extra_command(t: &mut Tabular, key: &str) -> bool {
         "Project: Integration Tests" => {
             super::integration_test_ui::open_for_active_project(t);
         }
+        "Project: Data Health" => {
+            if let Some(ctx) = t.egui_ctx.clone() {
+                super::data_health_ui::open_for_active_project(t, &ctx);
+            }
+        }
         "Project: Set Up from Git Folder" => {
             super::repo_setup_jobs::pick_and_start(t);
         }
@@ -352,6 +471,18 @@ pub(crate) fn run_extra_command(t: &mut Tabular, key: &str) -> bool {
         }
         "View: Toggle Sidebar" => {
             t.sidebar_visible = !t.sidebar_visible;
+        }
+        "View: Toggle Auto-Hide Menu Bar" => {
+            t.auto_hide_menu_bar = !t.auto_hide_menu_bar;
+            t.prefs_dirty = true;
+            if t.auto_hide_menu_bar {
+                t.toasts.info(
+                    "Menu bar is now set to auto-hide. Move cursor to the top edge to reveal it.",
+                );
+            } else {
+                t.menu_bar_revealed = false;
+                t.toasts.info("Menu bar is now pinned.");
+            }
         }
         "View: Toggle AI Assistant" => {
             t.show_ai_panel = !t.show_ai_panel;

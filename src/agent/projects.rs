@@ -75,7 +75,7 @@ pub struct SavedMemory {
 }
 
 impl HeadlessSession {
-    fn find_project(&self, key: &str) -> Result<Project, AgentError> {
+    pub(super) fn find_project(&self, key: &str) -> Result<Project, AgentError> {
         let all = project::load_all(self.app_dir());
         let key = key.trim();
         all.iter()

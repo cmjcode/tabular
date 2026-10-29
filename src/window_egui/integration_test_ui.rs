@@ -330,7 +330,8 @@ fn snapshot(t: &mut Tabular, st: &IntegrationTestTabState, need_catalog: bool) -
 
 /// Aksi yang butuh `&mut Tabular`, dijalankan setelah render.
 enum Act {
-    Run(Vec<String>),
+    /// Group terpilih, dan apakah user mengizinkan Production.
+    Run(Vec<String>, bool),
     Stop,
     Abort,
     OpenStep(String),
@@ -1635,6 +1636,16 @@ fn center_panel(
                     ui.close();
                 }
                 if ui
+                    .button(format!("{} Database check…", ic::ICON_DATABASE.codepoint))
+                    .on_hover_text(
+                        "A read-only SELECT with checks on its result, e.g. the balance after a receipt",
+                    )
+                    .clicked()
+                {
+                    add_db_step(st);
+                    ui.close();
+                }
+                if ui
                     .add_enabled(
                         st.selected_index().is_some(),
                         egui::Button::new(format!(
@@ -1840,8 +1851,7 @@ fn step_row(
     if resp.double_clicked() {
         ra.open = Some(step.id.clone());
     }
-    let can_cleanup =
-        step.phase != StepPhase::Cleanup && http_tests::is_mutating(&step.request.method);
+    let can_cleanup = step.phase != StepPhase::Cleanup && step.mutates();
     resp.context_menu(|ui| row_menu(ui, step, i, up, down, can_cleanup, ra));
 
     let mut row = ui.new_child(
@@ -1872,8 +1882,28 @@ fn step_row(
         );
     });
     cell(ui, cols.method, cell_left(), |ui| {
-        crate::http_repo::method_chip(ui, step.request.method.label());
+        crate::http_repo::method_chip(ui, step.method_label());
+        if let Some(c) = step.concurrent() {
+            ui.label(
+                egui::RichText::new(ic::ICON_BOLT.codepoint)
+                    .size(12.0)
+                    .color(style::theme_warning(ui.ctx())),
+            )
+            .on_hover_text(format!(
+                "Sent {} times at once, {} round(s)",
+                c.count(),
+                c.rounds()
+            ));
+        }
     });
+    let subtitle = match (&step.db, step.is_db()) {
+        (Some(db), true) => format!(
+            "{{{{{}}}}}  {}",
+            db.connection_var,
+            db.sql.split_whitespace().collect::<Vec<_>>().join(" ")
+        ),
+        _ => step.request.url.clone(),
+    };
     cell(
         ui,
         cols.name,
@@ -1910,7 +1940,7 @@ fn step_row(
             });
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(&step.request.url)
+                    egui::RichText::new(&subtitle)
                         .family(egui::FontFamily::Monospace)
                         .size(10.5)
                         .color(ui.visuals().weak_text_color()),
@@ -2225,6 +2255,33 @@ fn empty_request() -> SavedRequest {
     }
 }
 
+/// Tambah langkah DB (query baca) ke group yang sedang dipilih.
+fn add_db_step(st: &mut IntegrationTestTabState) {
+    let group = match &st.filter {
+        GroupFilter::Group(g) => g.clone(),
+        GroupFilter::All => String::new(),
+    };
+    let step = HttpTestStep {
+        id: st.suite.next_step_id(),
+        name: "Check database".into(),
+        phase: StepPhase::Test,
+        group,
+        kind: http_tests::StepKind::DbQuery,
+        db: Some(http_tests::DbQueryStep::default()),
+        assertions: vec![Assertion {
+            target: "row_count".into(),
+            op: AssertOp::Equals,
+            value: "0".into(),
+        }],
+        enabled: true,
+        ..Default::default()
+    };
+    st.selected = Some(step.id.clone());
+    st.suite.steps.push(step);
+    st.suite.normalize_order();
+    st.mark();
+}
+
 /// Tambah langkah ke group yang sedang dipilih.
 fn add_step(st: &mut IntegrationTestTabState, request: SavedRequest, request_id: Option<String>) {
     let group = match &st.filter {
@@ -2331,7 +2388,7 @@ fn right_panel(
         .suite
         .steps
         .iter()
-        .filter(|s| s.phase != StepPhase::Cleanup && http_tests::is_mutating(&s.request.method))
+        .filter(|s| s.phase != StepPhase::Cleanup && s.mutates())
         .map(|s| (s.id.clone(), s.name.clone()))
         .collect();
     let result = live.results.get(&st.suite.steps[i].id).cloned();
@@ -2372,45 +2429,82 @@ fn right_panel(
             )
             .changed();
         ui.add_space(8.0);
-        style::theme_card_frame(ui.ctx()).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                crate::http_repo::method_chip(ui, step.request.method.label());
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&step.request.url)
-                            .family(egui::FontFamily::Monospace)
-                            .size(11.5),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(&step.request.url);
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(format!(
-                        "{} Edit request in HTTP client",
-                        ic::ICON_OPEN_IN_NEW.codepoint
-                    ))
-                    .on_hover_text(
-                        "Opens a new tab. Save there writes the request back to this step.",
-                    )
-                    .clicked()
-                {
-                    acts.push(Act::OpenStep(step.id.clone()));
+        ui.horizontal(|ui| {
+            ui.label("Type").on_hover_text(
+                "HTTP request, or a read-only database query that checks the data the API wrote",
+            );
+            let before = step.kind;
+            egui::ComboBox::from_id_salt("it_kind")
+                .selected_text(step.kind.label())
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for k in [http_tests::StepKind::Http, http_tests::StepKind::DbQuery] {
+                        ui.selectable_value(&mut step.kind, k, k.label());
+                    }
+                });
+            if step.kind != before {
+                if step.is_db() {
+                    step.db.get_or_insert_with(Default::default);
+                    step.concurrency = None;
+                    if step.assertions.iter().all(|a| a.target == "status") {
+                        step.assertions = vec![Assertion {
+                            target: "row_count".into(),
+                            op: AssertOp::Equals,
+                            value: "0".into(),
+                        }];
+                    }
                 }
-            });
+                changed = true;
+            }
         });
+        ui.add_space(4.0);
+        if step.is_db() {
+            changed |= db_query_section(ui, step, live);
+        } else {
+            style::theme_card_frame(ui.ctx()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    crate::http_repo::method_chip(ui, step.request.method.label());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&step.request.url)
+                                .family(egui::FontFamily::Monospace)
+                                .size(11.5),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&step.request.url);
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(format!(
+                            "{} Edit request in HTTP client",
+                            ic::ICON_OPEN_IN_NEW.codepoint
+                        ))
+                        .on_hover_text(
+                            "Opens a new tab. Save there writes the request back to this step.",
+                        )
+                        .clicked()
+                    {
+                        acts.push(Act::OpenStep(step.id.clone()));
+                    }
+                });
+            });
+        }
     }
 
-    if let Some(r) = &result
-        && last_result_section(ui, r, live)
-    {
-        st.codefix_dialog = Some((vec![r.step_id.clone()], String::new()));
+    if let Some(r) = &result {
+        if last_result_section(ui, r, live) {
+            st.codefix_dialog = Some((vec![r.step_id.clone()], String::new()));
+        }
+        result_evidence(ui, r);
     }
     changed |= assertions_section(ui, &mut st.suite.steps[i], result.as_ref());
     changed |= extract_section(ui, &mut st.suite.steps[i]);
+    if st.suite.steps[i].kind.is_http() {
+        changed |= concurrency_section(ui, &mut st.suite.steps[i]);
+    }
     data_flow_section(ui, st, live, &deps, &pos, i);
     changed |= settings_section(ui, &mut st.suite.steps[i], &groups, &creators);
     ui.add_space(12.0);
@@ -2524,6 +2618,7 @@ fn op_text(op: AssertOp) -> &'static str {
         AssertOp::Exists => "exists",
         AssertOp::NotExists => "does not exist",
         AssertOp::Matches => "matches regex",
+        AssertOp::Approx => "is about (number)",
     }
 }
 
@@ -2533,6 +2628,291 @@ time_ms: the response time in ms\n\
 body: the whole response body\n\
 header:Content-Type: a response header\n\
 json:$.data.id: a value in the JSON body";
+
+const DB_FIELD_HELP: &str = "What to check in the query result:\n\
+row_count: number of rows\n\
+scalar: first column of the first row\n\
+cell:0.qty_balance: row 0, column qty_balance\n\
+column:id: every value of a column, comma separated\n\
+Values may use variables and arithmetic, e.g. {{before}} + {{qty}}.\n\
+Use the condition 'is about (number)' for decimals; add +- 0.5 for a tolerance.";
+
+const BURST_FIELD_HELP: &str = "Checks over all responses of the burst:\n\
+count:status=2xx: how many responses were 2xx (also 409, 4xx)\n\
+count:json:$.status=success: how many have this JSON value\n\
+any:json:$.message: at least one response matches\n\
+all:status: every response matches (same as a plain field)";
+
+fn field_help(step: &HttpTestStep) -> &'static str {
+    if step.is_db() {
+        DB_FIELD_HELP
+    } else if step.concurrent().is_some() {
+        BURST_FIELD_HELP
+    } else {
+        FIELD_HELP
+    }
+}
+
+/// Editor langkah DB: variabel koneksi, database, SQL, dan polling.
+fn db_query_section(ui: &mut egui::Ui, step: &mut HttpTestStep, live: &Live) -> bool {
+    let mut changed = false;
+    let db = step.db.get_or_insert_with(Default::default);
+    style::theme_card_frame(ui.ctx()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(ic::ICON_DATABASE.codepoint).strong());
+            ui.label(egui::RichText::new("Database query (read-only)").strong());
+            help_icon(
+                ui,
+                "One SELECT runs against the connection named by the environment variable. \
+                 {{variables}} become bound parameters, never pasted into the SQL. Writes are \
+                 refused on every access level. Connections marked Production need the \
+                 Production confirmation when the run starts.",
+            );
+        });
+        ui.add_space(4.0);
+        egui::Grid::new("it_db_meta")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Connection variable")
+                    .on_hover_text("Environment variable whose value is the connection name or id, per environment");
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut db.connection_var)
+                                .desired_width(140.0)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text("db_main"),
+                        )
+                        .changed();
+                    let var = db.connection_var.trim();
+                    if !var.is_empty() && !live.known_vars.contains(var) {
+                        ui.label(
+                            egui::RichText::new(ic::ICON_WARNING.codepoint)
+                                .color(style::theme_warning(ui.ctx())),
+                        )
+                        .on_hover_text(
+                            "Not set in the active project environment. Add it there with the connection name as value.",
+                        );
+                    }
+                });
+                ui.end_row();
+                ui.label("Database")
+                    .on_hover_text("Optional; defaults to the connection's database");
+                let mut d = db.database.clone().unwrap_or_default();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut d)
+                            .desired_width(140.0)
+                            .hint_text("default"),
+                    )
+                    .changed()
+                {
+                    db.database = Some(d).filter(|x| !x.trim().is_empty());
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label("Wait until checks pass")
+                    .on_hover_text("Re-run the query until every check holds, for data written asynchronously after the response");
+                ui.horizontal(|ui| {
+                    let mut wait = db.wait_until_ms.is_some();
+                    if ui.checkbox(&mut wait, "").changed() {
+                        db.wait_until_ms = wait.then_some(5_000);
+                        changed = true;
+                    }
+                    if let Some(ms) = db.wait_until_ms.as_mut() {
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(ms)
+                                    .range(100..=crate::http_test_db::MAX_WAIT_MS)
+                                    .speed(100)
+                                    .suffix(" ms"),
+                            )
+                            .changed();
+                        ui.label("every");
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut db.poll_ms)
+                                    .range(crate::http_test_db::MIN_POLL_MS..=10_000)
+                                    .speed(50)
+                                    .suffix(" ms"),
+                            )
+                            .changed();
+                    }
+                });
+                ui.end_row();
+            });
+        ui.add_space(4.0);
+        changed |= ui
+            .add(
+                egui::TextEdit::multiline(&mut db.sql)
+                    .code_editor()
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(
+                        "SELECT qty_balance FROM stocks WHERE id = {{stock_id}} AND deleted_at IS NULL",
+                    ),
+            )
+            .changed();
+    });
+    changed
+}
+
+/// Burst serentak untuk langkah HTTP (double submit, race condition).
+fn concurrency_section(ui: &mut egui::Ui, step: &mut HttpTestStep) -> bool {
+    let mut changed = false;
+    section_header(
+        ui,
+        ic::ICON_BOLT.codepoint,
+        "Concurrent requests",
+        Some(
+            "Send this request several times at once to catch double submits and race conditions.",
+        ),
+    );
+    let mut on = step.concurrency.is_some();
+    if ui
+        .checkbox(&mut on, "Send this request in parallel")
+        .changed()
+    {
+        step.concurrency = on.then(http_tests::Concurrency::default);
+        if on
+            && !step
+                .assertions
+                .iter()
+                .any(|a| http_tests::is_aggregate_target(&a.target))
+        {
+            step.assertions.push(Assertion {
+                target: "count:status=2xx".into(),
+                op: AssertOp::Equals,
+                value: "1".into(),
+            });
+        }
+        changed = true;
+    }
+    if let Some(c) = step.concurrency.as_mut() {
+        egui::Grid::new("it_conc")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Requests at once");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut c.count).range(2..=http_tests::MAX_CONCURRENCY))
+                    .changed();
+                ui.end_row();
+                ui.label("Rounds")
+                    .on_hover_text("Repeat the whole burst to catch races that happen rarely");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut c.rounds).range(1..=http_tests::MAX_ROUNDS))
+                    .changed();
+                ui.end_row();
+                ui.label("Release together").on_hover_text(
+                    "All requests wait at a barrier and are sent at the same moment",
+                );
+                changed |= ui.checkbox(&mut c.barrier, "").changed();
+                ui.end_row();
+            });
+        weak(
+            ui,
+            "Values extracted from the n-th successful response are also available as {{name#n}}; a linked cleanup step runs once per created record.",
+        );
+    }
+    changed
+}
+
+/// Hasil langkah DB / concurrent di bagian "Last run".
+fn result_evidence(ui: &mut egui::Ui, r: &StepResult) {
+    if let Some(db) = &r.db {
+        ui.add_space(4.0);
+        weak(
+            ui,
+            format!(
+                "{} row(s) from {}{}",
+                db.row_count,
+                if db.connection.is_empty() {
+                    "-"
+                } else {
+                    db.connection.as_str()
+                },
+                if db.attempts > 1 {
+                    format!(
+                        ", {} queries over {}{}",
+                        db.attempts,
+                        report::fmt_ms(db.waited_ms),
+                        if db.timed_out { " (timed out)" } else { "" }
+                    )
+                } else {
+                    String::new()
+                }
+            ),
+        );
+        if !db.columns.is_empty() && !db.sample.is_empty() {
+            egui::ScrollArea::horizontal()
+                .id_salt("it_db_sample")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("it_db_rows").striped(true).show(ui, |ui| {
+                        for c in &db.columns {
+                            ui.label(egui::RichText::new(c).small().strong());
+                        }
+                        ui.end_row();
+                        for row in db.sample.iter().take(10) {
+                            for v in row {
+                                ui.label(
+                                    egui::RichText::new(crate::repo_scan::truncate_chars(v, 40))
+                                        .small()
+                                        .family(egui::FontFamily::Monospace),
+                                );
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+        }
+    }
+    if !r.instances.is_empty() {
+        let ok = r
+            .instances
+            .iter()
+            .filter(|i| i.error.is_none() && (200..300).contains(&i.status))
+            .count();
+        ui.add_space(4.0);
+        weak(
+            ui,
+            format!(
+                "{} parallel request(s), {ok} accepted (2xx)",
+                r.instances.len()
+            ),
+        );
+        ui.horizontal_wrapped(|ui| {
+            for i in &r.instances {
+                let color = if i.error.is_some() || i.status >= 500 {
+                    style::theme_danger(ui.ctx())
+                } else if (200..300).contains(&i.status) {
+                    style::theme_success(ui.ctx())
+                } else {
+                    style::theme_warning(ui.ctx())
+                };
+                ui.label(
+                    egui::RichText::new(if i.error.is_some() {
+                        "ERR".to_string()
+                    } else {
+                        i.status.to_string()
+                    })
+                    .small()
+                    .family(egui::FontFamily::Monospace)
+                    .color(color),
+                )
+                .on_hover_text(format!(
+                    "Round {} request {}: {}",
+                    i.round,
+                    i.index,
+                    i.error.as_deref().unwrap_or(&i.body_preview)
+                ));
+            }
+        });
+    }
+}
 
 fn data_flow_section(
     ui: &mut egui::Ui,
@@ -2701,6 +3081,14 @@ fn assertions_section(
         "Expected result",
         Some("The step passes only when every check below holds."),
     );
+    let help = field_help(step);
+    let (target_hint, value_hint, new_check) = if step.is_db() {
+        ("row_count", "0", ("row_count", "0"))
+    } else if step.concurrent().is_some() {
+        ("count:status=2xx", "1", ("count:status=2xx", "1"))
+    } else {
+        ("status", "200", ("status", "200"))
+    };
     let mut remove: Option<usize> = None;
     if step.assertions.is_empty() {
         ui.label(
@@ -2716,7 +3104,7 @@ fn assertions_section(
                 ui.label("");
                 ui.horizontal(|ui| {
                     weak(ui, "Field");
-                    help_icon(ui, FIELD_HELP);
+                    help_icon(ui, help);
                 });
                 weak(ui, "Condition");
                 weak(ui, "Value");
@@ -2753,24 +3141,14 @@ fn assertions_section(
                             egui::TextEdit::singleline(&mut a.target)
                                 .desired_width(110.0)
                                 .font(egui::TextStyle::Monospace)
-                                .hint_text("status"),
+                                .hint_text(target_hint),
                         )
                         .changed();
                     egui::ComboBox::from_id_salt(("it_op", n))
                         .selected_text(op_text(a.op))
                         .width(110.0)
                         .show_ui(ui, |ui| {
-                            for op in [
-                                AssertOp::Equals,
-                                AssertOp::NotEquals,
-                                AssertOp::Contains,
-                                AssertOp::NotContains,
-                                AssertOp::Exists,
-                                AssertOp::NotExists,
-                                AssertOp::LessThan,
-                                AssertOp::GreaterThan,
-                                AssertOp::Matches,
-                            ] {
+                            for op in AssertOp::ALL {
                                 changed |=
                                     ui.selectable_value(&mut a.op, op, op_text(op)).changed();
                             }
@@ -2782,7 +3160,7 @@ fn assertions_section(
                             .add(
                                 egui::TextEdit::singleline(&mut a.value)
                                     .desired_width(80.0)
-                                    .hint_text("200"),
+                                    .hint_text(value_hint),
                             )
                             .changed();
                     }
@@ -2804,13 +3182,13 @@ fn assertions_section(
             .clicked()
         {
             step.assertions.push(Assertion {
-                target: "status".into(),
+                target: new_check.0.into(),
                 op: AssertOp::Equals,
-                value: "200".into(),
+                value: new_check.1.into(),
             });
             changed = true;
         }
-        if let Some(r) = result.filter(|r| r.executed())
+        if let Some(r) = result.filter(|r| r.executed() && r.db.is_none() && r.instances.is_empty())
             && ui
                 .small_button("Use last response")
                 .on_hover_text(
@@ -4066,10 +4444,7 @@ fn confirm_run_modal(
         .collect();
     let mutating = included
         .iter()
-        .filter(|&&i| {
-            st.suite.steps[i].phase != StepPhase::Cleanup
-                && http_tests::is_mutating(&st.suite.steps[i].request.method)
-        })
+        .filter(|&&i| st.suite.steps[i].phase != StepPhase::Cleanup && st.suite.steps[i].mutates())
         .count();
     let cleanups = included
         .iter()
@@ -4192,9 +4567,12 @@ fn confirm_run_modal(
         });
     if let Some(yes) = decided {
         st.confirm_run = None;
+        // Persetujuan Production juga berlaku untuk langkah DB yang membaca
+        // koneksi bertanda Production.
+        let allow_production = st.allow_production;
         st.allow_production = false;
         if yes {
-            acts.push(Act::Run(groups));
+            acts.push(Act::Run(groups, allow_production));
         }
     }
 }
@@ -4337,12 +4715,13 @@ fn apply(
     act: Act,
 ) {
     match act {
-        Act::Run(groups) => {
+        Act::Run(groups, allow_production) => {
             // Simpan dulu agar run memakai definisi terbaru.
             if let Err(e) = http_tests::save_suite(suite) {
                 t.toasts.error(e);
             }
-            let scope = RunScope::groups(suite, groups);
+            let mut scope = RunScope::groups(suite, groups);
+            scope.allow_production = allow_production;
             if let Err(e) = jobs::start_run(t, suite.clone(), scope) {
                 t.toasts.error(e);
             }
@@ -4535,6 +4914,10 @@ fn open_step_in_http(
     step_id: &str,
     last_run: Option<&TestRun>,
 ) {
+    // Langkah DB diedit di panel kanan; tidak ada request untuk dibuka.
+    if suite.steps.iter().any(|s| s.id == step_id && s.is_db()) {
+        return;
+    }
     if let Some(idx) = t.query_tabs.iter().position(|tab| {
         tab.http_client_state
             .as_ref()

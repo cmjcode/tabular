@@ -495,12 +495,106 @@ tabular test run "Procure to pay" --group Purchasing --junit report.xml --report
 Production environment unless you pass `--allow-production`. The exit code is
 0 for PASS and PASS WITH DEVIATIONS, and 1 otherwise.
 
+### Database steps
+
+Some bugs only show in the data: the response is 200 but a balance is wrong,
+an async job wrote twice, or a delete left rows behind. A **database step**
+(Add step > Database check, `"kind": "db_query"`) runs one read-only `SELECT`
+and checks its result.
+
+```json
+{ "id": "balance_after", "kind": "db_query", "phase": "test",
+  "db": { "connection_var": "db_main", "wait_until_ms": 5000,
+          "sql": "SELECT qty_balance FROM kandang_stocks WHERE kandang_project_id = {{project_id}} AND product_id = {{product_id}} AND deleted_at IS NULL" },
+  "assertions": [ { "target": "scalar", "op": "approx", "value": "{{balance_before}} + {{qty_sent}}" } ] }
+```
+
+- `connection_var` names a project environment variable whose value is the
+  connection name (or id), so the same suite checks Dev in Development and
+  Staging in Staging. The run checks every referenced connection with
+  `SELECT 1` before the first step.
+- `{{variables}}` in the SQL are bound as parameters (`?`, `$1`, `@P1`), never
+  pasted into the text. A string literal that contains variables
+  (`'%{{code}}%'`) becomes one text parameter. Variables inside quoted
+  identifiers are refused.
+- Only one `SELECT`/`WITH` statement is accepted, whatever the connection's
+  access level. MySQL and PostgreSQL run it in a read-only transaction, SQLite
+  with `query_only`; results are limited to 1000 rows and the query to 30 s.
+- A connection marked Production is refused unless the run allows Production
+  (the confirmation in the Run dialog, or `--allow-production`).
+- `wait_until_ms` repeats the query every `poll_ms` (default 250) until all
+  checks pass, for data written asynchronously after the response.
+- Targets: `row_count`, `scalar` (first column of the first row),
+  `cell:<row>.<column>` and `column:<column>` (all values, comma separated).
+  `extract` works the same, e.g. `{ "var": "balance_before", "from": "scalar" }`.
+- Assertion values may use simple arithmetic with spaces around the operator
+  (`{{a}} + {{b}}`). `approx` compares numbers with a tolerance of 0.001, or
+  the one given as `"100 +- 0.5"`.
+
+### Concurrent steps
+
+To reproduce a double submit or a race, add `concurrency` to an HTTP step:
+
+```json
+"concurrency": { "count": 5, "barrier": true, "rounds": 3 },
+"assertions": [
+  { "target": "count:status=2xx", "op": "equals", "value": "1" },
+  { "target": "any:json:$.message", "op": "contains", "value": "already been received" } ]
+```
+
+All requests wait at a barrier and are sent at the same moment (`barrier:
+false` sends them one after another as fast as possible). `count` is limited
+to 2..50 and `rounds` to 20. Checks run over every response of a round, and the
+step passes only when every round passes:
+
+| Target | Meaning |
+|---|---|
+| `count:status=2xx` | number of 2xx responses (also `409`, `4xx`) |
+| `count:json:$.status=success` | number of responses with this JSON value |
+| `any:<target>` | at least one response matches |
+| `all:<target>` or a plain target | every response matches |
+
+`extract` reads the first successful response; the n-th successful response
+also sets `{{var#n}}`. A cleanup step linked to a concurrent step runs once for
+every record the burst created. The report lists each response per round.
+
+### Data checks (Data Health)
+
+A data check is a query that should return **no rows**; every row is
+evidence of broken data. Suites test the code on Staging, data checks guard
+the data on Production. Open them with Project > Data Health.
+
+- Each check has a name, the rule it guards, a severity (Critical, Warning,
+  Info), a connection variable, the SQL and an optional number of tolerated
+  rows. The same read-only gate as database steps applies, so checks are safe
+  on Production without `--allow-production`.
+- The panel shows the last status, the number of rows and the trend since the
+  previous run, opens the query in a new tab to see the rows, and can run all
+  checks daily at a set time while Tabular is open (a notice appears when a
+  healthy check starts failing).
+- Generate with AI turns a business rule into a SQL check using the schema of
+  the connection; you review it before it is saved.
+- "Add stock checks" adds five MySQL checks from the VOLTUNES stock audit:
+  duplicate receipts per document, balance vs transactions, active stock-outs
+  of deleted stock-ins, stock-ins used beyond their quantity, and negative
+  balances. Adjust them to your schema.
+
+```bash
+tabular check list --project VOLTUNES
+tabular check seed --project VOLTUNES --preset voltunes-stock
+tabular check run --project VOLTUNES --env Production --report health.html --junit health.xml
+```
+
+`check run` exits with 1 when a Critical check fails or cannot run.
+
 ### Storage
 
 | What | Where |
 |---|---|
 | Suites | `{app data}/http_tests/<suite id>.json` |
 | Run history (last 50 per suite) | `{app data}/http_tests/runs/<suite id>/<run id>.json` |
+| Data checks per project | `{app data}/data_checks/<project id>.json` |
+| Data check runs (last 100 per project) | `{app data}/data_checks/runs/<project id>/<run id>.json` |
 
 Assertions and extracts use `status`, `time_ms`, `body`, `header:<Name>`,
 `cookie:<name>` (a value from `Set-Cookie`) or `json:$.path.to[0].field`. For an
