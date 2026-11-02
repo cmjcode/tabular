@@ -106,6 +106,8 @@ impl super::Tabular {
         self.ai_context_api = prefs.ai_context_api;
         self.ai_context_git = prefs.ai_context_git;
         self.ai_context_history = prefs.ai_context_history;
+        // Kirim sisa outbox Engram dari sesi sebelumnya (idempoten, thread latar).
+        crate::engram::start();
         if let Some(url) = prefs.sync_server_url.clone()
             && !url.trim().is_empty()
         {

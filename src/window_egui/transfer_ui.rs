@@ -993,6 +993,10 @@ impl Tabular {
                         if outcome.encrypted {
                             message.push_str(" (encrypted)");
                         }
+                        self.engram_activity(
+                            crate::engram::ActivityKind::Transfer,
+                            message.clone(),
+                        );
                         self.toasts.success(message);
                         if outcome.unmappable > 0 {
                             self.toasts.warning(format!(

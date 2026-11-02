@@ -80,6 +80,7 @@ pub mod editor_buffer;
 pub mod editor_ghost;
 pub mod editor_selection;
 pub mod editor_state_adapter;
+pub mod engram;
 pub mod export;
 pub mod export_import_all;
 pub mod file_viewer;

@@ -926,6 +926,17 @@ fn apply_plan(
         t.toasts.error(e);
     }
     log::info!("[REPO_SETUP] applied: {}", stats.summary(&plan.name));
+    if stats.changed() {
+        crate::engram::record(
+            crate::engram::ActivityKind::Project,
+            Some(&plan.name),
+            format!(
+                "Set up the repository {} in Tabular: {}",
+                plan.root.display(),
+                stats.summary(&plan.name)
+            ),
+        );
+    }
     stats
 }
 

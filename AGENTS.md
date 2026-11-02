@@ -40,6 +40,7 @@ locally). Windows failures do not block yet.
 | Execution safety | `src/connection_safety.rs` | Per-connection Safety mode (Standard / Confirm all writes / Read-only); `assess()` uses the agent classifier |
 | Menu bar | `src/window_egui/app_menu.rs` | Menu bar entries map to command-palette keys run by `editor::execute_command` |
 | AI assistant (in-app) | `src/ai_assistant.rs`, `src/vector_index.rs`, `src/window_egui/ai_context_jobs.rs` | Local feature-hash embeddings via sqlite-vec. Each chat turn adds a context bundle (FKs/indexes, API endpoints, business processes, notes, code + git, past queries) built in a background thread by `agent::context`; see `docs/MCP.md` "Context sent with each question", ADR 0008 |
+| Engram memory | `src/engram.rs` (headless client, recall, outbox recorder), `src/window_egui/engram_{hooks,settings}.rs` | Local personal memory at `127.0.0.1:7878` (token from Engram's `connection.json`). Each AI chat turn recalls memories in the context thread; important events (chat, DDL, DML summaries without values, connections, projects, tests, git, transfers, saved memories) go through `engram::record` → `<data dir>/engram_outbox/` → batched `remember`. Settings in `<data dir>/engram.json`; Tools > Engram Memory |
 | Agent / MCP layer | `src/agent/` | Headless; must never depend on `window_egui`. `context.rs` = `table_context` tool and the chat context bundle |
 | Sync / collab | `src/sync/` | E2E encrypted vault; `collab` feature is optional |
 | Plugins | `src/plugin_runtime/` | Wasm plugins via `wasmi` |

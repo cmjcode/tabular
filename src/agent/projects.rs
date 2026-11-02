@@ -219,6 +219,15 @@ impl HeadlessSession {
             entry.name,
             p.name
         );
+        // `entry.body` sudah disensor dari nilai secret project.
+        crate::engram::record(
+            crate::engram::ActivityKind::Memory,
+            Some(&p.name),
+            format!(
+                "Saved a project memory \"{}\" ({}):\n{}",
+                entry.name, entry.description, entry.body
+            ),
+        );
         Ok(SavedMemory {
             project: p.name,
             name: entry.name,

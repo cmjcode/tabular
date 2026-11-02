@@ -716,6 +716,7 @@ pub(crate) fn render_connection_dialog(
                                     let _ = id;
                                     load_connections(tabular);
                                     update_connection_in_tree(tabular, &connection_data);
+                                    tabular.engram_connection("Edited", &connection_data);
                                     tabular.show_edit_connection = false;
                                 }
                             } else {
@@ -737,6 +738,7 @@ pub(crate) fn render_connection_dialog(
                                 // load_connections memanggil refresh_connections_tree, jadi
                                 // add_connection_to_tree tidak perlu (akan menggandakan node).
                                 load_connections(tabular);
+                                tabular.engram_connection("Added", &connection_to_add);
                                 let new_conn_id = Some(id);
                                 let new_conn_name = tabular
                                     .connections

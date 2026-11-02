@@ -43,6 +43,9 @@ impl super::Tabular {
             self.record_query_stats(&message, paginated);
         }
         self.notify_long_query(&message);
+        // Perubahan skema/data yang berhasil (termasuk structure editor dan
+        // simpan grid lewat job ber-callback) dicatat ke Engram.
+        self.engram_record_query(&message);
 
         // Job ber-callback (structure editor, simpan spreadsheet, wizard, …)
         // menangani hasilnya sendiri, bukan lewat panel hasil tab.

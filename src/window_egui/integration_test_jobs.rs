@@ -1063,6 +1063,18 @@ fn finalize(t: &mut Tabular, suite_id: &str, run: TestRun) {
         ));
     }
     log::info!("[INTEGRATION_TEST] {msg}");
+    {
+        let env = run
+            .environment
+            .as_deref()
+            .map(|e| format!(" against {e}"))
+            .unwrap_or_default();
+        crate::engram::record(
+            crate::engram::ActivityKind::Test,
+            run.project_name.as_deref(),
+            format!("Ran the integration test suite{env}. {msg}"),
+        );
+    }
     match stats.verdict() {
         Verdict::Pass => t.toasts.success(msg.clone()),
         Verdict::PassWithDeviations => t.toasts.warning(msg.clone()),

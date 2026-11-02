@@ -30,6 +30,8 @@ pub mod diagram;
 pub mod diagram_db_sync;
 pub mod diagram_flow_jobs;
 pub(crate) mod diagram_merge_dialog;
+mod engram_hooks;
+mod engram_settings;
 pub mod file_viewer_jobs;
 pub mod file_viewer_ui;
 mod folder_fetch_jobs;

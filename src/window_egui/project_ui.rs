@@ -1426,6 +1426,13 @@ fn create_project(t: &mut Tabular, dlg: &ProjectDialog) -> Result<(), String> {
         return Err("Could not save the project file".into());
     }
     log::info!("[PROJECT] Created project '{}'", p.name);
+    {
+        let mut text = format!("Created the project \"{}\" in Tabular", p.name);
+        if !p.description.trim().is_empty() {
+            text.push_str(&format!(": {}", p.description.trim()));
+        }
+        crate::engram::record(crate::engram::ActivityKind::Project, Some(&p.name), text);
+    }
     t.toasts.success(format!("Project '{}' created", p.name));
     let id = p.id.clone();
     replace_project(t, p.clone());

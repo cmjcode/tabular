@@ -1,8 +1,8 @@
 //! Job latar panel AI Assistant: merakit konteks tambahan (relasi dan index,
 //! endpoint API, proses bisnis, catatan diagram, pemakaian di kode + commit
 //! git, query history) untuk satu giliran chat, lalu memulai giliran itu
-//! setelah konteks siap. Grep repository dan `git log` tidak pernah berjalan
-//! di UI thread.
+//! setelah konteks siap. Grep repository, `git log`, dan recall memori
+//! Engram (`crate::engram`) tidak pernah berjalan di UI thread.
 
 use std::sync::mpsc;
 use std::time::Instant;
@@ -14,7 +14,7 @@ use super::Tabular;
 
 /// Satu perakitan konteks yang sedang berjalan beserta giliran yang menunggu.
 pub struct AiContextJob {
-    rx: mpsc::Receiver<Result<ContextBundle, String>>,
+    rx: mpsc::Receiver<ContextOutcome>,
     cfg: ChatBackend,
     parts: ChatPromptParts,
     session_id: Option<String>,
@@ -22,6 +22,13 @@ pub struct AiContextJob {
 }
 
 const TOOL_NAME: &str = "context";
+
+/// Hasil thread konteks: bundle tabel (bila ada koneksi) dan memori Engram
+/// (bila integrasi aktif). `None` berarti bagian itu tidak diminta.
+struct ContextOutcome {
+    bundle: Option<Result<ContextBundle, String>>,
+    memory: Option<Result<(String, usize), String>>,
+}
 
 /// Permintaan konteks dari state UI. `None` bila tidak ada koneksi aktif.
 pub fn context_request(
@@ -64,23 +71,34 @@ pub fn start(
     session_id: Option<String>,
 ) {
     let req = context_request(t, &cfg, &parts.request, &parts.editor_context);
-    let (Some(req), Some(pool), Some(rt)) = (req, t.db_pool.clone(), t.runtime.clone()) else {
+    let table = match (req, t.db_pool.clone(), t.runtime.clone()) {
+        (Some(req), Some(pool), Some(rt)) => Some((req, pool, rt)),
+        _ => None,
+    };
+    let engram = crate::engram::settings();
+    let want_memory = engram.enabled && engram.recall_in_chat;
+    if table.is_none() && !want_memory {
         let (system, user) = parts.join("");
         launch_turn(t, &cfg, system, user, session_id);
         return;
-    };
+    }
 
     let (tx, rx) = mpsc::channel();
     let app_dir = crate::config::get_data_dir();
+    let question = parts.request.clone();
+    let with_tables = table.is_some();
     let spawned = std::thread::Builder::new()
         .name("ai-context".into())
         .spawn(move || {
-            let session =
-                crate::agent::core::HeadlessSession::new((*pool).clone()).with_app_dir(app_dir);
-            let result = rt
-                .block_on(session.table_context(&req))
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result);
+            // Recall memakai reqwest blocking: di luar `block_on`.
+            let memory = crate::engram::recall_for_chat(&question);
+            let bundle = table.map(|(req, pool, rt)| {
+                let session =
+                    crate::agent::core::HeadlessSession::new((*pool).clone()).with_app_dir(app_dir);
+                rt.block_on(session.table_context(&req))
+                    .map_err(|e| e.to_string())
+            });
+            let _ = tx.send(ContextOutcome { bundle, memory });
         });
     if let Err(e) = spawned {
         log::warn!("[AI] cannot start context thread, sending without context: {e}");
@@ -89,11 +107,16 @@ pub fn start(
         return;
     }
 
+    let description = match (with_tables, want_memory) {
+        (true, true) => "Gathering context (relations, APIs, code, history, Engram memory)…",
+        (true, false) => "Gathering context (relations, APIs, code, history)…",
+        _ => "Recalling Engram memory…",
+    };
     if let Some(msg) = t.ai_chat.last_mut() {
         msg.progress_steps
             .push(crate::agent::harness::ProgressStep {
                 step_index: Some(0),
-                description: "Gathering context (relations, APIs, code, history)…".to_string(),
+                description: description.to_string(),
                 detail: None,
                 status: crate::agent::harness::ProgressStatus::Active,
                 tool_name: Some(TOOL_NAME.to_string()),
@@ -123,9 +146,14 @@ pub fn poll(t: &mut Tabular, ctx: &eframe::egui::Context) {
     };
     match job.rx.try_recv() {
         Ok(result) => finish(t, job, result),
-        Err(mpsc::TryRecvError::Disconnected) => {
-            finish(t, job, Err("context thread stopped".to_string()))
-        }
+        Err(mpsc::TryRecvError::Disconnected) => finish(
+            t,
+            job,
+            ContextOutcome {
+                bundle: Some(Err("context thread stopped".to_string())),
+                memory: None,
+            },
+        ),
         Err(mpsc::TryRecvError::Empty) => {
             t.ai_context_job = Some(job);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -133,14 +161,27 @@ pub fn poll(t: &mut Tabular, ctx: &eframe::egui::Context) {
     }
 }
 
-fn finish(t: &mut Tabular, job: AiContextJob, result: Result<ContextBundle, String>) {
-    let (extra, summary) = match result {
-        Ok(bundle) => {
-            let summary = if bundle.stats.is_empty() {
-                "No extra context found for this request".to_string()
-            } else {
-                bundle.stats.summary()
-            };
+fn finish(t: &mut Tabular, job: AiContextJob, outcome: ContextOutcome) {
+    let mut extra = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    match outcome.memory {
+        Some(Ok((block, items))) if !block.is_empty() => {
+            extra.push_str(&block);
+            extra.push_str("\n\n");
+            parts.push(format!("{items} Engram memories"));
+        }
+        Some(Ok(_)) => parts.push("no matching Engram memory".to_string()),
+        Some(Err(e)) => {
+            log::warn!("[ENGRAM] recall failed, sending without memory: {e}");
+            parts.push("Engram unavailable".to_string());
+        }
+        None => {}
+    }
+    match outcome.bundle {
+        Some(Ok(bundle)) => {
+            if !bundle.stats.is_empty() {
+                parts.push(bundle.stats.summary());
+            }
             if !bundle.hints.is_empty() {
                 log::info!(
                     "[AI] context hints: {} ({} ms)",
@@ -148,12 +189,22 @@ fn finish(t: &mut Tabular, job: AiContextJob, result: Result<ContextBundle, Stri
                     job.started.elapsed().as_millis()
                 );
             }
-            (bundle.markdown, summary)
+            extra.push_str(&bundle.markdown);
         }
-        Err(e) => {
+        Some(Err(e)) => {
             log::warn!("[AI] context assembly failed, sending without it: {e}");
-            (String::new(), "Context unavailable".to_string())
+            parts.push("context unavailable".to_string());
         }
+        None => {}
+    }
+    let summary = if parts.is_empty() {
+        "No extra context found for this request".to_string()
+    } else {
+        let joined = parts.join(", ");
+        let mut c = joined.chars();
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
     };
     if let Some(msg) = t.ai_chat.last_mut() {
         if let Some(step) = msg

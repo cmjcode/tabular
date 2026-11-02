@@ -205,6 +205,14 @@ pub fn render(t: &mut Tabular, ctx: &egui::Context) {
         match res {
             Ok(run) => {
                 let failing = run.count(CheckStatus::Failing);
+                crate::engram::record(
+                    crate::engram::ActivityKind::Test,
+                    Some(&run.project_name),
+                    format!(
+                        "Ran the Data Health checks: {failing} check(s) found broken data ({})",
+                        run.verdict()
+                    ),
+                );
                 if failing > 0 {
                     t.toasts.error(format!(
                         "Data Health: {failing} check(s) found broken data ({})",
@@ -849,6 +857,14 @@ fn tick_scheduler(t: &mut Tabular, ctx: &egui::Context) {
                 let reg = run.regressions(previous.as_ref());
                 if !reg.is_empty() {
                     let names: Vec<&str> = reg.iter().map(|r| r.name.as_str()).collect();
+                    crate::engram::record(
+                        crate::engram::ActivityKind::Test,
+                        Some(&name),
+                        format!(
+                            "Scheduled Data Health checks started failing: {}",
+                            names.join(", ")
+                        ),
+                    );
                     t.toasts.error(format!(
                         "Data Health {name}: started failing: {}",
                         names.join(", ")

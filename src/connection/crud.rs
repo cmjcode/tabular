@@ -239,6 +239,7 @@ pub(crate) fn remove_connection(tabular: &mut window_egui::Tabular, connection_i
         .find(|c| c.id == Some(connection_id))
     {
         crate::driver_api::connect::delete_secret_options(connection_id, &conn.plugin_options);
+        tabular.engram_connection("Deleted", conn);
     }
 
     tabular.connections.retain(|c| c.id != Some(connection_id));

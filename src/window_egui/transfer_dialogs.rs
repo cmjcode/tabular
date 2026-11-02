@@ -194,6 +194,24 @@ impl Tabular {
                         fmt_count(summary.rows_copied),
                         summary.tables_copied
                     );
+                    let place = |conn_id: Option<i64>, db: &str| {
+                        let name = conn_id
+                            .map(|id| self.engram_connection_name(id))
+                            .unwrap_or_default();
+                        if db.trim().is_empty() {
+                            format!("\"{name}\"")
+                        } else {
+                            format!("\"{name}\" ({db})")
+                        }
+                    };
+                    self.engram_activity(
+                        crate::engram::ActivityKind::Transfer,
+                        format!(
+                            "{message} from {} to {}",
+                            place(dialog.source.conn_id, &dialog.source.database),
+                            place(dialog.target.conn_id, &dialog.target.database)
+                        ),
+                    );
                     if summary.failed.is_empty() && summary.warnings.is_empty() {
                         self.toasts.success(message);
                     } else if summary.failed.is_empty() {

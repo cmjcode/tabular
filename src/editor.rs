@@ -5543,8 +5543,24 @@ fn ai_finish_turn(tabular: &mut window_egui::Tabular) {
             }
         }
     }
+    ai_record_turn_to_engram(tabular);
     // K6: simpan sesi setelah tiap giliran selesai.
     tabular.ai_history_autosave();
+}
+
+/// Catat giliran yang selesai tanpa error (pertanyaan + jawaban) ke Engram.
+fn ai_record_turn_to_engram(tabular: &window_egui::Tabular) {
+    let n = tabular.ai_chat.len();
+    if n < 2 {
+        return;
+    }
+    let (question, answer) = (&tabular.ai_chat[n - 2], &tabular.ai_chat[n - 1]);
+    if !matches!(question.role, crate::models::structs::AiChatRole::User) || answer.error.is_some()
+    {
+        return;
+    }
+    let project = crate::window_egui::project_ui::current_project(tabular).map(|p| p.name.clone());
+    crate::engram::record_chat(project.as_deref(), &question.text, &answer.text);
 }
 
 fn ai_poll_stream(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {

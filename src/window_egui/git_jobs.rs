@@ -1819,6 +1819,13 @@ fn apply(t: &mut Tabular, r: JobResult, ctx: &egui::Context) {
             }
         }
         JobResult::Op { key, label, res } => {
+            let engram_note = res
+                .as_ref()
+                .ok()
+                .and_then(|_| engram_git_note(t, &key, &label));
+            if let Some(text) = engram_note {
+                t.engram_activity(crate::engram::ActivityKind::Git, text);
+            }
             let ui = t.git.ui_mut(&key);
             ui.busy = None;
             match res {
@@ -2028,4 +2035,43 @@ fn apply(t: &mut Tabular, r: JobResult, ctx: &egui::Context) {
         }
         JobResult::Graph(job) => git_graph_jobs::apply(t, job, ctx),
     }
+}
+
+/// Teks Engram untuk operasi git penting yang berhasil; `None` untuk operasi
+/// rutin (stage, fetch, checkout, …).
+fn engram_git_note(t: &Tabular, key: &str, label: &str) -> Option<String> {
+    let important = matches!(
+        label,
+        "Commit"
+            | "Push"
+            | "Merge"
+            | "Rebase"
+            | "Cherry pick"
+            | "Revert"
+            | "Push tag"
+            | "Create branch"
+    );
+    if !important {
+        return None;
+    }
+    let repo = t
+        .git
+        .path_of(key)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| key.to_string());
+    let ui = t.git.ui(key);
+    let branch = ui
+        .and_then(|u| u.status.as_ref())
+        .and_then(|s| s.branch.clone())
+        .map(|b| format!(" on branch {b}"))
+        .unwrap_or_default();
+    let mut text = format!("Git {} in repository {repo}{branch}", label.to_lowercase());
+    if label == "Commit"
+        && let Some(msg) = ui
+            .map(|u| u.commit_message.trim())
+            .filter(|m| !m.is_empty())
+    {
+        text.push_str(&format!(": \"{}\"", msg.lines().next().unwrap_or(msg)));
+    }
+    Some(text)
 }

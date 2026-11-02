@@ -1190,6 +1190,11 @@ impl HeadlessSession {
         let path = crate::obsidian::save_memory_note(&root, title, content, tags)
             .map_err(AgentError::Notes)?;
         log::info!("[AGENT] saved memory note {path}");
+        crate::engram::record(
+            crate::engram::ActivityKind::Memory,
+            None,
+            format!("Saved a note \"{title}\" about my data:\n{content}"),
+        );
         // Indeks ulang supaya catatan baru langsung bisa dicari; kegagalan di
         // sini tidak membatalkan penyimpanan.
         if let Err(e) = crate::vector_index::sync_note_embeddings(&self.cache_pool, &root).await {

@@ -846,7 +846,9 @@ impl Tabular {
                 ui,
                 &mut self.auto_hide_menu_bar,
                 "Auto-hide menu bar",
-                Some("Hide the top menu bar automatically; reveal by hovering top edge or pressing Alt."),
+                Some(
+                    "Hide the top menu bar automatically; reveal by hovering top edge or pressing Alt.",
+                ),
             ) {
                 self.save_prefs_now();
             }
@@ -1755,6 +1757,9 @@ impl Tabular {
         self.render_ai_default_target(ui);
         self.render_ai_inline_suggestions_pref(ui);
         self.render_ai_memory_settings(ui);
+        if !cfg!(any(target_os = "ios", target_os = "android")) {
+            self.render_engram_settings(ui);
+        }
         self.render_ai_context_settings(ui);
     }
 

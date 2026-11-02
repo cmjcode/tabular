@@ -97,6 +97,7 @@ const MENUS: &[(&str, &[Entry])] = &[
     ("Tools", &[
         Item("Plugins…", "Plugins: Open Plugins Manager", None),
         Item("Agent Access (MCP Server)…", "Tools: Agent Access", None),
+        Item("Engram Memory…", "Tools: Engram Memory", None),
         Item("Decrypt Exported File…", "Data: Decrypt Exported File", None),
         Separator,
         Item("Open Logs Folder", "Tools: Open Logs Folder", None),
@@ -157,6 +158,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     (
         "Tools: Agent Access",
         "Control what AI agents may do through the MCP server",
+    ),
+    (
+        "Tools: Engram Memory",
+        "Connect the AI assistant to Engram and choose what Tabular records there",
     ),
     ("Tools: Open Logs Folder", "Show Tabular's log files"),
     (
@@ -258,8 +263,8 @@ impl Tabular {
             }
 
             let any_popup_open = egui::Popup::is_any_open(&ctx);
-            let in_trigger_zone = hover_pos.map_or(false, |p| p.y <= 6.0);
-            let in_menu_bar_zone = hover_pos.map_or(false, |p| p.y <= 36.0);
+            let in_trigger_zone = hover_pos.is_some_and(|p| p.y <= 6.0);
+            let in_menu_bar_zone = hover_pos.is_some_and(|p| p.y <= 36.0);
 
             if in_trigger_zone {
                 self.menu_bar_revealed = true;
@@ -454,6 +459,10 @@ pub(crate) fn run_extra_command(t: &mut Tabular, key: &str) -> bool {
         "Tools: Agent Access" => {
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             t.open_agent_access();
+        }
+        "Tools: Engram Memory" => {
+            t.settings_active_pref_tab = super::PrefTab::AiAssistant;
+            t.show_settings_window = true;
         }
         "Tools: Open Logs Folder" => {
             let dir = crate::app_logging::logs_dir();
