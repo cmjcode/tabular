@@ -902,6 +902,7 @@ impl super::Tabular {
                         ui.label("SQL Query:");
                         ui.add(
                             egui::TextEdit::multiline(&mut self.new_view_query)
+                                .code_editor()
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(10),
                         );

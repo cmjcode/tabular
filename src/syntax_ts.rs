@@ -2072,6 +2072,42 @@ mod highlight_cache_tests {
         assert_eq!(widths.0, widths.1, "'i' and 'm' must have the same width");
     }
 
+    /// Regresi issue #22: jalur editor utama (`HighlightCache` incremental,
+    /// banyak baris, indentasi) juga harus menghasilkan glyph selebar sama
+    /// sehingga kolom yang diindentasi sejajar vertikal.
+    #[test]
+    fn cached_multiline_sql_lays_out_on_monospace_grid() {
+        let sql = "SELECT\n    l.endpoint,\n    COUNT(*) AS total_calls\nFROM gitlab_api_logs l\nLEFT JOIN users u ON l.user_id = u.id\nGROUP BY\n    l.endpoint";
+        let font = eframe::egui::FontId::monospace(14.0);
+        let mut cache = HighlightCache::default();
+        // Panggil dua kali: jalur cache-miss lalu cache-hit.
+        let _ = cache.get_or_highlight(sql, LanguageKind::Sql, false);
+        let mut job = cache.get_or_highlight(sql, LanguageKind::Sql, false);
+        apply_font(&mut job, &font);
+        assert!(job.sections.iter().all(|s| s.format.font_id == font));
+
+        let ctx = eframe::egui::Context::default();
+        let mut advances: Vec<f32> = Vec::new();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let galley = ui.fonts_mut(|f| f.layout_job(job.clone()));
+            advances = galley
+                .rows
+                .iter()
+                .flat_map(|r| r.glyphs.iter())
+                .filter(|g| g.chr != '\n')
+                .map(|g| g.advance_width)
+                .collect();
+        });
+        out.textures_delta.clear();
+        assert!(!advances.is_empty());
+        let first = advances[0];
+        assert!(first > 0.0);
+        assert!(
+            advances.iter().all(|w| (*w - first).abs() < 0.01),
+            "every glyph must have the same advance width: {advances:?}"
+        );
+    }
+
     #[test]
     fn cache_returns_same_job_as_direct_highlight() {
         let mut cache = HighlightCache::default();
