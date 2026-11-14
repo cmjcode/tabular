@@ -2651,6 +2651,37 @@ fn build_auto_mappings(
     }
 }
 
+/// Hitung lebar modal dan tinggi maksimum area scroll berdasarkan ukuran viewport.
+fn query_modal_metrics(viewport: egui::Vec2, max_width: f32) -> (f32, f32) {
+    let width = (viewport.x - 48.0).clamp(280.0, max_width);
+    // Sisakan ruang vertikal untuk header, teks penjelasan, tombol aksi bawah,
+    // serta margin atas-bawah layar agar tombol tidak pernah tertutup di luar viewport.
+    let max_body_height = (viewport.y - 280.0)
+        .min(viewport.y * 0.50)
+        .clamp(64.0, 420.0);
+    (width, max_body_height)
+}
+
+/// Ringkasan jumlah statement dan baris untuk query multi-baris / multi-statement.
+fn unsafe_dml_query_summary(query: &str, hash_is_comment: bool) -> Option<String> {
+    let stmt_count = crate::connection::sql::split_sql_spans(query, hash_is_comment).len();
+    let line_count = query.lines().count();
+    if stmt_count <= 1 && line_count <= 1 {
+        return None;
+    }
+    let stmt_part = if stmt_count == 1 {
+        "1 statement".to_string()
+    } else {
+        format!("{stmt_count} statements")
+    };
+    let line_part = if line_count == 1 {
+        "1 line".to_string()
+    } else {
+        format!("{line_count} lines")
+    };
+    Some(format!("{stmt_part}, {line_part}"))
+}
+
 pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if !tabular.show_parameter_dialog {
         return;
@@ -2661,6 +2692,8 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
         tabular.show_parameter_dialog,
     );
 
+    let screen = ctx.content_rect();
+    let (dialog_width, grid_max_height) = query_modal_metrics(screen.size(), 480.0);
     let mut execute_clicked = false;
     let mut close = false;
 
@@ -2669,10 +2702,13 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
+        .constrain_to(screen)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(480.0)
+        .default_width(dialog_width)
+        .max_width(dialog_width)
         .frame(window_egui::style::modal_window_frame(ctx))
         .show(ctx, |ui| {
+            ui.set_width(dialog_width);
             window_egui::style::render_modal_header(ui, "Parameter Bindings Required", &mut close);
             ui.add_space(12.0);
 
@@ -2685,24 +2721,30 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                 );
                 ui.add_space(8.0);
 
-                egui::Grid::new("parameter_input_grid")
-                    .num_columns(2)
-                    .spacing([14.0, 10.0])
+                egui::ScrollArea::vertical()
+                    .id_salt("parameter_input_scroll")
+                    .max_height(grid_max_height)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        for (param_name, val) in &mut tabular.parameter_inputs {
-                            ui.label(
-                                egui::RichText::new(param_name.as_str())
-                                    .monospace()
-                                    .strong(),
-                            );
-                            crate::window_egui::style::render_text_field(
-                                ui,
-                                egui::TextEdit::singleline(val).hint_text("Enter value..."),
-                                260.0,
-                                None,
-                            );
-                            ui.end_row();
-                        }
+                        egui::Grid::new("parameter_input_grid")
+                            .num_columns(2)
+                            .spacing([14.0, 10.0])
+                            .show(ui, |ui| {
+                                for (param_name, val) in &mut tabular.parameter_inputs {
+                                    ui.label(
+                                        egui::RichText::new(param_name.as_str())
+                                            .monospace()
+                                            .strong(),
+                                    );
+                                    crate::window_egui::style::render_text_field(
+                                        ui,
+                                        egui::TextEdit::singleline(val).hint_text("Enter value..."),
+                                        260.0,
+                                        None,
+                                    );
+                                    ui.end_row();
+                                }
+                            });
                     });
             });
 
@@ -2733,36 +2775,43 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
     }
 }
 
-pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
-    if !tabular.show_unsafe_dml_dialog {
-        return;
-    }
-    window_egui::style::render_modal_backdrop(
-        ctx,
-        "unsafe_dml_dialog",
-        tabular.show_unsafe_dml_dialog,
-    );
+/// Render modal konfirmasi eksekusi query berbahaya/perubahan data.
+/// Dipisah dari `Tabular` agar dapat diuji secara headless.
+fn show_unsafe_dml_modal(
+    ctx: &egui::Context,
+    title: &str,
+    reason: &str,
+    query: &str,
+    hash_is_comment: bool,
+) -> (window_egui::style::ConfirmChoice, Option<egui::Rect>) {
+    window_egui::style::render_modal_backdrop(ctx, "unsafe_dml_dialog", true);
 
+    let screen = ctx.content_rect();
+    let (dialog_width, query_max_height) = query_modal_metrics(screen.size(), 560.0);
     let mut confirm_clicked = false;
     let mut close = false;
+    let mut run_btn_rect = None;
+    let header_title = if title.is_empty() {
+        "Confirm statement"
+    } else {
+        title
+    };
 
     egui::Window::new("unsafe_dml_dialog_window")
         .id(egui::Id::new("unsafe_dml_dialog_window"))
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
+        .constrain_to(screen)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(500.0)
+        .default_width(dialog_width)
+        .max_width(dialog_width)
         .frame(window_egui::style::modal_window_frame(ctx))
         .show(ctx, |ui| {
+            ui.set_width(dialog_width);
             window_egui::style::render_modal_header(
                 ui,
-                egui::RichText::new(if tabular.unsafe_dml_type.is_empty() {
-                    "Confirm statement".to_string()
-                } else {
-                    tabular.unsafe_dml_type.clone()
-                })
-                .color(window_egui::style::theme_danger(ctx)),
+                egui::RichText::new(header_title).color(window_egui::style::theme_danger(ctx)),
                 &mut close,
             );
             ui.add_space(12.0);
@@ -2770,12 +2819,21 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
             window_egui::style::modal_card_frame(ctx).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new(&tabular.unsafe_dml_reason)
+                    egui::RichText::new(reason)
                         .color(window_egui::style::theme_danger(ctx))
                         .strong()
                         .size(14.0),
                 );
                 ui.add_space(10.0);
+
+                if let Some(summary) = unsafe_dml_query_summary(query, hash_is_comment) {
+                    ui.label(
+                        egui::RichText::new(summary)
+                            .size(11.5)
+                            .color(window_egui::style::theme_muted_text(ctx)),
+                    );
+                    ui.add_space(6.0);
+                }
 
                 egui::Frame::new()
                     .fill(if ui.visuals().dark_mode {
@@ -2790,11 +2848,19 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::same(10))
                     .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(&tabular.unsafe_dml_query)
-                                .monospace()
-                                .size(11.5),
-                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("unsafe_dml_query_scroll")
+                            .max_height(query_max_height)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(query).monospace().size(11.5),
+                                    )
+                                    .wrap(),
+                                );
+                            });
                     });
             });
 
@@ -2808,7 +2874,9 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
                             .color(egui::Color32::WHITE),
                     )
                     .fill(window_egui::style::theme_danger(ctx));
-                    if ui.add(run_btn).clicked() {
+                    let resp = ui.add(run_btn);
+                    run_btn_rect = Some(resp.rect);
+                    if resp.clicked() {
                         confirm_clicked = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -2818,12 +2886,45 @@ pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: 
             });
         });
 
-    if close {
-        tabular.show_unsafe_dml_dialog = false;
-    } else if confirm_clicked {
-        tabular.show_unsafe_dml_dialog = false;
-        let query = tabular.unsafe_dml_query.clone();
-        editor::execute_query_bypass_checks(tabular, query);
+    let choice = if confirm_clicked {
+        window_egui::style::ConfirmChoice::Confirmed
+    } else if close {
+        window_egui::style::ConfirmChoice::Cancelled
+    } else {
+        window_egui::style::ConfirmChoice::Pending
+    };
+    (choice, run_btn_rect)
+}
+
+pub(crate) fn render_unsafe_dml_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
+    if !tabular.show_unsafe_dml_dialog {
+        return;
+    }
+    let hash_is_comment = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)
+        .and_then(|cid| tabular.connections.iter().find(|c| c.id == Some(cid)))
+        .is_some_and(|c| c.connection_type == models::enums::DatabaseType::MySQL);
+
+    let (choice, _) = show_unsafe_dml_modal(
+        ctx,
+        &tabular.unsafe_dml_type,
+        &tabular.unsafe_dml_reason,
+        &tabular.unsafe_dml_query,
+        hash_is_comment,
+    );
+
+    match choice {
+        window_egui::style::ConfirmChoice::Pending => {}
+        window_egui::style::ConfirmChoice::Cancelled => {
+            tabular.show_unsafe_dml_dialog = false;
+        }
+        window_egui::style::ConfirmChoice::Confirmed => {
+            tabular.show_unsafe_dml_dialog = false;
+            let query = tabular.unsafe_dml_query.clone();
+            editor::execute_query_bypass_checks(tabular, query);
+        }
     }
 }
 
@@ -3046,5 +3147,114 @@ mod csv_import_tests {
             .err();
         assert_eq!(err.as_deref(), Some("No data or all columns skipped."));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsafe_dml_summary_counts_statements_and_lines() {
+        assert_eq!(
+            unsafe_dml_query_summary("DELETE FROM users", false),
+            None,
+            "single one-line statement needs no extra summary line"
+        );
+        assert_eq!(
+            unsafe_dml_query_summary("UPDATE users\nSET active = false\nWHERE id = 1;", false),
+            Some("1 statement, 3 lines".to_string())
+        );
+        let multi = "-- 1. step one\nUPDATE a SET x = 1 WHERE id = 1;\n\n-- 2. step two\nUPDATE b SET y = 2 WHERE id = 2;\nDELETE FROM c WHERE id = 3;";
+        assert_eq!(
+            unsafe_dml_query_summary(multi, false),
+            Some("3 statements, 6 lines".to_string())
+        );
+    }
+
+    #[test]
+    fn unsafe_dml_modal_keeps_run_button_inside_viewport_for_huge_batch() {
+        let mut huge_sql = String::new();
+        for i in 1..=25 {
+            huge_sql.push_str(&format!(
+                "-- {i}. Rekap kandang_stocks langkah {i}\n\
+                 UPDATE kandang_stock_mutation_details m\n\
+                 JOIN bak_ksmd_harga_20261113 b ON b.id = m.id\n\
+                 SET m.qty_in_harga = ROUND(b.harga * 1.0, 2),\n\
+                     m.updated_at = NOW(3)\n\
+                 WHERE m.deleted_at IS NULL AND m.id = {i};\n\n"
+            ));
+        }
+
+        for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(800.0, 540.0)] {
+            let ctx = egui::Context::default();
+            egui_icons::initialize(&ctx);
+            let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
+            let mut btn_rect = None;
+
+            // Jalankan beberapa pass agar egui menstabilkan posisi anchor CENTER_CENTER.
+            for _ in 0..3 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(screen_rect),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| {
+                    let (choice, rect) = show_unsafe_dml_modal(
+                        ui.ctx(),
+                        "Confirm change",
+                        "This connection asks before every change. Run this write statement?",
+                        &huge_sql,
+                        true,
+                    );
+                    assert_eq!(choice, window_egui::style::ConfirmChoice::Pending);
+                    btn_rect = rect;
+                });
+                out.textures_delta.clear();
+            }
+
+            let rect = btn_rect.expect("run button should be rendered");
+            assert!(
+                rect.top() >= screen_rect.top() && rect.bottom() <= screen_rect.bottom(),
+                "run button {rect:?} overflowed viewport {screen_rect:?}"
+            );
+            assert!(
+                rect.left() >= screen_rect.left() && rect.right() <= screen_rect.right(),
+                "run button {rect:?} overflowed horizontally in {screen_rect:?}"
+            );
+
+            // Klik tombol "Yes, Run It" pada posisinya untuk memastikan tidak terhalang.
+            let click_pos = rect.center();
+            let click_input = egui::RawInput {
+                screen_rect: Some(screen_rect),
+                events: vec![
+                    egui::Event::PointerMoved(click_pos),
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut final_choice = window_egui::style::ConfirmChoice::Pending;
+            let mut out = ctx.run_ui(click_input, |ui| {
+                let (choice, _) = show_unsafe_dml_modal(
+                    ui.ctx(),
+                    "Confirm change",
+                    "This connection asks before every change. Run this write statement?",
+                    &huge_sql,
+                    true,
+                );
+                final_choice = choice;
+            });
+            out.textures_delta.clear();
+            assert_eq!(
+                final_choice,
+                window_egui::style::ConfirmChoice::Confirmed,
+                "clicking visible Run button must confirm in viewport {viewport:?}"
+            );
+        }
     }
 }
