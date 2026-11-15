@@ -1131,3 +1131,114 @@ impl super::Tabular {
         }
     }
 }
+
+/// Folder sidebar untuk koneksi hasil impor DBeaver.
+const DBEAVER_IMPORT_FOLDER: &str = "Imported from DBeaver";
+
+impl super::Tabular {
+    /// "Database > Import Connections from DBeaver…": pilih `data-sources.json`,
+    /// lalu simpan koneksi yang belum ada. Koneksi yang sama (host, port,
+    /// database, user) dipakai ulang, tidak diduplikasi. Password tidak diimpor.
+    #[cfg(not(target_os = "ios"))]
+    pub(crate) fn import_dbeaver_connections(&mut self) {
+        let default = crate::connection_import::dbeaver_default_path();
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Select DBeaver data-sources.json")
+            .add_filter("DBeaver data sources", &["json"]);
+        if let Some(dir) = default
+            .as_ref()
+            .and_then(|p| p.parent())
+            .filter(|d| d.exists())
+        {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        let report = match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| crate::connection_import::parse_dbeaver(&text))
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.toasts
+                    .error(format!("Could not import {}: {e}", path.display()));
+                return;
+            }
+        };
+
+        let mut imported = 0usize;
+        let mut existing = 0usize;
+        let mut failed = 0usize;
+        let mut folder_ready = false;
+        for c in &report.connections {
+            if crate::deeplink::find_matching_connection(&self.connections, &c.dsn).is_some() {
+                existing += 1;
+                continue;
+            }
+            if !folder_ready {
+                folder_ready =
+                    crate::sidebar_database::save_connection_folder(self, DBEAVER_IMPORT_FOLDER);
+            }
+            let mut cfg = c.dsn.to_connection_config(Some(&c.name));
+            if cfg.connection_type == crate::models::enums::DatabaseType::SQLite {
+                // Form SQLite menyimpan path di host dan database sekaligus.
+                cfg.host = cfg.database.clone();
+            }
+            cfg.folder = Some(DBEAVER_IMPORT_FOLDER.to_string());
+            if let Some(ssh) = &c.ssh {
+                cfg.ssh_enabled = true;
+                cfg.ssh_host = ssh.host.clone();
+                cfg.ssh_port = ssh.port.clone();
+                cfg.ssh_username = ssh.username.clone();
+            }
+            if crate::sidebar_database::save_connection_to_database(self, &cfg) {
+                imported += 1;
+                // Daftar diperbarui per koneksi agar duplikat di file yang sama
+                // juga terdeteksi.
+                crate::sidebar_database::load_connections(self);
+            } else {
+                failed += 1;
+            }
+        }
+        if imported > 0 {
+            crate::sidebar_database::refresh_connections_tree(self);
+        }
+
+        let mut parts = vec![format!("Imported {imported} connection(s)")];
+        if existing > 0 {
+            parts.push(format!("{existing} already existed"));
+        }
+        if !report.skipped.is_empty() {
+            let names: Vec<String> = report
+                .skipped
+                .iter()
+                .take(3)
+                .map(|(n, why)| format!("{n} ({why})"))
+                .collect();
+            parts.push(format!(
+                "{} skipped: {}{}",
+                report.skipped.len(),
+                names.join(", "),
+                if report.skipped.len() > 3 {
+                    ", …"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if failed > 0 {
+            parts.push(format!("{failed} could not be saved"));
+        }
+        let summary = parts.join(" • ");
+        if failed > 0 {
+            self.toasts.error(summary);
+        } else {
+            self.toasts.success(summary);
+        }
+        if imported > 0 {
+            self.toasts
+                .info("Passwords were not imported. Edit each connection to add its password.");
+        }
+    }
+}

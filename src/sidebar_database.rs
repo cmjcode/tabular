@@ -7,6 +7,34 @@ use sqlx::{Row, SqlitePool};
 use crate::{connection, directory, models, modules, sidebar_history, window_egui};
 
 // Helper function to determine the sort order of database types
+/// Penanda password pada URL koneksi yang ditampilkan di form.
+const URL_PASSWORD_MASK: &str = "****";
+
+/// Terapkan URL koneksi yang di-paste ke form. Password penanda (`****`) atau
+/// kosong tidak menimpa password yang sudah ada, dan SSL hanya dinyalakan.
+fn apply_parsed_dsn(
+    connection: &mut models::structs::ConnectionConfig,
+    parsed: crate::deeplink::ParsedDsn,
+) {
+    let is_sqlite = parsed.db_type == models::enums::DatabaseType::SQLite;
+    connection.connection_type = parsed.db_type;
+    if is_sqlite {
+        // Form SQLite menyimpan path file di host dan database sekaligus.
+        connection.host = parsed.database.clone();
+    } else {
+        connection.host = parsed.host;
+    }
+    connection.port = parsed.port;
+    connection.username = parsed.username;
+    if !parsed.password.is_empty() && parsed.password != URL_PASSWORD_MASK {
+        connection.password = parsed.password;
+    }
+    connection.database = parsed.database;
+    if parsed.ssl {
+        connection.ssl_enabled = true;
+    }
+}
+
 fn database_type_order(db_type: &models::enums::DatabaseType) -> u8 {
     match db_type {
         models::enums::DatabaseType::MySQL => 0,
@@ -49,131 +77,6 @@ fn sort_connections_in_folder(
             (None, None) => a.name.cmp(&b.name),
         }
     });
-}
-
-// Helper to parse an editable connection URL and sync it back to fields
-#[derive(Debug, Clone)]
-struct ParsedUrl {
-    db_type: models::enums::DatabaseType,
-    host: String,
-    port: String,
-    username: String,
-    password: String,
-    database: String,
-}
-
-fn parse_connection_url(input: &str) -> Option<ParsedUrl> {
-    let url = input.trim();
-    if url.is_empty() {
-        return None;
-    }
-
-    // Handle sqlite: special cases (sqlite:path or sqlite://path)
-    if let Some(rest) = url.strip_prefix("sqlite:") {
-        let path = rest.strip_prefix("//").unwrap_or(rest);
-        return Some(ParsedUrl {
-            db_type: models::enums::DatabaseType::SQLite,
-            host: path.to_string(),
-            port: String::new(),
-            username: String::new(),
-            password: String::new(),
-            database: String::new(),
-        });
-    }
-
-    // General scheme:// parser
-    let (scheme, rest) = match url.split_once("://") {
-        Some((s, r)) => (s.to_lowercase(), r),
-        None => {
-            // Accept mssql:/mysql:/postgresql:/redis: without // if user types quickly
-            if let Some((s, r)) = url.split_once(':') {
-                (s.to_lowercase(), r)
-            } else {
-                return None;
-            }
-        }
-    };
-
-    let db_type = match scheme.as_str() {
-        "mysql" => models::enums::DatabaseType::MySQL,
-        "postgres" | "postgresql" => models::enums::DatabaseType::PostgreSQL,
-        "redis" => models::enums::DatabaseType::Redis,
-        "mssql" | "sqlserver" => models::enums::DatabaseType::MsSQL,
-        "mongodb" | "mongo" => models::enums::DatabaseType::MongoDB,
-        _ => return None,
-    };
-
-    let mut user = String::new();
-    let mut pass = String::new();
-    let mut hostport_and_path = rest;
-
-    // Extract auth if present: use last '@' to avoid '@' in password (should be %40 anyway)
-    if let Some(at_idx) = hostport_and_path.rfind('@') {
-        let (auth, after) = hostport_and_path.split_at(at_idx);
-        hostport_and_path = &after[1..]; // skip '@'
-        if let Some((u, p)) = auth.split_once(':') {
-            user = modules::url_decode(u);
-            pass = modules::url_decode(p);
-        } else {
-            user = modules::url_decode(auth);
-        }
-    }
-
-    // Split host:port and optional /database
-    let (hostport, path) = match hostport_and_path.split_once('/') {
-        Some((hp, p)) => (hp, Some(p)),
-        None => (hostport_and_path, None),
-    };
-
-    let host: String;
-    let mut port = String::new();
-
-    if hostport.starts_with('[') {
-        // IPv6 literal [::1]:port
-        if let Some(end) = hostport.find(']') {
-            host = hostport[1..end].to_string();
-            if let Some(rem) = hostport[end + 1..].strip_prefix(':') {
-                port = rem.to_string();
-            }
-        } else {
-            host = hostport.to_string();
-        }
-    } else if let Some((h, p)) = hostport.rsplit_once(':') {
-        host = h.to_string();
-        port = p.to_string();
-    } else {
-        host = hostport.to_string();
-    }
-
-    let database = path.unwrap_or("").trim_matches('/').to_string();
-
-    // Defaults for ports if missing
-    if port.is_empty() {
-        port = match db_type {
-            models::enums::DatabaseType::MySQL => "3306".into(),
-            models::enums::DatabaseType::PostgreSQL => "5432".into(),
-            models::enums::DatabaseType::Redis => "6379".into(),
-            models::enums::DatabaseType::MsSQL => "1433".into(),
-            models::enums::DatabaseType::SQLite => String::new(),
-            models::enums::DatabaseType::MongoDB => "27017".into(),
-            models::enums::DatabaseType::ApiHttp => String::new(),
-            models::enums::DatabaseType::Plugin(ref id) => {
-                crate::driver_api::registry::descriptor(id)
-                    .and_then(|d| d.default_port)
-                    .map(|p| p.to_string())
-                    .unwrap_or_default()
-            }
-        };
-    }
-
-    Some(ParsedUrl {
-        db_type,
-        host,
-        port,
-        username: user,
-        password: pass,
-        database,
-    })
 }
 
 /// Lebar tetap dialog Add/Edit Connection (isi window, tanpa margin frame).
@@ -424,7 +327,12 @@ pub(crate) fn render_connection_dialog(
                             let host = connection_data.host.trim();
                             let port = connection_data.port.trim();
                             let user = connection_data.username.trim();
-                            let pass = connection_data.password.clone();
+                            // Password tidak pernah ditampilkan di URL; diganti penanda.
+                            let pass = if connection_data.password.is_empty() {
+                                String::new()
+                            } else {
+                                URL_PASSWORD_MASK.to_string()
+                            };
                             let db = connection_data.database.trim();
 
                             match connection_data.connection_type {
@@ -523,17 +431,26 @@ pub(crate) fn render_connection_dialog(
                         };
 
                         ui.label("Connection URL:");
-                        let mut url_text = full_url.clone();
-                        let resp = ui.text_edit_singleline(&mut url_text);
-                        if resp.changed()
-                            && let Some(parsed) = parse_connection_url(&url_text)
-                        {
-                            connection_data.connection_type = parsed.db_type;
-                            connection_data.host = parsed.host;
-                            connection_data.port = parsed.port;
-                            connection_data.username = parsed.username;
-                            connection_data.password = parsed.password;
-                            connection_data.database = parsed.database;
+                        let draft_id = egui::Id::new("connection_url_draft");
+                        let mut url_text = ui
+                            .ctx()
+                            .data(|d| d.get_temp::<String>(draft_id))
+                            .unwrap_or_else(|| full_url.clone());
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut url_text)
+                                .hint_text("Paste postgres://, mysql://, jdbc:..., mongodb+srv://"),
+                        )
+                        .on_hover_text(
+                            "Paste a connection URL to fill the fields above. The password is shown as ****.",
+                        );
+                        if resp.changed() {
+                            ui.ctx().data_mut(|d| d.insert_temp(draft_id, url_text.clone()));
+                            if let Ok(parsed) = crate::deeplink::parse_dsn(&url_text) {
+                                apply_parsed_dsn(&mut connection_data, parsed);
+                            }
+                        }
+                        if resp.lost_focus() {
+                            ui.ctx().data_mut(|d| d.remove::<String>(draft_id));
                         }
                         ui.end_row();
                         } // end if != ApiHttp (Connection URL section)

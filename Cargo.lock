@@ -7496,6 +7496,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
  "tree-sitter",
  "tree-sitter-javascript",
  "tree-sitter-json",

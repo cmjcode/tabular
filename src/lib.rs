@@ -28,6 +28,7 @@ pub mod code_font;
 pub mod config;
 pub mod connection;
 pub mod connection_env;
+pub mod connection_import;
 pub mod connection_safety;
 pub mod curl_import;
 pub mod data_check_cli;
@@ -83,6 +84,7 @@ pub mod editor_state_adapter;
 pub mod engram;
 pub mod export;
 pub mod export_import_all;
+pub mod favorites;
 pub mod file_viewer;
 pub mod flexurio_import;
 pub mod geo_map;
@@ -124,6 +126,7 @@ pub mod project;
 pub mod project_memory;
 pub mod query_diagnostics;
 pub mod query_diagram;
+pub mod query_params;
 pub mod query_profiler;
 pub mod query_stats;
 pub mod query_tools;
@@ -155,6 +158,7 @@ pub mod sync;
 pub mod table_group;
 pub mod url_opener;
 pub mod user_manager;
+pub mod user_snippets;
 pub mod vector_index;
 // Unified syntax / parsing module (legacy highlighter + optional tree-sitter parsing)
 #[cfg(feature = "query_ast")]
@@ -287,6 +291,7 @@ pub fn run() -> Result<(), eframe::Error> {
     // Log ke file + crash report; setelah init_data_dir agar folder log benar.
     app_logging::init();
     app_logging::install_panic_hook();
+    connection::server_messages::install();
 
     log::debug!(
         "Application starting with data directory: {}",

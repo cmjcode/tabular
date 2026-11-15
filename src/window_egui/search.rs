@@ -5,8 +5,6 @@ use log::debug;
 impl super::Tabular {
     pub fn update_all_database_search_results(&mut self) {
         self.update_search_results();
-        self.history_search_text = self.database_search_text.trim().to_string();
-        crate::sidebar_history::filter_history_tree(self);
         crate::sidebar_query::filter_queries_tree(self);
     }
 

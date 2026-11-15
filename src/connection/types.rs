@@ -125,6 +125,8 @@ pub struct QueryResultMessage {
     pub error_location: Option<ErrorLocation>,
     /// Rincian waktu (tunggu/server/transfer/klien) bila driver mengukurnya.
     pub timing: Option<super::timing::QueryTiming>,
+    /// Notice PostgreSQL / PRINT SQL Server yang dikirim selama statement.
+    pub server_messages: Vec<super::server_messages::ServerMessage>,
 }
 
 #[derive(Debug, Clone)]

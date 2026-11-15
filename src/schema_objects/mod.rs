@@ -6,6 +6,7 @@
 
 pub mod catalog;
 pub mod exec;
+pub mod routine_call;
 pub mod sql;
 
 pub use exec::{ResultSet, run_in_database};

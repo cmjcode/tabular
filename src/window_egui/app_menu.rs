@@ -32,6 +32,7 @@ const MENUS: &[(&str, &[Entry])] = &[
         Separator,
         Item("Save", "Query: Save Tab", Some(Action::SaveTab)),
         Item("Close Tab", "Query: Close Tab", Some(Action::CloseTab)),
+        Item("Reopen Closed Tab", "Tabs: Reopen Closed Tab", Some(Action::ReopenClosedTab)),
         Separator,
         Item("Import Data into Table…", "Data: Import CSV", None),
         Item("Export Results…", "Data: Export with Options", None),
@@ -52,6 +53,7 @@ const MENUS: &[(&str, &[Entry])] = &[
         Separator,
         Item("Toggle Word Wrap", "Editor: Toggle Word Wrap", None),
         Item("Toggle Line Numbers", "Editor: Toggle Line Numbers", None),
+        Item("Edit SQL Snippets…", "Editor: Edit SQL Snippets...", None),
         Separator,
         Item("Preferences…", "Preferences: Settings", Some(Action::OpenSettings)),
     ]),
@@ -59,14 +61,20 @@ const MENUS: &[(&str, &[Entry])] = &[
         Item("Command Palette…", "View: Command Palette", Some(Action::QuickOpen)),
         Item("Toggle Sidebar", "View: Toggle Sidebar", None),
         Item("Toggle AI Assistant", "View: Toggle AI Assistant", Some(Action::ToggleAiPanel)),
+        Item("Toggle Query History", "View: Toggle Query History", None),
         Item("Toggle Auto-Hide Menu Bar", "View: Toggle Auto-Hide Menu Bar", None),
         Item("Query Insights", "Query: Insights (Most Run / Slowest)", None),
+        Separator,
+        Item("Next Tab", "Tabs: Next Tab", Some(Action::NextTab)),
+        Item("Previous Tab", "Tabs: Previous Tab", Some(Action::PrevTab)),
+        Item("Switch to Last Used Tab", "Tabs: Switch to Last Used Tab", None),
         Separator,
         Item("Refresh", "View: Refresh", Some(Action::Refresh)),
         Item("Color Theme…", "Preferences: Color Theme", None),
     ]),
     ("Database", &[
         Item("New Connection…", "Database: New Connection", None),
+        Item("Import Connections from DBeaver…", "Database: Import from DBeaver", None),
         Item("Edit Connection…", "Database: Edit Connection", None),
         Item("Refresh Connection", "Database: Refresh Connection", None),
         Separator,
@@ -114,6 +122,20 @@ const MENUS: &[(&str, &[Entry])] = &[
 
 /// Perintah baru yang juga ditampilkan di command palette: `(judul, deskripsi)`.
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
+    (
+        "Tabs: Reopen Closed Tab",
+        "Reopen the most recently closed query tab",
+    ),
+    ("Tabs: Next Tab", "Activate the tab to the right"),
+    ("Tabs: Previous Tab", "Activate the tab to the left"),
+    (
+        "Tabs: Switch to Last Used Tab",
+        "Go back to the previously active tab (Ctrl+Tab)",
+    ),
+    (
+        "Database: Import from DBeaver",
+        "Add connections from DBeaver's data-sources.json (passwords are not imported)",
+    ),
     (
         "Database: New Connection",
         "Add a database or API connection",
@@ -172,6 +194,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     (
         "View: Toggle AI Assistant",
         "Show or hide the AI Assistant panel",
+    ),
+    (
+        "View: Toggle Query History",
+        "Show or hide the Query History panel on the right of the editor",
     ),
     (
         "View: Toggle Auto-Hide Menu Bar",
@@ -385,6 +411,14 @@ impl Tabular {
 /// perintah dikenali.
 pub(crate) fn run_extra_command(t: &mut Tabular, key: &str) -> bool {
     match key {
+        "Tabs: Reopen Closed Tab" => crate::editor::reopen_closed_tab(t),
+        "Tabs: Next Tab" => crate::editor::cycle_tab(t, true),
+        "Tabs: Previous Tab" => crate::editor::cycle_tab(t, false),
+        "Tabs: Switch to Last Used Tab" => crate::editor::switch_to_previous_tab(t),
+        "Database: Import from DBeaver" => {
+            #[cfg(not(target_os = "ios"))]
+            t.import_dbeaver_connections();
+        }
         "Database: New Connection" => {
             t.new_connection.folder = Some("Default".to_string());
             t.show_add_connection = true;
@@ -495,6 +529,9 @@ pub(crate) fn run_extra_command(t: &mut Tabular, key: &str) -> bool {
         }
         "View: Toggle AI Assistant" => {
             t.show_ai_panel = !t.show_ai_panel;
+        }
+        "View: Toggle Query History" => {
+            super::history_panel::toggle(t);
         }
         "View: Command Palette" => {
             t.show_command_palette = true;

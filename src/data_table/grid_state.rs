@@ -340,6 +340,8 @@ pub struct GridExtState {
     // B10 / B11
     pub row_json: Option<RowJsonViewer>,
     pub fk_picker: Option<FkPicker>,
+    /// Profil kolom yang sedang ditampilkan.
+    pub column_profile: Option<super::column_profile::ColumnProfile>,
     next_generation: u64,
 }
 
@@ -353,6 +355,8 @@ impl GridExtState {
     pub fn close_topmost_overlay(&mut self) -> bool {
         if self.review.is_some() {
             self.review = None;
+        } else if self.column_profile.is_some() {
+            self.column_profile = None;
         } else if self.fk_picker.is_some() {
             self.fk_picker = None;
         } else if self.move_column.is_some() {
@@ -385,6 +389,8 @@ pub struct GridRequests {
     pub open_row_json: Option<usize>,
     pub open_fk_picker: Option<(usize, usize, ForeignKey)>,
     pub hide_column: Option<String>,
+    /// Buka profil kolom (nama header).
+    pub profile_column: Option<String>,
     pub show_all_columns: bool,
     pub toggle_column: Option<String>,
     pub reorder: Option<(String, String, bool)>,
@@ -1182,6 +1188,25 @@ pub(crate) fn select_find_match(t: &mut Tabular) {
     }
 }
 
+/// Profilkan kolom dari semua baris yang sudah dimuat (bukan hanya halaman
+/// yang tampil pada paginasi sisi klien).
+pub(crate) fn open_column_profile(t: &mut Tabular, column: &str) {
+    let Some(col) = t.current_table_headers.iter().position(|h| h == column) else {
+        return;
+    };
+    let rows = if t.all_table_data.is_empty() {
+        &t.current_table_data
+    } else {
+        &t.all_table_data
+    };
+    let profile = super::column_profile::profile(
+        column,
+        rows.iter()
+            .map(|r| r.get(col).map(String::as_str).unwrap_or("")),
+    );
+    t.grid_ext.column_profile = Some(profile);
+}
+
 pub(crate) fn search_all_rows_on_server(t: &mut Tabular) {
     let Some(cid) = t.current_connection_id else {
         return;
@@ -1762,6 +1787,9 @@ pub(crate) fn apply_grid_requests(t: &mut Tabular, req: GridRequests) {
     }
     if let Some(column) = req.hide_column {
         set_column_hidden(t, &column, true);
+    }
+    if let Some(column) = req.profile_column {
+        open_column_profile(t, &column);
     }
     if let Some(column) = req.toggle_column {
         let hidden = hidden_columns(t).contains(&column);

@@ -21,6 +21,9 @@ pub enum Action {
     FindReplace,
     NewTab,
     CloseTab,
+    ReopenClosedTab,
+    NextTab,
+    PrevTab,
     SaveTab,
     OpenFile,
     QuickOpen,
@@ -69,6 +72,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { action: Action::ToggleAiPanel, id: "toggle_ai_panel", label: "Toggle AI assistant", category: "Editor", defaults: &["Cmd+Shift+A"] },
     ActionSpec { action: Action::NewTab, id: "new_tab", label: "New query tab", category: "Tabs", defaults: &["Cmd+T"] },
     ActionSpec { action: Action::CloseTab, id: "close_tab", label: "Close tab", category: "Tabs", defaults: &["Cmd+W"] },
+    ActionSpec { action: Action::ReopenClosedTab, id: "reopen_closed_tab", label: "Reopen closed tab", category: "Tabs", defaults: &["Cmd+Alt+T"] },
+    ActionSpec { action: Action::NextTab, id: "next_tab", label: "Next tab", category: "Tabs", defaults: &["Cmd+Alt+ArrowRight"] },
+    ActionSpec { action: Action::PrevTab, id: "prev_tab", label: "Previous tab", category: "Tabs", defaults: &["Cmd+Alt+ArrowLeft"] },
     ActionSpec { action: Action::SaveTab, id: "save_tab", label: "Save tab / table changes", category: "Tabs", defaults: &["Cmd+S"] },
     ActionSpec { action: Action::OpenFile, id: "open_file", label: "Open SQL file", category: "Query", defaults: &["Cmd+O"] },
     ActionSpec { action: Action::QuickOpen, id: "quick_open", label: "Quick open / command palette", category: "Navigation", defaults: &["Cmd+P", "Cmd+K"] },
@@ -84,6 +90,13 @@ pub const FIXED_EDITOR_SHORTCUTS: &[(&str, &str)] = &[
     ("Add next occurrence to selection", "Cmd+D"),
     ("Find next match", "Cmd+G"),
     ("Go to definition (alternative)", "Cmd+B"),
+];
+
+/// Shortcut tab yang memakai tombol Control fisik di semua platform (di macOS
+/// Cmd+Tab dipakai sistem), sehingga tidak lewat [`Shortcut`].
+pub const CONTROL_TAB_SHORTCUTS: &[(&str, &str)] = &[
+    ("Switch to last used tab", "Ctrl+Tab"),
+    ("Switch to last used tab (reverse)", "Ctrl+Shift+Tab"),
 ];
 
 /// Label shortcut tetap (bukan aksi keymap) sesuai platform, mis. "Cmd+H"
@@ -655,8 +668,17 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                         // Shortcut editor tetap (belum bisa diubah) tetap ditampilkan
                         // agar bisa ditemukan.
                         let mut fixed_header = false;
-                        for (label, config) in FIXED_EDITOR_SHORTCUTS {
-                            let shortcut_text = fixed_label(config);
+                        // Shortcut Control fisik ditampilkan apa adanya: fixed_label
+                        // akan mengubahnya menjadi Cmd di macOS.
+                        let fixed_rows = FIXED_EDITOR_SHORTCUTS
+                            .iter()
+                            .map(|(label, config)| (*label, fixed_label(config)))
+                            .chain(
+                                CONTROL_TAB_SHORTCUTS
+                                    .iter()
+                                    .map(|(label, text)| (*label, (*text).to_string())),
+                            );
+                        for (label, shortcut_text) in fixed_rows {
                             if !filter.is_empty()
                                 && !label.to_lowercase().contains(&filter)
                                 && !shortcut_text.to_lowercase().contains(&filter)
@@ -669,7 +691,7 @@ pub fn render_shortcuts_window(tabular: &mut crate::window_egui::Tabular, ctx: &
                                 fixed_header = true;
                             }
                             ui.horizontal(|ui| {
-                                ui.label(*label);
+                                ui.label(label);
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {

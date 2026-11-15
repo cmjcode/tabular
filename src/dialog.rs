@@ -2684,6 +2684,8 @@ fn unsafe_dml_query_summary(query: &str, hash_is_comment: bool) -> Option<String
 
 pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &egui::Context) {
     if !tabular.show_parameter_dialog {
+        // Reset penanda fokus supaya pembukaan berikutnya memfokuskan field pertama lagi.
+        ctx.data_mut(|d| d.remove::<bool>(egui::Id::new("parameter_dialog_opened")));
         return;
     }
     window_egui::style::render_modal_backdrop(
@@ -2695,10 +2697,15 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
     let screen = ctx.content_rect();
     let (dialog_width, grid_max_height) = query_modal_metrics(screen.size(), 480.0);
     let mut execute_clicked = false;
+    let mut submit_by_enter = false;
     let mut close = false;
+    let first_frame_id = egui::Id::new("parameter_dialog_opened");
+    let first_frame = !ctx.data(|d| d.get_temp::<bool>(first_frame_id).unwrap_or(false));
+    ctx.data_mut(|d| d.insert_temp(first_frame_id, true));
 
     egui::Window::new("parameter_bindings_window")
         .id(egui::Id::new("parameter_bindings_window"))
+        .order(egui::Order::Foreground)
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
@@ -2727,51 +2734,111 @@ pub(crate) fn render_parameter_dialog(tabular: &mut window_egui::Tabular, ctx: &
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         egui::Grid::new("parameter_input_grid")
-                            .num_columns(2)
+                            .num_columns(3)
                             .spacing([14.0, 10.0])
                             .show(ui, |ui| {
-                                for (param_name, val) in &mut tabular.parameter_inputs {
+                                for (idx, param) in tabular.parameter_inputs.iter_mut().enumerate()
+                                {
                                     ui.label(
-                                        egui::RichText::new(param_name.as_str())
+                                        egui::RichText::new(param.name.as_str())
                                             .monospace()
                                             .strong(),
                                     );
-                                    crate::window_egui::style::render_text_field(
-                                        ui,
-                                        egui::TextEdit::singleline(val).hint_text("Enter value..."),
-                                        260.0,
-                                        None,
-                                    );
+                                    egui::ComboBox::from_id_salt(("param_kind", idx))
+                                        .width(120.0)
+                                        .selected_text(param.kind.label())
+                                        .show_ui(ui, |ui| {
+                                            for kind in crate::query_params::ParamKind::ALL {
+                                                ui.selectable_value(
+                                                    &mut param.kind,
+                                                    kind,
+                                                    kind.label(),
+                                                );
+                                            }
+                                        });
+                                    let enabled =
+                                        param.kind != crate::query_params::ParamKind::Null;
+                                    let hint = match param.kind {
+                                        crate::query_params::ParamKind::Raw => {
+                                            "Inserted as-is, not escaped"
+                                        }
+                                        crate::query_params::ParamKind::Null => "NULL",
+                                        _ => "Enter value...",
+                                    };
+                                    let field_width = 220.0;
+                                    ui.add_enabled_ui(enabled, |ui| {
+                                        let resp = crate::window_egui::style::render_text_field(
+                                            ui,
+                                            egui::TextEdit::singleline(&mut param.text)
+                                                .hint_text(hint),
+                                            field_width,
+                                            None,
+                                        );
+                                        if idx == 0 && first_frame {
+                                            resp.request_focus();
+                                        }
+                                        if resp.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        {
+                                            submit_by_enter = true;
+                                        }
+                                    });
                                     ui.end_row();
                                 }
                             });
                     });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Values are inserted as escaped SQL literals. Auto treats NULL, numbers \
+                         and true/false as SQL values and everything else as text.",
+                    )
+                    .size(11.0)
+                    .weak(),
+                );
+                if let Some(err) = &tabular.parameter_error {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(err)
+                            .size(12.0)
+                            .color(window_egui::style::theme_danger(ctx)),
+                    );
+                }
             });
 
             ui.add_space(14.0);
 
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(window_egui::style::btn_primary_ctx(
-                            ui.ctx(),
-                            "🚀 Run Query",
-                        ))
-                        .clicked()
-                    {
-                        execute_clicked = true;
-                    }
-                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(window_egui::style::btn_primary_ctx(
+                        ui.ctx(),
+                        format!("{} Run Query", egui_icons::icons::ICON_PLAY_ARROW.codepoint),
+                    ))
+                    .clicked()
+                {
+                    execute_clicked = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
             });
         });
 
     if close {
         tabular.show_parameter_dialog = false;
-    } else if execute_clicked {
-        tabular.show_parameter_dialog = false;
+        tabular.parameter_error = None;
+    } else if execute_clicked || submit_by_enter {
         let query = tabular.parameter_dialog_query.clone();
-        let substituted = editor::substitute_query_parameters(&query, &tabular.parameter_inputs);
-        editor::execute_query_bypass_checks(tabular, substituted);
+        let db = editor::active_tab_db_type(tabular)
+            .unwrap_or(crate::models::enums::DatabaseType::PostgreSQL);
+        match crate::query_params::substitute(&query, &db, &tabular.parameter_inputs) {
+            Ok(substituted) => {
+                tabular.show_parameter_dialog = false;
+                tabular.parameter_error = None;
+                editor::execute_query_with_safety(tabular, substituted);
+            }
+            Err(err) => tabular.parameter_error = Some(err),
+        }
     }
 }
 
@@ -2799,6 +2866,7 @@ fn show_unsafe_dml_modal(
 
     egui::Window::new("unsafe_dml_dialog_window")
         .id(egui::Id::new("unsafe_dml_dialog_window"))
+        .order(egui::Order::Foreground)
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
@@ -2866,23 +2934,21 @@ fn show_unsafe_dml_modal(
 
             ui.add_space(14.0);
 
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let run_btn = egui::Button::new(
-                        egui::RichText::new("Yes, Run It")
-                            .strong()
-                            .color(egui::Color32::WHITE),
-                    )
-                    .fill(window_egui::style::theme_danger(ctx));
-                    let resp = ui.add(run_btn);
-                    run_btn_rect = Some(resp.rect);
-                    if resp.clicked() {
-                        confirm_clicked = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let run_btn = egui::Button::new(
+                    egui::RichText::new("Yes, Run It")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(window_egui::style::theme_danger(ctx));
+                let resp = ui.add(run_btn);
+                run_btn_rect = Some(resp.rect);
+                if resp.clicked() {
+                    confirm_clicked = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
             });
         });
 
@@ -3185,26 +3251,35 @@ mod csv_import_tests {
             let ctx = egui::Context::default();
             egui_icons::initialize(&ctx);
             let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, viewport);
-            let mut btn_rect = None;
-
-            // Jalankan beberapa pass agar egui menstabilkan posisi anchor CENTER_CENTER.
-            for _ in 0..3 {
+            let mut t = 0.0;
+            let mut step = |events: Vec<egui::Event>| {
+                t += 0.05;
                 let raw = egui::RawInput {
                     screen_rect: Some(screen_rect),
+                    time: Some(t),
+                    events,
                     ..Default::default()
                 };
+                let mut res = (window_egui::style::ConfirmChoice::Pending, None);
                 let mut out = ctx.run_ui(raw, |ui| {
-                    let (choice, rect) = show_unsafe_dml_modal(
+                    res = show_unsafe_dml_modal(
                         ui.ctx(),
                         "Confirm change",
                         "This connection asks before every change. Run this write statement?",
                         &huge_sql,
                         true,
                     );
-                    assert_eq!(choice, window_egui::style::ConfirmChoice::Pending);
-                    btn_rect = rect;
                 });
                 out.textures_delta.clear();
+                res
+            };
+
+            // Jalankan beberapa pass agar layout header dan anchor CENTER_CENTER konvergen.
+            let mut btn_rect = None;
+            for _ in 0..12 {
+                let (choice, rect) = step(vec![]);
+                assert_eq!(choice, window_egui::style::ConfirmChoice::Pending);
+                btn_rect = rect;
             }
 
             let rect = btn_rect.expect("run button should be rendered");
@@ -3217,43 +3292,25 @@ mod csv_import_tests {
                 "run button {rect:?} overflowed horizontally in {screen_rect:?}"
             );
 
-            // Klik tombol "Yes, Run It" pada posisinya untuk memastikan tidak terhalang.
+            // Hover -> tekan -> lepas pada posisi tombol "Yes, Run It".
             let click_pos = rect.center();
-            let click_input = egui::RawInput {
-                screen_rect: Some(screen_rect),
-                events: vec![
-                    egui::Event::PointerMoved(click_pos),
-                    egui::Event::PointerButton {
-                        pos: click_pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::PointerButton {
-                        pos: click_pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                ..Default::default()
+            let button = |pressed| egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
             };
-            let mut final_choice = window_egui::style::ConfirmChoice::Pending;
-            let mut out = ctx.run_ui(click_input, |ui| {
-                let (choice, _) = show_unsafe_dml_modal(
-                    ui.ctx(),
-                    "Confirm change",
-                    "This connection asks before every change. Run this write statement?",
-                    &huge_sql,
-                    true,
-                );
-                final_choice = choice;
-            });
-            out.textures_delta.clear();
+            let (_, r_hover) = step(vec![egui::Event::PointerMoved(click_pos)]);
+            let (_, r_press) = step(vec![button(true)]);
+            let (final_choice, r_release) = step(vec![button(false)]);
+            assert_eq!(
+                r_hover, r_press,
+                "button position must remain stable across frames"
+            );
             assert_eq!(
                 final_choice,
                 window_egui::style::ConfirmChoice::Confirmed,
-                "clicking visible Run button must confirm in viewport {viewport:?}"
+                "click={click_pos:?} rect={rect:?} hover={r_hover:?} press={r_press:?} release={r_release:?} viewport={viewport:?}"
             );
         }
     }

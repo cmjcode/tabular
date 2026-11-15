@@ -59,6 +59,9 @@ impl super::Tabular {
         }
 
         let was_paginated = self.jobs.paginated.remove(&message.job_id);
+        // Notice / PRINT: menjadi hasil statement bila statement tidak punya
+        // result set, selain itu ditampilkan di tab hasil "Messages" tambahan.
+        let extra_messages = take_server_messages_for_display(&mut message, was_paginated);
 
         if message.truncated {
             self.toasts.warning(format!(
@@ -93,7 +96,7 @@ impl super::Tabular {
             .and_then(|id| self.query_tabs.iter().position(|t| t.id == id))
             && origin_idx != self.active_tab_index
         {
-            self.apply_result_to_background_tab(origin_idx, message, was_paginated);
+            self.apply_result_to_background_tab(origin_idx, message, was_paginated, extra_messages);
             if self.jobs.active.is_empty() {
                 self.query_execution_in_progress = false;
                 self.extend_query_icon_hold();
@@ -234,6 +237,14 @@ impl super::Tabular {
             statement_type: stmt_type,
             affected_rows: message.affected_rows,
         });
+        if let Some(messages) = &extra_messages {
+            active_tab.results.push(messages_result(
+                messages,
+                self.page_size,
+                &message.query,
+                stmt_type,
+            ));
+        }
 
         if let Some(display_rows) = display_rows {
             active_tab.active_result_index = 0;
@@ -296,6 +307,7 @@ impl super::Tabular {
         tab_index: usize,
         mut message: connection::QueryResultMessage,
         was_paginated: bool,
+        extra_messages: Option<Vec<connection::server_messages::ServerMessage>>,
     ) {
         let query_message = describe_query_outcome(&message);
         // Baris dipindahkan dari message; disalin hanya bila dua pemilik
@@ -350,6 +362,15 @@ impl super::Tabular {
                     statement_type: stmt_type,
                     affected_rows: message.affected_rows,
                 });
+                if let Some(messages) = &extra_messages {
+                    let page_size = tab.page_size;
+                    tab.results.push(messages_result(
+                        messages,
+                        page_size,
+                        &message.query,
+                        stmt_type,
+                    ));
+                }
                 if new_index > 0 {
                     // Statement berikutnya dalam batch hanya menambah tab hasil.
                     tab.active_result_index = tab.active_result_index.min(new_index);
@@ -640,6 +661,7 @@ impl super::Tabular {
                 truncated: false,
                 error_location: None,
                 timing: None,
+                server_messages: Vec::new(),
             };
             connection::execute::send_and_wake(&sender, message, wake.as_ref());
         });
@@ -1053,10 +1075,82 @@ pub(crate) fn describe_query_outcome(message: &connection::QueryResultMessage) -
     };
 
     let type_str = stmt_type.as_str();
-    if stmt_type == models::structs::StatementType::Other {
+    let mut text = if stmt_type == models::structs::StatementType::Other {
         format!("Query completed in {} • {}", duration_str, count)
     } else {
         format!("{} completed in {} • {}", type_str, duration_str, count)
+    };
+    let n = message.server_messages.len();
+    if n > 0 {
+        text.push_str(&format!(
+            " • {n} server message{}",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    text
+}
+
+/// Header tabel pesan server.
+pub(crate) const SERVER_MESSAGE_HEADERS: [&str; 2] = ["Severity", "Message"];
+
+fn server_message_rows(
+    messages: &[connection::server_messages::ServerMessage],
+) -> Vec<Vec<String>> {
+    messages
+        .iter()
+        .map(|m| vec![m.severity.clone(), m.text.clone()])
+        .collect()
+}
+
+/// Statement sukses tanpa result set (blok `DO`, `EXEC` yang hanya `PRINT`)
+/// menampilkan pesan servernya sebagai hasil dan mengembalikan `None`. Selain
+/// itu pesan dikembalikan untuk tab hasil "Messages" tambahan.
+pub(crate) fn take_server_messages_for_display(
+    message: &mut connection::QueryResultMessage,
+    was_paginated: bool,
+) -> Option<Vec<connection::server_messages::ServerMessage>> {
+    if message.server_messages.is_empty() || was_paginated {
+        return None;
+    }
+    if message.success && message.headers.is_empty() && message.rows.is_empty() {
+        message.headers = SERVER_MESSAGE_HEADERS
+            .iter()
+            .map(|h| h.to_string())
+            .collect();
+        message.rows = server_message_rows(&message.server_messages);
+        message.column_metadata = None;
+        return None;
+    }
+    Some(message.server_messages.clone())
+}
+
+fn messages_result(
+    messages: &[connection::server_messages::ServerMessage],
+    page_size: usize,
+    sql: &str,
+    statement_type: models::structs::StatementType,
+) -> models::structs::QueryResult {
+    let rows = server_message_rows(messages);
+    models::structs::QueryResult {
+        headers: SERVER_MESSAGE_HEADERS
+            .iter()
+            .map(|h| h.to_string())
+            .collect(),
+        rows: Vec::new(),
+        total_rows: rows.len(),
+        all_rows: rows,
+        table_name: "Messages".to_string(),
+        current_page: 0,
+        page_size: page_size.max(1),
+        query_message: connection::server_messages::format_for_panel(messages),
+        query_message_is_error: false,
+        execution_time_ms: 0,
+        column_metadata: None,
+        explain_plan_json: None,
+        pinned_columns: std::collections::HashSet::new(),
+        executed_sql: sql.to_string(),
+        statement_type,
+        affected_rows: None,
     }
 }
 
@@ -1085,5 +1179,59 @@ pub(crate) fn failed_query_message(
         truncated: false,
         error_location: None,
         timing: None,
+        server_messages: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod server_message_tests {
+    use super::*;
+    use crate::connection::server_messages::ServerMessage;
+
+    fn msg(headers: &[&str], success: bool) -> connection::QueryResultMessage {
+        let mut m =
+            failed_query_message(1, 1, "DO $$ BEGIN RAISE NOTICE 'x'; END $$", String::new());
+        m.success = success;
+        m.error = None;
+        m.headers = headers.iter().map(|h| h.to_string()).collect();
+        m.rows = if headers.is_empty() {
+            vec![]
+        } else {
+            vec![vec!["1".into()]]
+        };
+        m.server_messages = vec![ServerMessage {
+            severity: "NOTICE".into(),
+            text: "x".into(),
+        }];
+        m
+    }
+
+    #[test]
+    fn statement_without_result_set_shows_messages_as_result() {
+        let mut m = msg(&[], true);
+        assert!(take_server_messages_for_display(&mut m, false).is_none());
+        assert_eq!(m.headers, vec!["Severity", "Message"]);
+        assert_eq!(m.rows, vec![vec!["NOTICE".to_string(), "x".to_string()]]);
+        assert!(describe_query_outcome(&m).ends_with("• 1 server message"));
+    }
+
+    #[test]
+    fn statement_with_rows_gets_extra_messages_tab() {
+        let mut m = msg(&["v"], true);
+        let extra = take_server_messages_for_display(&mut m, false).unwrap();
+        assert_eq!(extra.len(), 1);
+        assert_eq!(m.headers, vec!["v"]);
+        let r = messages_result(&extra, 100, "q", models::structs::StatementType::Select);
+        assert_eq!(r.table_name, "Messages");
+        assert_eq!(r.total_rows, 1);
+    }
+
+    #[test]
+    fn errors_keep_messages_in_extra_tab_and_pagination_skips() {
+        let mut m = msg(&["Error"], false);
+        assert!(take_server_messages_for_display(&mut m, false).is_some());
+        let mut p = msg(&[], true);
+        assert!(take_server_messages_for_display(&mut p, true).is_none());
+        assert!(p.headers.is_empty());
     }
 }

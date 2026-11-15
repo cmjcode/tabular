@@ -1391,6 +1391,20 @@ fn refresh(app: &mut Tabular, force: bool, recompute: bool) {
             ) => query_tools::SnippetContext::WhereClause,
             _ => query_tools::SnippetContext::Any,
         };
+        // Snippet buatan pengguna didahulukan dari snippet bawaan.
+        for snippet in crate::user_snippets::matching(&crate::user_snippets::current(), &pref) {
+            let note = if snippet.description.is_empty() {
+                "user snippet".to_string()
+            } else {
+                format!("{} (user snippet)", snippet.description)
+            };
+            push(
+                snippet.prefix.clone(),
+                AutocompleteKind::Snippet,
+                Some(note),
+                Some(crate::user_snippets::insert_text(&snippet.body)),
+            );
+        }
         for snippet in query_tools::snippet_candidates(&pref, snippet_context) {
             push(
                 snippet.label.to_string(),

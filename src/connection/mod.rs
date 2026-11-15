@@ -17,6 +17,7 @@ pub mod execute;
 mod live_db_tests;
 pub mod metadata;
 pub mod pool;
+pub mod server_messages;
 pub mod session;
 pub mod sql;
 pub mod timing;

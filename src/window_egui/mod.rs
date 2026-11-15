@@ -48,6 +48,7 @@ pub(crate) mod git_prefs;
 pub mod git_review_view;
 pub mod git_sidebar;
 pub mod git_view;
+pub mod history_panel;
 pub mod init;
 pub mod integration_test_jobs;
 pub mod integration_test_ui;
@@ -183,7 +184,7 @@ pub struct Tabular {
     // Transitional multi-selection model (will move to lapce-core selection)
     pub multi_selection: crate::editor_selection::MultiSelection,
     pub selected_menu: String,
-    // Sub-tab within the "Database" menu: "Connections" | "Queries" | "History"
+    // Sub-tab within the "Database" menu: "Connections" | "Queries" | "Comparisons"
     pub selected_database_sub_menu: String,
     // Sub-tab within the "Collaborations" menu: "Teams" | "Collaboration"
     pub selected_collab_sub_menu: String,
@@ -304,6 +305,10 @@ pub struct Tabular {
     pub query_tabs: Vec<models::structs::QueryTab>,
     pub active_tab_index: usize,
     pub next_tab_id: usize,
+    /// Tab query yang baru ditutup (terbaru di akhir), untuk "Reopen Closed Tab".
+    pub closed_tabs: Vec<crate::editor::ClosedTab>,
+    /// Id tab yang aktif sebelum tab sekarang, untuk Ctrl+Tab.
+    pub previous_tab_id: Option<usize>,
     pub scroll_to_active_tab: bool,
     pub last_active_tab_index: Option<usize>,
     pub dragged_tab_index: Option<usize>,
@@ -322,7 +327,9 @@ pub struct Tabular {
     // Parameter Dialog state
     pub show_parameter_dialog: bool,
     pub parameter_dialog_query: String,
-    pub parameter_inputs: Vec<(String, String)>,
+    pub parameter_inputs: Vec<crate::query_params::ParamValue>,
+    /// Pesan validasi dialog parameter (nilai kosong, bukan angka, dll.).
+    pub parameter_error: Option<String>,
     // Unsafe DML Warning Dialog state
     pub show_unsafe_dml_dialog: bool,
     pub unsafe_dml_query: String,
@@ -757,6 +764,8 @@ pub struct Tabular {
 
     // --- AI Assistant ---
     pub show_ai_panel: bool,
+    /// Panel geser "Query History" di sisi kanan editor (lihat `history_panel`).
+    pub show_history_panel: bool,
     pub ai_panel_width: f32,
     /// Panel "Query Diagram" per tab (kunci: `QueryTab::id`).
     pub query_insights: std::collections::HashMap<usize, query_insight::QueryInsight>,

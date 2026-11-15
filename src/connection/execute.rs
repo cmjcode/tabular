@@ -690,6 +690,7 @@ fn skipped_statement_message(job: &QueryJob) -> QueryResultMessage {
         truncated: false,
         error_location: None,
         timing: None,
+        server_messages: Vec::new(),
     }
 }
 
@@ -743,6 +744,7 @@ async fn execute_query_job_all_in(
         truncated: false,
         error_location: None,
         timing: None,
+        server_messages: Vec::new(),
     };
     match outcome {
         Ok(sets) if !sets.is_empty() => sets
@@ -797,46 +799,53 @@ async fn execute_query_job_in(
     let query = job.options.query.clone();
     let dba_special_mode = job.options.dba_special_mode.clone();
 
-    let (outcome, timing) = super::timing::with_probe(start, async {
-        match job.options.connection.connection_type {
-            models::enums::DatabaseType::MySQL => {
-                execute_mysql_query_job(&job.options, job.connection_pool.clone(), batch_connection)
+    let ((outcome, timing), server_messages) =
+        // Future driver besar sekali di build debug; di-box agar lapisan
+        // capture/probe tidak menyalinnya di stack (stack overflow di tes).
+        super::server_messages::capture(Box::pin(super::timing::with_probe(start, async {
+            match job.options.connection.connection_type {
+                models::enums::DatabaseType::MySQL => {
+                    execute_mysql_query_job(
+                        &job.options,
+                        job.connection_pool.clone(),
+                        batch_connection,
+                    )
                     .await
+                }
+                models::enums::DatabaseType::PostgreSQL => {
+                    execute_postgres_query_job(
+                        &job.options,
+                        job.connection_pool.clone(),
+                        batch_connection,
+                    )
+                    .await
+                }
+                models::enums::DatabaseType::SQLite => {
+                    execute_sqlite_query_job(
+                        &job.options,
+                        job.connection_pool.clone(),
+                        batch_connection,
+                    )
+                    .await
+                }
+                models::enums::DatabaseType::Redis => {
+                    execute_redis_query_job(&job.options, job.connection_pool.clone()).await
+                }
+                models::enums::DatabaseType::MsSQL => {
+                    execute_mssql_query_job(&job.options, job.connection_pool.clone()).await
+                }
+                models::enums::DatabaseType::MongoDB => {
+                    execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
+                }
+                models::enums::DatabaseType::ApiHttp => Err(QueryExecutionError::Message(
+                    "API-HTTP connections do not support SQL queries".to_string(),
+                )),
+                models::enums::DatabaseType::Plugin(_) => {
+                    execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
+                }
             }
-            models::enums::DatabaseType::PostgreSQL => {
-                execute_postgres_query_job(
-                    &job.options,
-                    job.connection_pool.clone(),
-                    batch_connection,
-                )
-                .await
-            }
-            models::enums::DatabaseType::SQLite => {
-                execute_sqlite_query_job(
-                    &job.options,
-                    job.connection_pool.clone(),
-                    batch_connection,
-                )
-                .await
-            }
-            models::enums::DatabaseType::Redis => {
-                execute_redis_query_job(&job.options, job.connection_pool.clone()).await
-            }
-            models::enums::DatabaseType::MsSQL => {
-                execute_mssql_query_job(&job.options, job.connection_pool.clone()).await
-            }
-            models::enums::DatabaseType::MongoDB => {
-                execute_mongodb_query_job(&job.options, job.connection_pool.clone()).await
-            }
-            models::enums::DatabaseType::ApiHttp => Err(QueryExecutionError::Message(
-                "API-HTTP connections do not support SQL queries".to_string(),
-            )),
-            models::enums::DatabaseType::Plugin(_) => {
-                execute_plugin_query_job(&job.options, job.connection_pool.clone()).await
-            }
-        }
-    })
-    .await;
+        })))
+        .await;
 
     match outcome {
         Ok(output) => QueryResultMessage {
@@ -859,6 +868,7 @@ async fn execute_query_job_in(
             truncated: output.truncated,
             error_location: None,
             timing,
+            server_messages,
         },
         Err(err) => {
             if err.is_connection() {
@@ -887,6 +897,8 @@ async fn execute_query_job_in(
                 truncated: false,
                 error_location,
                 timing: None,
+                // Notice yang terkirim sebelum error sering menjelaskan errornya.
+                server_messages,
             }
         }
     }

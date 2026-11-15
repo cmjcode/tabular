@@ -109,6 +109,9 @@ hex = "0.4.3"
 rust_decimal = "1.43.0"
 wasmi = "2.0.0"
 log = { version = "0.4", features = ["release_max_level_debug"] }
+# Hanya untuk menangkap notice PostgreSQL / PRINT SQL Server dari driver
+# (`connection::server_messages`); crate ini sudah ada di dependency tree.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 env_logger = "0.11"
 dotenvy = "0.15.7"
 md5 = "0.8"

@@ -1057,7 +1057,7 @@ impl Tabular {
 
     /// Render the resizable left sidebar (connections/queries/history tree).
     /// Extracted verbatim from `update()`.
-    /// Shared search box used by the Connections/Queries/History tabs. Text is stored
+    /// Shared search box used by the Connections/Queries/Compare tabs. Text is stored
     /// in one field (`database_search_text`) so switching tabs doesn't reset the query.
     fn render_sidebar_search_box(&mut self, ui: &mut egui::Ui, hint: &str) {
         let search_response =
@@ -1154,7 +1154,8 @@ impl Tabular {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             match self.selected_menu.as_str() {
                                 "Database" => {
-                                    // ── Sub-tabs: Connections / Queries / History ──────────
+                                    // ── Sub-tabs: Connections / Queries / Compare ──────────
+                                    // (Riwayat query pindah ke panel geser di editor: `history_panel`.)
                                     // These used to be stacked accordions sharing one scroll
                                     // area. They're now compact icon sub-tabs nested right
                                     // under "Database" (like VS Code's view-container
@@ -1162,7 +1163,6 @@ impl Tabular {
                                     let segments = [
                                         style::NavSegment { key: "Connections", icon: egui_icons::icons::ICON_CABLE.codepoint, label: crate::i18n::tr("Connections") },
                                         style::NavSegment { key: "Queries", icon: egui_icons::icons::ICON_CODE.codepoint, label: crate::i18n::tr("Queries") },
-                                        style::NavSegment { key: "History", icon: egui_icons::icons::ICON_HISTORY.codepoint, label: crate::i18n::tr("History") },
                                         style::NavSegment { key: "Comparisons", icon: egui_icons::icons::ICON_DIFFERENCE.codepoint, label: crate::i18n::tr("Compare") },
                                     ];
                                     let seg_height = if metrics.is_touch { 40.0 } else { 32.0 };
@@ -1325,115 +1325,6 @@ impl Tabular {
                                         });
                                     }
                                 }
-                                "History" => {
-                                    self.render_sidebar_search_box(ui, "Search history…");
-                                    ui.add_space(4.0);
-
-                                    if self.auto_refresh_active {
-                                        egui::Frame::new()
-                                            .stroke(egui::Stroke::new(
-                                                1.0,
-                                                egui::Color32::from_rgb(255, 0, 0),
-                                            ))
-                                            .corner_radius(3.0)
-                                            .inner_margin(egui::Margin::symmetric(4, 4))
-                                            .show(ui, |ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.horizontal(|ui| {
-                                                        let remaining = if let Some(last) = self.auto_refresh_last_run {
-                                                            let elapsed = last.elapsed().as_secs();
-                                                            let interval = self.auto_refresh_interval_seconds.max(1) as u64;
-                                                            if elapsed >= interval {
-                                                                0
-                                                            } else {
-                                                                (interval - elapsed) as u32
-                                                            }
-                                                        } else {
-                                                            self.auto_refresh_interval_seconds
-                                                        };
-                                                        ui.label(format!(
-                                                            "Auto Query {} second(s)",
-                                                            remaining
-                                                        ));
-                                                        ui.add_space(ui.available_width() - 60.0);
-                                                        let stop_button = egui::Button::new(
-                                                            egui::RichText::new("⏹ STOP")
-                                                                .color(egui::Color32::WHITE),
-                                                        )
-                                                        .fill(style::theme_danger(ctx));
-                                                        if ui.add(stop_button).clicked() {
-                                                            self.stop_auto_refresh();
-                                                        }
-                                                    });
-                                                    if let Some(q) = &self.auto_refresh_query {
-                                                        ui.add(
-                                                            egui::TextEdit::multiline(&mut q.clone())
-                                                                .desired_rows(3)
-                                                                .desired_width(f32::INFINITY)
-                                                                .interactive(false),
-                                                        );
-                                                    }
-                                                });
-                                            });
-                                        ui.add_space(4.0);
-                                    }
-
-                                    let is_searching_history = !self.database_search_text.trim().is_empty();
-
-                                    let mut history_tree = if is_searching_history {
-                                        std::mem::take(&mut self.filtered_history_tree)
-                                    } else {
-                                        std::mem::take(&mut self.history_tree)
-                                    };
-
-                                    let query_files_to_open = self.render_tree(ui, &mut history_tree, false);
-
-                                    if is_searching_history {
-                                        self.filtered_history_tree = history_tree;
-                                    } else {
-                                        self.history_tree = history_tree;
-                                    }
-
-                                    for (filename, content, file_data, _) in query_files_to_open {
-                                        if let Some((connection_name, _query)) = file_data.split_once("||") {
-                                            let conn_id = self
-                                                .connections
-                                                .iter()
-                                                .find(|c| c.name == connection_name)
-                                                .and_then(|c| c.id);
-                                            if let Some(cid) = conn_id {
-                                                log::debug!(
-                                                    "✅ Processing history click: New tab '{}' with connection '{}' (id={})",
-                                                    filename, connection_name, cid
-                                                );
-                                                crate::editor::create_new_tab_with_connection(
-                                                    self,
-                                                    filename,
-                                                    content,
-                                                    Some(cid),
-                                                );
-                                                continue;
-                                            } else if !connection_name.is_empty() {
-                                                log::debug!(
-                                                    "⚠️ Connection '{}' from history not found. Opening tab without binding.",
-                                                    connection_name
-                                                );
-                                            }
-                                        }
-                                        log::debug!(
-                                            "✅ Processing history click: Creating new tab for '{}' (no connection binding)",
-                                            filename
-                                        );
-                                        crate::editor::create_new_tab(self, filename, content);
-                                    }
-                                    ui.add_space(4.0);
-
-                                    if self.history_tree.is_empty() && !is_searching_history {
-                                        ui.add_space(8.0);
-                                        ui.label("No query history yet");
-                                        ui.label("Executed queries will show up here");
-                                    }
-                                }
                                 "Comparisons" => {
                                     self.render_sidebar_search_box(ui, "Search comparisons…");
                                     ui.add_space(4.0);
@@ -1570,17 +1461,6 @@ impl Tabular {
                                                 ).on_hover_text("New comparison across connections");
                                                 if plus_btn.clicked() {
                                                     crate::window_egui::multi_compare_ui::open_new(self);
-                                                }
-                                            }
-                                            "History" if !self.history_tree.is_empty() => {
-                                                let clear_btn = ui.add_sized(
-                                                    [24.0, 24.0],
-                                                    egui::Button::new(egui::RichText::new("🗑").color(egui::Color32::WHITE))
-                                                        .fill(style::theme_danger(ctx)),
-                                                ).on_hover_text("Clear History");
-
-                                                if clear_btn.clicked() {
-                                                    self.show_clear_history_confirm = true;
                                                 }
                                             }
                                             _ => {}
@@ -2889,6 +2769,7 @@ impl Tabular {
                         ui.max_rect().right_bottom(),
                     );
                     crate::window_egui::db_context_bar::render(self, ui, db_context_rect, &metrics);
+                    crate::window_egui::history_panel::set_anchor(ui.ctx(), db_context_rect);
 
                     if let Some(tab) = self.query_tabs.get_mut(self.active_tab_index)
                         && tab.content != self.editor.text
@@ -5098,6 +4979,35 @@ impl App for Tabular {
             if consume(ctx, &self.keymap, Action::NewTab) {
                 editor::create_new_tab(self, "Untitled Query".to_string(), String::new());
             }
+            if consume(ctx, &self.keymap, Action::ReopenClosedTab) {
+                editor::reopen_closed_tab(self);
+            }
+            if !overlay_open && consume(ctx, &self.keymap, Action::NextTab) {
+                editor::cycle_tab(self, true);
+            }
+            if !overlay_open && consume(ctx, &self.keymap, Action::PrevTab) {
+                editor::cycle_tab(self, false);
+            }
+            // Ctrl+Tab memakai Control fisik juga di macOS. Dikonsumsi sebelum
+            // editor dirender supaya tidak menyisipkan karakter tab.
+            if !overlay_open {
+                let ctrl_tab = ctx.input_mut(|i| {
+                    let pressed = i.events.iter().any(|e| {
+                        matches!(e, egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. }
+                            if modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd)
+                    });
+                    if pressed {
+                        i.events.retain(|e| {
+                            !matches!(e, egui::Event::Key { key: egui::Key::Tab, modifiers, .. }
+                                if modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd)
+                        });
+                    }
+                    pressed
+                });
+                if ctrl_tab {
+                    editor::switch_to_previous_tab(self);
+                }
+            }
             if consume(ctx, &self.keymap, Action::OpenFile) {
                 sidebar_query::prompt_open_sql_file(self, None);
             }
@@ -5824,6 +5734,9 @@ impl App for Tabular {
 
         // Central panel (main editor / data / structure)
         self.render_central_panel(root_ui);
+        // Panel geser Query History (overlay kanan), setelah editor agar Esc
+        // milik editor diproses lebih dulu.
+        crate::window_egui::history_panel::render(self, ctx);
 
         // Handle copy operations AFTER UI render (state already updated)
         // Note: We only reach here if table/structure has potential focus (not editor/message)

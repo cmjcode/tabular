@@ -1191,6 +1191,31 @@ impl super::Tabular {
                                         ui.add_space(4.0);
                                     }
 
+                                    // Riwayat query: membuka panel geser dari kanan (`history_panel`).
+                                    let history_open = self.show_history_panel;
+                                    let history_button = egui::Button::new(
+                                        egui_icons::icons::ICON_HISTORY.rich_text().size(icon_size).color(if history_open {
+                                            egui::Color32::WHITE
+                                        } else {
+                                            ui.visuals().text_color()
+                                        }),
+                                    )
+                                    .min_size(egui::vec2(button_size.x, button_size.y))
+                                    .fill(if history_open { super::style::theme_accent(ui.ctx()) } else { base_fill })
+                                    .stroke(egui::Stroke::new(1.0, base_border))
+                                    .corner_radius(egui::CornerRadius::same(button_corner));
+                                    if ui
+                                        .add_sized(button_size, history_button)
+                                        .on_hover_text(if history_open { "Close Query History" } else { "Query History" })
+                                        .clicked()
+                                    {
+                                        crate::window_egui::history_panel::toggle(self);
+                                    }
+
+                                    ui.add_space(4.0);
+                                    draw_separator(ui);
+                                    ui.add_space(4.0);
+
                                     let format_button = egui::Button::new(egui_icons::icons::MDI_CODE_BRACES.rich_text().size(icon_size))
                                         .min_size(egui::vec2(button_size.x, button_size.y))
                                         .fill(base_fill)

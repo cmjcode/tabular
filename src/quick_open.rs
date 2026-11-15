@@ -982,6 +982,11 @@ pub fn load_all_quick_open_items(tabular: &mut Tabular) -> Vec<QuickOpenItem> {
         ),
         ("Query: New Tab", "Open a new query editor tab", "⌘T"),
         ("Query: Close Tab", "Close current editor tab", "⌘W"),
+        (
+            "Editor: Edit SQL Snippets...",
+            "Edit your own autocomplete snippets (snippets.json, $0 marks the cursor)",
+            "",
+        ),
         ("Query: Save Tab", "Save query to file", "⌘S"),
         (
             "Query: Open SQL File...",
@@ -2257,6 +2262,9 @@ fn command_shortcut_action(title: &str) -> Option<crate::keymap::Action> {
         "Query: Explain" => Action::ExplainQuery,
         "Query: New Tab" => Action::NewTab,
         "Query: Close Tab" => Action::CloseTab,
+        "Tabs: Reopen Closed Tab" => Action::ReopenClosedTab,
+        "Tabs: Next Tab" => Action::NextTab,
+        "Tabs: Previous Tab" => Action::PrevTab,
         "Query: Save Tab" => Action::SaveTab,
         "Query: Open SQL File..." => Action::OpenFile,
         "Editor: Go to Definition" => Action::GoToDefinition,

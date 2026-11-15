@@ -57,6 +57,26 @@ fn source_items(ui: &mut egui::Ui, node: &TreeNode, kind: RoutineKind) {
     let Some(conn_id) = node.connection_id else {
         return;
     };
+    if matches!(kind, RoutineKind::Procedure | RoutineKind::Function)
+        && ui
+            .button(format!(
+                "{} Execute {}…",
+                egui_icons::icons::ICON_PLAY_ARROW.codepoint,
+                kind.label()
+            ))
+            .on_hover_text("Open a call with parameter placeholders in a new tab")
+            .clicked()
+    {
+        push(
+            ui,
+            SchemaAction::ExecuteRoutine {
+                conn_id,
+                database: node.database_name.clone(),
+                kind,
+                name: object_name(node),
+            },
+        );
+    }
     if ui
         .button(format!("📜 Show {} Source", kind.label()))
         .clicked()
@@ -87,8 +107,46 @@ fn source_items(ui: &mut egui::Ui, node: &TreeNode, kind: RoutineKind) {
     }
 }
 
-/// Tambahan menu node tabel: rename, comment, maintenance.
+/// Item "Add to / Remove from Favorites" untuk node tabel atau view.
+fn favorite_item(ui: &mut egui::Ui, node: &TreeNode, kind: crate::favorites::FavoriteKind) {
+    let Some(conn_id) = node.connection_id else {
+        return;
+    };
+    let name = object_name(node);
+    let database = node.database_name.clone();
+    let starred = crate::favorites::is_favorite(conn_id, database.as_deref(), &name);
+    let label = if starred {
+        format!(
+            "{} Remove from Favorites",
+            egui_icons::icons::ICON_STAR_BORDER.codepoint
+        )
+    } else {
+        format!(
+            "{} Add to Favorites",
+            egui_icons::icons::ICON_STAR.codepoint
+        )
+    };
+    if ui.button(label).clicked() {
+        let fav = crate::favorites::Favorite {
+            connection_id: conn_id,
+            database,
+            name,
+            kind,
+        };
+        if let Err(e) = crate::favorites::toggle(fav) {
+            crate::persist_notice::report(
+                "favorites_write",
+                crate::persist_notice::Level::Error,
+                format!("Could not save favorites: {e}"),
+            );
+        }
+        ui.close();
+    }
+}
+
+/// Tambahan menu node tabel: favorit, rename, comment, maintenance.
 pub(crate) fn table_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Option<&DatabaseType>) {
+    favorite_item(ui, node, crate::favorites::FavoriteKind::Table);
     let (Some(conn_id), Some(db_type)) = (node.connection_id, db_type) else {
         return;
     };
@@ -136,6 +194,7 @@ pub(crate) fn table_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Opti
 
 /// Tambahan menu node view: definisi, rename, comment, drop.
 pub(crate) fn view_menu_items(ui: &mut egui::Ui, node: &TreeNode, db_type: Option<&DatabaseType>) {
+    favorite_item(ui, node, crate::favorites::FavoriteKind::View);
     let (Some(conn_id), Some(db_type)) = (node.connection_id, db_type) else {
         return;
     };

@@ -1,3 +1,4 @@
+pub(crate) mod column_profile;
 mod filter_sort;
 pub(crate) mod grid_model;
 pub(crate) mod grid_prefs;

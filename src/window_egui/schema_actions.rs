@@ -84,6 +84,13 @@ pub enum SchemaAction {
         database: Option<String>,
         name: String,
     },
+    /// Buka tab berisi panggilan procedure/function dengan placeholder parameter.
+    ExecuteRoutine {
+        conn_id: i64,
+        database: Option<String>,
+        kind: RoutineKind,
+        name: String,
+    },
     /// Balik preferensi "Show system databases/schemas".
     ToggleSystemObjects,
     /// SQL jadi dari structure editor (tambah/hapus FK, check, trigger, kolom
@@ -117,8 +124,19 @@ fn drain_actions(ctx: &egui::Context) -> Vec<SchemaAction> {
 pub struct SchemaUiState {
     dialog: Option<SchemaDialog>,
     fetches: Vec<SourceFetch>,
+    routine_calls: Vec<RoutineCallFetch>,
     /// State tab Foreign Keys / Checks / Triggers / Generated / DDL di Structure.
     pub(crate) structure: crate::data_table::structure_objects::StructureObjectsState,
+}
+
+/// Pengambilan parameter routine untuk "Execute…".
+struct RoutineCallFetch {
+    slot: TaskSlot,
+    conn_id: i64,
+    database: Option<String>,
+    db_type: DatabaseType,
+    kind: RoutineKind,
+    name: String,
 }
 
 struct SourceFetch {
@@ -615,6 +633,7 @@ impl Tabular {
             self.start_schema_action(ctx, action);
         }
         self.poll_source_fetches();
+        self.poll_routine_calls();
         self.render_schema_dialog(ctx);
     }
 
@@ -650,6 +669,35 @@ impl Tabular {
                     export,
                 });
             }
+            SchemaAction::ExecuteRoutine {
+                conn_id,
+                database,
+                kind,
+                name,
+            } => {
+                let Some(db_type) = self.connection_type_of(conn_id) else {
+                    return;
+                };
+                let Some(query) =
+                    crate::schema_objects::routine_call::params_query(&db_type, kind, &name)
+                else {
+                    self.toasts.warning(format!(
+                        "Executing a {} is not supported for {:?}",
+                        kind.label().to_lowercase(),
+                        db_type
+                    ));
+                    return;
+                };
+                let slot = self.spawn_schema_sql(ctx, conn_id, database.clone(), query);
+                self.schema_ui.routine_calls.push(RoutineCallFetch {
+                    slot,
+                    conn_id,
+                    database,
+                    db_type,
+                    kind,
+                    name,
+                });
+            }
             SchemaAction::ToggleSystemObjects => {
                 let show = !self.show_system_objects;
                 self.apply_show_system_objects(show);
@@ -676,6 +724,9 @@ impl Tabular {
                 conn_id, database, ..
             }
             | SchemaAction::ViewSource {
+                conn_id, database, ..
+            }
+            | SchemaAction::ExecuteRoutine {
                 conn_id, database, ..
             }
             | SchemaAction::CreateSchema { conn_id, database }
@@ -836,7 +887,9 @@ impl Tabular {
                 sql,
                 destructive,
             },
-            SchemaAction::ViewSource { .. } | SchemaAction::ToggleSystemObjects => return,
+            SchemaAction::ViewSource { .. }
+            | SchemaAction::ExecuteRoutine { .. }
+            | SchemaAction::ToggleSystemObjects => return,
         };
 
         let prepare =
@@ -853,6 +906,46 @@ impl Tabular {
             run_error: None,
             run_output: Vec::new(),
         });
+    }
+
+    fn poll_routine_calls(&mut self) {
+        if self.schema_ui.routine_calls.is_empty() {
+            return;
+        }
+        for fetch in std::mem::take(&mut self.schema_ui.routine_calls) {
+            let Some(outcome) = fetch.slot.take() else {
+                self.schema_ui.routine_calls.push(fetch);
+                continue;
+            };
+            let rows = match outcome {
+                Ok(sets) => sets.into_iter().next().map(|s| s.rows).unwrap_or_default(),
+                Err(e) => {
+                    self.toasts.error(format!(
+                        "Could not read the parameters of {}: {}",
+                        fetch.name, e
+                    ));
+                    continue;
+                }
+            };
+            let info = crate::schema_objects::routine_call::parse_params(&fetch.db_type, &rows);
+            let Some(sql) = crate::schema_objects::routine_call::call_template(
+                &fetch.db_type,
+                fetch.kind,
+                &fetch.name,
+                &info,
+            ) else {
+                continue;
+            };
+            let title = format!("Execute: {}", fetch.name);
+            crate::editor::create_new_tab_with_connection_and_database(
+                self,
+                title,
+                sql,
+                Some(fetch.conn_id),
+                fetch.database.clone(),
+            );
+            self.table_bottom_view = crate::models::structs::TableBottomView::Query;
+        }
     }
 
     fn poll_source_fetches(&mut self) {

@@ -4772,6 +4772,88 @@ impl super::Tabular {
         }
     }
 
+    /// Daftar tabel/view berbintang di atas pohon koneksi. Klik membuka datanya
+    /// lewat jalur Quick Open, jadi query per engine sama persis.
+    fn render_favorites_section(&mut self, ui: &mut egui::Ui) {
+        let favorites: Vec<crate::favorites::Favorite> = crate::favorites::all()
+            .into_iter()
+            .filter(|f| {
+                self.connections
+                    .iter()
+                    .any(|c| c.id == Some(f.connection_id))
+            })
+            .collect();
+        if favorites.is_empty() {
+            return;
+        }
+        let mut open: Option<crate::favorites::Favorite> = None;
+        let mut remove: Option<crate::favorites::Favorite> = None;
+        egui::CollapsingHeader::new(format!(
+            "{} Favorites",
+            egui_icons::icons::ICON_STAR.codepoint
+        ))
+        .id_salt("sidebar_favorites")
+        .default_open(true)
+        .show(ui, |ui| {
+            for fav in &favorites {
+                let conn_name = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == Some(fav.connection_id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                let icon = match fav.kind {
+                    crate::favorites::FavoriteKind::Table => egui_icons::icons::ICON_TABLE_CHART,
+                    crate::favorites::FavoriteKind::View => egui_icons::icons::ICON_VISIBILITY,
+                };
+                let location = match &fav.database {
+                    Some(db) if !db.is_empty() => format!("{conn_name} / {db}"),
+                    _ => conn_name,
+                };
+                let resp = ui
+                    .add(egui::Button::new(format!("{} {}", icon.codepoint, fav.name)).frame(false))
+                    .on_hover_text(location);
+                if resp.clicked() {
+                    open = Some(fav.clone());
+                }
+                resp.context_menu(|ui| {
+                    if ui.button("Remove from Favorites").clicked() {
+                        remove = Some(fav.clone());
+                        ui.close();
+                    }
+                });
+            }
+        });
+        if let Some(fav) = remove
+            && let Err(e) = crate::favorites::toggle(fav)
+        {
+            self.toasts.error(format!("Could not save favorites: {e}"));
+        }
+        if let Some(fav) = open {
+            let kind = match fav.kind {
+                crate::favorites::FavoriteKind::Table => crate::quick_open::QuickOpenKind::Table,
+                crate::favorites::FavoriteKind::View => crate::quick_open::QuickOpenKind::View,
+            };
+            let item = crate::quick_open::QuickOpenItem {
+                id: format!("favorite:{}:{}", fav.connection_id, fav.name),
+                title: fav.name.clone(),
+                subtitle: String::new(),
+                title_lower: fav.name.to_lowercase(),
+                subtitle_lower: String::new(),
+                kind,
+                connection_id: Some(fav.connection_id),
+                connection_name: None,
+                database_name: fav.database.clone(),
+                table_name: Some(fav.name.clone()),
+                file_path: None,
+                sql_content: None,
+                shortcut: None,
+                request_id: None,
+            };
+            crate::quick_open::execute_quick_open_item(self, &item);
+        }
+    }
+
     pub fn render_tree_for_database_section(&mut self, ui: &mut egui::Ui) {
         // Use search results if search is active, otherwise use normal tree
         if self.show_search_results && !self.database_search_text.trim().is_empty() {
@@ -4780,6 +4862,7 @@ impl super::Tabular {
             let _ = self.render_tree(ui, &mut filtered_tree, true);
             self.filtered_items_tree = filtered_tree;
         } else {
+            self.render_favorites_section(ui);
             // Show normal tree
             // Use slice to avoid borrowing issues
             let items_tree = std::mem::take(&mut self.items_tree);

@@ -329,14 +329,17 @@ async fn run_session(
                     _ => None,
                 };
                 let statement_guard = SqliteStatementGuard::new(interrupt);
-                let timed = match limits.timeout {
-                    Some(limit) => {
-                        tokio::time::timeout(limit, run_statement(c, &sql, limits.max_rows))
-                            .await
-                            .map_err(|_| limit)
+                let (timed, server_messages) = super::server_messages::capture(async {
+                    match limits.timeout {
+                        Some(limit) => {
+                            tokio::time::timeout(limit, run_statement(c, &sql, limits.max_rows))
+                                .await
+                                .map_err(|_| limit)
+                        }
+                        None => Ok(run_statement(c, &sql, limits.max_rows).await),
                     }
-                    None => Ok(run_statement(c, &sql, limits.max_rows).await),
-                };
+                })
+                .await;
                 let outcome = match timed {
                     Ok(result) => {
                         statement_guard.finish();
@@ -363,14 +366,10 @@ async fn run_session(
                         ))
                     }
                 };
-                send(session_message(
-                    job_id,
-                    tab_id,
-                    connection_id,
-                    &sql,
-                    outcome,
-                    started,
-                ));
+                let mut message =
+                    session_message(job_id, tab_id, connection_id, &sql, outcome, started);
+                message.server_messages = server_messages;
+                send(message);
             }
             SessionCommand::Commit { job_id } => {
                 let started = Instant::now();
@@ -686,6 +685,7 @@ fn session_message(
             truncated,
             error_location: None,
             timing: None,
+            server_messages: Vec::new(),
             headers,
             rows,
             error: None,
@@ -714,6 +714,7 @@ fn session_message(
             truncated: false,
             error_location: None,
             timing: None,
+            server_messages: Vec::new(),
         },
     }
 }

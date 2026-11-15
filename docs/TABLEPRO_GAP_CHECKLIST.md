@@ -92,20 +92,28 @@ Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs`
 - [ ] **D6. Vim mode** · P4 · XL · Belum
   Normal/Insert/Visual/Visual Line/Replace/Command, motions, text objects, register, marks, macro.
 - [ ] **D7. Query parameters sebagai prepared statement** · P4 · M · Sebagian
-  Saat ini substitusi teks (`substitute_query_parameters`). Kirim sebagai bind param per driver.
+  `src/query_params.rs` (2026-11-14): placeholder `:nama`/`$1`/`?` dipindai di luar string,
+  komentar, cast `::`, dollar-quote, dan operator jsonb `?|`/`?&`; tiap kemunculan diganti per
+  posisi dengan literal ter-escape per dialek (pilihan tipe Auto/Text/Number/NULL/SQL expression).
+  Mode keamanan koneksi kini menilai SQL final setelah substitusi (dulu konfirmasi "unsafe DML"
+  melewati dialog parameter dan mengirim placeholder mentah). Belum: bind param native per driver.
 - [ ] **D8. SQL Files: buka .sql eksternal sebagai tab dengan deteksi perubahan luar** · P3 · S · Sebagian
 - [ ] **D9. Row cap dinamis (default 10.000, maks 500.000) + stop fetch dini** · P3 · S · Sebagian
   `max_result_rows` ada; tambah UI per tab dan early termination stream.
 
 ## E. Tab, window, navigasi
 
-- [ ] **E1. Recent tabs (Ctrl+Tab) + reopen closed tab** · P2 · S · Belum
-  Simpan riwayat di `src/session_restore.rs`.
+- [x] **E1. Recent tabs (Ctrl+Tab) + reopen closed tab** · P2 · S · Selesai (sesi)
+  `editor::{reopen_closed_tab, cycle_tab, switch_to_previous_tab}`: riwayat 20 tab query tertutup
+  (isi editor, koneksi, database, file), Cmd+Alt+T, Cmd+Alt+←/→, Ctrl+Tab (Control fisik juga di
+  macOS). Riwayat tidak disimpan antar sesi.
 - [ ] **E2. Multi-window (drag tab keluar jadi window baru)** · P3 · L · Belum
   egui viewports; state `Tabular` harus bisa dibagi per viewport.
 - [ ] **E3. Split panes editor/hasil vertikal/horizontal** · P3 · M · Belum
 - [ ] **E4. Tab rows (multi-baris tab strip)** · P4 · S · Belum
-- [ ] **E5. Favorites: star database/tabel, pin di sidebar** · P2 · S · Belum
+- [x] **E5. Favorites: star database/tabel, pin di sidebar** · P2 · S · Selesai (tabel/view)
+  `src/favorites.rs` → `<data dir>/favorites.json`; menu konteks tabel/view, bagian "Favorites" di
+  atas pohon koneksi, klik membuka data lewat jalur Quick Open. Database belum bisa di-star.
 - [ ] **E6. Recent connections + clear** · P3 · S · Belum
 - [ ] **E7. Focus navigation antar pane via keyboard (View > Focus)** · P4 · S · Belum
 - [ ] **E8. What's New window setelah update** · P4 · S · Belum
@@ -117,7 +125,10 @@ Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs`
   Tabel baru di `connections.db` (`src/sidebar_database.rs`), secret tetap di `src/secrets.rs`.
 - [ ] **F2. SSH profiles reusable** · P1 · S · Belum
   Bergantung F1 untuk pola penyimpanan.
-- [ ] **F3. Import koneksi dari klien lain** · P1 · M · Belum
+- [ ] **F3. Import koneksi dari klien lain** · P1 · M · Sebagian
+  DBeaver selesai (`src/connection_import.rs`, Database > Import Connections from DBeaver…):
+  PostgreSQL/MySQL/SQLite/SQL Server/MongoDB/Redis + SSH tunnel, koneksi yang sama dipakai ulang,
+  password tidak diimpor. Belum: TablePlus, Sequel Ace, DataGrip, Beekeeper, Navicat.
   TablePlus (Keychain), Sequel Ace, DBeaver (`data-sources.json`), DataGrip, Beekeeper (`app.db`),
   Navicat `.ncx`. Password mungkin tidak bisa diambil tanpa entitlement; minta isi ulang.
 - [ ] **F4. Scan `.env` / `DATABASE_URL` / project folder jadi koneksi** · P2 · S · Belum
@@ -131,7 +142,9 @@ Status 2026-09-29: diterapkan di `src/data_table/grid_{model,prefs,state,ui}.rs`
 - [ ] **F10. Resolusi kredensial eksternal: 1Password, HashiCorp Vault, AWS Secrets Manager, shell command** · P3 · M · Sebagian
   Sekarang OS keychain + encrypted file.
 - [ ] **F11. Identity file + SSH agent IdentitiesOnly, TOTP prompt** · P4 · S · Sebagian
-- [ ] **F12. Connection URL paste (postgres://..., mysql://...) di form koneksi** · P2 · S · Belum
+- [x] **F12. Connection URL paste (postgres://..., mysql://...) di form koneksi** · P2 · S · Selesai
+  Field "Connection URL" memakai `deeplink::parse_dsn` (JDBC, `mongodb+srv`, `sslmode`), password
+  tampil sebagai `****`, dan teks yang sedang diketik tidak ditimpa tiap frame.
 - [ ] **F13. Check connection (ping) opsional saat dipakai** · P4 · S · Belum
 - [ ] **F14. Transport activity (throughput SSH/SOCKS di toolbar)** · P5 · S · Belum
 - [ ] **F15. Redis Sentinel mode** · P3 · S · Belum
@@ -180,8 +193,10 @@ Semua perubahan menampilkan SQL dulu (Execute / Open in Editor).
   Source to File…". PG kini punya folder Functions, Procedures, Triggers. SQLite: trigger & view.
 - [x] **G11. SQL Server: GO batch separator, PRINT output, per-result tabs** · P3 · M · Sebagian
   `GO` / `GO n` (di luar string/komentar) memecah script per batch; setiap result set dalam satu
-  batch mendapat tab hasil sendiri. Belum: output PRINT, karena `mssql-client` 0.20 membuang token
-  Info (hanya `tracing::debug!`); perlu patch/fork crate.
+  batch mendapat tab hasil sendiri. PRINT (2026-11-14): `connection/server_messages.rs` memasang
+  subscriber `tracing` yang menangkap event Info `mssql-client` dan `RAISE NOTICE` PostgreSQL per
+  job (task-local), tampil sebagai hasil "Severity/Message" atau tab "Messages". Belum diuji
+  melawan SQL Server/PostgreSQL sungguhan.
 
 ## H. Import, export, transfer
 

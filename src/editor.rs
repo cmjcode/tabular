@@ -111,6 +111,10 @@ pub(crate) fn create_new_tab(
     stash_active_tab_filter(tabular);
     // Job yang baru dimulai dicatat ke tab asalnya sebelum tab aktif berganti.
     tabular.sync_job_tabs();
+    tabular.previous_tab_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .map(|t| t.id);
     tabular.query_tabs.push(new_tab);
     let new_index = tabular.query_tabs.len() - 1;
     tabular.active_tab_index = new_index;
@@ -264,6 +268,122 @@ pub(crate) fn open_user_manager_tab(
     tab_id
 }
 
+/// Batas jumlah tab tertutup yang diingat.
+const CLOSED_TAB_HISTORY: usize = 20;
+
+/// Cuplikan tab query yang ditutup, cukup untuk membukanya kembali.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedTab {
+    pub title: String,
+    pub content: String,
+    pub file_path: Option<String>,
+    pub connection_id: Option<i64>,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+}
+
+/// Catat tab di `index` ke riwayat tab tertutup. Hanya tab query biasa yang
+/// berisi teks atau file; tab khusus (diagram, HTTP, DBA, Git, dll.) dilewati.
+pub(crate) fn remember_closed_tab(tabular: &mut window_egui::Tabular, index: usize) {
+    let Some(tab) = tabular.query_tabs.get(index) else {
+        return;
+    };
+    let special = tab.diagram_state.is_some()
+        || tab.http_client_state.is_some()
+        || tab.redis_browser_state.is_some()
+        || tab.dba_monitor_state.is_some()
+        || tab.user_manager_state.is_some()
+        || tab.git_state.is_some()
+        || tab.compare_state.is_some()
+        || tab.integration_test_state.is_some()
+        || tab.file_viewer_state.is_some()
+        || tab.dba_special_mode.is_some();
+    // Isi tab aktif hidup di buffer editor, bukan di `tab.content`.
+    let content = if index == tabular.active_tab_index {
+        tabular.editor.text.clone()
+    } else {
+        tab.content.clone()
+    };
+    if special || (content.trim().is_empty() && tab.file_path.is_none()) {
+        return;
+    }
+    let entry = ClosedTab {
+        title: tab.title.clone(),
+        content,
+        file_path: tab.file_path.clone(),
+        connection_id: tab.connection_id,
+        database_name: tab.database_name.clone(),
+        schema_name: tab.schema_name.clone(),
+    };
+    push_closed_tab(&mut tabular.closed_tabs, entry);
+}
+
+fn push_closed_tab(history: &mut Vec<ClosedTab>, entry: ClosedTab) {
+    history.retain(|t| t != &entry);
+    history.push(entry);
+    if history.len() > CLOSED_TAB_HISTORY {
+        let excess = history.len() - CLOSED_TAB_HISTORY;
+        history.drain(..excess);
+    }
+}
+
+/// Buka kembali tab yang terakhir ditutup. Isi yang dipulihkan adalah isi saat
+/// ditutup; file di disk tidak dibaca ulang.
+pub(crate) fn reopen_closed_tab(tabular: &mut window_egui::Tabular) {
+    let Some(entry) = tabular.closed_tabs.pop() else {
+        tabular.toasts.info("No recently closed tab");
+        return;
+    };
+    // Tab file yang masih terbuka cukup diaktifkan.
+    if let Some(path) = &entry.file_path
+        && let Some(idx) = tabular
+            .query_tabs
+            .iter()
+            .position(|t| t.file_path.as_deref() == Some(path.as_str()))
+    {
+        switch_to_tab(tabular, idx);
+        return;
+    }
+    create_new_tab_with_connection_and_database(
+        tabular,
+        entry.title,
+        entry.content,
+        entry.connection_id,
+        entry.database_name,
+    );
+    if let Some(tab) = tabular.query_tabs.get_mut(tabular.active_tab_index) {
+        tab.schema_name = entry.schema_name;
+        tab.is_saved = entry.file_path.is_some();
+        tab.file_path = entry.file_path;
+    }
+}
+
+/// Pindah ke tab di sebelah kanan (`forward`) atau kiri, berputar di ujung.
+pub(crate) fn cycle_tab(tabular: &mut window_egui::Tabular, forward: bool) {
+    let n = tabular.query_tabs.len();
+    if n < 2 {
+        return;
+    }
+    let cur = tabular.active_tab_index.min(n - 1);
+    let next = if forward {
+        (cur + 1) % n
+    } else {
+        (cur + n - 1) % n
+    };
+    switch_to_tab(tabular, next);
+}
+
+/// Pindah ke tab yang aktif sebelum tab sekarang (Ctrl+Tab).
+pub(crate) fn switch_to_previous_tab(tabular: &mut window_egui::Tabular) {
+    let target = tabular
+        .previous_tab_id
+        .and_then(|id| tabular.query_tabs.iter().position(|t| t.id == id));
+    match target {
+        Some(idx) if idx != tabular.active_tab_index => switch_to_tab(tabular, idx),
+        _ => cycle_tab(tabular, true),
+    }
+}
+
 pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     // Transaksi manual yang masih terbuka akan di-rollback saat tab ditutup;
     // minta konfirmasi dulu kecuali sudah dikonfirmasi lewat dialog.
@@ -276,6 +396,7 @@ pub(crate) fn close_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     }
     tabular.confirmed_close_tx_tab = None;
     tabular.dragged_tab_index = None;
+    remember_closed_tab(tabular, tab_index);
     // Catat tab asal job yang baru dimulai sebelum daftar tab berubah.
     tabular.sync_job_tabs();
     if tabular.query_tabs.len() <= 1 {
@@ -592,6 +713,7 @@ pub(crate) fn close_other_tabs(tabular: &mut window_egui::Tabular, keep_index: u
     let mut i = 0;
     while i < tabular.query_tabs.len() {
         if i != tabular.active_tab_index && !tabular.query_tabs[i].is_pinned {
+            remember_closed_tab(tabular, i);
             if let Some(session) = tabular.query_tabs[i].session.take() {
                 session.close();
             }
@@ -624,6 +746,7 @@ pub(crate) fn close_tabs_to_the_right(tabular: &mut window_egui::Tabular, tab_in
     let mut i = tab_index + 1;
     while i < tabular.query_tabs.len() {
         if !tabular.query_tabs[i].is_pinned {
+            remember_closed_tab(tabular, i);
             if let Some(session) = tabular.query_tabs[i].session.take() {
                 session.close();
             }
@@ -718,6 +841,12 @@ pub(crate) fn find_initial_blank_tab(tabular: &window_egui::Tabular) -> Option<u
 pub(crate) fn switch_to_tab(tabular: &mut window_egui::Tabular, tab_index: usize) {
     let mut need_connect: Option<i64> = None;
     if tab_index < tabular.query_tabs.len() {
+        if tab_index != tabular.active_tab_index {
+            tabular.previous_tab_id = tabular
+                .query_tabs
+                .get(tabular.active_tab_index)
+                .map(|t| t.id);
+        }
         // Job yang baru dimulai dicatat ke tab asalnya sebelum tab aktif berganti.
         tabular.sync_job_tabs();
         stash_active_tab_filter(tabular);
@@ -9103,6 +9232,12 @@ pub(crate) fn execute_command(tabular: &mut window_egui::Tabular, command: &str)
         "File: Open File..." => {
             window_egui::file_viewer_ui::open_dialog(tabular);
         }
+        "Editor: Edit SQL Snippets..." => match crate::user_snippets::ensure_file() {
+            Ok(path) => window_egui::file_viewer_ui::open_path(tabular, &path),
+            Err(e) => tabular
+                .toasts
+                .error(format!("Could not create the snippets file: {e}")),
+        },
         "Editor: Go to Definition" => {
             go_to_definition(tabular);
         }
@@ -9910,41 +10045,75 @@ fn execute_query_internal(tabular: &mut window_egui::Tabular, mut query: String)
         return;
     }
 
-    // Guard eksekusi: semua statement (bukan hanya yang pertama) dinilai dengan
-    // aturan yang sama seperti agent MCP, sesuai mode keamanan koneksi.
-    if !tabular.show_unsafe_dml_dialog {
-        match assess_query_for_active_tab(tabular, &query) {
-            crate::connection_safety::Verdict::Allow => {}
-            crate::connection_safety::Verdict::Confirm { title, reason } => {
-                tabular.show_unsafe_dml_dialog = true;
-                tabular.unsafe_dml_query = query;
-                tabular.unsafe_dml_type = title;
-                tabular.unsafe_dml_reason = reason;
-                tabular.query_execution_in_progress = false;
-                tabular.extend_query_icon_hold();
-                return;
-            }
-            crate::connection_safety::Verdict::Block { reason } => {
-                block_query(tabular, reason);
-                return;
-            }
-        }
-    }
-
-    // Parameter Prompt: Check if query contains parameter placeholders
+    // Parameter diisi lebih dulu supaya mode keamanan menilai SQL final, bukan
+    // teks berisi placeholder.
     if !tabular.show_parameter_dialog {
-        let params = extract_query_parameters(&query);
-        if !params.is_empty() {
-            tabular.show_parameter_dialog = true;
-            tabular.parameter_dialog_query = query;
-            tabular.parameter_inputs = params.into_iter().map(|p| (p, String::new())).collect();
-            tabular.query_execution_in_progress = false;
-            tabular.extend_query_icon_hold();
+        let names = crate::query_params::names(&query);
+        if !names.is_empty() {
+            open_parameter_dialog(tabular, query, names);
             return;
         }
     }
 
+    execute_query_with_safety(tabular, query);
+}
+
+/// Buka dialog parameter. Nilai yang pernah diisi untuk nama yang sama dipakai
+/// ulang supaya menjalankan ulang query tidak perlu mengetik semuanya lagi.
+fn open_parameter_dialog(tabular: &mut window_egui::Tabular, query: String, names: Vec<String>) {
+    let previous = std::mem::take(&mut tabular.parameter_inputs);
+    tabular.parameter_inputs = names
+        .into_iter()
+        .map(|name| {
+            previous
+                .iter()
+                .find(|v| v.name == name)
+                .cloned()
+                .unwrap_or_else(|| crate::query_params::ParamValue::new(name))
+        })
+        .collect();
+    tabular.parameter_error = None;
+    tabular.show_parameter_dialog = true;
+    tabular.parameter_dialog_query = query;
+    tabular.query_execution_in_progress = false;
+    tabular.extend_query_icon_hold();
+}
+
+/// Jalankan query setelah dinilai mode keamanan koneksi: semua statement (bukan
+/// hanya yang pertama) dinilai dengan aturan yang sama seperti agent MCP.
+pub(crate) fn execute_query_with_safety(tabular: &mut window_egui::Tabular, query: String) {
+    match assess_query_for_active_tab(tabular, &query) {
+        crate::connection_safety::Verdict::Allow => {}
+        crate::connection_safety::Verdict::Confirm { title, reason } => {
+            tabular.show_unsafe_dml_dialog = true;
+            tabular.unsafe_dml_query = query;
+            tabular.unsafe_dml_type = title;
+            tabular.unsafe_dml_reason = reason;
+            tabular.query_execution_in_progress = false;
+            tabular.extend_query_icon_hold();
+            return;
+        }
+        crate::connection_safety::Verdict::Block { reason } => {
+            block_query(tabular, reason);
+            return;
+        }
+    }
     execute_query_bypass_checks(tabular, query);
+}
+
+/// Tipe database koneksi tab aktif, bila ada.
+pub(crate) fn active_tab_db_type(
+    tabular: &window_egui::Tabular,
+) -> Option<crate::models::enums::DatabaseType> {
+    let conn_id = tabular
+        .query_tabs
+        .get(tabular.active_tab_index)
+        .and_then(|t| t.connection_id)?;
+    tabular
+        .connections
+        .iter()
+        .find(|c| c.id == Some(conn_id))
+        .map(|c| c.connection_type.clone())
 }
 
 /// Nilai query terhadap mode keamanan koneksi tab aktif.
@@ -10815,174 +10984,6 @@ pub(crate) fn split_sql_statements_with_spans(text: &str) -> Vec<(usize, usize, 
         .collect()
 }
 
-pub(crate) fn extract_query_parameters(sql: &str) -> Vec<String> {
-    let mut params = Vec::new();
-    let bytes = sql.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_backtick = false;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-
-    while i < len {
-        let b = bytes[i];
-        let next_b = if i + 1 < len {
-            Some(bytes[i + 1])
-        } else {
-            None
-        };
-
-        if in_line_comment {
-            if b == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_block_comment {
-            if b == b'*' && next_b == Some(b'/') {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_single_quote {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            } else if b == b'\'' {
-                if next_b == Some(b'\'') {
-                    i += 2;
-                    continue;
-                }
-                in_single_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double_quote {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            } else if b == b'"' {
-                in_double_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_backtick {
-            if b == b'`' {
-                in_backtick = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'-' && next_b == Some(b'-') {
-            in_line_comment = true;
-            i += 2;
-            continue;
-        }
-        if b == b'#' {
-            in_line_comment = true;
-            i += 1;
-            continue;
-        }
-        if b == b'/' && next_b == Some(b'*') {
-            in_block_comment = true;
-            i += 2;
-            continue;
-        }
-
-        if b == b'\'' {
-            in_single_quote = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            in_double_quote = true;
-            i += 1;
-            continue;
-        }
-        if b == b'`' {
-            in_backtick = true;
-            i += 1;
-            continue;
-        }
-
-        if b == b':' && next_b == Some(b':') {
-            i += 2;
-            continue;
-        }
-
-        if b == b':' && next_b.is_some_and(|c| c.is_ascii_alphabetic() || c == b'_') {
-            let start = i;
-            i += 1;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            let param_name = &sql[start..i];
-            if !params.contains(&param_name.to_string()) {
-                params.push(param_name.to_string());
-            }
-            continue;
-        }
-
-        if b == b'$' && next_b.is_some_and(|c| c.is_ascii_digit()) {
-            let start = i;
-            i += 1;
-            while i < len && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            let param_name = &sql[start..i];
-            if !params.contains(&param_name.to_string()) {
-                params.push(param_name.to_string());
-            }
-            continue;
-        }
-
-        if b == b'?' {
-            let param_name = format!("? (Param {})", params.len() + 1);
-            if !params.contains(&param_name) {
-                params.push(param_name);
-            }
-            i += 1;
-            continue;
-        }
-
-        i += 1;
-    }
-
-    params
-}
-
-pub(crate) fn substitute_query_parameters(query: &str, params: &[(String, String)]) -> String {
-    let mut result = query.to_string();
-    for (param_name, value) in params {
-        let val_trimmed = value.trim();
-        if val_trimmed.is_empty() {
-            continue;
-        }
-        if param_name.starts_with('?') {
-            if let Some(pos) = result.find('?') {
-                result.replace_range(pos..pos + 1, val_trimmed);
-            }
-        } else {
-            result = result.replace(param_name, val_trimmed);
-        }
-    }
-    result
-}
-
 pub(crate) fn close_tabs_for_file(tabular: &mut window_egui::Tabular, file_path: &str) {
     // Find all tabs that have this file open and close them
     let mut indices_to_close = Vec::new();
@@ -11180,17 +11181,79 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_query_parameters() {
-        let sql = "SELECT * FROM users WHERE status = :status AND id = $1 AND name = ?;";
-        let params = extract_query_parameters(sql);
-        assert_eq!(
-            params,
-            vec![
-                ":status".to_string(),
-                "$1".to_string(),
-                "? (Param 3)".to_string()
-            ]
+    fn reopen_closed_tab_restores_content_and_connection() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "Keep".to_string(), "SELECT 1".to_string());
+        create_new_tab_with_connection_and_database(
+            &mut tabular,
+            "Orders".to_string(),
+            "SELECT * FROM orders".to_string(),
+            Some(7),
+            Some("shop".to_string()),
         );
+        // Isi tab aktif yang belum disimpan ke tab.content tetap ikut terekam.
+        tabular
+            .editor
+            .set_text("SELECT * FROM orders WHERE id = 1".to_string());
+        let idx = tabular.active_tab_index;
+        close_tab(&mut tabular, idx);
+        assert_eq!(tabular.query_tabs.len(), 1);
+
+        reopen_closed_tab(&mut tabular);
+        let tab = &tabular.query_tabs[tabular.active_tab_index];
+        assert_eq!(tab.title, "Orders");
+        assert_eq!(tab.content, "SELECT * FROM orders WHERE id = 1");
+        assert_eq!(tab.connection_id, Some(7));
+        assert_eq!(tab.database_name.as_deref(), Some("shop"));
+        assert!(tabular.closed_tabs.is_empty());
+    }
+
+    #[test]
+    fn empty_tabs_are_not_remembered_and_history_is_capped() {
+        let mut history = Vec::new();
+        for i in 0..(CLOSED_TAB_HISTORY + 5) {
+            push_closed_tab(
+                &mut history,
+                ClosedTab {
+                    title: format!("t{i}"),
+                    content: "x".to_string(),
+                    file_path: None,
+                    connection_id: None,
+                    database_name: None,
+                    schema_name: None,
+                },
+            );
+        }
+        assert_eq!(history.len(), CLOSED_TAB_HISTORY);
+        assert_eq!(
+            history.last().unwrap().title,
+            format!("t{}", CLOSED_TAB_HISTORY + 4)
+        );
+
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), "SELECT 1".to_string());
+        create_new_tab(&mut tabular, "Blank".to_string(), String::new());
+        let idx = tabular.active_tab_index;
+        close_tab(&mut tabular, idx);
+        assert!(tabular.closed_tabs.is_empty());
+    }
+
+    #[test]
+    fn switch_to_previous_tab_toggles_between_last_two() {
+        let mut tabular = crate::window_egui::Tabular::new();
+        tabular.query_tabs.clear();
+        create_new_tab(&mut tabular, "A".to_string(), String::new());
+        create_new_tab(&mut tabular, "B".to_string(), String::new());
+        create_new_tab(&mut tabular, "C".to_string(), String::new());
+        switch_to_tab(&mut tabular, 0);
+        switch_to_previous_tab(&mut tabular);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "C");
+        switch_to_previous_tab(&mut tabular);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "A");
+        cycle_tab(&mut tabular, false);
+        assert_eq!(tabular.query_tabs[tabular.active_tab_index].title, "C");
     }
 
     #[test]

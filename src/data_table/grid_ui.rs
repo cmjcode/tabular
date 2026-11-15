@@ -749,6 +749,17 @@ pub(crate) fn render_cell_menu_extras(
     }
     if ui
         .button(format!(
+            "{} Profile Column '{}'…",
+            egui_icons::icons::ICON_INSIGHTS.codepoint,
+            ctx.column
+        ))
+        .clicked()
+    {
+        req.profile_column = Some(ctx.column.to_string());
+        ui.close();
+    }
+    if ui
+        .button(format!(
             "{} Hide Column '{}'",
             egui_icons::icons::ICON_VISIBILITY_OFF.codepoint,
             ctx.column
@@ -816,6 +827,17 @@ pub(crate) fn render_header_menu_extras(
         req.hide_column = Some(column.to_string());
         ui.close();
     }
+    if ui
+        .button(format!(
+            "{} Profile Column…",
+            egui_icons::icons::ICON_INSIGHTS.codepoint
+        ))
+        .on_hover_text("NULLs, distinct values, most common values and ranges")
+        .clicked()
+    {
+        req.profile_column = Some(column.to_string());
+        ui.close();
+    }
     if ui.button("Jump to Column…   ⌘J").clicked() {
         req.open_jump = true;
         ui.close();
@@ -845,6 +867,130 @@ pub(crate) fn render_grid_windows(t: &mut Tabular, ctx: &egui::Context) {
     render_fk_picker(t, ctx);
     render_row_json_window(t, ctx);
     render_move_column_window(t, ctx);
+    render_column_profile_window(t, ctx);
+}
+
+fn render_column_profile_window(t: &mut Tabular, ctx: &egui::Context) {
+    use super::column_profile::{TOP_VALUES, format_number};
+    let Some(p) = t.grid_ext.column_profile.clone() else {
+        return;
+    };
+    let browse = t.is_table_browse_mode;
+    let total_rows = t.total_rows;
+    let mut open = true;
+    let mut filter: Option<(FilterOperator, String)> = None;
+    egui::Window::new(format!("Column Profile: {}", p.column))
+        .id(egui::Id::new("grid_column_profile_window"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(420.0)
+        .show(ctx, |ui| {
+            let scope = if total_rows > p.rows {
+                format!(
+                    "Based on {} loaded rows of {} total. Load all rows for a complete profile.",
+                    p.rows, total_rows
+                )
+            } else {
+                format!("Based on {} loaded rows.", p.rows)
+            };
+            ui.label(egui::RichText::new(scope).size(11.0).weak());
+            ui.add_space(6.0);
+            let pct = |n: usize| format!("{n}  ({:.1}%)", p.percent(n));
+            egui::Grid::new("column_profile_stats")
+                .num_columns(2)
+                .spacing([18.0, 4.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    let mut row = |label: &str, value: String| {
+                        ui.label(label);
+                        ui.label(egui::RichText::new(value).monospace());
+                        ui.end_row();
+                    };
+                    row("Rows", p.rows.to_string());
+                    row("NULL", pct(p.nulls));
+                    row("Empty text", pct(p.blanks));
+                    row("Distinct", pct(p.distinct));
+                    if p.looks_unique() {
+                        row("Unique", "yes (every value differs)".to_string());
+                    }
+                    if let Some(n) = &p.numeric {
+                        row("Min", format_number(n.min));
+                        row("Max", format_number(n.max));
+                        row("Average", format_number(n.mean));
+                        row("Sum", format_number(n.sum));
+                    } else {
+                        if let Some(v) = &p.min_text {
+                            row("Lowest (text order)", v.clone());
+                        }
+                        if let Some(v) = &p.max_text {
+                            row("Highest (text order)", v.clone());
+                        }
+                    }
+                    row(
+                        "Length",
+                        format!("{} to {} characters", p.min_len, p.max_len),
+                    );
+                });
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!("Most common values (top {TOP_VALUES})")).strong(),
+            );
+            let max_count = p.top.first().map(|(_, c)| *c).unwrap_or(1).max(1);
+            egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    egui::Grid::new("column_profile_top")
+                        .num_columns(3)
+                        .spacing([10.0, 4.0])
+                        .show(ui, |ui| {
+                            for (value, count) in &p.top {
+                                let shown = if value.is_empty() {
+                                    "(empty)".to_string()
+                                } else {
+                                    value.chars().take(60).collect()
+                                };
+                                let label = ui.add(
+                                    egui::Label::new(egui::RichText::new(shown).monospace())
+                                        .truncate()
+                                        .sense(egui::Sense::click()),
+                                );
+                                if browse
+                                    && label
+                                        .on_hover_text("Click to filter the table by this value")
+                                        .clicked()
+                                {
+                                    filter = Some((FilterOperator::Equal, value.clone()));
+                                }
+                                let frac = *count as f32 / max_count as f32;
+                                ui.add(
+                                    egui::ProgressBar::new(frac)
+                                        .desired_width(120.0)
+                                        .text(pct(*count)),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                });
+            if browse && p.nulls > 0 {
+                ui.add_space(6.0);
+                if ui.button("Show only NULL rows").clicked() {
+                    filter = Some((FilterOperator::IsNull, String::new()));
+                }
+            }
+        });
+    if !open {
+        t.grid_ext.column_profile = None;
+    }
+    if let Some((op, value)) = filter {
+        let req = gs::GridRequests {
+            filter_by: Some((p.column.clone(), op, value)),
+            ..Default::default()
+        };
+        t.grid_ext.column_profile = None;
+        gs::apply_grid_requests(t, req);
+    }
 }
 
 fn sql_block(ui: &mut egui::Ui, sql: &str, max_height: f32) {
