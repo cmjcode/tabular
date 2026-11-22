@@ -45,7 +45,11 @@ pub(crate) fn render_plugin_fields(
     }
     if fields.password {
         ui.label("Password:");
-        ui.add(egui::TextEdit::singleline(&mut conn.password).password(true));
+        crate::window_egui::style::password_field_with_reveal(
+            ui,
+            &mut conn.password,
+            egui::Id::new(("plugin_connection_password_reveal", engine_id)),
+        );
         ui.end_row();
     }
     if fields.database {

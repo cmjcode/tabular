@@ -82,6 +82,11 @@ fn sort_connections_in_folder(
 /// Lebar tetap dialog Add/Edit Connection (isi window, tanpa margin frame).
 const CONNECTION_DIALOG_WIDTH: f32 = 460.0;
 
+/// Kunci status tampil/sembunyi password di dialog koneksi (per mode dialog).
+pub(crate) fn connection_password_reveal_id(is_edit_mode: bool, ssh: bool) -> egui::Id {
+    egui::Id::new(("connection_dialog_password_reveal", is_edit_mode, ssh))
+}
+
 pub(crate) fn render_connection_dialog(
     tabular: &mut window_egui::Tabular,
     ctx: &egui::Context,
@@ -94,6 +99,13 @@ pub(crate) fn render_connection_dialog(
     };
 
     if !should_show {
+        // Dialog tertutup: password kembali tersembunyi saat dibuka berikutnya.
+        for ssh in [false, true] {
+            crate::window_egui::style::reset_password_reveal(
+                ctx,
+                connection_password_reveal_id(is_edit_mode, ssh),
+            );
+        }
         return;
     }
 
@@ -291,9 +303,10 @@ pub(crate) fn render_connection_dialog(
                                 ui.end_row();
 
                                 ui.label("Password:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut connection_data.password)
-                                        .password(true),
+                                crate::window_egui::style::password_field_with_reveal(
+                                    ui,
+                                    &mut connection_data.password,
+                                    connection_password_reveal_id(is_edit_mode, false),
                                 );
                                 ui.end_row();
 
@@ -525,11 +538,10 @@ pub(crate) fn render_connection_dialog(
                                 }
                                 models::enums::SshAuthMethod::Password => {
                                     ui.label("SSH Password:");
-                                    ui.add(
-                                        egui::TextEdit::singleline(
-                                            &mut connection_data.ssh_password,
-                                        )
-                                        .password(true),
+                                    crate::window_egui::style::password_field_with_reveal(
+                                        ui,
+                                        &mut connection_data.ssh_password,
+                                        connection_password_reveal_id(is_edit_mode, true),
                                     );
                                     ui.end_row();
                                 }

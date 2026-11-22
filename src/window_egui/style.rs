@@ -936,6 +936,53 @@ pub fn ai_notice_frame(color: egui::Color32) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(8, 6))
 }
 
+/// Field password satu baris dengan tombol mata untuk menampilkan/menyembunyikan isinya.
+///
+/// Status tampil disimpan di memori sementara egui dengan kunci `reveal_id`;
+/// panggil [`reset_password_reveal`] saat form ditutup agar dibuka lagi dalam
+/// keadaan tersembunyi. Lebar total sama dengan `text_edit_singleline` biasa
+/// sehingga kolom grid tetap rata.
+pub fn password_field_with_reveal(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    reveal_id: egui::Id,
+) -> egui::Response {
+    let revealed = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(reveal_id))
+        .unwrap_or(false);
+    ui.horizontal(|ui| {
+        let button_w = 26.0 + ui.spacing().item_spacing.x;
+        let width = (ui.spacing().text_edit_width - button_w).max(60.0);
+        let resp = ui.add(
+            egui::TextEdit::singleline(value)
+                .id_salt(reveal_id)
+                .desired_width(width)
+                .password(!revealed),
+        );
+        let icon = if revealed {
+            egui_icons::icons::ICON_VISIBILITY_OFF
+        } else {
+            egui_icons::icons::ICON_VISIBILITY
+        };
+        let tip = if revealed {
+            "Hide password"
+        } else {
+            "Show password"
+        };
+        if ai_icon_button(ui, icon.codepoint, tip).clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(reveal_id, !revealed));
+        }
+        resp
+    })
+    .inner
+}
+
+/// Kembalikan field dari [`password_field_with_reveal`] ke keadaan tersembunyi.
+pub fn reset_password_reveal(ctx: &egui::Context, reveal_id: egui::Id) {
+    ctx.data_mut(|d| d.remove_temp::<bool>(reveal_id));
+}
+
 /// Tombol ikon tanpa bingkai (bingkai hanya muncul saat hover), ukuran seragam.
 pub fn ai_icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str) -> egui::Response {
     let muted = theme_muted_text(ui.ctx());
